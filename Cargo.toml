@@ -1,0 +1,35 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+rust-version = "1.85"
+
+[workspace.dependencies]
+aurora-span = { path = "crates/aurora-span" }
+aurora-diag = { path = "crates/aurora-diag" }
+aurora-lexer = { path = "crates/aurora-lexer" }
+aurora-ast = { path = "crates/aurora-ast" }
+aurora-parser = { path = "crates/aurora-parser" }
+aurora-check = { path = "crates/aurora-check" }
+aurora-types = { path = "crates/aurora-types" }
+aurora-typeck = { path = "crates/aurora-typeck" }
+aurora-interp = { path = "crates/aurora-interp" }
+aurora-net = { path = "crates/aurora-net" }
+aurora-codegen = { path = "crates/aurora-codegen" }
+aurora-gfx = { path = "crates/aurora-gfx" }
+aurora-shader = { path = "crates/aurora-shader" }
+aurora-runtime = { path = "crates/aurora-runtime" }
+aurora-gpu = { path = "crates/aurora-gpu" }
+aurora-window = { path = "crates/aurora-window" }
+aurora-lsp = { path = "crates/aurora-lsp" }
+aurora-debug = { path = "crates/aurora-debug" }
+aurora-audio = { path = "crates/aurora-audio" }
+aurora-std = { path = "crates/aurora-std" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"

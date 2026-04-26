@@ -1,0 +1,19 @@
+# Rust build artifacts
+/target
+**/target
+
+# Editor / OS
+*.rs.bk
+*.snap.new
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Aurora build output
+*.exe
+*.obj
+*.o
+
+# Generated render dumps
+*.ppm
