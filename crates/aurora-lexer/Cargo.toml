@@ -1,0 +1,9 @@
+[package]
+name = "aurora-lexer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aurora-span.workspace = true
+aurora-diag.workspace = true
