@@ -1,0 +1,11 @@
+[package]
+name = "aurora-parser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aurora-span.workspace = true
+aurora-diag.workspace = true
+aurora-lexer.workspace = true
+aurora-ast.workspace = true
