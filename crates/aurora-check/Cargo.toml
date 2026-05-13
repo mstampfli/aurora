@@ -1,0 +1,13 @@
+[package]
+name = "aurora-check"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aurora-span.workspace = true
+aurora-diag.workspace = true
+aurora-ast.workspace = true
+
+[dev-dependencies]
+aurora-parser.workspace = true
