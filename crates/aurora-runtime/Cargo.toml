@@ -1,0 +1,25 @@
+[package]
+name = "aurora-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The Aurora native runtime: host functions (`aurora_*`) that compiled Aurora
+# code calls. Built as a normal rlib so the JIT can take their addresses, and
+# linked into AOT executables so the same symbols resolve at link time.
+
+[dependencies]
+aurora-gfx.workspace = true
+aurora-audio.workspace = true
+aurora-window.workspace = true
+aurora-gpu.workspace = true
+aurora-net.workspace = true
+# Image decoding for the asset pipeline (PNG/JPEG → RGBA), used by `load_image`.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# TrueType rasterization for `draw_text` (pure Rust).
+fontdue = "0.9"
+# WAV decoding for `play_wav` (pure Rust).
+hound = "3"
+# Real 2D physics (Rapier) and weighted A* pathfinding, exposed as builtins.
+rapier2d = "0.22"
+pathfinding = "4"
