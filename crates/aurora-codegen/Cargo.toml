@@ -1,0 +1,20 @@
+[package]
+name = "aurora-codegen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aurora-ast.workspace = true
+aurora-lexer.workspace = true
+aurora-span.workspace = true
+aurora-gfx.workspace = true
+aurora-runtime.workspace = true
+cranelift = "0.131.2"
+cranelift-jit = "0.131.2"
+cranelift-module = "0.131.2"
+cranelift-object = "0.131.2"
+cranelift-native = "0.131.2"
+
+[dev-dependencies]
+aurora-parser.workspace = true
