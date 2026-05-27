@@ -1,0 +1,17 @@
+[package]
+name = "aurora-exe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Link target for AOT builds: `aurorac build` compiles an Aurora program to an
+# object file, points AURORA_OBJ at it, and `cargo build`s this crate. The
+# emitted object supplies `aurora_user_main`; this crate supplies the entry
+# point and links the `aurora-runtime` host functions.
+
+[[bin]]
+name = "aurora-exe"
+path = "src/main.rs"
+
+[dependencies]
+aurora-runtime.workspace = true
