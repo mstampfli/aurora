@@ -1,0 +1,11 @@
+[package]
+name = "aurora-shader"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aurora-ast.workspace = true
+
+[dev-dependencies]
+aurora-parser.workspace = true
