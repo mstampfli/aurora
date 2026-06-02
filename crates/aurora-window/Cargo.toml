@@ -1,0 +1,16 @@
+[package]
+name = "aurora-window"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Real-time window + input for Aurora games: a winit window with a wgpu surface
+# that presents a CPU framebuffer each frame and exposes keyboard/mouse input.
+# The frame/timing/input core is split out so it is unit-testable headlessly;
+# the window itself is opened by `run`.
+
+[dependencies]
+aurora-gfx.workspace = true
+winit = "0.30"
+wgpu = "22"
+pollster = "0.3"

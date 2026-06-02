@@ -1,0 +1,17 @@
+[package]
+name = "aurora-gpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Live GPU execution via wgpu (DX12/Vulkan/Metal). Headless: runs real WGSL on
+# the GPU and reads results back, so it is verifiable without a window. This is
+# where `aurora-shader`'s WGSL output actually executes.
+
+[dependencies]
+wgpu = "22"
+pollster = "0.3"
+
+[dev-dependencies]
+aurora-parser.workspace = true
+aurora-shader.workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "aurora-audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Audio for Aurora games: a deterministic synthesis + mixing core (oscillators,
+# ADSR envelopes, note pitches, track mixdown) that renders PCM samples — fully
+# unit-tested without a device — plus real playback through the default output
+# device via cpal.
+
+[dependencies]
+cpal = "0.15"
