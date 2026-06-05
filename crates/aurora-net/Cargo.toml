@@ -1,0 +1,12 @@
+[package]
+name = "aurora-net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aurora-ast.workspace = true
+aurora-interp.workspace = true
+
+[dev-dependencies]
+aurora-parser.workspace = true
