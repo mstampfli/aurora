@@ -1,0 +1,15 @@
+[package]
+name = "aurora-std"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The Aurora standard library: a prelude of Aurora source automatically appended
+# to every program, providing common helpers (math, easing, input key codes)
+# written in Aurora itself. Appended *after* user code so user line numbers are
+# unaffected (debugger/diagnostics stay accurate).
+
+[dev-dependencies]
+aurora-parser.workspace = true
+aurora-check.workspace = true
+aurora-typeck.workspace = true
