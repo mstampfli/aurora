@@ -1,0 +1,19 @@
+[package]
+name = "aurora-debug"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Native source-level debugger. Compiles the program with debug instrumentation
+# (hooks in the *machine code*, not an interpreter) and runs it at native speed,
+# stopping at breakpoints / each step to report the source line and scalar
+# locals. `debug_trace` records the stops (testable); `debug_interactive` drives
+# a stdin REPL.
+
+[dependencies]
+aurora-ast.workspace = true
+aurora-parser.workspace = true
+aurora-check.workspace = true
+aurora-typeck.workspace = true
+aurora-codegen.workspace = true
+aurora-runtime.workspace = true

@@ -1,0 +1,26 @@
+[package]
+name = "aurora-lsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Aurora Language Server: real-time editor diagnostics over the LSP protocol,
+# reusing the same parse + safety + type-check pipeline as the compiler. The
+# dispatch and diagnostic-conversion logic is pure and unit-tested; the binary
+# is the stdio JSON-RPC loop.
+
+[lib]
+name = "aurora_lsp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "aurora-lsp"
+path = "src/main.rs"
+
+[dependencies]
+aurora-span.workspace = true
+aurora-diag.workspace = true
+aurora-parser.workspace = true
+aurora-check.workspace = true
+aurora-typeck.workspace = true
+serde_json = "1"
