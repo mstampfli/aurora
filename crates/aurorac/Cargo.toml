@@ -1,0 +1,27 @@
+[package]
+name = "aurorac"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "aurorac"
+path = "src/main.rs"
+
+[dependencies]
+aurora-span.workspace = true
+aurora-diag.workspace = true
+aurora-lexer.workspace = true
+aurora-parser.workspace = true
+aurora-check.workspace = true
+aurora-typeck.workspace = true
+aurora-interp.workspace = true
+aurora-codegen.workspace = true
+aurora-gfx.workspace = true
+aurora-shader.workspace = true
+aurora-gpu.workspace = true
+aurora-window.workspace = true
+aurora-debug.workspace = true
+aurora-audio.workspace = true
+aurora-std.workspace = true
+aurora-runtime.workspace = true
