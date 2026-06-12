@@ -1,0 +1,15 @@
+// Aurora shaders — `aurorac wgsl examples/shader.aur` lowers these to WGSL.
+// The same types (Vec3/Vec4/Mat4) work on CPU and GPU (spec invariant #1).
+
+struct VsIn  { pos: Vec3, uv: Vec2 }
+struct VsOut { clip: Vec4, uv: Vec2 }
+
+@vertex fn vs(vin: VsIn) -> VsOut {
+    let world = model * vec4(vin.pos, 1.0)
+    VsOut { clip: view_proj * world, uv: vin.uv }
+}
+
+@fragment fn fs(vin: VsOut) -> Color {
+    let base = texture(albedo, vin.uv)
+    base * tint
+}

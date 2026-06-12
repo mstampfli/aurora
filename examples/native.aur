@@ -1,0 +1,21 @@
+// A natively-compiled Aurora program — `aurorac native examples/native.aur`.
+// No interpreter: this lowers to machine code via Cranelift and runs directly,
+// including `println` (linked host functions) and native `fsqrt`.
+
+fn fib(n: i64) -> i64 {
+    if n < 2 { return n }
+    fib(n - 1) + fib(n - 2)
+}
+
+fn sum_to(n: i64) -> i64 {
+    let mut total = 0
+    for i in 1..=n { total += i }
+    total
+}
+
+fn main() {
+    println("Aurora, compiled to native machine code:")
+    println(fib(35))
+    println(sum_to(1000000))
+    println(sqrt(2.0))
+}

@@ -1,0 +1,53 @@
+// Parallel system scheduler.
+//
+// `physics`, `regen`, and `score` touch disjoint components (Position, Health,
+// Score), so the compiler's §6.2 analysis proves they cannot race. `run_systems`
+// therefore fuses them into a single layer and runs all three concurrently on
+// worker threads over the shared ECS world. `report` reads Position and so
+// conflicts with `physics`; it is ordered with `after(physics)` and runs in a
+// later layer. The result is identical to sequential execution — just faster.
+
+component Position { x: i64 }
+component Velocity { x: i64 }
+component Health   { hp: i64 }
+component Score    { pts: i64 }
+
+system physics() {
+    for (p, v) in query<&mut Position, &Velocity> { p.x += v.x }
+}
+
+system regen() {
+    for h in query<&mut Health> { h.hp += 5 }
+}
+
+system score() {
+    for s in query<&mut Score> { s.pts += 10 }
+}
+
+// Reads Position (written by `physics`) -> must run after it, in its own layer.
+system report() after(physics) {
+    let mut sum = 0
+    for p in query<&Position> { sum += p.x }
+    println(sum)
+}
+
+fn main() {
+    let mut i = 0
+    while i < 4 {
+        spawn(Position { x: 0 }, Velocity { x: 3 }, Health { hp: 0 }, Score { pts: 0 })
+        i += 1
+    }
+
+    let mut tick = 0
+    while tick < 10 {
+        run_systems()        // physics || regen || score, then report
+        tick += 1
+    }
+
+    let mut hp = 0
+    for h in query<&Health> { hp += h.hp }       // 4 * 10 * 5  = 200
+    let mut pts = 0
+    for s in query<&Score> { pts += s.pts }      // 4 * 10 * 10 = 400
+    println(hp)
+    println(pts)
+}

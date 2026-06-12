@@ -1,0 +1,49 @@
+// Game-dev standard library: vectors, collision, easing, color, particles, UI.
+// (FFI, image loading, and text rendering are shown in ffi.aur / the README.)
+
+fn main() {
+    // 3D vectors
+    let n = vec3(1.0, 0.0, 0.0).cross(vec3(0.0, 1.0, 0.0)).normalize()
+    println(n.z)                                   // 1.0
+
+    // Collision
+    let player = rect(0.0, 0.0, 16.0, 16.0)
+    let wall   = rect(10.0, 10.0, 50.0, 50.0)
+    println(player.intersects(wall))               // 1
+    println(circles_hit(0.0, 0.0, 5.0, 8.0, 0.0, 5.0)) // 1
+
+    // Easing + color (a fade from black to white at t=0.5)
+    let t = ease_in_out_cubic(0.5)
+    println(color_lerp(rgb(0, 0, 0), rgb(255, 255, 255), t))
+
+    // A particle under gravity
+    let mut spark = particle(0.0, 0.0, 20.0, -10.0, 2.0)
+    spark.step(0.1, 30.0)
+    println(spark.x)                               // 2.0
+
+    // Immediate-mode UI hit-test
+    let b = button(4.0, 4.0, 80.0, 24.0)
+    println(b.clicked(40.0, 16.0, 1))              // 1
+
+    // Pathfinding heuristic
+    println(manhattan(0, 0, 5, 3))                 // 8
+
+    // Full grid pathfinding (BFS shortest path around a wall)
+    let mut gr = grid(5, 5)
+    gr.set_wall(2, 0, 1)
+    gr.set_wall(2, 1, 1)
+    gr.set_wall(2, 2, 1)
+    gr.set_wall(2, 3, 1)
+    gr.compute_field(4, 0)
+    println(gr.dist[0])                            // 12 (routes around the wall)
+
+    // 2D AABB physics: a falling body lands on a floor
+    let mut ball = body(0.0, 0.0, 10.0, 10.0)
+    ball.vy = 50.0
+    ball.step(1.0, 0.0)
+    ball.collide(0.0, 55.0, 100.0, 10.0)
+    println(ball.y)                                // 45.0 (resting on the floor)
+
+    // (UI widgets — ui_button/ui_slider/fill_rect — draw into the framebuffer
+    //  and read the live mouse; see the stdlib. Run in a window with `aurorac`.)
+}

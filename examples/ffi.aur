@@ -1,0 +1,16 @@
+// FFI: call C library functions directly with `@extern`.
+//
+// An `@extern` function with no body binds to an external C-ABI symbol. It
+// resolves against the C runtime at link time (`aurorac build`) or the
+// registered C symbols (`aurorac run`). The same mechanism binds Rust functions
+// exported as `#[no_mangle] extern "C"`. Scalars and pointers cross the boundary.
+
+@extern fn hypot(x: f64, y: f64) -> f64    // libm: sqrt(x*x + y*y)
+@extern fn cbrt(x: f64) -> f64             // libm: cube root
+@extern fn atan2(y: f64, x: f64) -> f64
+
+fn main() {
+    println(hypot(3.0, 4.0))     // 5.0
+    println(cbrt(27.0))          // 3.0
+    println(atan2(1.0, 1.0))     // ~0.785 (pi/4)
+}

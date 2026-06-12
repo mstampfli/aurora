@@ -1,0 +1,37 @@
+// Aurora — the worked example from grammar spec §9. Lexes clean today;
+// parses & type-checks once those phases land.
+
+use engine::{App, Camera, Transform, Mesh, load}
+
+component Spinner { speed: f32 = 1.0 }
+component Velocity { v: Vec3 }
+
+system spin(dt: Time) stage(Update) {
+    for (t, s) in query<&mut Transform, &Spinner> {
+        t.rotate(Quat.y(s.speed * dt))
+    }
+}
+
+system integrate(dt: Time) stage(Update) after(spin) {
+    for (t, vel) in query<&mut Transform, &Velocity> {
+        t.pos += vel.v * dt
+    }
+}
+
+@vertex fn vs(in: VertexIn) -> VertexOut {
+    VertexOut { clip: camera.view_proj * vec4(in.pos, 1.0), uv: in.uv }
+}
+
+@fragment fn fs(in: VertexOut) -> Color {
+    texture(albedo, in.uv)
+}
+
+pipeline standard { vs, fs, depth: .less, cull: .back }
+
+fn main() {
+    let app = App.new("demo", 1280, 720)
+    let cube: Handle<Mesh> = load("cube.glb")
+    app.spawn(Transform.identity(), cube, Spinner { speed: 1.5 })
+    app.spawn(Camera.perspective(60.0), Transform.at(0.0, 2.0, 5.0))
+    app.run()
+}

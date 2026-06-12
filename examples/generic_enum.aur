@@ -1,0 +1,33 @@
+// Generic enums at multiple instantiations.
+//
+// `Opt<i64>` and `Opt<f64>` coexist in one program. A value construction like
+// `Opt::Some(x)` carries no type argument, so the compiler resolves each
+// construction and `match` to its instantiation by propagating the concrete
+// types from annotations (function return types, `let` annotations, call
+// results). Each `Opt<T>` gets its own correct memory layout — the f64 payload
+// is never reinterpreted as integer bits. A site that can't be resolved from
+// annotations is a clear compile error, never a silent miscompile.
+
+enum Opt<T> { Some(T), None }
+
+fn first_even(n: i64) -> Opt<i64> {
+    if n - (n / 2) * 2 == 0 { Opt::Some(n) } else { Opt::None }
+}
+
+fn half(n: i64) -> Opt<f64> {
+    if n > 0 { Opt::Some((n as f64) / 2.0) } else { Opt::None }
+}
+
+fn main() {
+    let a: Opt<i64> = first_even(8)
+    let b: Opt<f64> = half(7)
+
+    match a {
+        Opt::Some(x) => println(x),        // 8   (i64 layout)
+        Opt::None    => println(-1),
+    }
+    match b {
+        Opt::Some(y) => println(y),        // 3.5 (f64 layout — correct!)
+        Opt::None    => println(-1.0),
+    }
+}

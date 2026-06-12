@@ -1,0 +1,18 @@
+// Aurora code driving the builtin graphics — `aurorac run examples/draw.aur`.
+// Creates a framebuffer, clears it, draws triangles, and saves a PPM image.
+
+fn main() {
+    framebuffer(200, 200)
+    clear(15, 15, 25)
+
+    // A red triangle.
+    triangle(100, 20, 20, 180, 180, 180, 230, 60, 60)
+    // A translucent-looking green one (flat color; overwrites).
+    triangle(100, 60, 60, 160, 140, 160, 80, 220, 90)
+
+    // Inspect a pixel from Aurora itself.
+    println(fb_get(100, 120))
+
+    save_ppm("aurora_draw.ppm")
+    println("saved aurora_draw.ppm")
+}

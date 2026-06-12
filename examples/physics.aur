@@ -1,0 +1,27 @@
+// Library-backed physics and pathfinding (Rapier + the `pathfinding` crate),
+// exposed as builtins — real rigid-body simulation and weighted A*, far beyond
+// the hand-rolled stdlib versions in gamedev.aur.
+
+fn main() {
+    // --- Rapier 2D physics: a box falls and rests on a floor ---
+    phys_init(0.0, 100.0)                          // gravity (px/s^2)
+    phys_add(50.0, 200.0, 60.0, 10.0, 0)           // static floor (top at 190)
+    let ball = phys_add(50.0, 0.0, 10.0, 10.0, 1)  // dynamic box (half-height 10)
+    let mut i = 0
+    while i < 240 {
+        phys_step(0.016666)                        // ~60 fps for 4 seconds
+        i = i + 1
+    }
+    println(phys_y(ball) as i64)                   // ~180: resting on the floor
+
+    // --- A* pathfinding around a wall ---
+    nav_init(6, 6)
+    let mut y = 0
+    while y < 5 {
+        nav_wall(3, y, 1)                          // a wall with a gap at the bottom
+        y = y + 1
+    }
+    let steps = nav_find(0, 0, 5, 0)               // route from top-left to top-right
+    println(steps)                                 // cells in the detour path
+    println(nav_x(1))                              // first step's column
+}

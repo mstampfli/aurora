@@ -1,0 +1,53 @@
+// Capstone: exercises modules, first-class strings, the standard library
+// (Vec2, math, IntList), enums + match, closures, and ECS — all compiled to
+// native code.  Run:  aurorac run examples/capstone.aur
+
+mod physics {
+    // A tiny 2D step using the stdlib Vec2.
+    fn step(p: Vec2, v: Vec2, dt: f64) -> Vec2 { p.add(v.scale(dt)) }
+}
+
+enum Shape { Dot, Box, Tri }
+
+fn area(s: Shape, size: i64) -> i64 {
+    match s {
+        Shape::Dot => 1,
+        Shape::Box => size * size,
+        Shape::Tri => size * size / 2,
+    }
+}
+
+component Position { x: i64, y: i64 }
+
+fn main() {
+    // First-class strings + stdlib.
+    println("=== Aurora capstone ===")
+    println("gcd(48,36) = " + str(gcd(48, 36)))
+    println(str_repeat("-", 20))
+
+    // Vec2 math through a module function.
+    let p = vec2(0.0, 0.0)
+    let v = vec2(3.0, 4.0)
+    let p2 = physics::step(p, v, 2.0)
+    println("moved to (" + str(p2.x) + ", " + str(p2.y) + "), speed " + str(v.length()))
+
+    // Enums + match.
+    println("box area: " + str(area(Shape::Box, 5)))
+    println("tri area: " + str(area(Shape::Tri, 6)))
+
+    // A bounded collection.
+    let mut scores = intlist()
+    scores.push(40)
+    scores.push(99)
+    scores.push(72)
+    println("top score: " + str(scores.maxv()) + " of " + str(scores.size()))
+
+    // ECS.
+    spawn(Position { x: 1, y: 2 })
+    spawn(Position { x: 3, y: 4 })
+    println("entities: " + str(entity_count()))
+
+    // Closures + pipe.
+    let dbl = |n: i64| n * 2
+    println("doubled: " + str(dbl(21)))
+}

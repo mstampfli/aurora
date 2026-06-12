@@ -1,0 +1,31 @@
+// A real interactive Aurora game: opens a window, reads input, draws each frame,
+// and plays a tone — all via language builtins.  Run with:  aurorac run examples/game_window.aur
+//
+// Builtins used: framebuffer/clear/pixel (graphics), window_open/window_present
+// (real-time wgpu window), key_down (input), play_note (audio). Key codes:
+// 0=Left 1=Right 2=Up 3=Down 4=Space 5=W 6=A 7=S 8=D 9=Enter.
+
+fn main() {
+    framebuffer(200, 150)
+    window_open(200, 150)
+
+    let mut x = 100
+    let mut y = 75
+
+    // The game loop runs until the window is closed (window_present returns 0).
+    while window_present() == 1 {
+        if key_down(0) == 1 { x = x - 2 }   // Left  / arrow
+        if key_down(1) == 1 { x = x + 2 }   // Right / arrow
+        if key_down(2) == 1 { y = y - 2 }   // Up
+        if key_down(3) == 1 { y = y + 2 }   // Down
+        if key_down(4) == 1 { play_note(7, 80) }  // Space → play a note
+
+        clear(12, 14, 24)
+        // Draw a small box at (x, y).
+        for dy in 0..6 {
+            for dx in 0..6 {
+                pixel(x + dx, y + dy, 120, 200, 255)
+            }
+        }
+    }
+}

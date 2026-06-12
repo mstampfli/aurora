@@ -1,0 +1,34 @@
+// A runnable ECS program — `aurorac run examples/ecs.aur`.
+// Spawns entities, runs a system that mutates components through a `&mut` query,
+// then reports the results. (`run_systems`/`entity_count` are interpreter
+// harness builtins standing in for the engine loop.)
+
+component Position { x: i32, y: i32 }
+component Velocity { x: i32, y: i32 }
+
+system integrate() {
+    for (p, v) in query<&mut Position, &Velocity> {
+        p.x += v.x
+        p.y += v.y
+    }
+}
+
+fn main() {
+    spawn(Position { x: 0, y: 0 }, Velocity { x: 1, y: 2 })
+    spawn(Position { x: 10, y: 10 }, Velocity { x: -2, y: 0 })
+    spawn(Position { x: 5, y: 5 })   // no Velocity — skipped by the query
+
+    println("entities:")
+    println(entity_count())
+
+    // Advance the simulation three ticks.
+    for tick in 1..=3 {
+        run_systems()
+    }
+
+    println("positions after 3 ticks:")
+    for p in query<&Position> {
+        println(p.x)
+        println(p.y)
+    }
+}

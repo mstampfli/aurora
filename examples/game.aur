@@ -1,0 +1,39 @@
+// Capstone: a tiny ECS "game" that renders — `aurorac run examples/game.aur`.
+// Combines components, systems (with scheduler ordering), queries with `&mut`
+// write-back, and the builtin graphics — all checked and executed by Aurora.
+
+component Position { x: i32, y: i32 }
+component Velocity { x: i32, y: i32 }
+component Sprite   { r: i32, g: i32, b: i32 }
+
+// Advance every moving entity.
+system integrate() stage(Update) {
+    for (p, v) in query<&mut Position, &Velocity> {
+        p.x += v.x
+        p.y += v.y
+    }
+}
+
+// Draw each entity. It reads Position while `integrate` writes it, so it must be
+// ordered after — the ECS data-race check (E0202) requires this.
+system render() stage(Update) after(integrate) {
+    for (p, s) in query<&Position, &Sprite> {
+        triangle(p.x, p.y, p.x + 8, p.y, p.x, p.y + 8, s.r, s.g, s.b)
+    }
+}
+
+fn main() {
+    framebuffer(128, 128)
+    clear(15, 15, 25)
+
+    spawn(Position { x: 8, y: 8 },  Velocity { x: 4, y: 3 }, Sprite { r: 230, g: 70, b: 70 })
+    spawn(Position { x: 100, y: 12 }, Velocity { x: -3, y: 5 }, Sprite { r: 70, g: 220, b: 90 })
+
+    // Run several ticks; each tick integrates then renders (a motion trail).
+    for frame in 1..=12 {
+        run_systems()
+    }
+
+    save_ppm("aurora_game.ppm")
+    println("rendered 12 ticks of 2 entities to aurora_game.ppm")
+}

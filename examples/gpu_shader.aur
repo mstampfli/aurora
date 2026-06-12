@@ -1,0 +1,10 @@
+// A self-contained Aurora fragment shader that runs on the real GPU:
+//   aurorac gpu examples/gpu_shader.aur -o out.ppm
+//
+// `aurorac gpu` lowers this to WGSL (aurora-shader), pairs it with a fullscreen
+// vertex stage, executes it headless via wgpu on the actual GPU, and saves the
+// read-back pixels. The same `vec4`/`Color` types also type-check on the CPU.
+
+@fragment fn shade() -> Color {
+    vec4(0.9, 0.2, 0.5, 1.0)
+}

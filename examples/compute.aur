@@ -1,0 +1,36 @@
+// A runnable Aurora program — `aurorac run examples/compute.aur`.
+// Exercises functions, recursion, control flow, structs, arrays, and tuples.
+
+struct Vec2i { x: i32, y: i32 }
+
+fn fib(n: i32) -> i32 {
+    if n < 2 { return n }
+    fib(n - 1) + fib(n - 2)
+}
+
+fn sum_to(n: i32) -> i32 {
+    let mut total = 0
+    for i in 1..=n {
+        total += i
+    }
+    total
+}
+
+fn main() {
+    println("Aurora is running.")
+
+    println(fib(10))        // 55
+    println(sum_to(100))    // 5050
+
+    let mut p = Vec2i { x: 3, y: 4 }
+    p.x = p.x * 10
+    println(p.x + p.y)      // 34
+
+    let xs = [2, 4, 6, 8]
+    let mut acc = 0
+    for v in xs { acc += v }
+    println(acc)            // 20
+
+    let (a, b) = (7, 6)
+    println(a * b)          // 42
+}

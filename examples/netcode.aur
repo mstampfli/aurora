@@ -1,0 +1,35 @@
+// Aurora — the end-to-end replication example from netcode spec §11.
+
+@replicated(authority: .server)
+component Avatar {
+    @interp pos: Vec3
+    @interp(.slerp) view: Quat
+    @predict vel: Vec3
+    health: f32
+    @quantize(0.1) ammo: f32
+}
+
+struct Command { tick: Tick, mv: Vec2, view: Quat, fire: bool }
+
+@predict_system
+system move_avatar(cmd: Command, dt: Time) {
+    for (a, e) in query<&mut Avatar, Entity> where owns(e, cmd) {
+        a.vel = accelerate(a.vel, cmd.mv, dt)
+        a.pos += a.vel * dt
+        a.view = cmd.view
+    }
+}
+
+@rpc(.server, reliable)
+fn fire(dir: Vec3) {
+    let hit = physics.raycast_at_tick(self.muzzle(), dir, self.cmd_tick)
+    if hit {
+        hit.get_mut::<Avatar>().health -= 25.0
+    }
+    on_explosion.multicast(hit.point, 1.0)
+}
+
+@rpc(.multicast, unreliable)
+fn on_explosion(pos: Vec3, r: f32) {
+    spawn_fx(.explosion, pos, r)
+}
