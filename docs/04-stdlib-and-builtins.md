@@ -1,0 +1,182 @@
+# Aurora — Builtins & Standard Library Reference
+
+This is the practical reference for writing Aurora programs: the **builtins**
+(functions the compiler lowers to native runtime calls) and the **standard
+library prelude** (Aurora source auto-included in every program). For the
+grammar and type system see [`01-grammar-and-types.md`](01-grammar-and-types.md).
+
+```sh
+aurorac run    game.aur              # compile main to native code & run (JIT)
+aurorac build  game.aur -o game.exe  # standalone optimized native executable
+aurorac check  game.aur              # type + safety checks only
+```
+
+`main` is the entry point. Top-level `fn`, `struct`, `component`, `system`,
+`enum`, `trait`, `impl`, `const`, and `mod` are all items; statements end at a
+newline or `;` (block-form `if`/`while`/`for`/`match` need no separator).
+
+---
+
+## Core builtins
+
+| Builtin | Signature | Notes |
+|---|---|---|
+| `print` / `println` | `(value)` | print a scalar/string (with/without newline) |
+| `assert` | `(cond)` | abort if `cond` is 0 |
+| `str` | `(int\|float) -> str` | format a number |
+| `len` | `(str\|array) -> i64` | length |
+| `char_at` / `substr` / `starts_with` | string ops | |
+| `abs`/`min`/`max`/`clamp`/`sqrt`/`sin`/`cos`/`tan`/`floor`/`ceil`/`round`/`pow` | math | float-typed |
+| `band`/`bor`/`bxor`/`shl`/`shr`/`bnot` | `(i64, i64) -> i64` | integer bitwise (`&`/`\|` are taken by refs/closures) |
+
+Arrays are fixed-size (`[T; N]`) and **bounds-checked** — an out-of-range or
+negative index panics with `array index N out of bounds (length L)`.
+
+## ECS (the language)
+
+`component Position { x: f64 }` declares storage; `spawn(Position { .. }, ..)`
+creates an entity; `system move() { for (p, v) in query<&mut Position, &Velocity> { .. } }`
+defines behaviour. `run_systems()` runs them — **independent systems in a stage
+run in parallel** (the §6.2 checker proves they can't race). `despawn(e)`,
+`entity_count()`.
+
+## Graphics, window, input
+
+| Builtin | Signature |
+|---|---|
+| `framebuffer(w, h)` / `clear(r,g,b)` | create / clear the CPU framebuffer |
+| `pixel(x,y,r,g,b)` / `triangle(x0,y0,x1,y1,x2,y2,r,g,b)` | draw |
+| `fb_get(x,y) -> i64` | read a packed `0xRRGGBB` pixel |
+| `save_ppm(path)` | write the framebuffer to a PPM |
+| `window_open(w,h)` / `window_present() -> i64` | real-time window (1=open) |
+| `key_down(code) -> i64` | keyboard (see `key_*` helpers) |
+| `mouse_x()` / `mouse_y()` / `mouse_down() -> i64` | mouse |
+| `gpu_render("<wgsl>", time_ms)` / `gpu_compute(...)` | run shaders on the GPU |
+
+## Assets & text
+
+| Builtin | Signature | Backed by |
+|---|---|---|
+| `load_ppm(path) -> i64` | PPM → framebuffer | built-in |
+| `load_image(path) -> i64` | **PNG/JPEG** → framebuffer | `image` crate |
+| `load_font(path) -> i64` | load a TrueType/OpenType font | `fontdue` |
+| `draw_text(x, y, str, px, color)` | rasterize text (alpha-blended) | `fontdue` |
+| `play_note(semitone, ms)` / `play_sound(...)` | synth audio | `aurora-audio` |
+| `play_wav(path) -> i64` | decode + play a **WAV** file | `hound` |
+| `scene_save(path)` / `scene_load(path)` | persist the ECS world | built-in |
+
+## Networking (reliable UDP)
+
+`net_bind(port)`, `net_connect(host, port)`, `net_send(msg)`, `net_recv() -> str`.
+
+## Physics — Rapier 2D (`phys_*`)
+
+Real rigid-body simulation. Positions are body centres; units are whatever your
+game uses (e.g. pixels). Bodies are referenced by an `i64` handle.
+
+| Builtin | Signature | Notes |
+|---|---|---|
+| `phys_init(gx, gy)` | create/reset the world with gravity | |
+| `phys_add(x, y, hw, hh, dynamic) -> i64` | box (half-extents); `dynamic` 1/0 | returns a handle |
+| `phys_step(dt)` | advance the simulation | |
+| `phys_x(h) -> f64` / `phys_y(h) -> f64` | body centre | |
+| `phys_vel_x(h)` / `phys_vel_y(h) -> f64` | linear velocity | |
+| `phys_set_vel(h, vx, vy)` / `phys_set_pos(h, x, y)` | set state | |
+| `phys_apply_impulse(h, ix, iy)` | instantaneous (jumps, knockback) | |
+| `phys_apply_force(h, fx, fy)` | continuous force | |
+| `phys_raycast(x, y, dx, dy, max) -> f64` | distance to first hit, or `-1` | run after `phys_step` |
+
+## Pathfinding — weighted A\* (`nav_*`)
+
+| Builtin | Signature |
+|---|---|
+| `nav_init(w, h)` | create a grid |
+| `nav_wall(x, y, blocked)` | mark a cell blocked (1) / open (0) |
+| `nav_find(sx, sy, gx, gy) -> i64` | A* search; returns path length in cells, or `-1` |
+| `nav_x(i) -> i64` / `nav_y(i) -> i64` | read the i-th path cell |
+
+## Data parallelism
+
+`par_for(out_array, |i| ...)` fills `out[i]` across OS threads (disjoint writes).
+
+---
+
+## Foreign function interface (`@extern`)
+
+Bind external **C** symbols, and **Rust** functions exported as
+`#[no_mangle] extern "C"`:
+
+```aurora
+@extern fn hypot(x: f64, y: f64) -> f64       // C symbol = function name
+@extern("SDL_Delay") fn delay(ms: i64)        // or name the symbol explicitly
+```
+
+A bodiless `@extern fn` is declared as an import. It resolves **at link time**
+for `aurorac build` (against the C runtime and anything linked into the
+executable) and **against registered symbols** for `aurorac run`.
+
+**Supported parameter/return types:** all scalars — `i64`, `f64`, `f32` — plus
+**structs and arrays of scalars**, passed **by pointer**. `i64`/`f64` aggregates
+read straight through (their 8-byte-slot layout matches C); aggregates containing
+`f32` are **marshaled to C's packed layout** at the call site (so an Aurora
+`[f32; 16]` matrix is passed as a `const float[16]`). This covers the buffers,
+vectors, and matrices that real C/Rust graphics and math APIs take.
+
+**Region contracts at the boundary.** Because an `@extern` function has no body
+to infer from, you can declare its region contract with `#region` annotations on
+parameter/return types — `@extern fn keep(t: #perm Thing)` or
+`@extern fn tmp() -> #frame Buf`. The checker then enforces it at call sites
+(passing a `#frame` value where `#perm` is required is an `E0410` error), exactly
+as if the body had been visible.
+
+To use your own C/Rust library with `aurorac build`, link it into the
+`aurora-exe` crate (its `build.rs` is the hook); the runtime already bundles
+`image`, `fontdue`, `hound`, Rapier, and the `pathfinding` crate this way.
+
+---
+
+## Standard library prelude
+
+Auto-included Aurora source. Highlights:
+
+**Math:** `lerp`, `clampf`, `clamp01`, `smoothstep`, `deg2rad`/`rad2deg`,
+`gcd`/`lcm`/`ipow`/`factorial`/`isqrt`, `wrapf`/`fmodp`, `approach`, `minf`/`maxf`,
+`maxi`/`mini`/`absi`/`clampi`/`signi`.
+
+**Easing:** `ease_in_quad`, `ease_out_quad`, `ease_in_out_quad`, `ease_in_cubic`,
+`ease_out_cubic`, `ease_in_out_cubic`.
+
+**Vectors:** `Vec2` (`add`/`sub`/`scale`/`dot`/`length`/`dist`) and `Vec3`
+(`add`/`sub`/`scale`/`dot`/`cross`/`length`/`normalize`).
+
+**Color (packed `0xRRGGBB`):** `rgb(r,g,b)`, `red`/`green`/`blue`, `color_lerp`.
+
+**Collision:** `Rect` (`contains`/`intersects`), `circles_hit`, `point_in_circle`,
+`overlap_1d`.
+
+**Sprites & animation:** `SpriteSheet` (`src_x`/`src_y`), `anim_frame`.
+
+**Particles:** `Particle` (`step(dt, gravity)`, `alive`).
+
+**Collections:** generic `List<T>` (`push`/`get`/`size`), `IntList`, `F64List`.
+
+**Lightweight engines** (zero-dependency defaults; for serious use prefer the
+`phys_*`/`nav_*` library builtins above):
+- `Grid` — 4-connected BFS pathfinding (`compute_field`/`next_to`).
+- `Body` — AABB physics (`step`/`collide`).
+- Immediate-mode UI — `fill_rect`, `ui_button`, `ui_label`, `ui_slider`.
+
+See [`examples/`](../examples/) — `gamedev.aur`, `physics.aur`, `ffi.aur`.
+
+---
+
+## Known limitations
+
+- **FFI structs with sub-8-byte fields** (e.g. `{i32, i32}`) aren't passed by
+  value — they'd need layout packing. Scalars, pointers, and structs/arrays of
+  `i64`/`f64` (by pointer) all work.
+- **Performance** is Cranelift-level (release builds use `opt_level=speed`); there
+  is no LLVM backend or autovectorization yet.
+- **Tooling**: there is a CLI debugger, profiler, and LSP (diagnostics + completion),
+  but no editor-integrated debugger UI, no package registry, and the language is
+  young — treat it as a capable foundation, not a battle-tested production engine.
