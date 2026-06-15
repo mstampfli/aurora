@@ -1359,6 +1359,77 @@ pub extern "C" fn aurora_grab_mouse(on: i64) {
     aurora_window::imm_grab_mouse(on != 0);
 }
 
+// --- rebindable input actions ----------------------------------------------
+//
+// Decouple the game from physical keys: it binds abstract ACTIONS to input codes
+// (rebindable at runtime, e.g. from a settings menu) and queries actions, never
+// raw keys. Codes 0..65 are keyboard (the `key_down` codes); 100/101/102 are the
+// left/right/middle mouse buttons.
+
+thread_local! {
+    static BINDINGS: RefCell<std::collections::HashMap<i64, i64>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+fn code_is_down(code: i64) -> bool {
+    if code < 0 {
+        false
+    } else if code >= 100 {
+        aurora_window::imm_mouse_button((code - 100) as u32)
+    } else {
+        aurora_window::imm_key_down(code as u32)
+    }
+}
+
+/// Bind an action id to an input code (rebindable any time).
+#[no_mangle]
+pub extern "C" fn aurora_input_bind(action: i64, code: i64) {
+    BINDINGS.with(|b| {
+        b.borrow_mut().insert(action, code);
+    });
+}
+
+/// The input code currently bound to an action, or -1 if unbound.
+#[no_mangle]
+pub extern "C" fn aurora_input_binding(action: i64) -> i64 {
+    BINDINGS.with(|b| b.borrow().get(&action).copied().unwrap_or(-1))
+}
+
+/// Whether an action's bound input is currently held (1) or not (0).
+#[no_mangle]
+pub extern "C" fn aurora_input_down(action: i64) -> i64 {
+    let code = BINDINGS.with(|b| b.borrow().get(&action).copied().unwrap_or(-1));
+    code_is_down(code) as i64
+}
+
+/// A -1/0/+1 axis from two opposing actions (e.g. back/forward).
+#[no_mangle]
+pub extern "C" fn aurora_input_axis(neg: i64, pos: i64) -> f64 {
+    let p = aurora_input_down(pos) as f64;
+    let n = aurora_input_down(neg) as f64;
+    p - n
+}
+
+/// Read the `i`-th `f32` at a raw pointer (passed as integer bits), widened to
+/// `f64`. Lets Aurora sim code read the opaque `f32` state/input blobs the
+/// netcode framework hands it (see `aurora_net_sim`).
+#[no_mangle]
+pub extern "C" fn aurora_f32_load(ptr: i64, i: i64) -> f64 {
+    if ptr == 0 || i < 0 {
+        return 0.0;
+    }
+    unsafe { *(ptr as *const f32).add(i as usize) as f64 }
+}
+
+/// Write `v` (narrowed to `f32`) as the `i`-th `f32` at a raw pointer.
+#[no_mangle]
+pub extern "C" fn aurora_f32_store(ptr: i64, i: i64, v: f64) {
+    if ptr == 0 || i < 0 {
+        return;
+    }
+    unsafe { *(ptr as *mut f32).add(i as usize) = v as f32 };
+}
+
 /// Play a note WITHOUT blocking — mixed into the persistent audio engine, so
 /// sounds and music overlap. `looped` != 0 repeats it until volume/stop.
 #[no_mangle]
@@ -1647,23 +1718,18 @@ pub extern "C" fn aurora_dbg_var_f64(name_ptr: *const u8, name_len: i64, value: 
 /// Touch every host symbol so the linker keeps this crate's object in an AOT
 /// link even when the Rust driver references nothing from it directly.
 pub fn force_link() -> usize {
-    let fns: [*const (); 184] = [
+    let fns: [*const (); 192] = [
         aurora_r3d_ssao as *const (),
         aurora_r3d_point_shadows as *const (),
-        // Multiplayer.
-        aurora_net_add_wall as *const (),
-        aurora_net_player_size as *const (),
-        aurora_net_interest as *const (),
-        aurora_net_fire as *const (),
-        aurora_net_hit_player as *const (),
-        aurora_net_hit_x as *const (),
-        aurora_net_hit_y as *const (),
-        aurora_net_hit_z as *const (),
+        // Multiplayer (generic framework: the game registers its Aurora sim).
         aurora_net_host as *const (),
         aurora_net_join as *const (),
-        aurora_net_config as *const (),
+        aurora_net_sim as *const (),
         aurora_net_send_input as *const (),
         aurora_net_update as *const (),
+        aurora_net_interest as *const (),
+        aurora_net_hit_radius as *const (),
+        aurora_net_spawn_at as *const (),
         aurora_net_my_id as *const (),
         aurora_net_is_server as *const (),
         aurora_net_player_count as *const (),
@@ -1676,6 +1742,21 @@ pub fn force_link() -> usize {
         aurora_net_local_y as *const (),
         aurora_net_local_z as *const (),
         aurora_net_local_yaw as *const (),
+        aurora_net_state as *const (),
+        aurora_net_local_state as *const (),
+        aurora_net_fire as *const (),
+        aurora_net_hit_player as *const (),
+        aurora_net_hit_x as *const (),
+        aurora_net_hit_y as *const (),
+        aurora_net_hit_z as *const (),
+        // Rebindable input-action layer.
+        aurora_input_bind as *const (),
+        aurora_input_binding as *const (),
+        aurora_input_down as *const (),
+        aurora_input_axis as *const (),
+        // Raw f32-blob accessors (for the Aurora net sim).
+        aurora_f32_load as *const (),
+        aurora_f32_store as *const (),
         // 3D rendering extras.
         aurora_r3d_fog as *const (),
         aurora_r3d_sky as *const (),

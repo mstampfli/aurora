@@ -1,12 +1,58 @@
 // Multiplayer 3D movement shooter: an authoritative server with client-side
-// prediction and remote-player interpolation, all in the language. The local
-// player is predicted (responsive); other players are drawn from interpolated
-// server snapshots. Movement is the single shared model the server and client
-// both run, so they can't drift.
+// prediction and remote-player interpolation, all in the language. The movement
+// is written in Aurora and registered with the engine's generic netcode via
+// `net_sim`, so the server and every client run the exact same step over an
+// opaque state blob and cannot drift. The local player is predicted (responsive);
+// other players are drawn from interpolated server snapshots.
 //
 // Set `is_host` below: run one copy as the host (1) and others as clients (0),
 // then `aurorac run examples/mp_shooter3d.aur`. The host listens on UDP 7777;
 // clients join 127.0.0.1:7777 (change the address for LAN play).
+//
+// State blob (f32): 0 x 1 y 2 z 3 yaw 4 vy 5 jump_prev
+// Input blob (f32): 0 forward 1 strafe-right 2 yaw 3 jump 4 dt
+
+fn mp_sim(state: i64, input: i64) {
+    let dt = f32_load(input, 4)
+    let yaw = f32_load(input, 2)
+    f32_store(state, 3, yaw)
+
+    let wf = f32_load(input, 0)
+    let ws = f32_load(input, 1)
+    let hx = sin(yaw)
+    let hz = 0.0 - cos(yaw)
+    let rx = cos(yaw)
+    let rz = sin(yaw)
+    let mut wx = hx * wf + rx * ws
+    let mut wz = hz * wf + rz * ws
+    let wl = sqrt(wx * wx + wz * wz)
+    if wl > 1.0 {
+        wx = wx / wl
+        wz = wz / wl
+    }
+
+    let y = f32_load(state, 1)
+    let mut vy = f32_load(state, 4)
+    let jump_in = f32_load(input, 3)
+    let jumped = jump_in > 0.5 and f32_load(state, 5) < 0.5
+    f32_store(state, 5, jump_in)
+    if y <= 0.001 {
+        if jumped { vy = 9.0 }
+    }
+    vy = vy - 22.0 * dt
+
+    let nx = f32_load(state, 0) + wx * 8.0 * dt
+    let nz = f32_load(state, 2) + wz * 8.0 * dt
+    let mut ny = y + vy * dt
+    if ny < 0.0 {
+        ny = 0.0
+        vy = 0.0
+    }
+    f32_store(state, 0, nx)
+    f32_store(state, 1, ny)
+    f32_store(state, 2, nz)
+    f32_store(state, 4, vy)
+}
 
 fn main() {
     let is_host = 1
@@ -20,23 +66,19 @@ fn main() {
     let ground_vis = r3d_make_plane(120.0, 60.0, 0.35, 0.5, 0.35)
     let body_vis = r3d_make_box(0.4, 0.9, 0.4)
     let spark = r3d_make_sprite(1.0, 0.85, 0.3)
-
     let crate_vis = r3d_make_box(0.6, 0.45, 0.3)
 
-    // Movement tuning shared by client prediction and the server.
-    net_config(8.0, 22.0, 9.0, 0.0)
-    net_player_size(0.4, 0.9)
     if is_host == 1 {
         net_host(7777)
     } else {
         net_join("127.0.0.1", 7777)
     }
-
-    // Static cover: collision boxes (shared movement collides with these) + the
-    // visuals. Walls must be registered identically on every peer.
-    net_add_wall(6.0, 1.0, -4.0, 1.0, 1.0, 1.0)
-    net_add_wall(-5.0, 1.0, 3.0, 1.0, 1.0, 1.0)
-    net_add_wall(0.0, 1.5, -12.0, 3.0, 1.5, 1.0)
+    // Register the shared movement model (6 state floats, 5 input floats).
+    net_sim(|state, input| {
+        mp_sim(state, input)
+        0
+    }, 6, 5)
+    net_spawn_at(0.0, 0.0, 8.0)
 
     let yaw = 0.0
     let pitch = 0.0
@@ -62,19 +104,20 @@ fn main() {
         if pitch > 1.4 { pitch = 1.4 }
         if pitch < 0.0 - 1.4 { pitch = 0.0 - 1.4 }
 
-        // Input (WASD relative to yaw, space jumps, shift sprints handled by speed).
+        // Input (WASD relative to yaw, space jumps).
         let fwd = 0.0
         let strafe = 0.0
         if key_down(5) { fwd = fwd + 1.0 }
         if key_down(7) { fwd = fwd - 1.0 }
         if key_down(8) { strafe = strafe + 1.0 }
         if key_down(6) { strafe = strafe - 1.0 }
-        let jump = 0
-        if key_down(4) { jump = 1 }
+        let jump = 0.0
+        if key_down(4) { jump = 1.0 }
 
         // Send input (predicts locally on a client, authoritative on the host),
         // then pump the network (server simulates + broadcasts; client reconciles).
-        net_send_input(fwd, strafe, yaw, jump, dt)
+        let blob = [fwd, strafe, yaw, jump, dt]
+        net_send_input(blob)
         net_update(dt)
 
         // Camera follows the local (predicted) player.

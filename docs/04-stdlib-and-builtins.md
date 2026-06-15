@@ -71,34 +71,47 @@ run in parallel** (the §6.2 checker proves they can't race). `despawn(e)`,
 
 ## Multiplayer (authoritative server + client prediction)
 
-A game-ready layer for a multiplayer movement shooter: an authoritative UDP
-server with N clients, **client-side prediction** of the local player,
-**server reconciliation** (snap to authoritative + replay unacknowledged inputs),
-and **snapshot interpolation** of remote players. The client and server run the
-same movement model, so they cannot drift.
+A generic, game-agnostic framework for a multiplayer movement shooter: an
+authoritative UDP server with N clients, **client-side prediction** of the local
+player, **server reconciliation** (snap to authoritative + replay unacknowledged
+inputs), and **snapshot interpolation** of remote players. The engine owns the
+machinery but **no gameplay**: each tick it runs your own simulation step,
+registered from Aurora with `net_sim`, over an opaque per-player state blob.
+Prediction, rollback replay, and server authority all call that same step, so
+they cannot drift.
+
+The contract: a player's state is a block of `f32` floats. The engine reads only
+`state[0..3]` = x,y,z and `state[3]` = yaw (for transforms / interpolation /
+lag-comp); every other float is yours (velocity, timers, flags). Read and write
+the blob from your sim with the raw `f32_load(ptr, i)` / `f32_store(ptr, i, v)`
+accessors.
 
 | Builtin | Signature | Notes |
 |---|---|---|
 | `net_host(port) -> i64` | start an authoritative server | the host is also player 0 |
 | `net_join(host, port) -> i64` | join as a predicting client | 1 on success |
-| `net_config(speed, gravity, jump, ground)` | tune the shared movement model | |
-| `net_send_input(fwd, strafe, yaw, jump, dt) -> i64` | submit a frame's input | predicts locally + sends; returns the input seq |
+| `net_sim(\|state, input\| {...}, state_len, input_len)` | register the game's sim step | a closure run natively over `f32` state/input blobs; `state_len`/`input_len` floats each |
+| `net_send_input(input_array) -> i64` | submit a frame's input | from an `[f64; n]` blob; predicts locally + sends; returns the input seq |
 | `net_update(dt)` | pump the network | server simulates + broadcasts; client reconciles + interpolates |
+| `net_spawn_at(x, y, z)` | set the local spawn point | |
 | `net_my_id() -> i64` / `net_is_server() -> i64` | identity | |
 | `net_player_count() -> i64` / `net_player_id_at(i) -> i64` | iterate players | |
 | `net_player_x/y/z/yaw(id) -> f64` | a player's transform | predicted for the local player, interpolated for remotes |
 | `net_local_x/y/z/yaw() -> f64` | the local player's transform | shorthand for the predicted self |
-| `net_add_wall(x,y,z, hx,hy,hz)` / `net_player_size(r, h)` | static collision + player box | movement collides + slides; register walls on every peer |
+| `net_state(id, i) -> f64` / `net_local_state(i) -> f64` | read any game-defined state float | velocity, flags, etc. |
 | `net_interest(radius)` | relevancy radius | clients are only told about players within it |
+| `net_hit_radius(r)` | per-player hit sphere radius | used by the lag-compensated raycast |
 | `net_fire(ox,oy,oz, dx,dy,dz)` | lag-compensated hitscan | server rewinds targets to the shooter's view |
 | `net_hit_player() -> i64` / `net_hit_x/y/z() -> f64` | last validated hit | player id (-1 none) + world point |
 
 Snapshots are **delta-compressed** (only changed, in-interest players, with periodic
 keyframes), so idle players cost almost nothing.
 
-A loop: each frame build input from keys/mouse, `net_send_input(...)`,
-`net_update(dt)`, point the camera at `net_local_*`, and draw every player with
-`net_player_*`. See [`examples/mp_shooter3d.aur`](../examples/mp_shooter3d.aur).
+A loop: once, register your movement step with `net_sim` and host/join; then each
+frame build the input blob, `net_send_input(blob)`, `net_update(dt)`, point the
+camera at `net_local_*`, and draw every player with `net_player_*`. See
+[`examples/mp_shooter3d.aur`](../examples/mp_shooter3d.aur) and the full
+momentum controller in [`game/overclock/playground.aur`](../game/overclock/playground.aur).
 
 ## Physics - Rapier 2D (`phys_*`)
 
@@ -183,6 +196,30 @@ transparent key (clear to black, draw the crosshair/ammo in color).
 | `mouse_scroll() -> f64` | scroll-wheel delta this frame | |
 | `mouse_button(b) -> i64` | held: 0 = left, 1 = right, 2 = middle | |
 | `key_down(code)` | extended codes | 0-9 movement/action, 10-13 Shift/Ctrl/Alt/Tab, 30-39 digits, 40-65 A-Z |
+
+### Rebindable input actions
+
+Decouple the game from physical keys: bind abstract **actions** (your own integer
+ids) to input codes, then query actions, never raw keys. Rebind any time (e.g.
+from a settings menu). Codes are the `key_down` codes for the keyboard; 100/101/102
+are the left/right/middle mouse buttons.
+
+| Builtin | Signature | Notes |
+|---|---|---|
+| `input_bind(action, code)` | bind an action id to an input code | rebindable at runtime |
+| `input_binding(action) -> i64` | the code bound to an action | -1 if unbound |
+| `input_down(action) -> i64` | is the action's input held? | 1/0 |
+| `input_axis(neg, pos) -> f64` | a -1/0/+1 axis from two actions | e.g. back vs forward |
+
+### Raw float-blob accessors
+
+For reading and writing the opaque `f32` state/input blobs the netcode framework
+hands a `net_sim` step (the pointer is passed as integer bits).
+
+| Builtin | Signature | Notes |
+|---|---|---|
+| `f32_load(ptr, i) -> f64` | read the `i`-th `f32` at `ptr` | widened to `f64` |
+| `f32_store(ptr, i, v)` | write `v` as the `i`-th `f32` at `ptr` | narrowed to `f32` |
 
 ## 3D positional audio
 

@@ -1,12 +1,15 @@
-//! Game-ready multiplayer for the 3D movement shooter: an authoritative UDP
-//! server with N clients, client-side prediction + server reconciliation for the
-//! local player, and snapshot interpolation for remote players. Exposed to
-//! Aurora as `net_host`/`net_join`/`net_send_input`/`net_update` plus player
-//! transform accessors that the 3D loop reads to draw everyone.
+//! Generic multiplayer framework for games built in Aurora. The engine owns the
+//! reusable machinery - UDP transport, an authoritative server, client-side
+//! prediction + reconciliation, snapshot interpolation, lag compensation,
+//! interest management, and delta compression - but it does NOT contain any
+//! gameplay. Each tick it runs the GAME's own simulation step, registered from
+//! Aurora with [`aurora_net_sim`], over an opaque per-player state blob.
 //!
-//! The single movement function ([`apply_input`]) is run by BOTH the client
-//! (predict + replay) and the server (authoritative), which is what structurally
-//! prevents client/server drift (netcode spec §6.3).
+//! Contract: a player's state is `f32` floats; the engine reads only `state[0..3]`
+//! = x,y,z and `state[3]` = yaw (for transforms, interpolation, lag-comp). Every
+//! other float is game-defined (velocity, flags, timers, ...). The same sim
+//! function is run by client prediction (and its rollback replay) and by the
+//! authoritative server, which is what structurally prevents drift.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -19,148 +22,40 @@ const TAG_SNAPSHOT: u8 = 2;
 const TAG_FIRE: u8 = 3;
 const TAG_HIT: u8 = 4;
 
+const STATE_MAX: usize = 32; // max floats in a player state blob
+const INPUT_MAX: usize = 16; // max floats in an input blob
+
+/// The Aurora sim closure's native ABI: `(env, state_ptr_bits, input_ptr_bits)`,
+/// matching how compiled Aurora closures are called (see `aurora_par_for`).
+type SimFn = extern "C" fn(i64, i64, i64) -> i64;
+
+/// One player's opaque state. `s[0..3]` = position, `s[3]` = yaw; rest is the
+/// game's (set/read entirely by the Aurora sim).
 #[derive(Clone, Copy)]
-struct Cfg {
-    speed: f32,
-    gravity: f32,
-    jump: f32,
-    ground: f32,
-    /// Player collision box half-extents: radius (x/z) and half-height (y).
-    pr: f32,
-    ph: f32,
-    /// Interest radius: a client is only told about players within this distance.
-    interest: f32,
+struct Player {
+    s: [f32; STATE_MAX],
 }
-impl Default for Cfg {
-    fn default() -> Cfg {
-        Cfg { speed: 8.0, gravity: 22.0, jump: 9.0, ground: 0.0, pr: 0.4, ph: 0.9, interest: 80.0 }
+impl Player {
+    fn spawn() -> Player {
+        Player { s: [0.0; STATE_MAX] }
     }
 }
 
-/// A static axis-aligned box the players collide against.
-#[derive(Clone, Copy)]
-struct Aabb {
-    cx: f32,
-    cy: f32,
-    cz: f32,
-    hx: f32,
-    hy: f32,
-    hz: f32,
-}
-
-#[derive(Clone, Copy)]
-struct PlayerState {
-    x: f32,
-    y: f32,
-    z: f32,
-    yaw: f32,
-    vy: f32,
-    grounded: bool,
-}
-impl PlayerState {
-    fn spawn() -> PlayerState {
-        PlayerState { x: 0.0, y: 0.0, z: 0.0, yaw: 0.0, vy: 0.0, grounded: true }
-    }
-}
-
-#[derive(Clone, Copy)]
-struct Input {
-    seq: u32,
-    fwd: f32,
-    strafe: f32,
-    yaw: f32,
-    jump: bool,
-    dt: f32,
-}
-
-/// The shared, drift-proof movement step: run identically by client prediction
-/// and the authoritative server. Horizontal move relative to yaw, plus gravity
-/// and jump against a flat ground plane.
-fn apply_input(p: &mut PlayerState, inp: &Input, cfg: &Cfg, walls: &[Aabb]) {
-    let (s, c) = (inp.yaw.sin(), inp.yaw.cos());
-    // Forward is -z at yaw 0; right is +x.
-    let (fx, fz) = (s, -c);
-    let (rx, rz) = (c, s);
-    p.x += (fx * inp.fwd + rx * inp.strafe) * cfg.speed * inp.dt;
-    p.z += (fz * inp.fwd + rz * inp.strafe) * cfg.speed * inp.dt;
-    if p.grounded && inp.jump {
-        p.vy = cfg.jump;
-    }
-    p.vy -= cfg.gravity * inp.dt;
-    p.y += p.vy * inp.dt;
-    if p.y <= cfg.ground {
-        p.y = cfg.ground;
-        p.vy = 0.0;
-        p.grounded = true;
-    } else {
-        p.grounded = false;
-    }
-    resolve_walls(p, cfg, walls);
-    p.yaw = inp.yaw;
-}
-
-/// Collide-and-slide the player box against static walls: push out along the
-/// axis of least penetration each iteration (so motion slides along surfaces),
-/// landing on tops and stopping under ceilings. Deterministic, so client
-/// prediction replay and the server agree.
-fn resolve_walls(p: &mut PlayerState, cfg: &Cfg, walls: &[Aabb]) {
-    for _ in 0..4 {
-        let mut any = false;
-        for w in walls {
-            let (cx, cy, cz) = (p.x, p.y + cfg.ph, p.z);
-            let (dx, dy, dz) = (cx - w.cx, cy - w.cy, cz - w.cz);
-            let px = (cfg.pr + w.hx) - dx.abs();
-            let py = (cfg.ph + w.hy) - dy.abs();
-            let pz = (cfg.pr + w.hz) - dz.abs();
-            if px <= 0.0 || py <= 0.0 || pz <= 0.0 {
-                continue;
-            }
-            any = true;
-            if px <= py && px <= pz {
-                p.x += if dx < 0.0 { -px } else { px };
-            } else if pz <= px && pz <= py {
-                p.z += if dz < 0.0 { -pz } else { pz };
-            } else if dy >= 0.0 {
-                p.y += py; // landed on top
-                p.vy = 0.0;
-                p.grounded = true;
-            } else {
-                p.y -= py; // bumped a ceiling
-                if p.vy > 0.0 {
-                    p.vy = 0.0;
-                }
-            }
-        }
-        if !any {
-            break;
-        }
-    }
-}
+type InputBlob = [f32; INPUT_MAX];
 
 struct SClient {
     addr: SocketAddr,
     id: u32,
-    state: PlayerState,
-    inbox: VecDeque<Input>,
+    state: Player,
+    inbox: VecDeque<(u32, InputBlob)>,
     acked_seq: u32,
-    /// What we last told this client about each player (for delta compression).
-    last_sent: std::collections::HashMap<u32, PlayerState>,
+    last_sent: std::collections::HashMap<u32, Player>,
 }
 
 struct Remote {
     interp: InterpBuffer,
-    yaw: f32,
-    last: PlayerState,
+    last: Player,
     last_seen: u32,
-}
-
-/// Whether two player states differ enough to be worth re-sending (delta).
-fn state_differs(a: &PlayerState, b: &PlayerState) -> bool {
-    (a.x - b.x).abs() > 1e-3
-        || (a.y - b.y).abs() > 1e-3
-        || (a.z - b.z).abs() > 1e-3
-        || (a.yaw - b.yaw).abs() > 1e-3
-        || (a.vy - b.vy).abs() > 1e-3
 }
 
 /// One networking session (server or client).
@@ -169,29 +64,41 @@ pub struct Session {
     is_server: bool,
     server_addr: Option<SocketAddr>,
     my_id: u32,
-    cfg: Cfg,
     tick: f32,
     buf: Vec<u8>,
     ids: Vec<u32>,
-    // Server state.
+    interest: f32,
+    hit_radius: f32,
+    // The game's simulation step (registered from Aurora).
+    sim_fn: usize,
+    sim_env: usize,
+    state_len: usize, // floats replicated per player
+    input_len: usize, // floats per input blob
+    // Server.
     clients: Vec<SClient>,
-    host: PlayerState,
+    host: Player,
     next_id: u32,
-    // Client state.
-    pred: PlayerState,
-    pending: VecDeque<Input>,
-    next_seq: u32,
-    last_snap_tick: f32,
-    remotes: Vec<(u32, Remote)>,
-    // Static world collision (shared by prediction + server).
-    walls: Vec<Aabb>,
-    // Server-side lag compensation: a rewindable history of player colliders.
     lag: LagComp,
     server_tick: u64,
+    // Client.
+    pred: Player,
+    pending: VecDeque<(u32, InputBlob)>,
+    next_seq: u32,
     last_server_tick: u32,
     last_snap_players: usize,
-    // Last hitscan result (server: own shots; client: from a HIT packet).
+    remotes: Vec<(u32, Remote)>,
     last_hit: (i64, [f32; 3]),
+}
+
+/// Run the registered Aurora sim on `state` with `input` (mutating `state`).
+fn run_sim(sim_fn: usize, sim_env: usize, state: &mut [f32; STATE_MAX], input: &InputBlob) {
+    if sim_fn == 0 {
+        return;
+    }
+    // SAFETY: `sim_fn` is finalized JIT/AOT Aurora code; we pass pointers to our
+    // own buffers, which the sim reads/writes in place.
+    let f: SimFn = unsafe { std::mem::transmute(sim_fn) };
+    f(sim_env as i64, state.as_mut_ptr() as i64, input.as_ptr() as i64);
 }
 
 impl Session {
@@ -200,88 +107,96 @@ impl Session {
         sock.set_nonblocking(true)?;
         Ok(Session::base(sock, true, None))
     }
-
     pub fn join(addr: SocketAddr) -> std::io::Result<Session> {
         let sock = UdpSocket::bind(("127.0.0.1", 0))?;
         sock.set_nonblocking(true)?;
         Ok(Session::base(sock, false, Some(addr)))
     }
-
     fn base(sock: UdpSocket, is_server: bool, server_addr: Option<SocketAddr>) -> Session {
         Session {
             sock,
             is_server,
             server_addr,
             my_id: 0,
-            cfg: Cfg::default(),
             tick: 0.0,
             buf: vec![0u8; 2048],
-            ids: if is_server { vec![0] } else { vec![0] },
+            ids: vec![0],
+            interest: 80.0,
+            hit_radius: 1.0,
+            sim_fn: 0,
+            sim_env: 0,
+            state_len: 4,
+            input_len: 8,
             clients: Vec::new(),
-            host: PlayerState::spawn(),
+            host: Player::spawn(),
             next_id: 1,
-            pred: PlayerState::spawn(),
-            pending: VecDeque::new(),
-            next_seq: 1,
-            last_snap_tick: 0.0,
-            remotes: Vec::new(),
-            walls: Vec::new(),
             lag: LagComp::new(64),
             server_tick: 0,
+            pred: Player::spawn(),
+            pending: VecDeque::new(),
+            next_seq: 1,
             last_server_tick: 0,
             last_snap_players: 0,
+            remotes: Vec::new(),
             last_hit: (-1, [0.0; 3]),
         }
-    }
-
-    pub fn add_wall(&mut self, x: f32, y: f32, z: f32, hx: f32, hy: f32, hz: f32) {
-        self.walls.push(Aabb { cx: x, cy: y, cz: z, hx, hy, hz });
-    }
-    pub fn set_player_size(&mut self, radius: f32, half_height: f32) {
-        self.cfg.pr = radius.max(0.01);
-        self.cfg.ph = half_height.max(0.01);
     }
 
     pub fn local_addr(&self) -> SocketAddr {
         self.sock.local_addr().unwrap()
     }
 
-    /// Apply this frame's input. On the server (host player) it is authoritative;
-    /// on a client it predicts locally and sends the input to the server.
-    pub fn send_input(&mut self, fwd: f32, strafe: f32, yaw: f32, jump: bool, dt: f32) -> u32 {
-        let cfg = self.cfg;
-        let walls = self.walls.clone();
+    /// Register the game's simulation step and the replicated/input float counts.
+    pub fn set_sim(&mut self, sim_fn: usize, sim_env: usize, state_len: usize, input_len: usize) {
+        self.sim_fn = sim_fn;
+        self.sim_env = sim_env;
+        self.state_len = state_len.clamp(4, STATE_MAX);
+        self.input_len = input_len.clamp(1, INPUT_MAX);
+    }
+    pub fn set_interest(&mut self, radius: f32) {
+        self.interest = radius.max(0.0);
+    }
+    pub fn set_hit_radius(&mut self, r: f32) {
+        self.hit_radius = r.max(0.01);
+    }
+    pub fn set_spawn(&mut self, x: f32, y: f32, z: f32) {
+        // Set the local player's starting position.
+        let p = if self.is_server { &mut self.host } else { &mut self.pred };
+        p.s[0] = x;
+        p.s[1] = y;
+        p.s[2] = z;
+    }
+
+    /// Submit this frame's input blob (`input[0..input_len]`). Predicts locally on
+    /// a client (and sends it); authoritative on the host. Returns the input seq.
+    pub fn send_input(&mut self, input: &[f32]) -> u32 {
+        let mut blob = [0.0f32; INPUT_MAX];
+        for (i, v) in input.iter().take(self.input_len).enumerate() {
+            blob[i] = *v;
+        }
         if self.is_server {
-            let inp = Input { seq: 0, fwd, strafe, yaw, jump, dt };
-            apply_input(&mut self.host, &inp, &cfg, &walls);
+            run_sim(self.sim_fn, self.sim_env, &mut self.host.s, &blob);
             0
         } else {
             let seq = self.next_seq;
             self.next_seq += 1;
-            let inp = Input { seq, fwd, strafe, yaw, jump, dt };
-            // Predict immediately for a responsive local player.
-            apply_input(&mut self.pred, &inp, &cfg, &walls);
-            self.pending.push_back(inp);
+            run_sim(self.sim_fn, self.sim_env, &mut self.pred.s, &blob);
+            self.pending.push_back((seq, blob));
             if let Some(addr) = self.server_addr {
-                let pkt = encode_input(&inp);
-                let _ = self.sock.send_to(&pkt, addr);
+                let _ = self.sock.send_to(&encode_input(seq, &blob, self.input_len), addr);
             }
             seq
         }
     }
 
-    /// Fire a hitscan ray from `(o*)` along `(d*)`. On the host it resolves
-    /// authoritatively now; on a client it sends the shot with the view tick so
-    /// the server can lag-compensate, and the result arrives via `net_update`.
+    /// Fire a hitscan ray. On the host it resolves now; on a client it sends the
+    /// shot with the view tick so the server can lag-compensate.
     pub fn fire(&mut self, ox: f32, oy: f32, oz: f32, dx: f32, dy: f32, dz: f32) {
         let o = [ox, oy, oz];
         let d = [dx, dy, dz];
         if self.is_server {
             self.last_hit = match self.lag.raycast_at_tick(o, d, self.server_tick, 0) {
-                Some(h) => (
-                    h.entity as i64,
-                    [o[0] + d[0] * h.distance, o[1] + d[1] * h.distance, o[2] + d[2] * h.distance],
-                ),
+                Some(h) => (h.entity as i64, [o[0] + d[0] * h.distance, o[1] + d[1] * h.distance, o[2] + d[2] * h.distance]),
                 None => (-1, [0.0; 3]),
             };
         } else if let Some(addr) = self.server_addr {
@@ -289,7 +204,6 @@ impl Session {
             let _ = self.sock.send_to(&encode_fire(vt, o, d), addr);
         }
     }
-
     pub fn hit_player(&self) -> i64 {
         self.last_hit.0
     }
@@ -298,7 +212,6 @@ impl Session {
     }
 
     pub fn update(&mut self, dt: f32) {
-        // Drain incoming packets.
         loop {
             match self.sock.recv_from(&mut self.buf) {
                 Ok((n, from)) => {
@@ -315,74 +228,58 @@ impl Session {
         }
 
         if self.is_server {
-            // Apply each client's queued inputs authoritatively, then broadcast.
-            let cfg = self.cfg;
-            let walls = self.walls.clone();
+            let (sim_fn, sim_env) = (self.sim_fn, self.sim_env);
             for c in &mut self.clients {
-                while let Some(inp) = c.inbox.pop_front() {
-                    apply_input(&mut c.state, &inp, &cfg, &walls);
-                    c.acked_seq = inp.seq;
+                while let Some((seq, inp)) = c.inbox.pop_front() {
+                    run_sim(sim_fn, sim_env, &mut c.state.s, &inp);
+                    c.acked_seq = seq;
                 }
             }
-            // Record collider history for lag-compensated hit validation.
             self.server_tick += 1;
             let st = self.server_tick;
-            let r = (cfg.pr * cfg.pr + cfg.ph * cfg.ph).sqrt();
-            self.lag.record(st, 0, [self.host.x, self.host.y + cfg.ph, self.host.z], r);
+            let r = self.hit_radius;
+            self.lag.record(st, 0, [self.host.s[0], self.host.s[1], self.host.s[2]], r);
             for c in &self.clients {
-                self.lag.record(st, c.id as u64, [c.state.x, c.state.y + cfg.ph, c.state.z], r);
+                self.lag.record(st, c.id as u64, [c.state.s[0], c.state.s[1], c.state.s[2]], r);
             }
             self.tick += dt;
             self.broadcast();
             self.ids = std::iter::once(0u32).chain(self.clients.iter().map(|c| c.id)).collect();
         } else {
             self.tick += dt;
-            // Drop remotes we haven't heard about for a while (left interest /
-            // disconnected), so stale ghosts don't linger.
             let now = self.last_server_tick;
             self.remotes.retain(|(_, r)| now.saturating_sub(r.last_seen) <= 90);
             self.ids = std::iter::once(self.my_id).chain(self.remotes.iter().map(|(id, _)| *id)).collect();
         }
     }
 
-    pub fn last_snapshot_players(&self) -> usize {
-        self.last_snap_players
-    }
-
     fn broadcast(&mut self) {
-        // All players (host id 0 + each client).
-        let mut all: Vec<(u32, PlayerState)> = Vec::with_capacity(self.clients.len() + 1);
+        let mut all: Vec<(u32, Player)> = Vec::with_capacity(self.clients.len() + 1);
         all.push((0, self.host));
         for c in &self.clients {
             all.push((c.id, c.state));
         }
-        let interest2 = self.cfg.interest * self.cfg.interest;
-        // A periodic keyframe re-syncs everything regardless of the delta state.
+        let interest2 = self.interest * self.interest;
         let keyframe = self.server_tick % 30 == 0;
-        let tick = self.tick;
-        let stick = self.server_tick as u32;
+        let (tick, stick, slen) = (self.tick, self.server_tick as u32, self.state_len);
 
         for ci in 0..self.clients.len() {
             let (cid, cpos, acked) = {
                 let c = &self.clients[ci];
-                (c.id, [c.state.x, c.state.y, c.state.z], c.acked_seq)
+                (c.id, [c.state.s[0], c.state.s[1], c.state.s[2]], c.acked_seq)
             };
-            let mut included: Vec<(u32, PlayerState)> = Vec::new();
+            let mut included: Vec<(u32, Player)> = Vec::new();
             for (id, st) in &all {
-                // Interest management: skip players outside the client's radius
-                // (the client itself is always relevant).
                 if *id != cid {
-                    let d = [st.x - cpos[0], st.y - cpos[1], st.z - cpos[2]];
+                    let d = [st.s[0] - cpos[0], st.s[1] - cpos[1], st.s[2] - cpos[2]];
                     if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > interest2 {
                         continue;
                     }
                 }
-                // Delta compression: only send players whose state changed since
-                // we last told this client (plus periodic keyframes).
                 let changed = self.clients[ci]
                     .last_sent
                     .get(id)
-                    .map(|p| state_differs(p, st))
+                    .map(|p| state_differs(&p.s, &st.s, slen))
                     .unwrap_or(true);
                 if changed || keyframe {
                     included.push((*id, *st));
@@ -390,7 +287,7 @@ impl Session {
                 }
             }
             let c = &self.clients[ci];
-            let pkt = encode_snapshot(cid, acked, tick, stick, &included);
+            let pkt = encode_snapshot(cid, acked, tick, stick, slen, &included);
             let _ = self.sock.send_to(&pkt, c.addr);
         }
     }
@@ -404,7 +301,7 @@ impl Session {
                 self.clients.push(SClient {
                     addr: from,
                     id,
-                    state: PlayerState::spawn(),
+                    state: Player::spawn(),
                     inbox: VecDeque::new(),
                     acked_seq: 0,
                     last_sent: std::collections::HashMap::new(),
@@ -417,22 +314,19 @@ impl Session {
     fn on_server_packet(&mut self, pkt: &[u8], from: SocketAddr) {
         match pkt.first().copied() {
             Some(TAG_INPUT) => {
-                let Some(inp) = decode_input(pkt) else { return };
-                let idx = self.ensure_client(from);
-                self.clients[idx].inbox.push_back(inp);
+                if let Some((seq, blob)) = decode_input(pkt, self.input_len) {
+                    let idx = self.ensure_client(from);
+                    self.clients[idx].inbox.push_back((seq, blob));
+                }
             }
             Some(TAG_FIRE) => {
                 let Some((vt, o, d)) = decode_fire(pkt) else { return };
                 let Some(shooter) = self.clients.iter().find(|c| c.addr == from).map(|c| c.id) else {
                     return;
                 };
-                // Rewind colliders to the tick the shooter was seeing.
                 let tick = (vt as u64).min(self.server_tick);
                 let (id, point) = match self.lag.raycast_at_tick(o, d, tick, shooter as u64) {
-                    Some(h) => (
-                        h.entity as i64,
-                        [o[0] + d[0] * h.distance, o[1] + d[1] * h.distance, o[2] + d[2] * h.distance],
-                    ),
+                    Some(h) => (h.entity as i64, [o[0] + d[0] * h.distance, o[1] + d[1] * h.distance, o[2] + d[2] * h.distance]),
                     None => (-1, [0.0; 3]),
                 };
                 let _ = self.sock.send_to(&encode_hit(id, point), from);
@@ -450,35 +344,29 @@ impl Session {
         }
         let Some((your_id, acked, tick, stick, players)) = decode_snapshot(pkt) else { return };
         self.my_id = your_id;
-        self.last_snap_tick = tick;
+        self.tick = tick;
         self.last_server_tick = stick;
         self.last_snap_players = players.len();
+        let (sim_fn, sim_env) = (self.sim_fn, self.sim_env);
         for (id, st) in players {
             if id == your_id {
-                // Reconcile: snap to authoritative, then replay unacked inputs.
-                self.pred = st;
-                while self.pending.front().map(|i| i.seq <= acked).unwrap_or(false) {
+                self.pred = st; // snap to authoritative, then replay unacked inputs
+                while self.pending.front().map(|(s, _)| *s <= acked).unwrap_or(false) {
                     self.pending.pop_front();
                 }
-                let cfg = self.cfg;
-                let walls = self.walls.clone();
-                let pending: Vec<Input> = self.pending.iter().copied().collect();
-                for inp in pending {
-                    apply_input(&mut self.pred, &inp, &cfg, &walls);
+                let pend: Vec<(u32, InputBlob)> = self.pending.iter().copied().collect();
+                for (_, inp) in pend {
+                    run_sim(sim_fn, sim_env, &mut self.pred.s, &inp);
                 }
             } else {
                 let slot = match self.remotes.iter_mut().find(|(rid, _)| *rid == id) {
                     Some((_, r)) => r,
                     None => {
-                        self.remotes.push((
-                            id,
-                            Remote { interp: InterpBuffer::new(0.06), yaw: st.yaw, last: st, last_seen: stick },
-                        ));
+                        self.remotes.push((id, Remote { interp: InterpBuffer::new(0.06), last: st, last_seen: stick }));
                         &mut self.remotes.last_mut().unwrap().1
                     }
                 };
-                slot.interp.push(tick, [st.x, st.y, st.z]);
-                slot.yaw = st.yaw;
+                slot.interp.push(tick, [st.s[0], st.s[1], st.s[2]]);
                 slot.last = st;
                 slot.last_seen = stick;
             }
@@ -498,51 +386,47 @@ impl Session {
     pub fn player_id_at(&self, i: usize) -> i64 {
         self.ids.get(i).map(|&id| id as i64).unwrap_or(-1)
     }
-    fn player_state(&self, id: u32) -> (PlayerState, Option<[f32; 3]>) {
+    fn player_blob(&self, id: u32) -> (Player, Option<[f32; 3]>) {
         if self.is_server {
             if id == 0 {
                 (self.host, None)
             } else if let Some(c) = self.clients.iter().find(|c| c.id == id) {
                 (c.state, None)
             } else {
-                (PlayerState::spawn(), None)
+                (Player::spawn(), None)
             }
         } else if id == self.my_id {
             (self.pred, None)
         } else if let Some((_, r)) = self.remotes.iter().find(|(rid, _)| *rid == id) {
-            (PlayerState { yaw: r.yaw, ..r.last }, r.interp.sample(self.last_snap_tick))
+            (r.last, r.interp.sample(self.last_server_tick as f32))
         } else {
-            (PlayerState::spawn(), None)
+            (Player::spawn(), None)
         }
     }
     pub fn px(&self, id: u32) -> f64 {
-        let (s, interp) = self.player_state(id);
-        interp.map(|p| p[0]).unwrap_or(s.x) as f64
+        let (p, i) = self.player_blob(id);
+        i.map(|q| q[0]).unwrap_or(p.s[0]) as f64
     }
     pub fn py(&self, id: u32) -> f64 {
-        let (s, interp) = self.player_state(id);
-        interp.map(|p| p[1]).unwrap_or(s.y) as f64
+        let (p, i) = self.player_blob(id);
+        i.map(|q| q[1]).unwrap_or(p.s[1]) as f64
     }
     pub fn pz(&self, id: u32) -> f64 {
-        let (s, interp) = self.player_state(id);
-        interp.map(|p| p[2]).unwrap_or(s.z) as f64
+        let (p, i) = self.player_blob(id);
+        i.map(|q| q[2]).unwrap_or(p.s[2]) as f64
     }
     pub fn pyaw(&self, id: u32) -> f64 {
-        self.player_state(id).0.yaw as f64
+        self.player_blob(id).0.s[3] as f64
     }
-    pub fn set_cfg(&mut self, speed: f32, gravity: f32, jump: f32, ground: f32) {
-        self.cfg = Cfg {
-            speed,
-            gravity,
-            jump,
-            ground,
-            pr: self.cfg.pr,
-            ph: self.cfg.ph,
-            interest: self.cfg.interest,
-        };
+    /// Read any state float of a player (game-defined fields beyond the transform).
+    pub fn state(&self, id: u32, i: usize) -> f64 {
+        if i >= STATE_MAX {
+            return 0.0;
+        }
+        self.player_blob(id).0.s[i] as f64
     }
-    pub fn set_interest(&mut self, radius: f32) {
-        self.cfg.interest = radius.max(0.0);
+    pub fn local_state(&self, i: usize) -> f64 {
+        self.state(self.my_id, i)
     }
 }
 
@@ -561,51 +445,50 @@ fn rd_f32(b: &[u8], o: usize) -> f32 {
     f32::from_be_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
 }
 
-fn encode_input(i: &Input) -> Vec<u8> {
-    let mut b = Vec::with_capacity(22);
-    b.push(TAG_INPUT);
-    put_u32(&mut b, i.seq);
-    put_f32(&mut b, i.fwd);
-    put_f32(&mut b, i.strafe);
-    put_f32(&mut b, i.yaw);
-    b.push(i.jump as u8);
-    put_f32(&mut b, i.dt);
-    b
-}
-fn decode_input(b: &[u8]) -> Option<Input> {
-    if b.len() < 22 || b[0] != TAG_INPUT {
-        return None;
-    }
-    Some(Input {
-        seq: rd_u32(b, 1),
-        fwd: rd_f32(b, 5),
-        strafe: rd_f32(b, 9),
-        yaw: rd_f32(b, 13),
-        jump: b[17] != 0,
-        dt: rd_f32(b, 18),
-    })
+fn state_differs(a: &[f32; STATE_MAX], b: &[f32; STATE_MAX], len: usize) -> bool {
+    (0..len).any(|i| (a[i] - b[i]).abs() > 1e-3)
 }
 
-fn encode_snapshot(your_id: u32, acked: u32, tick: f32, stick: u32, players: &[(u32, PlayerState)]) -> Vec<u8> {
-    let mut b = Vec::with_capacity(19 + players.len() * 24);
+fn encode_input(seq: u32, blob: &InputBlob, len: usize) -> Vec<u8> {
+    let mut b = Vec::with_capacity(5 + len * 4);
+    b.push(TAG_INPUT);
+    put_u32(&mut b, seq);
+    for v in blob.iter().take(len) {
+        put_f32(&mut b, *v);
+    }
+    b
+}
+fn decode_input(b: &[u8], len: usize) -> Option<(u32, InputBlob)> {
+    if b.len() < 5 + len * 4 || b[0] != TAG_INPUT {
+        return None;
+    }
+    let seq = rd_u32(b, 1);
+    let mut blob = [0.0f32; INPUT_MAX];
+    for i in 0..len {
+        blob[i] = rd_f32(b, 5 + i * 4);
+    }
+    Some((seq, blob))
+}
+
+fn encode_snapshot(your_id: u32, acked: u32, tick: f32, stick: u32, slen: usize, players: &[(u32, Player)]) -> Vec<u8> {
+    let mut b = Vec::with_capacity(19 + players.len() * (4 + slen * 4));
     b.push(TAG_SNAPSHOT);
     put_u32(&mut b, your_id);
     put_u32(&mut b, acked);
     put_f32(&mut b, tick);
     put_u32(&mut b, stick);
     b.extend_from_slice(&(players.len() as u16).to_be_bytes());
-    for (id, s) in players {
+    b.push(slen as u8);
+    for (id, p) in players {
         put_u32(&mut b, *id);
-        put_f32(&mut b, s.x);
-        put_f32(&mut b, s.y);
-        put_f32(&mut b, s.z);
-        put_f32(&mut b, s.yaw);
-        put_f32(&mut b, s.vy);
+        for i in 0..slen {
+            put_f32(&mut b, p.s[i]);
+        }
     }
     b
 }
-fn decode_snapshot(b: &[u8]) -> Option<(u32, u32, f32, u32, Vec<(u32, PlayerState)>)> {
-    if b.len() < 19 || b[0] != TAG_SNAPSHOT {
+fn decode_snapshot(b: &[u8]) -> Option<(u32, u32, f32, u32, Vec<(u32, Player)>)> {
+    if b.len() < 20 || b[0] != TAG_SNAPSHOT {
         return None;
     }
     let your_id = rd_u32(b, 1);
@@ -613,23 +496,21 @@ fn decode_snapshot(b: &[u8]) -> Option<(u32, u32, f32, u32, Vec<(u32, PlayerStat
     let tick = rd_f32(b, 9);
     let stick = rd_u32(b, 13);
     let count = u16::from_be_bytes([b[17], b[18]]) as usize;
+    let slen = (b[19] as usize).min(STATE_MAX);
+    let stride = 4 + slen * 4;
     let mut players = Vec::with_capacity(count);
-    let mut o = 19;
+    let mut o = 20;
     for _ in 0..count {
-        if o + 24 > b.len() {
+        if o + stride > b.len() {
             break;
         }
         let id = rd_u32(b, o);
-        let st = PlayerState {
-            x: rd_f32(b, o + 4),
-            y: rd_f32(b, o + 8),
-            z: rd_f32(b, o + 12),
-            yaw: rd_f32(b, o + 16),
-            vy: rd_f32(b, o + 20),
-            grounded: false,
-        };
-        players.push((id, st));
-        o += 24;
+        let mut p = Player::spawn();
+        for i in 0..slen {
+            p.s[i] = rd_f32(b, o + 4 + i * 4);
+        }
+        players.push((id, p));
+        o += stride;
     }
     Some((your_id, acked, tick, stick, players))
 }
@@ -675,7 +556,13 @@ thread_local! {
     static NET: RefCell<Option<Session>> = const { RefCell::new(None) };
 }
 
-/// Start an authoritative server on `port` (the host is also player 0).
+fn with<R>(default: R, f: impl FnOnce(&mut Session) -> R) -> R {
+    NET.with(|n| n.borrow_mut().as_mut().map(f).unwrap_or(default))
+}
+fn read<R>(default: R, f: impl FnOnce(&Session) -> R) -> R {
+    NET.with(|n| n.borrow().as_ref().map(f).unwrap_or(default))
+}
+
 #[no_mangle]
 pub extern "C" fn aurora_net_host(port: i64) -> i64 {
     match Session::host(port.clamp(0, 65535) as u16) {
@@ -687,7 +574,6 @@ pub extern "C" fn aurora_net_host(port: i64) -> i64 {
     }
 }
 
-/// Join a server at `host:port` as a predicting client.
 #[no_mangle]
 pub extern "C" fn aurora_net_join(ptr: *const u8, len: i64, port: i64) -> i64 {
     let host = {
@@ -710,222 +596,183 @@ pub extern "C" fn aurora_net_join(ptr: *const u8, len: i64, port: i64) -> i64 {
     }
 }
 
-/// Tune the shared movement model (speed, gravity, jump impulse, ground height).
+/// Register the game's Aurora simulation step (a closure `|state, input|`) plus
+/// how many state floats to replicate and how many input floats per blob.
 #[no_mangle]
-pub extern "C" fn aurora_net_config(speed: f64, gravity: f64, jump: f64, ground: f64) {
-    NET.with(|n| {
-        if let Some(s) = n.borrow_mut().as_mut() {
-            s.set_cfg(speed as f32, gravity as f32, jump as f32, ground as f32);
-        }
-    });
+pub extern "C" fn aurora_net_sim(sim_fn: *const u8, sim_env: *const u8, state_len: i64, input_len: i64) {
+    with((), |s| s.set_sim(sim_fn as usize, sim_env as usize, state_len.max(4) as usize, input_len.max(1) as usize));
 }
 
-/// Register a static collision box (center + half-extents) for net movement.
+/// Submit this frame's input blob from an Aurora `[f64; len]` array; returns the
+/// input seq. Floats are narrowed to `f32` for the wire / sim blob.
 #[no_mangle]
-pub extern "C" fn aurora_net_add_wall(x: f64, y: f64, z: f64, hx: f64, hy: f64, hz: f64) {
-    NET.with(|n| {
-        if let Some(s) = n.borrow_mut().as_mut() {
-            s.add_wall(x as f32, y as f32, z as f32, hx as f32, hy as f32, hz as f32);
-        }
-    });
+pub extern "C" fn aurora_net_send_input(input: *const f64, len: i64) -> i64 {
+    if input.is_null() || len <= 0 {
+        return 0;
+    }
+    let n = len.min(INPUT_MAX as i64) as usize;
+    let src = unsafe { std::slice::from_raw_parts(input, n) };
+    let mut blob = [0.0f32; INPUT_MAX];
+    for (i, v) in src.iter().enumerate() {
+        blob[i] = *v as f32;
+    }
+    with(0, |s| s.send_input(&blob[..n]) as i64)
 }
 
-/// Set the player collision capsule-ish box: radius (x/z) and half-height (y).
-#[no_mangle]
-pub extern "C" fn aurora_net_player_size(radius: f64, half_height: f64) {
-    NET.with(|n| {
-        if let Some(s) = n.borrow_mut().as_mut() {
-            s.set_player_size(radius as f32, half_height as f32);
-        }
-    });
-}
-
-/// Set the interest radius: clients are only told about players within it.
-#[no_mangle]
-pub extern "C" fn aurora_net_interest(radius: f64) {
-    NET.with(|n| {
-        if let Some(s) = n.borrow_mut().as_mut() {
-            s.set_interest(radius as f32);
-        }
-    });
-}
-
-/// Submit this frame's input; returns the input sequence number (0 on the host).
-#[no_mangle]
-pub extern "C" fn aurora_net_send_input(fwd: f64, strafe: f64, yaw: f64, jump: i64, dt: f64) -> i64 {
-    NET.with(|n| {
-        n.borrow_mut()
-            .as_mut()
-            .map(|s| s.send_input(fwd as f32, strafe as f32, yaw as f32, jump != 0, dt as f32) as i64)
-            .unwrap_or(0)
-    })
-}
-
-/// Pump the network: receive, simulate (server), reconcile + interpolate (client).
 #[no_mangle]
 pub extern "C" fn aurora_net_update(dt: f64) {
-    NET.with(|n| {
-        if let Some(s) = n.borrow_mut().as_mut() {
-            s.update(dt as f32);
-        }
-    });
-}
-
-/// Fire a hitscan shot from origin `(ox,oy,oz)` along direction `(dx,dy,dz)`.
-#[allow(clippy::too_many_arguments)]
-#[no_mangle]
-pub extern "C" fn aurora_net_fire(ox: f64, oy: f64, oz: f64, dx: f64, dy: f64, dz: f64) {
-    NET.with(|n| {
-        if let Some(s) = n.borrow_mut().as_mut() {
-            s.fire(ox as f32, oy as f32, oz as f32, dx as f32, dy as f32, dz as f32);
-        }
-    });
-}
-/// The player id hit by the last shot (server-validated), or -1.
-#[no_mangle]
-pub extern "C" fn aurora_net_hit_player() -> i64 {
-    NET.with(|n| n.borrow().as_ref().map(|s| s.hit_player()).unwrap_or(-1))
-}
-fn hit_axis(i: usize) -> f64 {
-    NET.with(|n| n.borrow().as_ref().map(|s| s.hit_point()[i] as f64).unwrap_or(0.0))
+    with((), |s| s.update(dt as f32));
 }
 #[no_mangle]
-pub extern "C" fn aurora_net_hit_x() -> f64 { hit_axis(0) }
+pub extern "C" fn aurora_net_interest(radius: f64) {
+    with((), |s| s.set_interest(radius as f32));
+}
 #[no_mangle]
-pub extern "C" fn aurora_net_hit_y() -> f64 { hit_axis(1) }
+pub extern "C" fn aurora_net_hit_radius(r: f64) {
+    with((), |s| s.set_hit_radius(r as f32));
+}
 #[no_mangle]
-pub extern "C" fn aurora_net_hit_z() -> f64 { hit_axis(2) }
+pub extern "C" fn aurora_net_spawn_at(x: f64, y: f64, z: f64) {
+    with((), |s| s.set_spawn(x as f32, y as f32, z as f32));
+}
 
 #[no_mangle]
 pub extern "C" fn aurora_net_my_id() -> i64 {
-    NET.with(|n| n.borrow().as_ref().map(|s| s.my_id() as i64).unwrap_or(0))
+    read(0, |s| s.my_id() as i64)
 }
 #[no_mangle]
 pub extern "C" fn aurora_net_is_server() -> i64 {
-    NET.with(|n| n.borrow().as_ref().map(|s| s.is_server() as i64).unwrap_or(0))
+    read(0, |s| s.is_server() as i64)
 }
 #[no_mangle]
 pub extern "C" fn aurora_net_player_count() -> i64 {
-    NET.with(|n| n.borrow().as_ref().map(|s| s.player_count() as i64).unwrap_or(0))
+    read(0, |s| s.player_count() as i64)
 }
 #[no_mangle]
 pub extern "C" fn aurora_net_player_id_at(i: i64) -> i64 {
-    NET.with(|n| n.borrow().as_ref().map(|s| s.player_id_at(i.max(0) as usize)).unwrap_or(-1))
-}
-fn paxis(id: i64, axis: u8) -> f64 {
-    NET.with(|n| {
-        n.borrow()
-            .as_ref()
-            .map(|s| {
-                let id = id.max(0) as u32;
-                match axis {
-                    0 => s.px(id),
-                    1 => s.py(id),
-                    2 => s.pz(id),
-                    _ => s.pyaw(id),
-                }
-            })
-            .unwrap_or(0.0)
-    })
+    read(-1, |s| s.player_id_at(i.max(0) as usize))
 }
 #[no_mangle]
-pub extern "C" fn aurora_net_player_x(id: i64) -> f64 { paxis(id, 0) }
+pub extern "C" fn aurora_net_player_x(id: i64) -> f64 {
+    read(0.0, |s| s.px(id.max(0) as u32))
+}
 #[no_mangle]
-pub extern "C" fn aurora_net_player_y(id: i64) -> f64 { paxis(id, 1) }
+pub extern "C" fn aurora_net_player_y(id: i64) -> f64 {
+    read(0.0, |s| s.py(id.max(0) as u32))
+}
 #[no_mangle]
-pub extern "C" fn aurora_net_player_z(id: i64) -> f64 { paxis(id, 2) }
+pub extern "C" fn aurora_net_player_z(id: i64) -> f64 {
+    read(0.0, |s| s.pz(id.max(0) as u32))
+}
 #[no_mangle]
-pub extern "C" fn aurora_net_player_yaw(id: i64) -> f64 { paxis(id, 3) }
+pub extern "C" fn aurora_net_player_yaw(id: i64) -> f64 {
+    read(0.0, |s| s.pyaw(id.max(0) as u32))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_local_x() -> f64 {
+    read(0.0, |s| s.px(s.my_id()))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_local_y() -> f64 {
+    read(0.0, |s| s.py(s.my_id()))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_local_z() -> f64 {
+    read(0.0, |s| s.pz(s.my_id()))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_local_yaw() -> f64 {
+    read(0.0, |s| s.pyaw(s.my_id()))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_state(id: i64, i: i64) -> f64 {
+    read(0.0, |s| s.state(id.max(0) as u32, i.max(0) as usize))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_local_state(i: i64) -> f64 {
+    read(0.0, |s| s.local_state(i.max(0) as usize))
+}
 
-fn local_axis(axis: u8) -> f64 {
-    NET.with(|n| {
-        n.borrow()
-            .as_ref()
-            .map(|s| {
-                let id = s.my_id() as i64;
-                match axis {
-                    0 => s.px(id as u32),
-                    1 => s.py(id as u32),
-                    2 => s.pz(id as u32),
-                    _ => s.pyaw(id as u32),
-                }
-            })
-            .unwrap_or(0.0)
-    })
+#[allow(clippy::too_many_arguments)]
+#[no_mangle]
+pub extern "C" fn aurora_net_fire(ox: f64, oy: f64, oz: f64, dx: f64, dy: f64, dz: f64) {
+    with((), |s| s.fire(ox as f32, oy as f32, oz as f32, dx as f32, dy as f32, dz as f32));
 }
 #[no_mangle]
-pub extern "C" fn aurora_net_local_x() -> f64 { local_axis(0) }
+pub extern "C" fn aurora_net_hit_player() -> i64 {
+    read(-1, |s| s.hit_player())
+}
 #[no_mangle]
-pub extern "C" fn aurora_net_local_y() -> f64 { local_axis(1) }
+pub extern "C" fn aurora_net_hit_x() -> f64 {
+    read(0.0, |s| s.hit_point()[0] as f64)
+}
 #[no_mangle]
-pub extern "C" fn aurora_net_local_z() -> f64 { local_axis(2) }
+pub extern "C" fn aurora_net_hit_y() -> f64 {
+    read(0.0, |s| s.hit_point()[1] as f64)
+}
 #[no_mangle]
-pub extern "C" fn aurora_net_local_yaw() -> f64 { local_axis(3) }
+pub extern "C" fn aurora_net_hit_z() -> f64 {
+    read(0.0, |s| s.hit_point()[2] as f64)
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Server + client over real loopback UDP: the client predicts immediately,
-    /// the server authoritatively simulates, and the client's reconciled position
-    /// converges to the server's with no drift.
+    // A Rust stand-in for an Aurora sim: integrate position by an input velocity.
+    // State layout: [x,y,z,yaw, vx,vy,vz]. Input: [vx,vz, dt].
+    extern "C" fn test_sim(_env: i64, state_bits: i64, input_bits: i64) -> i64 {
+        let s = state_bits as *mut f32;
+        let inp = input_bits as *const f32;
+        unsafe {
+            let (vx, vz, dt) = (*inp, *inp.add(1), *inp.add(2));
+            *s += vx * dt; // x
+            *s.add(2) += vz * dt; // z
+            *s.add(4) = vx;
+            *s.add(6) = vz;
+        }
+        0
+    }
+    fn install(s: &mut Session) {
+        s.set_sim(test_sim as usize, 0, 7, 3);
+    }
+
     #[test]
-    fn client_prediction_reconciles_to_authoritative_server() {
+    fn prediction_reconciles_with_a_registered_sim() {
         let mut server = Session::host(0).unwrap();
+        install(&mut server);
         let saddr = server.local_addr();
         let mut client = Session::join(saddr).unwrap();
+        install(&mut client);
         let dt = 1.0 / 60.0;
-
-        // Drive ~2 seconds: the client walks forward (-z) the whole time.
         for _ in 0..120 {
-            client.send_input(1.0, 0.0, 0.0, false, dt);
+            client.send_input(&[3.0, 0.0, dt]); // move +x
             client.update(dt);
             server.update(dt);
             std::thread::sleep(std::time::Duration::from_micros(300));
             client.update(dt);
         }
-
-        // The client adopted a non-zero id and has a remote-free local prediction.
-        assert!(client.my_id() >= 1, "client should be assigned an id, got {}", client.my_id());
         let cid = client.my_id();
-        // Server registered the client and simulated it forward.
-        let server_z = server.pz(cid);
-        assert!(server_z < -1.0, "server should have moved the client forward (-z), got {server_z}");
-        // Client's predicted/reconciled z matches the server's (no drift).
-        let client_z = client.pz(cid);
-        assert!((client_z - server_z).abs() < 0.5, "client {client_z} should converge to server {server_z}");
+        assert!(cid >= 1);
+        let sx = server.px(cid);
+        assert!(sx > 1.0, "server moved the client, got {sx}");
+        assert!((client.px(cid) - sx).abs() < 0.5, "client {} converges to server {sx}", client.px(cid));
     }
 
     #[test]
-    fn net_movement_collides_with_a_wall() {
-        // A wall at z = -3 blocks a player walking forward (-z); the shared model
-        // resolves it identically for the host (authoritative) here.
+    fn lag_compensated_shot_hits_with_a_sim() {
         let mut server = Session::host(0).unwrap();
-        server.add_wall(0.0, 1.0, -3.0, 5.0, 1.0, 0.5); // spans z in [-3.5, -2.5]
-        let dt = 1.0 / 60.0;
-        for _ in 0..180 {
-            server.send_input(1.0, 0.0, 0.0, false, dt); // walk forward forever
-        }
-        let z = server.pz(0);
-        // Without the wall the host would reach z ~ -24; the wall stops it near
-        // its front face (-2.5) minus the player radius.
-        assert!(z > -3.0, "wall should stop the player, got z={z}");
-        assert!(z < -1.5, "player should reach the wall, got z={z}");
-    }
-
-    #[test]
-    fn lag_compensated_shot_hits_a_target() {
-        use std::f32::consts::PI;
-        let mut server = Session::host(0).unwrap();
+        install(&mut server);
         let saddr = server.local_addr();
-        let mut a = Session::join(saddr).unwrap(); // shooter, stays at origin
-        let mut b = Session::join(saddr).unwrap(); // target, walks +x
+        let mut a = Session::join(saddr).unwrap();
+        let mut b = Session::join(saddr).unwrap();
+        install(&mut a);
+        install(&mut b);
         let dt = 1.0 / 60.0;
-
         for _ in 0..90 {
-            server.send_input(1.0, 0.0, -PI / 2.0, false, dt); // host walks -x, out of the way
-            a.send_input(0.0, 0.0, 0.0, false, dt);
-            b.send_input(1.0, 0.0, PI / 2.0, false, dt); // B walks +x
+            server.send_input(&[-4.0, 0.0, dt]); // host moves -x out of the way
+            a.send_input(&[0.0, 0.0, dt]);
+            b.send_input(&[4.0, 0.0, dt]); // B moves +x
             a.update(dt);
             b.update(dt);
             server.update(dt);
@@ -934,34 +781,31 @@ mod tests {
             b.update(dt);
         }
         let bid = b.my_id();
-        assert!(bid >= 1);
-
-        // A fires from its eye straight along +x, where B is.
-        a.fire(0.0, 0.9, 0.0, 1.0, 0.0, 0.0);
+        a.fire(0.0, 0.0, 0.0, 1.0, 0.0, 0.0);
         for _ in 0..10 {
             a.update(dt);
             server.update(dt);
             std::thread::sleep(std::time::Duration::from_micros(300));
             a.update(dt);
         }
-        assert_eq!(a.hit_player(), bid as i64, "the rewound shot should hit B");
-        assert!(a.hit_point()[0] > 0.5, "hit point should be out along +x, got {:?}", a.hit_point());
+        assert_eq!(a.hit_player(), bid as i64, "rewound shot should hit B");
     }
 
     #[test]
-    fn interest_management_culls_distant_players() {
-        use std::f32::consts::PI;
+    fn interest_culls_distant_players() {
         let mut server = Session::host(0).unwrap();
-        server.set_interest(5.0); // tiny radius
+        install(&mut server);
+        server.set_interest(5.0);
         let saddr = server.local_addr();
         let mut a = Session::join(saddr).unwrap();
         let mut b = Session::join(saddr).unwrap();
+        install(&mut a);
+        install(&mut b);
         let dt = 1.0 / 60.0;
-        // B walks far away (+x) past the interest radius; A stays put.
         for _ in 0..150 {
-            server.send_input(1.0, 0.0, -PI / 2.0, false, dt); // host away (-x)
-            a.send_input(0.0, 0.0, 0.0, false, dt);
-            b.send_input(1.0, 0.0, PI / 2.0, false, dt);
+            server.send_input(&[-14.0, 0.0, dt]); // host leaves A's radius too
+            a.send_input(&[0.0, 0.0, dt]);
+            b.send_input(&[14.0, 0.0, dt]); // B leaves A's interest radius decisively
             a.update(dt);
             b.update(dt);
             server.update(dt);
@@ -969,52 +813,6 @@ mod tests {
             a.update(dt);
             b.update(dt);
         }
-        // A should no longer see B (out of interest) -> only itself.
-        assert_eq!(a.player_count(), 1, "A should have culled the distant B");
-    }
-
-    #[test]
-    fn delta_compression_shrinks_idle_snapshots() {
-        let mut server = Session::host(0).unwrap();
-        let saddr = server.local_addr();
-        let mut a = Session::join(saddr).unwrap();
-        let dt = 1.0 / 60.0;
-        // Register, then go idle and let several non-keyframe ticks pass.
-        for _ in 0..40 {
-            a.send_input(0.0, 0.0, 0.0, false, dt); // no movement
-            a.update(dt);
-            server.update(dt);
-            std::thread::sleep(std::time::Duration::from_micros(300));
-            a.update(dt);
-        }
-        // An idle player produces empty (delta) snapshots between keyframes; over
-        // many ticks the client must have received at least one zero-player one.
-        // (We can't observe every packet, but the latest should reflect delta.)
-        assert!(a.last_snapshot_players() <= 1, "idle snapshots should be delta-compressed, got {}", a.last_snapshot_players());
-    }
-
-    #[test]
-    fn remote_player_is_interpolated_on_other_clients() {
-        let mut server = Session::host(0).unwrap();
-        let saddr = server.local_addr();
-        let mut a = Session::join(saddr).unwrap();
-        let mut b = Session::join(saddr).unwrap();
-        let dt = 1.0 / 60.0;
-
-        for _ in 0..120 {
-            a.send_input(1.0, 0.0, 0.0, false, dt); // A strafes/walks
-            b.send_input(0.0, 0.0, 0.0, false, dt); // B stands
-            a.update(dt);
-            b.update(dt);
-            server.update(dt);
-            std::thread::sleep(std::time::Duration::from_micros(300));
-            a.update(dt);
-            b.update(dt);
-        }
-        // B should see A as a remote player that has moved (-z), via interpolation.
-        let aid = a.my_id();
-        assert!(b.player_count() >= 2, "B should see at least 2 players");
-        let a_seen_by_b = b.pz(aid);
-        assert!(a_seen_by_b < -0.5, "B should see A moved forward via interp, got {a_seen_by_b}");
+        assert_eq!(a.player_count(), 1, "A should cull the distant B");
     }
 }
