@@ -19,6 +19,10 @@ mod phys3d;
 pub use nav3d::*;
 pub use phys3d::*;
 
+// Game-ready multiplayer: authoritative server, client prediction, interpolation.
+mod netgame;
+pub use netgame::*;
+
 // --- printing --------------------------------------------------------------
 
 #[no_mangle]
@@ -1635,7 +1639,25 @@ pub extern "C" fn aurora_dbg_var_f64(name_ptr: *const u8, name_len: i64, value: 
 /// Touch every host symbol so the linker keeps this crate's object in an AOT
 /// link even when the Rust driver references nothing from it directly.
 pub fn force_link() -> usize {
-    let fns: [*const (); 157] = [
+    let fns: [*const (); 174] = [
+        // Multiplayer.
+        aurora_net_host as *const (),
+        aurora_net_join as *const (),
+        aurora_net_config as *const (),
+        aurora_net_send_input as *const (),
+        aurora_net_update as *const (),
+        aurora_net_my_id as *const (),
+        aurora_net_is_server as *const (),
+        aurora_net_player_count as *const (),
+        aurora_net_player_id_at as *const (),
+        aurora_net_player_x as *const (),
+        aurora_net_player_y as *const (),
+        aurora_net_player_z as *const (),
+        aurora_net_player_yaw as *const (),
+        aurora_net_local_x as *const (),
+        aurora_net_local_y as *const (),
+        aurora_net_local_z as *const (),
+        aurora_net_local_yaw as *const (),
         // 3D rendering extras.
         aurora_r3d_fog as *const (),
         aurora_r3d_sky as *const (),
