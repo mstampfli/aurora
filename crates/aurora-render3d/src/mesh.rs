@@ -14,11 +14,20 @@ pub struct Vertex {
     pub uv: [f32; 2],
     pub joints: [u32; 4],
     pub weights: [f32; 4],
+    /// Tangent xyz + handedness in w (for normal mapping).
+    pub tangent: [f32; 4],
 }
 
 impl Vertex {
     pub fn new(pos: [f32; 3], normal: [f32; 3], uv: [f32; 2]) -> Vertex {
-        Vertex { pos, normal, uv, joints: [0; 4], weights: [1.0, 0.0, 0.0, 0.0] }
+        Vertex {
+            pos,
+            normal,
+            uv,
+            joints: [0; 4],
+            weights: [1.0, 0.0, 0.0, 0.0],
+            tangent: [1.0, 0.0, 0.0, 1.0],
+        }
     }
 
     pub const LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
@@ -30,6 +39,7 @@ impl Vertex {
             2 => Float32x2, // uv
             3 => Uint32x4,  // joints
             4 => Float32x4, // weights
+            5 => Float32x4, // tangent
         ],
     };
 }
@@ -61,6 +71,48 @@ impl MeshData {
         }
     }
 
+    /// Compute per-vertex tangents from positions, normals, and UVs (for normal
+    /// mapping). Handedness is stored in `tangent.w`.
+    pub fn compute_tangents(&mut self) {
+        let n = self.vertices.len();
+        let mut tan = vec![glam::Vec3::ZERO; n];
+        let mut bit = vec![glam::Vec3::ZERO; n];
+        for tri in self.indices.chunks_exact(3) {
+            let (i0, i1, i2) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
+            let p0 = glam::Vec3::from(self.vertices[i0].pos);
+            let p1 = glam::Vec3::from(self.vertices[i1].pos);
+            let p2 = glam::Vec3::from(self.vertices[i2].pos);
+            let uv0 = glam::Vec2::from(self.vertices[i0].uv);
+            let uv1 = glam::Vec2::from(self.vertices[i1].uv);
+            let uv2 = glam::Vec2::from(self.vertices[i2].uv);
+            let e1 = p1 - p0;
+            let e2 = p2 - p0;
+            let d1 = uv1 - uv0;
+            let d2 = uv2 - uv0;
+            let denom = d1.x * d2.y - d2.x * d1.y;
+            let r = if denom.abs() > 1e-8 { 1.0 / denom } else { 0.0 };
+            let t = (e1 * d2.y - e2 * d1.y) * r;
+            let bt = (e2 * d1.x - e1 * d2.x) * r;
+            for &i in &[i0, i1, i2] {
+                tan[i] += t;
+                bit[i] += bt;
+            }
+        }
+        for i in 0..n {
+            let nrm = glam::Vec3::from(self.vertices[i].normal);
+            let t = tan[i];
+            // Gram-Schmidt orthogonalize, fall back to an arbitrary basis.
+            let tangent = (t - nrm * nrm.dot(t)).normalize_or_zero();
+            let tangent = if tangent.length_squared() < 1e-8 {
+                nrm.cross(glam::Vec3::X).normalize_or_zero()
+            } else {
+                tangent
+            };
+            let w = if nrm.cross(tangent).dot(bit[i]) < 0.0 { -1.0 } else { 1.0 };
+            self.vertices[i].tangent = [tangent.x, tangent.y, tangent.z, w];
+        }
+    }
+
     /// An axis-aligned unit cube centered at the origin (side length 2), with
     /// per-face normals and UVs. Handy as a primitive and for tests.
     pub fn cube() -> MeshData {
@@ -82,6 +134,7 @@ impl MeshData {
             }
             m.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
         }
+        m.compute_tangents();
         m
     }
 
@@ -113,6 +166,7 @@ impl MeshData {
                 m.indices.extend_from_slice(&[a, b, a + 1, a + 1, b, b + 1]);
             }
         }
+        m.compute_tangents();
         m
     }
 
@@ -127,6 +181,21 @@ impl MeshData {
         m.vertices.push(Vertex::new([h, 0.0, h], n, [tiles, tiles]));
         m.vertices.push(Vertex::new([h, 0.0, -h], n, [tiles, 0.0]));
         m.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
+        m.compute_tangents();
+        m
+    }
+
+    /// A unit quad in the XY plane (corners -0.5..0.5), normal +Z. Used for
+    /// camera-facing billboards (the orientation comes from the model matrix).
+    pub fn quad() -> MeshData {
+        let n = [0.0, 0.0, 1.0];
+        let mut m = MeshData::default();
+        m.vertices.push(Vertex::new([-0.5, -0.5, 0.0], n, [0.0, 1.0]));
+        m.vertices.push(Vertex::new([0.5, -0.5, 0.0], n, [1.0, 1.0]));
+        m.vertices.push(Vertex::new([0.5, 0.5, 0.0], n, [1.0, 0.0]));
+        m.vertices.push(Vertex::new([-0.5, 0.5, 0.0], n, [0.0, 0.0]));
+        m.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
+        m.compute_tangents();
         m
     }
 }

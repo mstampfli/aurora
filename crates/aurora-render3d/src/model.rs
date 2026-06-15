@@ -8,12 +8,20 @@ use glam::{Mat4, Quat, Vec3};
 
 use crate::mesh::{MeshData, Vertex};
 
-/// A drawable piece of a model: geometry plus a base color and optional texture.
+/// A tightly-packed RGBA8 texture: `(pixels, w, h)`.
+pub type Tex = (Vec<u8>, u32, u32);
+
+/// A drawable piece of a model: geometry plus a PBR material.
 pub struct Primitive {
     pub mesh: MeshData,
     pub base_color: [f32; 4],
-    /// Tightly-packed RGBA8 base-color texture, if any: `(pixels, w, h)`.
-    pub texture: Option<(Vec<u8>, u32, u32)>,
+    pub metallic: f32,
+    pub roughness: f32,
+    pub emissive: [f32; 3],
+    pub texture: Option<Tex>,
+    pub normal_tex: Option<Tex>,
+    pub mr_tex: Option<Tex>,
+    pub emissive_tex: Option<Tex>,
     /// Whether this primitive carries skinning weights.
     pub skinned: bool,
 }
@@ -121,13 +129,25 @@ impl Model {
             if !has_normals {
                 data.compute_flat_normals();
             }
+            data.compute_tangents();
             let base_color = mesh
                 .material_id
                 .and_then(|id| materials.get(id))
                 .and_then(|mat| mat.diffuse)
                 .map(|d| [d[0], d[1], d[2], 1.0])
                 .unwrap_or([0.8, 0.8, 0.8, 1.0]);
-            primitives.push(Primitive { mesh: data, base_color, texture: None, skinned: false });
+            primitives.push(Primitive {
+                mesh: data,
+                base_color,
+                metallic: 0.0,
+                roughness: 0.9,
+                emissive: [0.0; 3],
+                texture: None,
+                normal_tex: None,
+                mr_tex: None,
+                emissive_tex: None,
+                skinned: false,
+            });
         }
         Ok(Model { primitives, skeleton: None, clips: Vec::new() })
     }
@@ -231,14 +251,37 @@ impl Model {
                     Some(idx) => idx.into_u32().collect(),
                     None => (0..positions.len() as u32).collect(),
                 };
+                // Read tangents if present; otherwise compute them from UVs.
+                match reader.read_tangents() {
+                    Some(ts) => {
+                        for (v, t) in data.vertices.iter_mut().zip(ts) {
+                            v.tangent = t;
+                        }
+                    }
+                    None => data.compute_tangents(),
+                }
 
-                let pbr = prim.material().pbr_metallic_roughness();
-                let base_color = pbr.base_color_factor();
-                let texture = pbr.base_color_texture().and_then(|info| {
-                    let img = images.get(info.texture().source().index())?;
-                    rgba_from_gltf(img)
+                let material = prim.material();
+                let pbr = material.pbr_metallic_roughness();
+                let tex_of = |info: gltf::texture::Texture| -> Option<crate::model::Tex> {
+                    rgba_from_gltf(images.get(info.source().index())?)
+                };
+                let texture = pbr.base_color_texture().and_then(|i| tex_of(i.texture()));
+                let mr_tex = pbr.metallic_roughness_texture().and_then(|i| tex_of(i.texture()));
+                let normal_tex = material.normal_texture().and_then(|i| tex_of(i.texture()));
+                let emissive_tex = material.emissive_texture().and_then(|i| tex_of(i.texture()));
+                primitives.push(Primitive {
+                    mesh: data,
+                    base_color: pbr.base_color_factor(),
+                    metallic: pbr.metallic_factor(),
+                    roughness: pbr.roughness_factor(),
+                    emissive: material.emissive_factor(),
+                    texture,
+                    normal_tex,
+                    mr_tex,
+                    emissive_tex,
+                    skinned: is_skinned,
                 });
-                primitives.push(Primitive { mesh: data, base_color, texture, skinned: is_skinned });
             }
         }
 

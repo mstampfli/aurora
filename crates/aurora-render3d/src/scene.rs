@@ -8,7 +8,7 @@ use glam::{Mat4, Vec3};
 use crate::anim::AnimPlayer;
 use crate::mesh::MeshData;
 use crate::model::Model;
-use crate::render::Renderer3D;
+use crate::render::{MaterialDesc, Renderer3D};
 
 /// One drawable: a set of (mesh, material) primitives, with an optional skeleton
 /// and animation player when it came from an animated model.
@@ -43,9 +43,10 @@ impl Scene {
         format: wgpu::TextureFormat,
         w: u32,
         h: u32,
+        samples: u32,
     ) -> Scene {
         let mut s = Scene {
-            renderer: Renderer3D::new(device, queue, format, w, h),
+            renderer: Renderer3D::new(device, queue, format, w, h, samples),
             items: Vec::new(),
             cam: Camera {
                 eye: Vec3::new(0.0, 2.0, 6.0),
@@ -89,6 +90,22 @@ impl Scene {
         self.renderer.set_light(dir, color, ambient);
     }
 
+    pub fn set_fog(&mut self, color: Vec3, density: f32) {
+        self.renderer.set_fog(color, density);
+    }
+    pub fn set_sky(&mut self, on: bool, top: Vec3, horizon: Vec3) {
+        self.renderer.set_sky(on, top, horizon);
+    }
+    pub fn set_shadows(&mut self, on: bool) {
+        self.renderer.set_shadows(on);
+    }
+    pub fn clear_point_lights(&mut self) {
+        self.renderer.clear_point_lights();
+    }
+    pub fn add_point_light(&mut self, pos: Vec3, color: Vec3, range: f32, intensity: f32) {
+        self.renderer.add_point_light(pos, color, range, intensity);
+    }
+
     pub fn set_clear(&mut self, r: f32, g: f32, b: f32) {
         self.clear = [r, g, b, 1.0];
     }
@@ -106,8 +123,17 @@ impl Scene {
         let mut skinned = false;
         for p in &model.primitives {
             let mesh = self.renderer.add_mesh(device, &p.mesh);
-            let tex = p.texture.as_ref().map(|(px, w, h)| (px.as_slice(), *w, *h));
-            let mat = self.renderer.add_material(device, queue, p.base_color, tex);
+            let desc = MaterialDesc {
+                base_color: p.base_color,
+                metallic: p.metallic,
+                roughness: p.roughness,
+                emissive: p.emissive,
+                base_tex: p.texture.as_ref().map(|(px, w, h)| (px.as_slice(), *w, *h)),
+                normal_tex: p.normal_tex.as_ref().map(|(px, w, h)| (px.as_slice(), *w, *h)),
+                mr_tex: p.mr_tex.as_ref().map(|(px, w, h)| (px.as_slice(), *w, *h)),
+                emissive_tex: p.emissive_tex.as_ref().map(|(px, w, h)| (px.as_slice(), *w, *h)),
+            };
+            let mat = self.renderer.add_material(device, queue, &desc);
             prims.push((mesh, mat));
             skinned |= p.skinned;
         }
@@ -124,7 +150,7 @@ impl Scene {
         color: [f32; 4],
     ) -> i64 {
         let m = self.renderer.add_mesh(device, mesh);
-        let mat = self.renderer.add_material(device, queue, color, None);
+        let mat = self.renderer.add_material(device, queue, &MaterialDesc::flat(color));
         self.items.push(Renderable {
             prims: vec![(m, mat)],
             model: None,
@@ -157,18 +183,78 @@ impl Scene {
         self.add_primitive(device, queue, &MeshData::plane(size, tiles), color)
     }
 
+    /// Project a world point to framebuffer pixel coords (origin top-left), or
+    /// `None` if it is behind the camera.
+    pub fn world_to_screen(&self, p: Vec3) -> Option<(f32, f32)> {
+        let clip = self.renderer.view_proj() * p.extend(1.0);
+        if clip.w <= 0.0001 {
+            return None;
+        }
+        let ndc = clip.truncate() / clip.w;
+        let x = (ndc.x * 0.5 + 0.5) * self.size.0 as f32;
+        let y = (1.0 - (ndc.y * 0.5 + 0.5)) * self.size.1 as f32;
+        Some((x, y))
+    }
+
+    /// A camera-facing sprite: a quad with an unlit (emissive) color. Draw it
+    /// with `draw_billboard`. Good for particles, muzzle flashes, and markers.
+    pub fn make_sprite(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, color: [f32; 3]) -> i64 {
+        let m = self.renderer.add_mesh(device, &MeshData::quad());
+        let desc = MaterialDesc {
+            base_color: [0.0, 0.0, 0.0, 1.0],
+            metallic: 0.0,
+            roughness: 1.0,
+            emissive: color,
+            base_tex: None,
+            normal_tex: None,
+            mr_tex: None,
+            emissive_tex: None,
+        };
+        let mat = self.renderer.add_material(device, queue, &desc);
+        self.items.push(Renderable {
+            prims: vec![(m, mat)],
+            model: None,
+            player: AnimPlayer::new(),
+            skinned: false,
+        });
+        (self.items.len() - 1) as i64
+    }
+
+    /// Draw a sprite handle as a camera-facing billboard of side `size` at `pos`.
+    pub fn draw_billboard(&mut self, handle: i64, pos: Vec3, size: f32) {
+        let to_cam = (self.cam.eye - pos).normalize_or_zero();
+        let mut right = Vec3::Y.cross(to_cam);
+        if right.length_squared() < 1e-6 {
+            right = Vec3::X;
+        }
+        right = right.normalize();
+        let up = to_cam.cross(right);
+        let model = Mat4::from_cols(
+            (right * size).extend(0.0),
+            (up * size).extend(0.0),
+            to_cam.extend(0.0),
+            pos.extend(1.0),
+        );
+        self.draw(handle, model);
+    }
+
+    /// Draw a handle once per transform (batched instancing).
+    pub fn draw_instances(&mut self, handle: i64, transforms: &[Mat4]) {
+        for &t in transforms {
+            self.draw(handle, t);
+        }
+    }
+
     /// Number of animation clips on a model handle.
     pub fn clip_count(&self, handle: i64) -> i64 {
         self.item(handle).and_then(|r| r.model.as_ref()).map(|m| m.clips.len() as i64).unwrap_or(0)
     }
 
-    /// Start (or switch to) an animation clip on a model handle.
-    pub fn anim_play(&mut self, handle: i64, clip: i64, looping: bool, speed: f32) {
+    /// Start (or crossfade to) an animation clip on a model handle, blending from
+    /// the current pose over `fade` seconds (0 = instant).
+    pub fn anim_play(&mut self, handle: i64, clip: i64, looping: bool, speed: f32, fade: f32) {
         if let Some(r) = self.item_mut(handle) {
-            r.player.clip = clip.max(0) as usize;
-            r.player.looping = looping;
-            r.player.speed = speed;
-            r.player.time = 0.0;
+            r.player.play(clip.max(0) as usize, looping, speed, fade);
         }
     }
 
