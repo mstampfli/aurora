@@ -373,6 +373,11 @@ const BUILTINS: &[&str] = &[
     "phys3d_spherecast", "phys3d_overlap_sphere", "phys3d_apply_force",
     "phys3d_apply_torque", "phys3d_set_angvel", "phys3d_set_rot",
     "phys3d_rot_qx", "phys3d_rot_qy", "phys3d_rot_qz", "phys3d_rot_qw",
+    // Multiplayer (authoritative server + client prediction).
+    "net_host", "net_join", "net_config", "net_send_input", "net_update",
+    "net_my_id", "net_is_server", "net_player_count", "net_player_id_at",
+    "net_player_x", "net_player_y", "net_player_z", "net_player_yaw",
+    "net_local_x", "net_local_y", "net_local_z", "net_local_yaw",
 ];
 
 /// Byte size of a type (always a multiple of 8). Aggregates lay out their
@@ -653,6 +658,23 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_phys3d_rot_qy", aurora_runtime::aurora_phys3d_rot_qy as *const u8);
     builder.symbol("aurora_phys3d_rot_qz", aurora_runtime::aurora_phys3d_rot_qz as *const u8);
     builder.symbol("aurora_phys3d_rot_qw", aurora_runtime::aurora_phys3d_rot_qw as *const u8);
+    builder.symbol("aurora_net_host", aurora_runtime::aurora_net_host as *const u8);
+    builder.symbol("aurora_net_join", aurora_runtime::aurora_net_join as *const u8);
+    builder.symbol("aurora_net_config", aurora_runtime::aurora_net_config as *const u8);
+    builder.symbol("aurora_net_send_input", aurora_runtime::aurora_net_send_input as *const u8);
+    builder.symbol("aurora_net_update", aurora_runtime::aurora_net_update as *const u8);
+    builder.symbol("aurora_net_my_id", aurora_runtime::aurora_net_my_id as *const u8);
+    builder.symbol("aurora_net_is_server", aurora_runtime::aurora_net_is_server as *const u8);
+    builder.symbol("aurora_net_player_count", aurora_runtime::aurora_net_player_count as *const u8);
+    builder.symbol("aurora_net_player_id_at", aurora_runtime::aurora_net_player_id_at as *const u8);
+    builder.symbol("aurora_net_player_x", aurora_runtime::aurora_net_player_x as *const u8);
+    builder.symbol("aurora_net_player_y", aurora_runtime::aurora_net_player_y as *const u8);
+    builder.symbol("aurora_net_player_z", aurora_runtime::aurora_net_player_z as *const u8);
+    builder.symbol("aurora_net_player_yaw", aurora_runtime::aurora_net_player_yaw as *const u8);
+    builder.symbol("aurora_net_local_x", aurora_runtime::aurora_net_local_x as *const u8);
+    builder.symbol("aurora_net_local_y", aurora_runtime::aurora_net_local_y as *const u8);
+    builder.symbol("aurora_net_local_z", aurora_runtime::aurora_net_local_z as *const u8);
+    builder.symbol("aurora_net_local_yaw", aurora_runtime::aurora_net_local_yaw as *const u8);
     builder.symbol("aurora_scene_save", aurora_runtime::aurora_scene_save as *const u8);
     builder.symbol("aurora_scene_load", aurora_runtime::aurora_scene_load as *const u8);
     builder.symbol("aurora_prof_enter", aurora_runtime::aurora_prof_enter as *const u8);
@@ -905,6 +927,23 @@ fn lower(
     hosts.insert("phys3d_rot_qy", import(jmod, "aurora_phys3d_rot_qy", &[i], Some(f64t)));
     hosts.insert("phys3d_rot_qz", import(jmod, "aurora_phys3d_rot_qz", &[i], Some(f64t)));
     hosts.insert("phys3d_rot_qw", import(jmod, "aurora_phys3d_rot_qw", &[i], Some(f64t)));
+    hosts.insert("net_host", import(jmod, "aurora_net_host", &[i], Some(i)));
+    hosts.insert("net_join", import(jmod, "aurora_net_join", &[ptr_ty, i, i], Some(i)));
+    hosts.insert("net_config", import(jmod, "aurora_net_config", &[f64t, f64t, f64t, f64t], None));
+    hosts.insert("net_send_input", import(jmod, "aurora_net_send_input", &[f64t, f64t, f64t, i, f64t], Some(i)));
+    hosts.insert("net_update", import(jmod, "aurora_net_update", &[f64t], None));
+    hosts.insert("net_my_id", import(jmod, "aurora_net_my_id", &[], Some(i)));
+    hosts.insert("net_is_server", import(jmod, "aurora_net_is_server", &[], Some(i)));
+    hosts.insert("net_player_count", import(jmod, "aurora_net_player_count", &[], Some(i)));
+    hosts.insert("net_player_id_at", import(jmod, "aurora_net_player_id_at", &[i], Some(i)));
+    hosts.insert("net_player_x", import(jmod, "aurora_net_player_x", &[i], Some(f64t)));
+    hosts.insert("net_player_y", import(jmod, "aurora_net_player_y", &[i], Some(f64t)));
+    hosts.insert("net_player_z", import(jmod, "aurora_net_player_z", &[i], Some(f64t)));
+    hosts.insert("net_player_yaw", import(jmod, "aurora_net_player_yaw", &[i], Some(f64t)));
+    hosts.insert("net_local_x", import(jmod, "aurora_net_local_x", &[], Some(f64t)));
+    hosts.insert("net_local_y", import(jmod, "aurora_net_local_y", &[], Some(f64t)));
+    hosts.insert("net_local_z", import(jmod, "aurora_net_local_z", &[], Some(f64t)));
+    hosts.insert("net_local_yaw", import(jmod, "aurora_net_local_yaw", &[], Some(f64t)));
     hosts.insert("draw_text", import(jmod, "aurora_draw_text", &[i, i, ptr_ty, i, i, i], None));
     hosts.insert("scene_save", import(jmod, "aurora_scene_save", &[ptr_ty, i], Some(i)));
     hosts.insert("scene_load", import(jmod, "aurora_scene_load", &[ptr_ty, i], Some(i)));
@@ -3066,6 +3105,19 @@ fn tr_call(
         let call = b.ins().call(f, &[p, len]);
         return Ok(Term::Val(b.inst_results(call)[0], Cty::I64));
     }
+    // `net_join(host_str, port)` - a host string plus a port int.
+    if name == "net_join" {
+        let (p, len) = str_arg(m, b, l, env, &args[0].value)?;
+        let (port, pt) = val(m, b, l, env, &args[1].value)?;
+        let port = if pt == Cty::F32 || pt == Cty::F64 {
+            b.ins().fcvt_to_sint_sat(types::I64, port)
+        } else {
+            port
+        };
+        let f = m.declare_func_in_func(env.hosts["net_join"], b.func);
+        let call = b.ins().call(f, &[p, len, port]);
+        return Ok(Term::Val(b.inst_results(call)[0], Cty::I64));
+    }
     if name == "net_recv" {
         let out = alloc(b, env, 2);
         let f = m.declare_func_in_func(env.hosts["net_recv"], b.func);
@@ -3814,6 +3866,17 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "phys3d_rot_qx" | "phys3d_rot_qy" | "phys3d_rot_qz" | "phys3d_rot_qw" => {
             (vec![I64], Some(F64))
         }
+        // Multiplayer (net_join takes a string and is dispatched separately).
+        "net_host" => (vec![I64], Some(I64)),
+        "net_config" => (vec![F64, F64, F64, F64], None),
+        "net_send_input" => (vec![F64, F64, F64, I64, F64], Some(I64)),
+        "net_update" => (vec![F64], None),
+        "net_my_id" | "net_is_server" | "net_player_count" => (vec![], Some(I64)),
+        "net_player_id_at" => (vec![I64], Some(I64)),
+        "net_player_x" | "net_player_y" | "net_player_z" | "net_player_yaw" => {
+            (vec![I64], Some(F64))
+        }
+        "net_local_x" | "net_local_y" | "net_local_z" | "net_local_yaw" => (vec![], Some(F64)),
         _ => return None,
     };
     Some(sig)
