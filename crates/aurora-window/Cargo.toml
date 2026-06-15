@@ -11,6 +11,8 @@ license.workspace = true
 
 [dependencies]
 aurora-gfx.workspace = true
+aurora-render3d.workspace = true
 winit = "0.30"
 wgpu = "22"
 pollster = "0.3"
+glam = "0.29"

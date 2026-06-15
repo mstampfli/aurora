@@ -150,6 +150,140 @@ pub fn mouse() -> (i64, i64, bool) {
     })
 }
 
+// --- 3D scene API (the `r3d_*` builtins) -----------------------------------
+//
+// These drive the GPU 3D renderer that lives inside `Gfx`, sharing the window's
+// wgpu device. Resource creation needs the device, which exists only once the
+// window has been resumed, so `with_gfx` pumps one round of events to force
+// window/device creation on first use.
+
+use glam::{EulerRot, Mat4, Quat, Vec3};
+
+fn with_gfx<R>(default: R, f: impl FnOnce(&mut Gfx) -> R) -> R {
+    IMM.with(|s| {
+        let mut slot = s.borrow_mut();
+        let Some((event_loop, app)) = slot.as_mut() else { return default };
+        if app.gfx.is_none() && app.open {
+            event_loop.pump_app_events(Some(Duration::ZERO), app);
+        }
+        match app.gfx.as_mut() {
+            Some(g) => f(g),
+            None => default,
+        }
+    })
+}
+
+/// Load a glTF/GLB/OBJ model; returns a handle (>= 0) or -1 on failure.
+pub fn r3d_load_model(path: &str) -> i64 {
+    with_gfx(-1, |g| {
+        let (d, q, s) = g.scene_mut();
+        s.load_model(d, q, path)
+    })
+}
+
+pub fn r3d_make_box(r: f32, g: f32, b: f32) -> i64 {
+    with_gfx(-1, |gf| {
+        let (d, q, s) = gf.scene_mut();
+        s.make_box(d, q, [r, g, b, 1.0])
+    })
+}
+pub fn r3d_make_sphere(segments: i64, r: f32, g: f32, b: f32) -> i64 {
+    with_gfx(-1, |gf| {
+        let (d, q, s) = gf.scene_mut();
+        s.make_sphere(d, q, segments.max(3) as u32, [r, g, b, 1.0])
+    })
+}
+pub fn r3d_make_plane(size: f32, tiles: f32, r: f32, g: f32, b: f32) -> i64 {
+    with_gfx(-1, |gf| {
+        let (d, q, s) = gf.scene_mut();
+        s.make_plane(d, q, size, tiles.max(1.0), [r, g, b, 1.0])
+    })
+}
+
+pub fn r3d_camera(ex: f32, ey: f32, ez: f32, tx: f32, ty: f32, tz: f32, fov_deg: f32) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.set_camera(Vec3::new(ex, ey, ez), Vec3::new(tx, ty, tz), fov_deg);
+    });
+}
+pub fn r3d_light(dx: f32, dy: f32, dz: f32, r: f32, g: f32, b: f32, ambient: f32) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.set_light(Vec3::new(dx, dy, dz), Vec3::new(r, g, b), ambient);
+    });
+}
+pub fn r3d_clear(r: f32, g: f32, b: f32) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.set_clear(r, g, b);
+    });
+}
+pub fn r3d_begin() {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.begin();
+    });
+}
+
+/// Queue a model at position (px,py,pz), Euler rotation (yaw,pitch,roll radians),
+/// and uniform `scale`.
+#[allow(clippy::too_many_arguments)]
+pub fn r3d_draw(
+    handle: i64,
+    px: f32,
+    py: f32,
+    pz: f32,
+    yaw: f32,
+    pitch: f32,
+    roll: f32,
+    scale: f32,
+) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        let m = Mat4::from_scale_rotation_translation(
+            Vec3::splat(scale),
+            Quat::from_euler(EulerRot::YXZ, yaw, pitch, roll),
+            Vec3::new(px, py, pz),
+        );
+        s.draw(handle, m);
+    });
+}
+
+pub fn r3d_anim_play(handle: i64, clip: i64, looping: i64, speed: f32) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.anim_play(handle, clip, looping != 0, speed);
+    });
+}
+pub fn r3d_anim_update(handle: i64, dt: f32) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.anim_update(handle, dt);
+    });
+}
+pub fn r3d_clip_count(handle: i64) -> i64 {
+    with_gfx(0, |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.clip_count(handle)
+    })
+}
+
+/// Render the queued 3D scene to the window and pump events; returns whether the
+/// window is still open.
+pub fn r3d_present() -> bool {
+    IMM.with(|s| {
+        let mut slot = s.borrow_mut();
+        let Some((event_loop, app)) = slot.as_mut() else { return false };
+        event_loop.pump_app_events(Some(Duration::ZERO), app);
+        if app.open {
+            if let Some(g) = app.gfx.as_mut() {
+                g.present_scene();
+            }
+        }
+        app.open
+    })
+}
+
 /// Aurora key codes (stable integers passed from `.aur` code).
 fn code_to_key(code: u32) -> Option<KeyCode> {
     Some(match code {

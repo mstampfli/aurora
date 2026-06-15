@@ -20,6 +20,12 @@ mod imm;
 mod input;
 pub use imm::{
     key_down as imm_key_down, mouse as imm_mouse, open as imm_open, present as imm_present,
+    r3d_anim_play as imm_r3d_anim_play, r3d_anim_update as imm_r3d_anim_update,
+    r3d_begin as imm_r3d_begin, r3d_camera as imm_r3d_camera, r3d_clear as imm_r3d_clear,
+    r3d_clip_count as imm_r3d_clip_count, r3d_draw as imm_r3d_draw, r3d_light as imm_r3d_light,
+    r3d_load_model as imm_r3d_load_model, r3d_make_box as imm_r3d_make_box,
+    r3d_make_plane as imm_r3d_make_plane, r3d_make_sphere as imm_r3d_make_sphere,
+    r3d_present as imm_r3d_present,
 };
 pub use input::{Input, Key};
 
@@ -224,7 +230,9 @@ fn map_key(code: KeyCode) -> Option<Key> {
     })
 }
 
-/// wgpu surface + a blit pipeline that presents the CPU framebuffer texture.
+/// wgpu surface + a blit pipeline that presents the CPU framebuffer texture,
+/// and (for 3D programs) a [`Scene`](aurora_render3d::Scene) rendered straight
+/// to the surface with a depth buffer.
 pub(crate) struct Gfx {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -235,6 +243,8 @@ pub(crate) struct Gfx {
     bind_group: wgpu::BindGroup,
     tex_w: u32,
     tex_h: u32,
+    /// Lazily-created 3D scene (only for programs that use the 3D builtins).
+    pub(crate) scene: Option<aurora_render3d::Scene>,
 }
 
 const BLIT_WGSL: &str = r#"
@@ -272,7 +282,10 @@ impl Gfx {
             &wgpu::DeviceDescriptor {
                 label: Some("aurora-window"),
                 required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::downlevel_defaults(),
+                // Use the adapter's full limits (desktop GPUs) so the 3D renderer
+                // gets real performance and large scenes, not the conservative
+                // downlevel fallback.
+                required_limits: adapter.limits(),
                 memory_hints: wgpu::MemoryHints::Performance,
             },
             None,
@@ -355,7 +368,60 @@ impl Gfx {
             ],
         });
 
-        Ok(Gfx { surface, device, queue, config, pipeline, texture, bind_group, tex_w, tex_h })
+        Ok(Gfx {
+            surface,
+            device,
+            queue,
+            config,
+            pipeline,
+            texture,
+            bind_group,
+            tex_w,
+            tex_h,
+            scene: None,
+        })
+    }
+
+    /// Create the 3D scene on first use, sized to the current surface, and return
+    /// it along with the device/queue (disjoint borrows).
+    pub(crate) fn scene_mut(
+        &mut self,
+    ) -> (&wgpu::Device, &wgpu::Queue, &mut aurora_render3d::Scene) {
+        if self.scene.is_none() {
+            self.scene = Some(aurora_render3d::Scene::new(
+                &self.device,
+                &self.queue,
+                self.config.format,
+                self.config.width.max(1),
+                self.config.height.max(1),
+            ));
+        }
+        (&self.device, &self.queue, self.scene.as_mut().unwrap())
+    }
+
+    /// Render the 3D scene directly to the surface (with its depth buffer).
+    fn present_scene(&mut self) {
+        let (w, h) = (self.config.width.max(1), self.config.height.max(1));
+        if let Some(scene) = self.scene.as_mut() {
+            scene.resize(&self.device, w, h);
+        } else {
+            return;
+        }
+        let surface_tex = match self.surface.get_current_texture() {
+            Ok(t) => t,
+            Err(_) => {
+                self.surface.configure(&self.device, &self.config);
+                return;
+            }
+        };
+        let view = surface_tex.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut enc =
+            self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        if let Some(scene) = self.scene.as_mut() {
+            scene.render(&self.device, &self.queue, &mut enc, &view);
+        }
+        self.queue.submit(Some(enc.finish()));
+        surface_tex.present();
     }
 
     pub(crate) fn resize(&mut self, w: u32, h: u32) {
