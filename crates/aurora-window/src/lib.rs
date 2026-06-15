@@ -19,13 +19,20 @@
 mod imm;
 mod input;
 pub use imm::{
-    key_down as imm_key_down, mouse as imm_mouse, open as imm_open, present as imm_present,
+    grab_mouse as imm_grab_mouse, key_down as imm_key_down, mouse as imm_mouse,
+    mouse_button as imm_mouse_button, mouse_delta as imm_mouse_delta, open as imm_open,
+    present as imm_present, scroll as imm_scroll,
     r3d_anim_play as imm_r3d_anim_play, r3d_anim_update as imm_r3d_anim_update,
     r3d_begin as imm_r3d_begin, r3d_camera as imm_r3d_camera, r3d_clear as imm_r3d_clear,
-    r3d_clip_count as imm_r3d_clip_count, r3d_draw as imm_r3d_draw, r3d_light as imm_r3d_light,
+    r3d_clear_lights as imm_r3d_clear_lights, r3d_clip_count as imm_r3d_clip_count,
+    r3d_debug_line as imm_r3d_debug_line, r3d_draw as imm_r3d_draw,
+    r3d_draw_billboard as imm_r3d_draw_billboard, r3d_fog as imm_r3d_fog,
+    r3d_frustum_cull as imm_r3d_frustum_cull, r3d_light as imm_r3d_light,
     r3d_load_model as imm_r3d_load_model, r3d_make_box as imm_r3d_make_box,
     r3d_make_plane as imm_r3d_make_plane, r3d_make_sphere as imm_r3d_make_sphere,
-    r3d_present as imm_r3d_present,
+    r3d_make_sprite as imm_r3d_make_sprite, r3d_point_light as imm_r3d_point_light,
+    r3d_present as imm_r3d_present, r3d_shadows as imm_r3d_shadows, r3d_sky as imm_r3d_sky,
+    r3d_world_to_screen as imm_r3d_world_to_screen,
 };
 pub use input::{Input, Key};
 
@@ -245,7 +252,33 @@ pub(crate) struct Gfx {
     tex_h: u32,
     /// Lazily-created 3D scene (only for programs that use the 3D builtins).
     pub(crate) scene: Option<aurora_render3d::Scene>,
+    /// HUD overlay: blits the CPU framebuffer over the 3D scene, treating pure
+    /// black as transparent (a color key).
+    hud_pipeline: wgpu::RenderPipeline,
+    hud_bind_group: wgpu::BindGroup,
 }
+
+const HUD_WGSL: &str = r#"
+struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
+@vertex
+fn vs(@builtin(vertex_index) i: u32) -> VOut {
+    var p = array<vec2<f32>, 3>(vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+    var o: VOut;
+    let xy = p[i];
+    o.pos = vec4<f32>(xy, 0.0, 1.0);
+    o.uv = vec2<f32>(xy.x * 0.5 + 0.5, 1.0 - (xy.y * 0.5 + 0.5));
+    return o;
+}
+@group(0) @binding(0) var tex: texture_2d<f32>;
+@group(0) @binding(1) var samp: sampler;
+@fragment
+fn fs(in: VOut) -> @location(0) vec4<f32> {
+    let c = textureSample(tex, samp, in.uv);
+    // Pure black is the transparent key; everything else is HUD.
+    if (c.r + c.g + c.b < 0.012) { discard; }
+    return vec4<f32>(c.rgb, 1.0);
+}
+"#;
 
 const BLIT_WGSL: &str = r#"
 struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
@@ -368,6 +401,45 @@ impl Gfx {
             ],
         });
 
+        // HUD overlay pipeline (alpha-blended, black = transparent key).
+        let hud_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("hud"),
+            source: wgpu::ShaderSource::Wgsl(HUD_WGSL.into()),
+        });
+        let hud_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("hud"),
+            layout: None,
+            vertex: wgpu::VertexState {
+                module: &hud_module,
+                entry_point: "vs",
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &hud_module,
+                entry_point: "fs",
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let hud_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("hud"),
+            layout: &hud_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+            ],
+        });
+
         Ok(Gfx {
             surface,
             device,
@@ -379,6 +451,8 @@ impl Gfx {
             tex_w,
             tex_h,
             scene: None,
+            hud_pipeline,
+            hud_bind_group,
         })
     }
 
@@ -394,18 +468,40 @@ impl Gfx {
                 self.config.format,
                 self.config.width.max(1),
                 self.config.height.max(1),
+                4, // 4x MSAA for the live window
             ));
         }
         (&self.device, &self.queue, self.scene.as_mut().unwrap())
     }
 
-    /// Render the 3D scene directly to the surface (with its depth buffer).
-    fn present_scene(&mut self) {
+    /// Render the 3D scene to the surface, then overlay the HUD framebuffer
+    /// (`hud_rgba`, the CPU framebuffer; pure-black pixels are transparent).
+    fn present_scene(&mut self, hud_rgba: &[u8]) {
         let (w, h) = (self.config.width.max(1), self.config.height.max(1));
         if let Some(scene) = self.scene.as_mut() {
             scene.resize(&self.device, w, h);
         } else {
             return;
+        }
+        // Upload the HUD framebuffer for the overlay pass.
+        let hud_bytes = (self.tex_w * self.tex_h * 4) as usize;
+        let has_hud = hud_rgba.len() >= hud_bytes && hud_bytes > 0;
+        if has_hud {
+            self.queue.write_texture(
+                wgpu::ImageCopyTexture {
+                    texture: &self.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &hud_rgba[..hud_bytes],
+                wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(self.tex_w * 4),
+                    rows_per_image: Some(self.tex_h),
+                },
+                wgpu::Extent3d { width: self.tex_w, height: self.tex_h, depth_or_array_layers: 1 },
+            );
         }
         let surface_tex = match self.surface.get_current_texture() {
             Ok(t) => t,
@@ -419,6 +515,23 @@ impl Gfx {
             self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         if let Some(scene) = self.scene.as_mut() {
             scene.render(&self.device, &self.queue, &mut enc, &view);
+        }
+        // HUD overlay pass (load the 3D result, blend the HUD on top).
+        if has_hud {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("hud"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.hud_pipeline);
+            pass.set_bind_group(0, &self.hud_bind_group, &[]);
+            pass.draw(0..3, 0..1);
         }
         self.queue.submit(Some(enc.finish()));
         surface_tex.present();

@@ -27,9 +27,18 @@ struct ImmApp {
     gfx: Option<Gfx>,
     keys: HashSet<KeyCode>,
     open: bool,
-    /// Mouse position in framebuffer pixels, and left-button state.
+    /// Mouse position in framebuffer pixels, and button states.
     mouse: (i64, i64),
     mouse_down: bool,
+    mouse_right: bool,
+    mouse_middle: bool,
+    /// Raw mouse motion accumulated since the last present (for FPS look).
+    mouse_dx: f64,
+    mouse_dy: f64,
+    /// Scroll accumulated since the last present.
+    scroll: f64,
+    /// Whether the cursor is grabbed + hidden (FPS look).
+    grabbed: bool,
     /// Window inner size (to map cursor coords back to framebuffer pixels).
     win_size: (f64, f64),
 }
@@ -70,8 +79,20 @@ impl ApplicationHandler for ImmApp {
                 let fy = position.y / self.win_size.1 * self.height as f64;
                 self.mouse = (fx as i64, fy as i64);
             }
-            WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
-                self.mouse_down = state == ElementState::Pressed;
+            WindowEvent::MouseInput { state, button, .. } => {
+                let down = state == ElementState::Pressed;
+                match button {
+                    MouseButton::Left => self.mouse_down = down,
+                    MouseButton::Right => self.mouse_right = down,
+                    MouseButton::Middle => self.mouse_middle = down,
+                    _ => {}
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                self.scroll += match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => y as f64,
+                    winit::event::MouseScrollDelta::PixelDelta(p) => p.y / 40.0,
+                };
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
@@ -86,6 +107,19 @@ impl ApplicationHandler for ImmApp {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn device_event(
+        &mut self,
+        _el: &ActiveEventLoop,
+        _id: winit::event::DeviceId,
+        event: winit::event::DeviceEvent,
+    ) {
+        // Raw mouse motion: the unaccelerated delta an FPS camera wants.
+        if let winit::event::DeviceEvent::MouseMotion { delta } = event {
+            self.mouse_dx += delta.0;
+            self.mouse_dy += delta.1;
         }
     }
 }
@@ -109,9 +143,66 @@ pub fn open(width: u32, height: u32) {
         open: true,
         mouse: (0, 0),
         mouse_down: false,
+        mouse_right: false,
+        mouse_middle: false,
+        mouse_dx: 0.0,
+        mouse_dy: 0.0,
+        scroll: 0.0,
+        grabbed: false,
         win_size: ((width.max(1) * 3) as f64, (height.max(1) * 3) as f64),
     };
     IMM.with(|s| *s.borrow_mut() = Some((event_loop, app)));
+}
+
+/// The raw mouse motion accumulated this frame. Reset at the next present.
+pub fn mouse_delta() -> (f64, f64) {
+    IMM.with(|s| s.borrow().as_ref().map(|(_, app)| (app.mouse_dx, app.mouse_dy)).unwrap_or((0.0, 0.0)))
+}
+
+/// The scroll-wheel delta accumulated this frame. Reset at the next present.
+pub fn scroll() -> f64 {
+    IMM.with(|s| s.borrow().as_ref().map(|(_, app)| app.scroll).unwrap_or(0.0))
+}
+
+fn reset_frame_input(app: &mut ImmApp) {
+    app.mouse_dx = 0.0;
+    app.mouse_dy = 0.0;
+    app.scroll = 0.0;
+}
+
+/// Whether mouse button `b` is held: 0 = left, 1 = right, 2 = middle.
+pub fn mouse_button(b: u32) -> bool {
+    IMM.with(|s| {
+        s.borrow()
+            .as_ref()
+            .map(|(_, app)| match b {
+                1 => app.mouse_right,
+                2 => app.mouse_middle,
+                _ => app.mouse_down,
+            })
+            .unwrap_or(false)
+    })
+}
+
+/// Grab + hide the cursor for FPS mouse-look (or release it). Falls back from
+/// locked to confined grab if the platform requires it.
+pub fn grab_mouse(on: bool) {
+    IMM.with(|s| {
+        let mut slot = s.borrow_mut();
+        let Some((_, app)) = slot.as_mut() else { return };
+        app.grabbed = on;
+        if let Some(w) = &app.window {
+            if on {
+                let _ = w
+                    .set_cursor_grab(winit::window::CursorGrabMode::Locked)
+                    .or_else(|_| w.set_cursor_grab(winit::window::CursorGrabMode::Confined));
+                w.set_cursor_visible(false);
+            } else {
+                let _ = w.set_cursor_grab(winit::window::CursorGrabMode::None);
+                w.set_cursor_visible(true);
+            }
+        }
+    })
 }
 
 /// Pump events, present `rgba` (tight `width*height*4` bytes), and return whether
@@ -130,6 +221,7 @@ pub fn present(rgba: &[u8]) -> bool {
                 }
             }
         }
+        reset_frame_input(app);
         app.open
     })
 }
@@ -218,6 +310,63 @@ pub fn r3d_clear(r: f32, g: f32, b: f32) {
         s.set_clear(r, g, b);
     });
 }
+pub fn r3d_fog(r: f32, g: f32, b: f32, density: f32) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.set_fog(Vec3::new(r, g, b), density);
+    });
+}
+#[allow(clippy::too_many_arguments)]
+pub fn r3d_sky(on: i64, tr: f32, tg: f32, tb: f32, hr: f32, hg: f32, hb: f32) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.set_sky(on != 0, Vec3::new(tr, tg, tb), Vec3::new(hr, hg, hb));
+    });
+}
+pub fn r3d_shadows(on: i64) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.set_shadows(on != 0);
+    });
+}
+pub fn r3d_clear_lights() {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.clear_point_lights();
+    });
+}
+#[allow(clippy::too_many_arguments)]
+pub fn r3d_point_light(x: f32, y: f32, z: f32, r: f32, g: f32, b: f32, range: f32, intensity: f32) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.add_point_light(Vec3::new(x, y, z), Vec3::new(r, g, b), range, intensity);
+    });
+}
+pub fn r3d_make_sprite(r: f32, g: f32, b: f32) -> i64 {
+    with_gfx(-1, |gf| {
+        let (d, q, s) = gf.scene_mut();
+        s.make_sprite(d, q, [r, g, b])
+    })
+}
+pub fn r3d_draw_billboard(handle: i64, x: f32, y: f32, z: f32, size: f32) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.draw_billboard(handle, Vec3::new(x, y, z), size);
+    });
+}
+#[allow(clippy::too_many_arguments)]
+pub fn r3d_debug_line(ax: f32, ay: f32, az: f32, bx: f32, by: f32, bz: f32, r: f32, g: f32, b: f32) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.renderer.debug_line(Vec3::new(ax, ay, az), Vec3::new(bx, by, bz), Vec3::new(r, g, b));
+    });
+}
+pub fn r3d_frustum_cull(on: i64) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.renderer.set_frustum_cull(on != 0);
+    });
+}
 pub fn r3d_begin() {
     with_gfx((), |gf| {
         let (_, _, s) = gf.scene_mut();
@@ -249,10 +398,10 @@ pub fn r3d_draw(
     });
 }
 
-pub fn r3d_anim_play(handle: i64, clip: i64, looping: i64, speed: f32) {
+pub fn r3d_anim_play(handle: i64, clip: i64, looping: i64, speed: f32, fade: f32) {
     with_gfx((), |gf| {
         let (_, _, s) = gf.scene_mut();
-        s.anim_play(handle, clip, looping != 0, speed);
+        s.anim_play(handle, clip, looping != 0, speed, fade);
     });
 }
 pub fn r3d_anim_update(handle: i64, dt: f32) {
@@ -268,35 +417,70 @@ pub fn r3d_clip_count(handle: i64) -> i64 {
     })
 }
 
-/// Render the queued 3D scene to the window and pump events; returns whether the
+/// Render the queued 3D scene to the window and overlay `hud_rgba` (the CPU
+/// framebuffer; black is transparent), pump events, and return whether the
 /// window is still open.
-pub fn r3d_present() -> bool {
+pub fn r3d_present(hud_rgba: &[u8]) -> bool {
     IMM.with(|s| {
         let mut slot = s.borrow_mut();
         let Some((event_loop, app)) = slot.as_mut() else { return false };
         event_loop.pump_app_events(Some(Duration::ZERO), app);
         if app.open {
             if let Some(g) = app.gfx.as_mut() {
-                g.present_scene();
+                g.present_scene(hud_rgba);
             }
         }
+        reset_frame_input(app);
         app.open
     })
 }
 
-/// Aurora key codes (stable integers passed from `.aur` code).
+/// Project a world point to framebuffer pixel coords; returns `(x, y, visible)`
+/// where `visible` is 0 if the point is behind the camera or off-screen.
+pub fn r3d_world_to_screen(wx: f32, wy: f32, wz: f32) -> (f32, f32, bool) {
+    with_gfx((0.0, 0.0, false), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        match s.world_to_screen(Vec3::new(wx, wy, wz)) {
+            Some((x, y)) => (x, y, true),
+            None => (0.0, 0.0, false),
+        }
+    })
+}
+
+/// Aurora key codes (stable integers passed from `.aur` code). 0-9 are the
+/// classic movement/action keys; 10-19 modifiers/common action keys; 30-39 the
+/// number row (1..9,0); 40-65 the letters A..Z.
 fn code_to_key(code: u32) -> Option<KeyCode> {
+    use KeyCode::*;
+    const LETTERS: [KeyCode; 26] = [
+        KeyA, KeyB, KeyC, KeyD, KeyE, KeyF, KeyG, KeyH, KeyI, KeyJ, KeyK, KeyL, KeyM, KeyN, KeyO,
+        KeyP, KeyQ, KeyR, KeyS, KeyT, KeyU, KeyV, KeyW, KeyX, KeyY, KeyZ,
+    ];
+    const DIGITS: [KeyCode; 10] =
+        [Digit1, Digit2, Digit3, Digit4, Digit5, Digit6, Digit7, Digit8, Digit9, Digit0];
     Some(match code {
-        0 => KeyCode::ArrowLeft,
-        1 => KeyCode::ArrowRight,
-        2 => KeyCode::ArrowUp,
-        3 => KeyCode::ArrowDown,
-        4 => KeyCode::Space,
-        5 => KeyCode::KeyW,
-        6 => KeyCode::KeyA,
-        7 => KeyCode::KeyS,
-        8 => KeyCode::KeyD,
-        9 => KeyCode::Enter,
+        0 => ArrowLeft,
+        1 => ArrowRight,
+        2 => ArrowUp,
+        3 => ArrowDown,
+        4 => Space,
+        5 => KeyW,
+        6 => KeyA,
+        7 => KeyS,
+        8 => KeyD,
+        9 => Enter,
+        10 => ShiftLeft,
+        11 => ControlLeft,
+        12 => AltLeft,
+        13 => Tab,
+        14 => KeyR,
+        15 => KeyE,
+        16 => KeyQ,
+        17 => KeyF,
+        18 => KeyC,
+        19 => KeyV,
+        30..=39 => DIGITS[(code - 30) as usize],
+        40..=65 => LETTERS[(code - 40) as usize],
         _ => return None,
     })
 }
