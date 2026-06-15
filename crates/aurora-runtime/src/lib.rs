@@ -13,6 +13,12 @@
 use std::cell::RefCell;
 use std::collections::HashSet;
 
+// 3D physics (Rapier 3D) and 3D pathfinding (voxel grid + navmesh) builtins.
+mod nav3d;
+mod phys3d;
+pub use nav3d::*;
+pub use phys3d::*;
+
 // --- printing --------------------------------------------------------------
 
 #[no_mangle]
@@ -1184,6 +1190,82 @@ pub extern "C" fn aurora_mouse_down() -> i64 {
     }
 }
 
+// --- 3D rendering (the `r3d_*` builtins) -----------------------------------
+//
+// These drive the GPU 3D renderer that lives in the window (`aurora-render3d`),
+// sharing the window's wgpu device. Colors are 0..1 floats; angles are radians.
+
+/// Load a glTF/GLB/OBJ model; returns a handle (>= 0) or -1.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_load_model(ptr: *const u8, len: i64) -> i64 {
+    let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
+    let path = String::from_utf8_lossy(s);
+    aurora_window::imm_r3d_load_model(&path)
+}
+#[no_mangle]
+pub extern "C" fn aurora_r3d_make_box(r: f64, g: f64, b: f64) -> i64 {
+    aurora_window::imm_r3d_make_box(r as f32, g as f32, b as f32)
+}
+#[no_mangle]
+pub extern "C" fn aurora_r3d_make_sphere(segments: i64, r: f64, g: f64, b: f64) -> i64 {
+    aurora_window::imm_r3d_make_sphere(segments, r as f32, g as f32, b as f32)
+}
+#[no_mangle]
+pub extern "C" fn aurora_r3d_make_plane(size: f64, tiles: f64, r: f64, g: f64, b: f64) -> i64 {
+    aurora_window::imm_r3d_make_plane(size as f32, tiles as f32, r as f32, g as f32, b as f32)
+}
+#[allow(clippy::too_many_arguments)]
+#[no_mangle]
+pub extern "C" fn aurora_r3d_camera(ex: f64, ey: f64, ez: f64, tx: f64, ty: f64, tz: f64, fov: f64) {
+    aurora_window::imm_r3d_camera(
+        ex as f32, ey as f32, ez as f32, tx as f32, ty as f32, tz as f32, fov as f32,
+    );
+}
+#[allow(clippy::too_many_arguments)]
+#[no_mangle]
+pub extern "C" fn aurora_r3d_light(dx: f64, dy: f64, dz: f64, r: f64, g: f64, b: f64, ambient: f64) {
+    aurora_window::imm_r3d_light(
+        dx as f32, dy as f32, dz as f32, r as f32, g as f32, b as f32, ambient as f32,
+    );
+}
+#[no_mangle]
+pub extern "C" fn aurora_r3d_clear(r: f64, g: f64, b: f64) {
+    aurora_window::imm_r3d_clear(r as f32, g as f32, b as f32);
+}
+#[no_mangle]
+pub extern "C" fn aurora_r3d_begin() {
+    aurora_window::imm_r3d_begin();
+}
+#[allow(clippy::too_many_arguments)]
+#[no_mangle]
+pub extern "C" fn aurora_r3d_draw(
+    h: i64, px: f64, py: f64, pz: f64, yaw: f64, pitch: f64, roll: f64, scale: f64,
+) {
+    aurora_window::imm_r3d_draw(
+        h, px as f32, py as f32, pz as f32, yaw as f32, pitch as f32, roll as f32, scale as f32,
+    );
+}
+#[no_mangle]
+pub extern "C" fn aurora_r3d_anim_play(h: i64, clip: i64, looping: i64, speed: f64) {
+    aurora_window::imm_r3d_anim_play(h, clip, looping, speed as f32);
+}
+#[no_mangle]
+pub extern "C" fn aurora_r3d_anim_update(h: i64, dt: f64) {
+    aurora_window::imm_r3d_anim_update(h, dt as f32);
+}
+#[no_mangle]
+pub extern "C" fn aurora_r3d_clip_count(h: i64) -> i64 {
+    aurora_window::imm_r3d_clip_count(h)
+}
+#[no_mangle]
+pub extern "C" fn aurora_r3d_present() -> i64 {
+    if aurora_window::imm_r3d_present() {
+        1
+    } else {
+        0
+    }
+}
+
 /// Play a note WITHOUT blocking — mixed into the persistent audio engine, so
 /// sounds and music overlap. `looped` != 0 repeats it until volume/stop.
 #[no_mangle]
@@ -1415,7 +1497,53 @@ pub extern "C" fn aurora_dbg_var_f64(name_ptr: *const u8, name_len: i64, value: 
 /// Touch every host symbol so the linker keeps this crate's object in an AOT
 /// link even when the Rust driver references nothing from it directly.
 pub fn force_link() -> usize {
-    let fns: [*const (); 78] = [
+    let fns: [*const (); 121] = [
+        // 3D physics (Rapier 3D).
+        aurora_phys3d_init as *const (),
+        aurora_phys3d_add_box as *const (),
+        aurora_phys3d_add_sphere as *const (),
+        aurora_phys3d_add_capsule as *const (),
+        aurora_phys3d_add_character as *const (),
+        aurora_phys3d_add_trimesh as *const (),
+        aurora_phys3d_step as *const (),
+        aurora_phys3d_x as *const (),
+        aurora_phys3d_y as *const (),
+        aurora_phys3d_z as *const (),
+        aurora_phys3d_vel_x as *const (),
+        aurora_phys3d_vel_y as *const (),
+        aurora_phys3d_vel_z as *const (),
+        aurora_phys3d_set_vel as *const (),
+        aurora_phys3d_set_pos as *const (),
+        aurora_phys3d_apply_impulse as *const (),
+        aurora_phys3d_move_character as *const (),
+        aurora_phys3d_grounded as *const (),
+        aurora_phys3d_raycast as *const (),
+        // 3D pathfinding (voxel grid + navmesh).
+        aurora_nav3d_init as *const (),
+        aurora_nav3d_wall as *const (),
+        aurora_nav3d_find as *const (),
+        aurora_nav3d_x as *const (),
+        aurora_nav3d_y as *const (),
+        aurora_nav3d_z as *const (),
+        aurora_navmesh_build as *const (),
+        aurora_navmesh_find as *const (),
+        aurora_navmesh_x as *const (),
+        aurora_navmesh_y as *const (),
+        aurora_navmesh_z as *const (),
+        // 3D rendering.
+        aurora_r3d_load_model as *const (),
+        aurora_r3d_make_box as *const (),
+        aurora_r3d_make_sphere as *const (),
+        aurora_r3d_make_plane as *const (),
+        aurora_r3d_camera as *const (),
+        aurora_r3d_light as *const (),
+        aurora_r3d_clear as *const (),
+        aurora_r3d_begin as *const (),
+        aurora_r3d_draw as *const (),
+        aurora_r3d_anim_play as *const (),
+        aurora_r3d_anim_update as *const (),
+        aurora_r3d_clip_count as *const (),
+        aurora_r3d_present as *const (),
         aurora_oob as *const (),
         aurora_ffi_dot as *const (),
         aurora_ffi_dotf as *const (),

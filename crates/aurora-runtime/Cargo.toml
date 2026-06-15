@@ -20,6 +20,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 fontdue = "0.9"
 # WAV decoding for `play_wav` (pure Rust).
 hound = "3"
-# Real 2D physics (Rapier) and weighted A* pathfinding, exposed as builtins.
+# Real 2D + 3D physics (Rapier) and weighted A* pathfinding, exposed as builtins.
 rapier2d = "0.22"
+rapier3d = "0.22"
 pathfinding = "4"
