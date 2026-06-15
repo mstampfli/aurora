@@ -347,6 +347,19 @@ const BUILTINS: &[&str] = &[
     "nav_init", "nav_wall", "nav_find", "nav_x", "nav_y",
     "char_at", "substr", "starts_with", "net_bind", "net_connect", "net_send", "net_recv",
     "gpu_compute", "par_for",
+    // 3D physics (Rapier 3D).
+    "phys3d_init", "phys3d_add_box", "phys3d_add_sphere", "phys3d_add_capsule",
+    "phys3d_add_character", "phys3d_add_trimesh", "phys3d_step",
+    "phys3d_x", "phys3d_y", "phys3d_z", "phys3d_vel_x", "phys3d_vel_y", "phys3d_vel_z",
+    "phys3d_set_vel", "phys3d_set_pos", "phys3d_apply_impulse", "phys3d_move_character",
+    "phys3d_grounded", "phys3d_raycast",
+    // 3D pathfinding (voxel grid + navmesh).
+    "nav3d_init", "nav3d_wall", "nav3d_find", "nav3d_x", "nav3d_y", "nav3d_z",
+    "navmesh_build", "navmesh_find", "navmesh_x", "navmesh_y", "navmesh_z",
+    // 3D rendering.
+    "r3d_load_model", "r3d_make_box", "r3d_make_sphere", "r3d_make_plane",
+    "r3d_camera", "r3d_light", "r3d_clear", "r3d_begin", "r3d_draw",
+    "r3d_anim_play", "r3d_anim_update", "r3d_clip_count", "r3d_present",
 ];
 
 /// Byte size of a type (always a multiple of 8). Aggregates lay out their
@@ -545,6 +558,52 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_nav_find", aurora_runtime::aurora_nav_find as *const u8);
     builder.symbol("aurora_nav_x", aurora_runtime::aurora_nav_x as *const u8);
     builder.symbol("aurora_nav_y", aurora_runtime::aurora_nav_y as *const u8);
+    // 3D physics (Rapier 3D).
+    builder.symbol("aurora_phys3d_init", aurora_runtime::aurora_phys3d_init as *const u8);
+    builder.symbol("aurora_phys3d_add_box", aurora_runtime::aurora_phys3d_add_box as *const u8);
+    builder.symbol("aurora_phys3d_add_sphere", aurora_runtime::aurora_phys3d_add_sphere as *const u8);
+    builder.symbol("aurora_phys3d_add_capsule", aurora_runtime::aurora_phys3d_add_capsule as *const u8);
+    builder.symbol("aurora_phys3d_add_character", aurora_runtime::aurora_phys3d_add_character as *const u8);
+    builder.symbol("aurora_phys3d_add_trimesh", aurora_runtime::aurora_phys3d_add_trimesh as *const u8);
+    builder.symbol("aurora_phys3d_step", aurora_runtime::aurora_phys3d_step as *const u8);
+    builder.symbol("aurora_phys3d_x", aurora_runtime::aurora_phys3d_x as *const u8);
+    builder.symbol("aurora_phys3d_y", aurora_runtime::aurora_phys3d_y as *const u8);
+    builder.symbol("aurora_phys3d_z", aurora_runtime::aurora_phys3d_z as *const u8);
+    builder.symbol("aurora_phys3d_vel_x", aurora_runtime::aurora_phys3d_vel_x as *const u8);
+    builder.symbol("aurora_phys3d_vel_y", aurora_runtime::aurora_phys3d_vel_y as *const u8);
+    builder.symbol("aurora_phys3d_vel_z", aurora_runtime::aurora_phys3d_vel_z as *const u8);
+    builder.symbol("aurora_phys3d_set_vel", aurora_runtime::aurora_phys3d_set_vel as *const u8);
+    builder.symbol("aurora_phys3d_set_pos", aurora_runtime::aurora_phys3d_set_pos as *const u8);
+    builder.symbol("aurora_phys3d_apply_impulse", aurora_runtime::aurora_phys3d_apply_impulse as *const u8);
+    builder.symbol("aurora_phys3d_move_character", aurora_runtime::aurora_phys3d_move_character as *const u8);
+    builder.symbol("aurora_phys3d_grounded", aurora_runtime::aurora_phys3d_grounded as *const u8);
+    builder.symbol("aurora_phys3d_raycast", aurora_runtime::aurora_phys3d_raycast as *const u8);
+    // 3D pathfinding.
+    builder.symbol("aurora_nav3d_init", aurora_runtime::aurora_nav3d_init as *const u8);
+    builder.symbol("aurora_nav3d_wall", aurora_runtime::aurora_nav3d_wall as *const u8);
+    builder.symbol("aurora_nav3d_find", aurora_runtime::aurora_nav3d_find as *const u8);
+    builder.symbol("aurora_nav3d_x", aurora_runtime::aurora_nav3d_x as *const u8);
+    builder.symbol("aurora_nav3d_y", aurora_runtime::aurora_nav3d_y as *const u8);
+    builder.symbol("aurora_nav3d_z", aurora_runtime::aurora_nav3d_z as *const u8);
+    builder.symbol("aurora_navmesh_build", aurora_runtime::aurora_navmesh_build as *const u8);
+    builder.symbol("aurora_navmesh_find", aurora_runtime::aurora_navmesh_find as *const u8);
+    builder.symbol("aurora_navmesh_x", aurora_runtime::aurora_navmesh_x as *const u8);
+    builder.symbol("aurora_navmesh_y", aurora_runtime::aurora_navmesh_y as *const u8);
+    builder.symbol("aurora_navmesh_z", aurora_runtime::aurora_navmesh_z as *const u8);
+    // 3D rendering.
+    builder.symbol("aurora_r3d_load_model", aurora_runtime::aurora_r3d_load_model as *const u8);
+    builder.symbol("aurora_r3d_make_box", aurora_runtime::aurora_r3d_make_box as *const u8);
+    builder.symbol("aurora_r3d_make_sphere", aurora_runtime::aurora_r3d_make_sphere as *const u8);
+    builder.symbol("aurora_r3d_make_plane", aurora_runtime::aurora_r3d_make_plane as *const u8);
+    builder.symbol("aurora_r3d_camera", aurora_runtime::aurora_r3d_camera as *const u8);
+    builder.symbol("aurora_r3d_light", aurora_runtime::aurora_r3d_light as *const u8);
+    builder.symbol("aurora_r3d_clear", aurora_runtime::aurora_r3d_clear as *const u8);
+    builder.symbol("aurora_r3d_begin", aurora_runtime::aurora_r3d_begin as *const u8);
+    builder.symbol("aurora_r3d_draw", aurora_runtime::aurora_r3d_draw as *const u8);
+    builder.symbol("aurora_r3d_anim_play", aurora_runtime::aurora_r3d_anim_play as *const u8);
+    builder.symbol("aurora_r3d_anim_update", aurora_runtime::aurora_r3d_anim_update as *const u8);
+    builder.symbol("aurora_r3d_clip_count", aurora_runtime::aurora_r3d_clip_count as *const u8);
+    builder.symbol("aurora_r3d_present", aurora_runtime::aurora_r3d_present as *const u8);
     builder.symbol("aurora_scene_save", aurora_runtime::aurora_scene_save as *const u8);
     builder.symbol("aurora_scene_load", aurora_runtime::aurora_scene_load as *const u8);
     builder.symbol("aurora_prof_enter", aurora_runtime::aurora_prof_enter as *const u8);
@@ -715,6 +774,52 @@ fn lower(
     hosts.insert("nav_find", import(jmod, "aurora_nav_find", &[i, i, i, i], Some(i)));
     hosts.insert("nav_x", import(jmod, "aurora_nav_x", &[i], Some(i)));
     hosts.insert("nav_y", import(jmod, "aurora_nav_y", &[i], Some(i)));
+    // 3D physics (Rapier 3D).
+    hosts.insert("phys3d_init", import(jmod, "aurora_phys3d_init", &[f64t, f64t, f64t], None));
+    hosts.insert("phys3d_add_box", import(jmod, "aurora_phys3d_add_box", &[f64t, f64t, f64t, f64t, f64t, f64t, i], Some(i)));
+    hosts.insert("phys3d_add_sphere", import(jmod, "aurora_phys3d_add_sphere", &[f64t, f64t, f64t, f64t, i], Some(i)));
+    hosts.insert("phys3d_add_capsule", import(jmod, "aurora_phys3d_add_capsule", &[f64t, f64t, f64t, f64t, f64t, i], Some(i)));
+    hosts.insert("phys3d_add_character", import(jmod, "aurora_phys3d_add_character", &[f64t, f64t, f64t, f64t, f64t], Some(i)));
+    hosts.insert("phys3d_add_trimesh", import(jmod, "aurora_phys3d_add_trimesh", &[ptr_ty, i, ptr_ty, i], Some(i)));
+    hosts.insert("phys3d_step", import(jmod, "aurora_phys3d_step", &[f64t], None));
+    hosts.insert("phys3d_x", import(jmod, "aurora_phys3d_x", &[i], Some(f64t)));
+    hosts.insert("phys3d_y", import(jmod, "aurora_phys3d_y", &[i], Some(f64t)));
+    hosts.insert("phys3d_z", import(jmod, "aurora_phys3d_z", &[i], Some(f64t)));
+    hosts.insert("phys3d_vel_x", import(jmod, "aurora_phys3d_vel_x", &[i], Some(f64t)));
+    hosts.insert("phys3d_vel_y", import(jmod, "aurora_phys3d_vel_y", &[i], Some(f64t)));
+    hosts.insert("phys3d_vel_z", import(jmod, "aurora_phys3d_vel_z", &[i], Some(f64t)));
+    hosts.insert("phys3d_set_vel", import(jmod, "aurora_phys3d_set_vel", &[i, f64t, f64t, f64t], None));
+    hosts.insert("phys3d_set_pos", import(jmod, "aurora_phys3d_set_pos", &[i, f64t, f64t, f64t], None));
+    hosts.insert("phys3d_apply_impulse", import(jmod, "aurora_phys3d_apply_impulse", &[i, f64t, f64t, f64t], None));
+    hosts.insert("phys3d_move_character", import(jmod, "aurora_phys3d_move_character", &[i, f64t, f64t, f64t, f64t], None));
+    hosts.insert("phys3d_grounded", import(jmod, "aurora_phys3d_grounded", &[i], Some(i)));
+    hosts.insert("phys3d_raycast", import(jmod, "aurora_phys3d_raycast", &[f64t, f64t, f64t, f64t, f64t, f64t, f64t], Some(f64t)));
+    // 3D pathfinding.
+    hosts.insert("nav3d_init", import(jmod, "aurora_nav3d_init", &[i, i, i], None));
+    hosts.insert("nav3d_wall", import(jmod, "aurora_nav3d_wall", &[i, i, i, i], None));
+    hosts.insert("nav3d_find", import(jmod, "aurora_nav3d_find", &[i, i, i, i, i, i], Some(i)));
+    hosts.insert("nav3d_x", import(jmod, "aurora_nav3d_x", &[i], Some(i)));
+    hosts.insert("nav3d_y", import(jmod, "aurora_nav3d_y", &[i], Some(i)));
+    hosts.insert("nav3d_z", import(jmod, "aurora_nav3d_z", &[i], Some(i)));
+    hosts.insert("navmesh_build", import(jmod, "aurora_navmesh_build", &[ptr_ty, i, ptr_ty, i], Some(i)));
+    hosts.insert("navmesh_find", import(jmod, "aurora_navmesh_find", &[f64t, f64t, f64t, f64t, f64t, f64t], Some(i)));
+    hosts.insert("navmesh_x", import(jmod, "aurora_navmesh_x", &[i], Some(f64t)));
+    hosts.insert("navmesh_y", import(jmod, "aurora_navmesh_y", &[i], Some(f64t)));
+    hosts.insert("navmesh_z", import(jmod, "aurora_navmesh_z", &[i], Some(f64t)));
+    // 3D rendering.
+    hosts.insert("r3d_load_model", import(jmod, "aurora_r3d_load_model", &[ptr_ty, i], Some(i)));
+    hosts.insert("r3d_make_box", import(jmod, "aurora_r3d_make_box", &[f64t, f64t, f64t], Some(i)));
+    hosts.insert("r3d_make_sphere", import(jmod, "aurora_r3d_make_sphere", &[i, f64t, f64t, f64t], Some(i)));
+    hosts.insert("r3d_make_plane", import(jmod, "aurora_r3d_make_plane", &[f64t, f64t, f64t, f64t, f64t], Some(i)));
+    hosts.insert("r3d_camera", import(jmod, "aurora_r3d_camera", &[f64t, f64t, f64t, f64t, f64t, f64t, f64t], None));
+    hosts.insert("r3d_light", import(jmod, "aurora_r3d_light", &[f64t, f64t, f64t, f64t, f64t, f64t, f64t], None));
+    hosts.insert("r3d_clear", import(jmod, "aurora_r3d_clear", &[f64t, f64t, f64t], None));
+    hosts.insert("r3d_begin", import(jmod, "aurora_r3d_begin", &[], None));
+    hosts.insert("r3d_draw", import(jmod, "aurora_r3d_draw", &[i, f64t, f64t, f64t, f64t, f64t, f64t, f64t], None));
+    hosts.insert("r3d_anim_play", import(jmod, "aurora_r3d_anim_play", &[i, i, i, f64t], None));
+    hosts.insert("r3d_anim_update", import(jmod, "aurora_r3d_anim_update", &[i, f64t], None));
+    hosts.insert("r3d_clip_count", import(jmod, "aurora_r3d_clip_count", &[i], Some(i)));
+    hosts.insert("r3d_present", import(jmod, "aurora_r3d_present", &[], Some(i)));
     hosts.insert("draw_text", import(jmod, "aurora_draw_text", &[i, i, ptr_ty, i, i, i], None));
     hosts.insert("scene_save", import(jmod, "aurora_scene_save", &[ptr_ty, i], Some(i)));
     hosts.insert("scene_load", import(jmod, "aurora_scene_load", &[ptr_ty, i], Some(i)));
@@ -2754,7 +2859,7 @@ fn tr_call(
         }
         return Ok(Term::Val(b.ins().iconst(types::I64, 0), Cty::I64));
     }
-    if matches!(name.as_str(), "load_ppm" | "load_image" | "load_font" | "play_wav" | "scene_save" | "scene_load") {
+    if matches!(name.as_str(), "load_ppm" | "load_image" | "load_font" | "play_wav" | "scene_save" | "scene_load" | "r3d_load_model") {
         let result = if let Some(a) = args.first() {
             let (ptr, len) = str_arg(m, b, l, env, &a.value)?;
             let f = m.declare_func_in_func(env.hosts[name.as_str()], b.func);
@@ -2825,6 +2930,27 @@ fn tr_call(
         let f = m.declare_func_in_func(env.hosts["par_for"], b.func);
         b.ins().call(f, &[out, nv, fn_ptr, env_ptr]);
         return Ok(Term::Val(out, oct));
+    }
+
+    // `navmesh_build(verts, indices)` / `phys3d_add_trimesh(verts, indices)` -
+    // take an `[f64; N]` vertex array (N/3 vertices, xyz each) and an `[i64; M]`
+    // triangle-index array; the counts are derived from the array lengths.
+    if name == "navmesh_build" || name == "phys3d_add_trimesh" {
+        let (vp, vt) = val(m, b, l, env, &args[0].value)?;
+        let vcount = match &vt {
+            Cty::Array(_, n) => (*n as i64) / 3,
+            _ => return Err(format!("{name} expects an [f64; N] vertex array in JIT")),
+        };
+        let (ip, it) = val(m, b, l, env, &args[1].value)?;
+        let icount = match &it {
+            Cty::Array(_, n) => *n as i64,
+            _ => return Err(format!("{name} expects an [i64; M] index array in JIT")),
+        };
+        let vn = b.ins().iconst(types::I64, vcount);
+        let inn = b.ins().iconst(types::I64, icount);
+        let f = m.declare_func_in_func(env.hosts[name.as_str()], b.func);
+        let call = b.ins().call(f, &[vp, vn, ip, inn]);
+        return Ok(Term::Val(b.inst_results(call)[0], Cty::I64));
     }
 
     // `gpu_compute(wgsl, arr)` — run a compute shader over an `[f64; n]` array
@@ -3537,6 +3663,41 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "nav_find" => (vec![I64, I64, I64, I64], Some(I64)),
         "nav_x" => (vec![I64], Some(I64)),
         "nav_y" => (vec![I64], Some(I64)),
+        // 3D physics.
+        "phys3d_init" => (vec![F64, F64, F64], None),
+        "phys3d_add_box" => (vec![F64, F64, F64, F64, F64, F64, I64], Some(I64)),
+        "phys3d_add_sphere" => (vec![F64, F64, F64, F64, I64], Some(I64)),
+        "phys3d_add_capsule" => (vec![F64, F64, F64, F64, F64, I64], Some(I64)),
+        "phys3d_add_character" => (vec![F64, F64, F64, F64, F64], Some(I64)),
+        "phys3d_step" => (vec![F64], None),
+        "phys3d_x" | "phys3d_y" | "phys3d_z" => (vec![I64], Some(F64)),
+        "phys3d_vel_x" | "phys3d_vel_y" | "phys3d_vel_z" => (vec![I64], Some(F64)),
+        "phys3d_set_vel" => (vec![I64, F64, F64, F64], None),
+        "phys3d_set_pos" => (vec![I64, F64, F64, F64], None),
+        "phys3d_apply_impulse" => (vec![I64, F64, F64, F64], None),
+        "phys3d_move_character" => (vec![I64, F64, F64, F64, F64], None),
+        "phys3d_grounded" => (vec![I64], Some(I64)),
+        "phys3d_raycast" => (vec![F64, F64, F64, F64, F64, F64, F64], Some(F64)),
+        // 3D pathfinding.
+        "nav3d_init" => (vec![I64, I64, I64], None),
+        "nav3d_wall" => (vec![I64, I64, I64, I64], None),
+        "nav3d_find" => (vec![I64, I64, I64, I64, I64, I64], Some(I64)),
+        "nav3d_x" | "nav3d_y" | "nav3d_z" => (vec![I64], Some(I64)),
+        "navmesh_find" => (vec![F64, F64, F64, F64, F64, F64], Some(I64)),
+        "navmesh_x" | "navmesh_y" | "navmesh_z" => (vec![I64], Some(F64)),
+        // 3D rendering.
+        "r3d_make_box" => (vec![F64, F64, F64], Some(I64)),
+        "r3d_make_sphere" => (vec![I64, F64, F64, F64], Some(I64)),
+        "r3d_make_plane" => (vec![F64, F64, F64, F64, F64], Some(I64)),
+        "r3d_camera" => (vec![F64, F64, F64, F64, F64, F64, F64], None),
+        "r3d_light" => (vec![F64, F64, F64, F64, F64, F64, F64], None),
+        "r3d_clear" => (vec![F64, F64, F64], None),
+        "r3d_begin" => (vec![], None),
+        "r3d_draw" => (vec![I64, F64, F64, F64, F64, F64, F64, F64], None),
+        "r3d_anim_play" => (vec![I64, I64, I64, F64], None),
+        "r3d_anim_update" => (vec![I64, F64], None),
+        "r3d_clip_count" => (vec![I64], Some(I64)),
+        "r3d_present" => (vec![], Some(I64)),
         _ => return None,
     };
     Some(sig)
