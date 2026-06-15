@@ -1,80 +1,117 @@
-// A 3D movement-shooter scaffold: GPU-rendered world, a kinematic capsule
-// player with gravity + jump that slides along walls, arrow-key look, WASD move.
-// Run with `aurorac run examples/shooter3d.aur` (opens a window; Esc quits).
-//
-// Primitives are used so it runs with no assets. To use a real animated
-// character, replace the player box with `r3d_load_model("hero.glb")`, then
-// `r3d_anim_play(model, 0, 1, 1.0)` and `r3d_anim_update(model, dt)` each frame.
+// A 3D movement-shooter scaffold exercising the full 3D stack: GPU PBR renderer
+// with a sky, directional shadows, and fog; an FPS mouse-look camera with cursor
+// capture; a kinematic capsule player with gravity, jump, and sprint that slides
+// along walls; hitscan shooting via raycast with a tracer line, an impact spark
+// billboard, and knockback on a dynamic target; and a HUD crosshair composited
+// over the 3D scene. Run with `aurorac run examples/shooter3d.aur` (Esc quits).
 
 fn main() {
     window_open(960, 540)
-    r3d_clear(0.5, 0.7, 0.95)
-    r3d_light(0.4, 1.0, 0.3, 1.0, 0.98, 0.9, 0.35)
+    grab_mouse(1)
+
+    // Environment: blue sky, sun + ambient, shadows, light distance fog.
+    r3d_sky(1, 0.30, 0.50, 0.85, 0.70, 0.80, 0.92)
+    r3d_light(0.4, 1.0, 0.3, 1.0, 0.97, 0.9, 0.25)
+    r3d_shadows(1)
+    r3d_fog(0.70, 0.80, 0.92, 0.010)
 
     // Renderable primitives.
-    let ground_vis = r3d_make_plane(80.0, 40.0, 0.4, 0.55, 0.4)
-    let player_vis = r3d_make_box(0.9, 0.3, 0.2)
-    let crate_vis = r3d_make_box(0.7, 0.5, 0.3)
+    let ground_vis = r3d_make_plane(120.0, 60.0, 0.35, 0.5, 0.35)
+    let crate_vis = r3d_make_box(0.6, 0.45, 0.3)
+    let enemy_vis = r3d_make_box(0.85, 0.2, 0.2)
+    let spark = r3d_make_sprite(1.0, 0.85, 0.3)
 
-    // Physics world: a static ground, some obstacle boxes, a character capsule.
-    phys3d_init(0.0, -18.0, 0.0)
-    phys3d_add_box(0.0, -0.5, 0.0, 40.0, 0.5, 40.0, 0)
+    // Physics world: ground, static cover, a dynamic target, a player capsule.
+    phys3d_init(0.0, -22.0, 0.0)
+    phys3d_add_box(0.0, -0.5, 0.0, 60.0, 0.5, 60.0, 0)
     phys3d_add_box(6.0, 1.0, -4.0, 1.0, 1.0, 1.0, 0)
     phys3d_add_box(-5.0, 1.0, 3.0, 1.0, 1.0, 1.0, 0)
-    phys3d_add_box(0.0, 1.5, -10.0, 3.0, 1.5, 1.0, 0)
-    let player = phys3d_add_character(0.0, 2.0, 8.0, 0.6, 0.4)
+    phys3d_add_box(0.0, 1.5, -12.0, 3.0, 1.5, 1.0, 0)
+    let target = phys3d_add_box(10.0, 1.0, -6.0, 0.6, 0.6, 0.6, 1)
+    let player = phys3d_add_character(0.0, 2.0, 8.0, 0.7, 0.4)
 
     let yaw = 0.0
+    let pitch = 0.0
     let vy = 0.0
-    let speed = 7.0
     let dt = 0.016
+    let cx = 480
+    let cy = 270
 
     while r3d_present() {
         r3d_begin()
 
-        // Look: arrow keys turn; W/S forward, A/D strafe.
-        if key_down(0) { yaw = yaw - 2.0 * dt }
-        if key_down(1) { yaw = yaw + 2.0 * dt }
+        // HUD: clear to black (the transparent key), draw a crosshair.
+        clear(0, 0, 0)
+        let i = 0 - 6
+        while i <= 6 {
+            pixel(cx + i, cy, 230, 230, 230)
+            pixel(cx, cy + i, 230, 230, 230)
+            i = i + 1
+        }
+
+        // Mouse look (yaw/pitch from raw mouse delta).
+        yaw = yaw + mouse_dx() * 0.0025
+        pitch = pitch - mouse_dy() * 0.0025
+        if pitch > 1.4 { pitch = 1.4 }
+        if pitch < 0.0 - 1.4 { pitch = 0.0 - 1.4 }
+
+        let cp = cos(pitch)
+        let fx = cp * sin(yaw)
+        let fy = sin(pitch)
+        let fz = 0.0 - cp * cos(yaw)
+        let rx = cos(yaw)
+        let rz = sin(yaw)
+        let hx = sin(yaw)
+        let hz = 0.0 - cos(yaw)
+
+        // Movement (WASD relative to yaw; LShift sprints).
         let fwd = 0.0
         let strafe = 0.0
         if key_down(5) { fwd = fwd + 1.0 }
         if key_down(7) { fwd = fwd - 1.0 }
         if key_down(8) { strafe = strafe + 1.0 }
         if key_down(6) { strafe = strafe - 1.0 }
+        let speed = 8.0
+        if key_down(10) { speed = 13.0 }
+        let mx = (hx * fwd + rx * strafe) * speed * dt
+        let mz = (hz * fwd + rz * strafe) * speed * dt
 
-        // Forward/right vectors from yaw (yaw 0 looks toward -z).
-        let fx = sin(yaw)
-        let fz = 0.0 - cos(yaw)
-        let rx = cos(yaw)
-        let rz = sin(yaw)
-        let dx = (fx * fwd + rx * strafe) * speed * dt
-        let dz = (fz * fwd + rz * strafe) * speed * dt
-
-        // Gravity + jump (kinematic: integrate vertical velocity ourselves).
+        // Gravity + jump (kinematic character: integrate vertical velocity).
         let grounded = phys3d_grounded(player)
         if grounded == 1 {
             if vy < 0.0 { vy = 0.0 }
-            if key_down(4) { vy = 8.0 }
+            if key_down(4) { vy = 9.0 }
         }
-        vy = vy - 18.0 * dt
-        let dy = vy * dt
-
-        phys3d_move_character(player, dx, dy, dz, dt)
+        vy = vy - 22.0 * dt
+        phys3d_move_character(player, mx, vy * dt, mz, dt)
         phys3d_step(dt)
 
         let px = phys3d_x(player)
         let py = phys3d_y(player)
         let pz = phys3d_z(player)
+        let eye = py + 0.6
+        r3d_camera(px, eye, pz, px + fx, eye + fy, pz + fz, 80.0)
 
-        // First-person camera at the player's eye, looking along yaw.
-        let eye_y = py + 0.6
-        r3d_camera(px, eye_y, pz, px + fx, eye_y + 0.0, pz + fz, 75.0)
+        // Shoot: hitscan ray from the eye along the look direction.
+        if mouse_button(0) == 1 {
+            let body = phys3d_raycast_full(px, eye, pz, fx, fy, fz, 200.0)
+            if body >= 0 {
+                let ix = phys3d_hit_x()
+                let iy = phys3d_hit_y()
+                let iz = phys3d_hit_z()
+                r3d_debug_line(px, eye - 0.1, pz, ix, iy, iz, 1.0, 0.9, 0.4)
+                r3d_draw_billboard(spark, ix, iy, iz, 0.4)
+                if body == target {
+                    phys3d_apply_impulse(target, fx * 30.0, 8.0, fz * 30.0)
+                }
+            }
+        }
 
         // Draw the world.
         r3d_draw(ground_vis, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
         r3d_draw(crate_vis, 6.0, 1.0, -4.0, 0.0, 0.0, 0.0, 1.0)
         r3d_draw(crate_vis, -5.0, 1.0, 3.0, 0.0, 0.0, 0.0, 1.0)
-        r3d_draw(crate_vis, 0.0, 1.5, -10.0, 0.0, 0.0, 0.0, 3.0)
-        r3d_draw(player_vis, px, py, pz, yaw, 0.0, 0.0, 1.0)
+        r3d_draw(crate_vis, 0.0, 1.5, -12.0, 0.0, 0.0, 0.0, 3.0)
+        r3d_draw(enemy_vis, phys3d_x(target), phys3d_y(target), phys3d_z(target), 0.0, 0.0, 0.0, 0.6)
     }
 }

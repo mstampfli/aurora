@@ -119,7 +119,43 @@ window. Colors are 0..1 floats; angles are radians; handles are `i64`.
 | `r3d_present() -> i64` | render the queue to the window | 1 while open, 0 when closed |
 
 A frame loop is `while r3d_present() { r3d_begin(); ...camera/draw...; }`. See
-[`examples/shooter3d.aur`](../examples/shooter3d.aur).
+[`examples/shooter3d.aur`](../examples/shooter3d.aur). Materials are physically
+based (metallic/roughness, normal maps, emissive, all read from glTF); the
+renderer applies 4x MSAA automatically.
+
+More rendering controls:
+
+| Builtin | Signature | Notes |
+|---|---|---|
+| `r3d_sky(on, tr,tg,tb, hr,hg,hb)` | procedural sky | zenith + horizon colors, sun from the light |
+| `r3d_shadows(on)` | directional shadow map (PCF) | on by default |
+| `r3d_fog(r,g,b, density)` | exponential distance fog | density 0 = off |
+| `r3d_point_light(x,y,z, r,g,b, range, intensity)` | add a point light | up to 16; `r3d_clear_lights()` resets |
+| `r3d_make_sprite(r,g,b) -> i64` / `r3d_draw_billboard(h, x,y,z, size)` | camera-facing billboard | particles, markers |
+| `r3d_debug_line(ax,ay,az, bx,by,bz, r,g,b)` | world-space debug line | aim rays, nav debug |
+| `r3d_frustum_cull(on)` | toggle frustum culling | on by default |
+| `r3d_screen_x/y(wx,wy,wz) -> f64` | project a world point to pixels | -1 if behind the camera |
+
+The CPU framebuffer (`clear`/`pixel`/`triangle`/`draw_text`) is composited over
+the 3D scene as a **HUD** each `r3d_present()`, with pure black as the
+transparent key (clear to black, draw the crosshair/ammo in color).
+
+## FPS input
+
+| Builtin | Signature | Notes |
+|---|---|---|
+| `grab_mouse(on)` | capture + hide the cursor | for mouse-look |
+| `mouse_dx() / mouse_dy() -> f64` | raw mouse motion this frame | the look delta |
+| `mouse_scroll() -> f64` | scroll-wheel delta this frame | |
+| `mouse_button(b) -> i64` | held: 0 = left, 1 = right, 2 = middle | |
+| `key_down(code)` | extended codes | 0-9 movement/action, 10-13 Shift/Ctrl/Alt/Tab, 30-39 digits, 40-65 A-Z |
+
+## 3D positional audio
+
+| Builtin | Signature | Notes |
+|---|---|---|
+| `audio_listener(x,y,z, fx,fy,fz)` | set listener pose | position + forward |
+| `play_sound_at(semitone, ms, x,y,z)` | spatialized note | distance attenuation + stereo pan |
 
 ## 3D physics - Rapier 3D (`phys3d_*`)
 
@@ -142,6 +178,13 @@ along walls (the core of a fluid movement shooter). Bodies are `i64` handles.
 | `phys3d_move_character(h, dx,dy,dz, dt)` | move + slide a character | read position after `step` |
 | `phys3d_grounded(h) -> i64` | is the character on the ground | 1/0 |
 | `phys3d_raycast(x,y,z, dx,dy,dz, max) -> f64` | distance to first hit, or -1 | shooting, ground checks |
+| `phys3d_raycast_full(x,y,z, dx,dy,dz, max) -> i64` | hit body handle (-1 none) | then read the hit below |
+| `phys3d_hit_x/y/z() -> f64` / `phys3d_hit_nx/ny/nz() -> f64` | last hit point + normal | decals, impacts |
+| `phys3d_hit_body() -> i64` | last hit body handle | |
+| `phys3d_spherecast(x,y,z, dx,dy,dz, r, max) -> f64` | swept-sphere distance, or -1 | thick projectiles |
+| `phys3d_overlap_sphere(x,y,z, r) -> i64` | first overlapping body, or -1 | triggers, pickups, blasts |
+| `phys3d_apply_force/apply_torque(h, x,y,z)` / `phys3d_set_angvel(h, x,y,z)` | dynamic forces | |
+| `phys3d_set_rot(h, qx,qy,qz,qw)` / `phys3d_rot_qx/qy/qz/qw(h) -> f64` | orientation quaternion | |
 
 ## 3D pathfinding (`nav3d_*` grid, `navmesh_*` navmesh)
 
