@@ -1,183 +1,194 @@
 # Aurora
 
-A from-scratch programming language designed for game development: **fast**
-(compiles to native machine code - JIT *and* standalone executables),
-**batteries-included** (ECS, graphics, and netcode are language/runtime features),
-**GPU-native** (shaders are Aurora functions that run on real hardware), and
-**safe where it's free** (the compiler proves systems can't data-race).
+A from-scratch language for game development. It compiles to native machine code
+(Cranelift JIT *and* standalone executables), treats ECS, graphics, and netcode as
+language and runtime features rather than libraries, lowers shaders to real WGSL
+that runs on the GPU, and proves at compile time that parallel systems cannot
+data-race.
 
-> Status: a working compiler toolchain. **22 crates, 313 tests, 0 warnings.**
-> Every capability below is backed by passing tests and runnable examples.
-> Design specs live in [`docs/`](docs/).
+Aurora is opinionated about a small set of things:
 
-Aurora programs drive graphics, a real-time window, keyboard + mouse input,
-audio (mixed/non-blocking), and **GPU fragment shaders** through language
-builtins - `window_open`/`window_present`/`key_down`/`mouse_x`/`play_sound`/
-`gpu_render` (see [`examples/game_window.aur`](examples/game_window.aur)).
-**Strings are first-class** (`let s = "a" + str(n)`, `len`, `char_at`, `substr`,
-`starts_with`, `==`, params/returns), and dynamic memory is **arena-managed** -
-`#frame` allocations are reclaimed in O(1) by `frame_reset()` rather than leaked.
-**Networking is a builtin** (`net_bind`/`net_connect`/`net_send`/`net_recv` over
-reliable UDP). **Generics** are monomorphized - `fn id<T>`, `struct Stack<T>`, and
-a generic `List<T>` collection all specialize per concrete type. A standard
-library (math, easing, string helpers, `Vec2`, generic `List<T>`) is
-auto-included, and code is organized with **modules** (`mod m { … }` →
-`m::item`) and **dependencies** (`[dependencies]` in `aurora.toml`, path or git,
-resolved transitively with an `aurora.lock`).
+- **The compiler is the engine.** `component`, `system`, and `query` are syntax,
+  not a library. `spawn`/`despawn`/`run_systems` are builtins. So are graphics, a
+  real-time window, keyboard/mouse input, audio, networking, physics, and
+  pathfinding. You write a game, not glue code.
+- **Parallel systems are proven safe, not hoped safe.** `run_systems()` groups
+  systems into layers by access conflict and ordering, then runs each layer
+  concurrently over one shared world. The race-freedom proof (spec section 6.2) is
+  what makes that sound: two systems that touch the same component must be ordered
+  or the compiler rejects them.
+- **One language for CPU and GPU.** A shader is an Aurora function with `@vertex` /
+  `@fragment` / `@compute`. The same `Vec3`/`Mat4`/`Color` types work on both
+  sides; the shader crate lowers them to valid WGSL and the GPU crate runs it.
+- **Memory is regions, not a GC.** Values live in `#frame`, `#level`, or `#perm`
+  arenas. `#frame` data is reclaimed in O(1) by `frame_reset()` at the end of a
+  tick instead of leaking, and the checker rejects storing a short-lived value
+  where a longer-lived one is required.
+- **Safe where it is free.** Data-race freedom, move/ownership checking, region
+  escape, and bounds-checked array indexing are all compile-time or cheap-runtime,
+  with no borrow-checker ceremony for the common case.
+
+## Hello, Aurora
+
+```aurora
+fn main() {
+    println("hello, world")
+}
+```
 
 ```sh
-aurorac new    mygame                        # scaffold a project (aurora.toml + src/)
-aurorac run    examples/showcase.aur         # compile main to native code & run
-aurorac build  examples/native.aur -o game.exe   # → a standalone native .exe
-aurorac debug  examples/native.aur --break 9 # native debugger (breakpoints, step, locals)
-aurorac gpu    examples/gpu_shader.aur -o out.ppm  # run a shader on the real GPU
-aurorac window                               # open a live real-time window (interactive)
-aurorac sound                                # synthesize + play audio
-aurorac check  examples/game.aur             # type-check + safety checks
-aurora-lsp                                   # language server (editor diagnostics over stdio)
+aurorac run hello.aur
 ```
 
-## What makes Aurora different
+## A taste
 
-| Pillar | How | Where |
-|---|---|---|
-| **Fast (JIT)** | Cranelift compiles the *whole* language (scalars, structs/enums/arrays, methods, closures, ECS) to machine code | `aurora-codegen` |
-| **Fast (AOT)** | `aurorac build` emits a native object and links a standalone `.exe` - no interpreter, no runtime VM | `aurora-codegen`, `aurora-runtime`, `aurora-exe` |
-| **ECS is the language** | `component`/`system`/`query` are syntax; the compiler proves systems race-free (§6.2) | `aurora-parser`, `aurora-check` |
-| **Parallel scheduler** | `run_systems()` layers systems by access conflict + ordering and runs each layer of independent systems concurrently over a shared world - the §6.2 race-freedom proof is what makes it safe | `aurora-ast` (`parallel_layers`), `aurora-codegen`, `aurora-runtime` |
-| **Built-in graphics** | Aurora code drives a CPU rasterizer; shaders are Aurora functions lowered to WGSL | `aurora-gfx`, `aurora-shader` |
-| **Live GPU** | lowered WGSL runs headless on the real GPU (compute + render), pixels read back | `aurora-gpu` (wgpu) |
-| **Real-time window** | winit + wgpu window presents a framebuffer each frame with keyboard/mouse input | `aurora-window` |
-| **Built-in audio** | synthesis (oscillators, ADSR, note pitches, mixing) + real output via cpal | `aurora-audio` |
-| **FFI (C + Rust)** | `@extern fn hypot(x: f64, y: f64) -> f64` binds a C-ABI symbol - any C library or Rust `#[no_mangle] extern "C"` function. Resolves at link time (AOT) or against registered symbols (JIT) | `aurora-codegen` |
-| **Asset loading** | `load_image(path)` decodes PNG/JPEG into the framebuffer (via the `image` crate), beyond the built-in PPM loader | `aurora-runtime` |
-| **Physics (Rapier)** | `phys_init`/`phys_add`/`phys_step`/`phys_x`/`phys_set_vel` - real 2D rigid-body simulation (gravity, colliders, continuous collision) via the Rapier crate | `aurora-runtime` |
-| **Pathfinding (A\*)** | `nav_init`/`nav_wall`/`nav_find`/`nav_x`/`nav_y` - weighted grid A* via the `pathfinding` crate | `aurora-runtime` |
-| **Text rendering** | `load_font(path)` + `draw_text(x, y, str, px, color)` rasterize TrueType/OpenType glyphs into the framebuffer (via `fontdue`), alpha-blended | `aurora-runtime` |
-| **Native debugger** | machine-code instrumentation (not an interpreter) - breakpoints, step, and locals incl. floats + struct fields, at native speed | `aurora-debug` |
-| **Profiler** | `aurorac profile` instruments the native code for per-function call counts + wall-clock time | `aurora-runtime` |
-| **Assets + scenes** | `load_ppm` loads images into the framebuffer; `scene_save`/`scene_load` persist the whole ECS world; `aurorac watch` hot-reloads on change | `aurora-runtime` |
-| **Standard library** | a prelude auto-included in every program: math/easing, `Vec2`/`Vec3` + vector math, generic `List<T>`, **collision** (`Rect`/circle), **color** packing + lerp, **sprite-sheet** + animation helpers, **particles**, **grid BFS pathfinding** (`Grid`), **2D AABB physics** (`Body` integrate + collision resolve), immediate-mode **UI widgets** (`ui_button`/`ui_slider`/`ui_label`/`fill_rect`), integer **bitwise** builtins; packages depend on each other by path or git | `aurora-std`, `aurorac` |
-| **Built-in netcode** | serialization, prediction/reconciliation, lag-comp, interest, **real UDP transport** (now exposed as language builtins), fixed-point determinism | `aurora-net` |
-| **Arena memory** | per-region bump allocator; `#frame` data reclaimed O(1), not leaked | `aurora-runtime` |
-| **Data parallelism** | `par_for(out, closure)` runs the closure across OS threads, each writing disjoint output slots | `aurora-runtime`, `aurora-codegen` |
-| **Generics + traits + enums** | functions, structs (incl. **nested** like `Box<Box<i64>>`), collections, and enums (`Result<T,E>`, **multiple instantiations**) monomorphize per type; `trait`s give static dispatch with enforced bounds (`fn f<T: Speaker>`) and dynamic dispatch (`dyn Speaker`) | `aurora-ast`, `aurora-typeck`, `aurora-codegen` |
-| **Error handling** | `Result<T,E>`/`Option<T>` + `match`, with the `?` operator for early-return error propagation | `aurora-codegen` |
-| **Safe where it's free** | data-race (§6.2), ownership/move (§8.1/3), region-escape through bindings, return values, *and* **inferred region-parameterized signatures** - a call passing a `#frame` value to a function that stores it in `#perm` is rejected; optional **`#region` type annotations** (`fn keep(t: #perm Thing)`) declare the contract across bodiless boundaries (`@extern`, trait sigs) (§8.2); **array indexing is bounds-checked** (out-of-range/negative traps with a clear panic) | `aurora-check`, `aurora-codegen` |
-| **Editor tooling** | a Language Server (LSP) streams diagnostics AND completion (keywords, builtins, symbols) to any editor | `aurora-lsp` |
-
-### "Safe where it's free", concretely
+Race-free ECS. `render` reads `Position` while `integrate` writes it, so the
+ordering is required or `aurorac check` reports `E0202`:
 
 ```aurora
-system integrate() stage(Update) { for (p, v) in query<&mut Position, &Velocity> { p.x += v.x } }
-system render()    stage(Update) after(integrate) { for (p, s) in query<&Position, &Sprite> { triangle(...) } }
-```
+component Position { x: f64, y: f64 }
+component Velocity { x: f64, y: f64 }
 
-`render` reads `Position` while `integrate` writes it. Without `after(integrate)`,
-`aurorac check` reports `E0202: systems conflict on component 'Position' but are
-not ordered` - the data-race-freedom theorem, enforced at compile time. Add the
-ordering and it checks clean.
-
-### One language for CPU and GPU
-
-```aurora
-@vertex fn vs(vin: VsIn) -> VsOut { VsOut { clip: view_proj * vec4(vin.pos, 1.0), uv: vin.uv } }
-```
-
-`aurorac wgsl` lowers this to valid WGSL - the same `Vec3`/`Mat4` types work on
-both sides.
-
-### Using C/Rust libraries and assets
-
-```aurora
-@extern fn hypot(x: f64, y: f64) -> f64     // bind any C-ABI symbol
+system integrate() stage(Update) {
+    for (p, v) in query<&mut Position, &Velocity> { p.x += v.x; p.y += v.y }
+}
+system render() stage(Update) after(integrate) {
+    for (p, s) in query<&Position, &Sprite> { triangle(/* ... */) }
+}
 
 fn main() {
-    println(hypot(3.0, 4.0))                 // 5.0 - calls libm
+    spawn(Position { x: 0.0, y: 0.0 }, Velocity { x: 1.0, y: 0.0 })
+    run_systems()
+}
+```
 
-    load_image("hero.png")                   // PNG/JPEG -> framebuffer
+A shader is just an Aurora function. `aurorac wgsl` lowers it to WGSL and
+`aurorac gpu` runs it on real hardware:
+
+```aurora
+@vertex fn vs(vin: VsIn) -> VsOut {
+    VsOut { clip: view_proj * vec4(vin.pos, 1.0), uv: vin.uv }
+}
+```
+
+Generics monomorphize per concrete type (functions, structs, nested types, and
+enums used at multiple instantiations):
+
+```aurora
+enum Opt<T> { Some(T), None }
+
+fn unwrap_or<T>(o: Opt<T>, d: T) -> T {
+    match o { Opt::Some(x) => x, Opt::None => d }
+}
+```
+
+Call into any C or Rust C-ABI function with `@extern`:
+
+```aurora
+@extern fn hypot(x: f64, y: f64) -> f64     // binds a C-ABI symbol (here, libm)
+
+fn main() {
+    println(hypot(3.0, 4.0))                 // 5.0
+    load_image("hero.png")                   // PNG/JPEG into the framebuffer
     load_font("C:/Windows/Fonts/arial.ttf")
     draw_text(8, 8, "Score: 1234", 28, rgb(255, 255, 255))
 }
 ```
 
-`@extern` declarations bind external **C** symbols (and **Rust** functions
-exported as `#[no_mangle] extern "C"`), resolved at link time for `aurorac build`
-and against registered symbols for `aurorac run`. `load_image` (via the `image`
-crate) and `load_font`/`draw_text` (via `fontdue`) give a real asset pipeline and
-on-screen text.
-
-## Architecture (22 crates)
+## Project layout
 
 ```
-aurora-span      spans + source maps
-aurora-diag      diagnostics + caret renderer
-aurora-lexer     hand-rolled lexer (nested comments, newline-aware ASI)
-aurora-ast       the syntax tree
-aurora-parser    recursive-descent + Pratt expressions
-aurora-types     type representation + union-find unifier
-aurora-typeck    bidirectional type checker (lenient prelude, generics)
-aurora-check     ECS scheduler safety, move checking, region escape, resolution
-aurora-interp    tree-walking interpreter (dev/reference; the compiled path is primary)
-aurora-codegen   Cranelift backend - JIT + AOT object emission (whole language)
-aurora-runtime   native host functions (print/graphics/ECS) linked into executables
-aurora-exe       link target + entry shim for standalone `.exe` output
-aurora-gfx       CPU rasterizer (framebuffer, triangles, PPM)
-aurora-shader    Aurora @vertex/@fragment/@compute -> WGSL
-aurora-gpu       live GPU execution via wgpu (headless compute + render)
-aurora-window    real-time winit+wgpu window + keyboard/mouse input
-aurora-audio     synthesis (oscillators/ADSR/mixing) + cpal playback
-aurora-runtime   native host functions (print/graphics/ECS/debug) for compiled code
-aurora-debug     native source-level debugger (machine-code instrumentation)
-aurora-std       standard-library prelude (Aurora source, auto-included)
-aurora-net       netcode: serialization, prediction, lag-comp, interest, real UDP transport, fixed-point
-aurora-lsp       Language Server (LSP diagnostics over stdio)
-aurorac          the CLI driver
+crates/
+  aurora-span      spans + source maps
+  aurora-diag      diagnostics + caret renderer
+  aurora-lexer     hand-rolled lexer (nested comments, newline-aware ASI)
+  aurora-ast       the syntax tree
+  aurora-parser    recursive-descent + Pratt expressions
+  aurora-types     type representation + union-find unifier
+  aurora-typeck    bidirectional type checker (generics, traits, enums)
+  aurora-check     ECS scheduler safety, move checking, region escape, resolution
+  aurora-interp    tree-walking interpreter (reference path; compiled path is primary)
+  aurora-codegen   Cranelift backend: JIT + AOT object emission (whole language)
+  aurora-runtime   native host functions (print/graphics/ECS/physics/nav) for compiled code
+  aurora-exe       link target + entry shim for standalone .exe output
+  aurora-gfx       CPU rasterizer (framebuffer, triangles, PPM)
+  aurora-shader    Aurora @vertex/@fragment/@compute -> WGSL
+  aurora-gpu       live GPU execution via wgpu (headless compute + render)
+  aurora-window    real-time winit + wgpu window with keyboard/mouse input
+  aurora-audio     synthesis (oscillators/ADSR/mixing) + cpal playback
+  aurora-debug     native source-level debugger (machine-code instrumentation)
+  aurora-net       netcode: replication, prediction, lag-comp, interest, reliable UDP
+  aurora-std       standard-library prelude (Aurora source, auto-included)
+  aurora-lsp       Language Server (diagnostics + completion over stdio)
+  aurorac          the CLI driver
+docs/
+  01-grammar-and-types.md      full EBNF + type system
+  02-netcode-replication.md    replication model
+  03-implementation-roadmap.md phase-by-phase build log
+  04-stdlib-and-builtins.md    practical reference: every builtin + the stdlib prelude
+examples/                      runnable .aur programs (start with showcase.aur)
 ```
 
-Pipeline: `lex → parse → resolve → typecheck → ECS-safety → move-check → region-check`,
-then JIT-run or emit a standalone native executable.
-
-## Examples
-
-| File | Shows |
-|---|---|
-| `compute.aur` | functions, recursion, control flow, structs, arrays, tuples |
-| `showcase.aur` | enums, `impl` methods, closures, the pipe operator, `match` |
-| `ecs.aur` | spawn/query/systems with `&mut` write-back |
-| `parallel.aur` | independent systems run concurrently; a conflicting one is `after`-ordered into a later layer |
-| `generic_enum.aur` | one generic enum used at two instantiations (`Opt<i64>` + `Opt<f64>`), resolved per construction/match |
-| `ffi.aur` | calling C library functions directly with `@extern` |
-| `gamedev.aur` | the game-dev stdlib: vectors, collision, easing, color, particles, UI, pathfinding |
-| `physics.aur` | library-backed Rapier 2D physics + `pathfinding`-crate A*, via builtins |
-| `game.aur` | ECS + scheduler ordering + graphics, all in one program |
-| `draw.aur` | Aurora code driving the builtin rasterizer |
-| `shader.aur` | shaders that lower to WGSL |
-| `spinner.aur`, `netcode.aur` | the grammar/netcode spec examples |
+The pipeline is `lex -> parse -> resolve -> typecheck -> ECS-safety -> move-check
+-> region-check`, then JIT-run or emit a standalone native executable.
 
 ## Building
 
 ```sh
-cargo build --workspace      # builds everything (Cranelift takes a moment first time)
+cargo build --workspace      # builds the toolchain (Cranelift takes a moment first time)
 cargo test  --workspace      # 313 tests
 ```
 
-## Known limitations (honest list)
+## CLI
 
-The live GPU renderer, real UDP transport, audio, the real-time window, and the
-parallel system scheduler that earlier drafts of this list called "not yet" are
-all done now (see the table above). What genuinely remains:
+```sh
+aurorac new    mygame                       # scaffold a project (aurora.toml + src/)
+aurorac run    examples/showcase.aur        # compile main to native code and run (JIT)
+aurorac build  examples/native.aur -o game.exe   # standalone optimized native executable
+aurorac check  examples/game.aur            # type + ECS + move + region checks only
+aurorac debug  examples/native.aur --break 9     # native debugger (breakpoints, step, locals)
+aurorac gpu    examples/gpu_shader.aur -o out.ppm # run a shader on the real GPU
+aurorac window                              # open a live real-time window
+aurorac sound                               # synthesize and play audio
+aurora-lsp                                  # language server over stdio
+```
 
-- **Backend / performance**: Cranelift only (JIT + AOT; release builds use
-  `opt_level=speed`). No LLVM backend or autovectorization yet - a designed-but-
-  deferred performance item; runtime speed is good, not maximal.
-- **Young & evolving**: a capable foundation with a CLI debugger/profiler and an
-  LSP, but no editor-integrated debugger UI or central package registry (path/git
-  dependencies do work), and not yet battle-tested in a shipped game.
+## Spec and docs
 
-## Design docs
+The design docs in [`docs/`](docs/) are the authoritative description of the
+grammar, type system, region rules, netcode model, and every builtin. Start with
+[`docs/04-stdlib-and-builtins.md`](docs/04-stdlib-and-builtins.md) for the
+practical reference (the CLI, ECS, graphics, audio, physics, pathfinding, FFI, and
+the auto-included standard library).
 
-- [`docs/01-grammar-and-types.md`](docs/01-grammar-and-types.md) - full EBNF + type system
-- [`docs/02-netcode-replication.md`](docs/02-netcode-replication.md) - replication model
-- [`docs/03-implementation-roadmap.md`](docs/03-implementation-roadmap.md) - phase-by-phase build log
-- [`docs/04-stdlib-and-builtins.md`](docs/04-stdlib-and-builtins.md) - **practical reference**: every builtin (graphics/audio/physics/pathfinding/FFI) + the stdlib prelude
+## Tests
+
+```sh
+cargo test --workspace       # 313 tests across 22 crates, 0 warnings
+```
+
+Every capability above is backed by passing tests and a runnable example in
+[`examples/`](examples/).
+
+## Status
+
+Real and working: a full compiler toolchain that JITs and AOT-compiles the whole
+language, with ECS, a CPU rasterizer, live GPU shaders, a real-time window, audio,
+reliable-UDP netcode, Rapier 2D physics, A* pathfinding, an asset pipeline
+(PNG/JPEG/TTF/WAV), C and Rust FFI, a native debugger and profiler, and an LSP.
+
+What is intentionally not here yet, but is on the road:
+
+- **An LLVM backend.** Codegen is Cranelift only (JIT + AOT, `opt_level=speed` for
+  builds). Runtime speed is good, not maximal, and there is no autovectorization.
+- **A 3D mesh pipeline.** The shader path already speaks `Vec3`/`Mat4`/`vec4`, but
+  there is no model loader (glTF/OBJ) or vertex/index-buffer mesh draw yet; physics
+  is 2D (Rapier 2D).
+- **Editor-integrated debugger UI** and a **central package registry** (path and
+  git dependencies do work today).
+- **Battle-testing.** This is a capable foundation, not yet a shipped-game-proven
+  production engine.
+
+## License
+
+MIT.
