@@ -9,7 +9,8 @@
 mod engine;
 mod synth;
 pub use engine::{
-    active_voices, play as play_mixed, set_volume, start as start_engine, stop_all,
+    active_voices, play as play_mixed, play_spatial as play_mixed_spatial, set_volume,
+    start as start_engine, stop_all,
 };
 pub use synth::{mix, pitch, render_sequence, Adsr, Note, Wave};
 

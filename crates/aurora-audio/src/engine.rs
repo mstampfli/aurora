@@ -14,6 +14,9 @@ struct Voice {
     samples: Arc<Vec<f32>>,
     pos: usize,
     looped: bool,
+    gain: f32,
+    /// Stereo pan in [-1, 1]: -1 full left, 0 center, +1 full right.
+    pan: f32,
 }
 
 struct Mixer {
@@ -23,9 +26,11 @@ struct Mixer {
 }
 
 impl Mixer {
-    /// Pull the next mixed mono sample, advancing/cleaning up voices.
-    fn next_sample(&mut self) -> f32 {
-        let mut acc = 0.0f32;
+    /// Pull the next mixed stereo frame, advancing/cleaning up voices. A centered
+    /// voice contributes 0.5 to each channel (so left+right == the mono signal).
+    fn next_frame(&mut self) -> (f32, f32) {
+        let mut l = 0.0f32;
+        let mut r = 0.0f32;
         self.voices.retain_mut(|v| {
             if v.pos >= v.samples.len() {
                 if v.looped && !v.samples.is_empty() {
@@ -34,11 +39,21 @@ impl Mixer {
                     return false;
                 }
             }
-            acc += v.samples[v.pos];
+            let s = v.samples[v.pos] * v.gain;
+            let lp = (1.0 - v.pan) * 0.5;
+            let rp = (1.0 + v.pan) * 0.5;
+            l += s * lp;
+            r += s * rp;
             v.pos += 1;
             true
         });
-        (acc * self.volume).clamp(-1.0, 1.0)
+        ((l * self.volume).clamp(-1.0, 1.0), (r * self.volume).clamp(-1.0, 1.0))
+    }
+
+    /// Mono mix (sum of both channels), for single-channel devices and tests.
+    fn next_sample(&mut self) -> f32 {
+        let (l, r) = self.next_frame();
+        (l + r).clamp(-1.0, 1.0)
     }
 }
 
@@ -77,10 +92,20 @@ pub fn start() -> Result<(), String> {
                 move |out: &mut [$t], _| {
                     let mut m = mix.lock().unwrap();
                     for frame in out.chunks_mut(channels) {
-                        let s = m.next_sample();
-                        let v = $conv(s);
-                        for ch in frame.iter_mut() {
-                            *ch = v;
+                        if channels >= 2 {
+                            let (l, r) = m.next_frame();
+                            frame[0] = $conv(l);
+                            frame[1] = $conv(r);
+                            // Mirror to any extra channels.
+                            let mono = $conv((l + r).clamp(-1.0, 1.0));
+                            for ch in frame.iter_mut().skip(2) {
+                                *ch = mono;
+                            }
+                        } else {
+                            let v = $conv(m.next_sample());
+                            for ch in frame.iter_mut() {
+                                *ch = v;
+                            }
                         }
                     }
                 },
@@ -105,6 +130,12 @@ pub fn start() -> Result<(), String> {
 /// Queue a mono buffer (sampled at `src_rate`) to play, mixed with whatever is
 /// already sounding. Non-blocking. Resamples to the device rate if needed.
 pub fn play(samples: &[f32], src_rate: u32, looped: bool) {
+    play_spatial(samples, src_rate, looped, 1.0, 0.0);
+}
+
+/// Like [`play`] but with a per-voice `gain` (0..) and stereo `pan` (-1..1). The
+/// runtime uses this for positional 3D audio (distance attenuation + panning).
+pub fn play_spatial(samples: &[f32], src_rate: u32, looped: bool, gain: f32, pan: f32) {
     if start().is_err() || samples.is_empty() {
         return;
     }
@@ -116,7 +147,13 @@ pub fn play(samples: &[f32], src_rate: u32, looped: bool) {
         let n = (samples.len() as f64 / ratio) as usize;
         (0..n).map(|i| samples.get((i as f64 * ratio) as usize).copied().unwrap_or(0.0)).collect()
     };
-    mixer().lock().unwrap().voices.push(Voice { samples: Arc::new(buf), pos: 0, looped });
+    mixer().lock().unwrap().voices.push(Voice {
+        samples: Arc::new(buf),
+        pos: 0,
+        looped,
+        gain: gain.max(0.0),
+        pan: pan.clamp(-1.0, 1.0),
+    });
 }
 
 /// Set the master volume (0.0..=~1.0+).
@@ -143,8 +180,8 @@ mod tests {
         // Drive the mixer directly (no device): two constant "voices" sum and
         // clamp, and finish after their samples are consumed.
         let mut m = Mixer { voices: Vec::new(), volume: 1.0, device_rate: 44_100 };
-        m.voices.push(Voice { samples: Arc::new(vec![0.6, 0.6]), pos: 0, looped: false });
-        m.voices.push(Voice { samples: Arc::new(vec![0.6, 0.6]), pos: 0, looped: false });
+        m.voices.push(Voice { samples: Arc::new(vec![0.6, 0.6]), pos: 0, looped: false, gain: 1.0, pan: 0.0 });
+        m.voices.push(Voice { samples: Arc::new(vec![0.6, 0.6]), pos: 0, looped: false, gain: 1.0, pan: 0.0 });
         assert!((m.next_sample() - 1.0).abs() < 1e-6, "0.6+0.6 clamps to 1.0");
         assert_eq!(m.voices.len(), 2, "still playing after one sample");
         let _ = m.next_sample(); // consume the 2nd sample of each
@@ -155,14 +192,29 @@ mod tests {
     #[test]
     fn volume_scales_the_mix() {
         let mut m = Mixer { voices: Vec::new(), volume: 0.5, device_rate: 44_100 };
-        m.voices.push(Voice { samples: Arc::new(vec![1.0]), pos: 0, looped: false });
+        m.voices.push(Voice { samples: Arc::new(vec![1.0]), pos: 0, looped: false, gain: 1.0, pan: 0.0 });
         assert!((m.next_sample() - 0.5).abs() < 1e-6, "volume 0.5 halves the sample");
+    }
+
+    #[test]
+    fn pan_splits_into_stereo_channels() {
+        let mut m = Mixer { voices: Vec::new(), volume: 1.0, device_rate: 44_100 };
+        m.voices.push(Voice { samples: Arc::new(vec![1.0]), pos: 0, looped: false, gain: 1.0, pan: -1.0 });
+        let (l, r) = m.next_frame();
+        assert!(l > 0.9 && r < 0.1, "pan -1 should be full-left, got l={l} r={r}");
+    }
+
+    #[test]
+    fn gain_attenuates_a_voice() {
+        let mut m = Mixer { voices: Vec::new(), volume: 1.0, device_rate: 44_100 };
+        m.voices.push(Voice { samples: Arc::new(vec![1.0]), pos: 0, looped: false, gain: 0.25, pan: 0.0 });
+        assert!((m.next_sample() - 0.25).abs() < 1e-6, "gain 0.25 attenuates the voice");
     }
 
     #[test]
     fn looped_voice_wraps() {
         let mut m = Mixer { voices: Vec::new(), volume: 1.0, device_rate: 44_100 };
-        m.voices.push(Voice { samples: Arc::new(vec![0.2, 0.4]), pos: 0, looped: true });
+        m.voices.push(Voice { samples: Arc::new(vec![0.2, 0.4]), pos: 0, looped: true, gain: 1.0, pan: 0.0 });
         let a = m.next_sample();
         let b = m.next_sample();
         let c = m.next_sample(); // wraps back to sample 0
