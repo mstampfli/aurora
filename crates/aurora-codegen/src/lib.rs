@@ -360,6 +360,19 @@ const BUILTINS: &[&str] = &[
     "r3d_load_model", "r3d_make_box", "r3d_make_sphere", "r3d_make_plane",
     "r3d_camera", "r3d_light", "r3d_clear", "r3d_begin", "r3d_draw",
     "r3d_anim_play", "r3d_anim_update", "r3d_clip_count", "r3d_present",
+    "r3d_fog", "r3d_sky", "r3d_shadows", "r3d_clear_lights", "r3d_point_light",
+    "r3d_make_sprite", "r3d_draw_billboard", "r3d_debug_line", "r3d_frustum_cull",
+    "r3d_screen_x", "r3d_screen_y",
+    // FPS input.
+    "mouse_dx", "mouse_dy", "mouse_scroll", "mouse_button", "grab_mouse",
+    // 3D positional audio.
+    "audio_listener", "play_sound_at",
+    // Rich 3D physics queries.
+    "phys3d_raycast_full", "phys3d_hit_x", "phys3d_hit_y", "phys3d_hit_z",
+    "phys3d_hit_nx", "phys3d_hit_ny", "phys3d_hit_nz", "phys3d_hit_body",
+    "phys3d_spherecast", "phys3d_overlap_sphere", "phys3d_apply_force",
+    "phys3d_apply_torque", "phys3d_set_angvel", "phys3d_set_rot",
+    "phys3d_rot_qx", "phys3d_rot_qy", "phys3d_rot_qz", "phys3d_rot_qw",
 ];
 
 /// Byte size of a type (always a multiple of 8). Aggregates lay out their
@@ -604,6 +617,42 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_r3d_anim_update", aurora_runtime::aurora_r3d_anim_update as *const u8);
     builder.symbol("aurora_r3d_clip_count", aurora_runtime::aurora_r3d_clip_count as *const u8);
     builder.symbol("aurora_r3d_present", aurora_runtime::aurora_r3d_present as *const u8);
+    builder.symbol("aurora_r3d_fog", aurora_runtime::aurora_r3d_fog as *const u8);
+    builder.symbol("aurora_r3d_sky", aurora_runtime::aurora_r3d_sky as *const u8);
+    builder.symbol("aurora_r3d_shadows", aurora_runtime::aurora_r3d_shadows as *const u8);
+    builder.symbol("aurora_r3d_clear_lights", aurora_runtime::aurora_r3d_clear_lights as *const u8);
+    builder.symbol("aurora_r3d_point_light", aurora_runtime::aurora_r3d_point_light as *const u8);
+    builder.symbol("aurora_r3d_make_sprite", aurora_runtime::aurora_r3d_make_sprite as *const u8);
+    builder.symbol("aurora_r3d_draw_billboard", aurora_runtime::aurora_r3d_draw_billboard as *const u8);
+    builder.symbol("aurora_r3d_debug_line", aurora_runtime::aurora_r3d_debug_line as *const u8);
+    builder.symbol("aurora_r3d_frustum_cull", aurora_runtime::aurora_r3d_frustum_cull as *const u8);
+    builder.symbol("aurora_r3d_screen_x", aurora_runtime::aurora_r3d_screen_x as *const u8);
+    builder.symbol("aurora_r3d_screen_y", aurora_runtime::aurora_r3d_screen_y as *const u8);
+    builder.symbol("aurora_mouse_dx", aurora_runtime::aurora_mouse_dx as *const u8);
+    builder.symbol("aurora_mouse_dy", aurora_runtime::aurora_mouse_dy as *const u8);
+    builder.symbol("aurora_mouse_scroll", aurora_runtime::aurora_mouse_scroll as *const u8);
+    builder.symbol("aurora_mouse_button", aurora_runtime::aurora_mouse_button as *const u8);
+    builder.symbol("aurora_grab_mouse", aurora_runtime::aurora_grab_mouse as *const u8);
+    builder.symbol("aurora_audio_listener", aurora_runtime::aurora_audio_listener as *const u8);
+    builder.symbol("aurora_play_sound_at", aurora_runtime::aurora_play_sound_at as *const u8);
+    builder.symbol("aurora_phys3d_raycast_full", aurora_runtime::aurora_phys3d_raycast_full as *const u8);
+    builder.symbol("aurora_phys3d_hit_x", aurora_runtime::aurora_phys3d_hit_x as *const u8);
+    builder.symbol("aurora_phys3d_hit_y", aurora_runtime::aurora_phys3d_hit_y as *const u8);
+    builder.symbol("aurora_phys3d_hit_z", aurora_runtime::aurora_phys3d_hit_z as *const u8);
+    builder.symbol("aurora_phys3d_hit_nx", aurora_runtime::aurora_phys3d_hit_nx as *const u8);
+    builder.symbol("aurora_phys3d_hit_ny", aurora_runtime::aurora_phys3d_hit_ny as *const u8);
+    builder.symbol("aurora_phys3d_hit_nz", aurora_runtime::aurora_phys3d_hit_nz as *const u8);
+    builder.symbol("aurora_phys3d_hit_body", aurora_runtime::aurora_phys3d_hit_body as *const u8);
+    builder.symbol("aurora_phys3d_spherecast", aurora_runtime::aurora_phys3d_spherecast as *const u8);
+    builder.symbol("aurora_phys3d_overlap_sphere", aurora_runtime::aurora_phys3d_overlap_sphere as *const u8);
+    builder.symbol("aurora_phys3d_apply_force", aurora_runtime::aurora_phys3d_apply_force as *const u8);
+    builder.symbol("aurora_phys3d_apply_torque", aurora_runtime::aurora_phys3d_apply_torque as *const u8);
+    builder.symbol("aurora_phys3d_set_angvel", aurora_runtime::aurora_phys3d_set_angvel as *const u8);
+    builder.symbol("aurora_phys3d_set_rot", aurora_runtime::aurora_phys3d_set_rot as *const u8);
+    builder.symbol("aurora_phys3d_rot_qx", aurora_runtime::aurora_phys3d_rot_qx as *const u8);
+    builder.symbol("aurora_phys3d_rot_qy", aurora_runtime::aurora_phys3d_rot_qy as *const u8);
+    builder.symbol("aurora_phys3d_rot_qz", aurora_runtime::aurora_phys3d_rot_qz as *const u8);
+    builder.symbol("aurora_phys3d_rot_qw", aurora_runtime::aurora_phys3d_rot_qw as *const u8);
     builder.symbol("aurora_scene_save", aurora_runtime::aurora_scene_save as *const u8);
     builder.symbol("aurora_scene_load", aurora_runtime::aurora_scene_load as *const u8);
     builder.symbol("aurora_prof_enter", aurora_runtime::aurora_prof_enter as *const u8);
@@ -816,10 +865,46 @@ fn lower(
     hosts.insert("r3d_clear", import(jmod, "aurora_r3d_clear", &[f64t, f64t, f64t], None));
     hosts.insert("r3d_begin", import(jmod, "aurora_r3d_begin", &[], None));
     hosts.insert("r3d_draw", import(jmod, "aurora_r3d_draw", &[i, f64t, f64t, f64t, f64t, f64t, f64t, f64t], None));
-    hosts.insert("r3d_anim_play", import(jmod, "aurora_r3d_anim_play", &[i, i, i, f64t], None));
+    hosts.insert("r3d_anim_play", import(jmod, "aurora_r3d_anim_play", &[i, i, i, f64t, f64t], None));
     hosts.insert("r3d_anim_update", import(jmod, "aurora_r3d_anim_update", &[i, f64t], None));
     hosts.insert("r3d_clip_count", import(jmod, "aurora_r3d_clip_count", &[i], Some(i)));
     hosts.insert("r3d_present", import(jmod, "aurora_r3d_present", &[], Some(i)));
+    hosts.insert("r3d_fog", import(jmod, "aurora_r3d_fog", &[f64t, f64t, f64t, f64t], None));
+    hosts.insert("r3d_sky", import(jmod, "aurora_r3d_sky", &[i, f64t, f64t, f64t, f64t, f64t, f64t], None));
+    hosts.insert("r3d_shadows", import(jmod, "aurora_r3d_shadows", &[i], None));
+    hosts.insert("r3d_clear_lights", import(jmod, "aurora_r3d_clear_lights", &[], None));
+    hosts.insert("r3d_point_light", import(jmod, "aurora_r3d_point_light", &[f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t], None));
+    hosts.insert("r3d_make_sprite", import(jmod, "aurora_r3d_make_sprite", &[f64t, f64t, f64t], Some(i)));
+    hosts.insert("r3d_draw_billboard", import(jmod, "aurora_r3d_draw_billboard", &[i, f64t, f64t, f64t, f64t], None));
+    hosts.insert("r3d_debug_line", import(jmod, "aurora_r3d_debug_line", &[f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t], None));
+    hosts.insert("r3d_frustum_cull", import(jmod, "aurora_r3d_frustum_cull", &[i], None));
+    hosts.insert("r3d_screen_x", import(jmod, "aurora_r3d_screen_x", &[f64t, f64t, f64t], Some(f64t)));
+    hosts.insert("r3d_screen_y", import(jmod, "aurora_r3d_screen_y", &[f64t, f64t, f64t], Some(f64t)));
+    hosts.insert("mouse_dx", import(jmod, "aurora_mouse_dx", &[], Some(f64t)));
+    hosts.insert("mouse_dy", import(jmod, "aurora_mouse_dy", &[], Some(f64t)));
+    hosts.insert("mouse_scroll", import(jmod, "aurora_mouse_scroll", &[], Some(f64t)));
+    hosts.insert("mouse_button", import(jmod, "aurora_mouse_button", &[i], Some(i)));
+    hosts.insert("grab_mouse", import(jmod, "aurora_grab_mouse", &[i], None));
+    hosts.insert("audio_listener", import(jmod, "aurora_audio_listener", &[f64t, f64t, f64t, f64t, f64t, f64t], None));
+    hosts.insert("play_sound_at", import(jmod, "aurora_play_sound_at", &[i, i, f64t, f64t, f64t], None));
+    hosts.insert("phys3d_raycast_full", import(jmod, "aurora_phys3d_raycast_full", &[f64t, f64t, f64t, f64t, f64t, f64t, f64t], Some(i)));
+    hosts.insert("phys3d_hit_x", import(jmod, "aurora_phys3d_hit_x", &[], Some(f64t)));
+    hosts.insert("phys3d_hit_y", import(jmod, "aurora_phys3d_hit_y", &[], Some(f64t)));
+    hosts.insert("phys3d_hit_z", import(jmod, "aurora_phys3d_hit_z", &[], Some(f64t)));
+    hosts.insert("phys3d_hit_nx", import(jmod, "aurora_phys3d_hit_nx", &[], Some(f64t)));
+    hosts.insert("phys3d_hit_ny", import(jmod, "aurora_phys3d_hit_ny", &[], Some(f64t)));
+    hosts.insert("phys3d_hit_nz", import(jmod, "aurora_phys3d_hit_nz", &[], Some(f64t)));
+    hosts.insert("phys3d_hit_body", import(jmod, "aurora_phys3d_hit_body", &[], Some(i)));
+    hosts.insert("phys3d_spherecast", import(jmod, "aurora_phys3d_spherecast", &[f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t], Some(f64t)));
+    hosts.insert("phys3d_overlap_sphere", import(jmod, "aurora_phys3d_overlap_sphere", &[f64t, f64t, f64t, f64t], Some(i)));
+    hosts.insert("phys3d_apply_force", import(jmod, "aurora_phys3d_apply_force", &[i, f64t, f64t, f64t], None));
+    hosts.insert("phys3d_apply_torque", import(jmod, "aurora_phys3d_apply_torque", &[i, f64t, f64t, f64t], None));
+    hosts.insert("phys3d_set_angvel", import(jmod, "aurora_phys3d_set_angvel", &[i, f64t, f64t, f64t], None));
+    hosts.insert("phys3d_set_rot", import(jmod, "aurora_phys3d_set_rot", &[i, f64t, f64t, f64t, f64t], None));
+    hosts.insert("phys3d_rot_qx", import(jmod, "aurora_phys3d_rot_qx", &[i], Some(f64t)));
+    hosts.insert("phys3d_rot_qy", import(jmod, "aurora_phys3d_rot_qy", &[i], Some(f64t)));
+    hosts.insert("phys3d_rot_qz", import(jmod, "aurora_phys3d_rot_qz", &[i], Some(f64t)));
+    hosts.insert("phys3d_rot_qw", import(jmod, "aurora_phys3d_rot_qw", &[i], Some(f64t)));
     hosts.insert("draw_text", import(jmod, "aurora_draw_text", &[i, i, ptr_ty, i, i, i], None));
     hosts.insert("scene_save", import(jmod, "aurora_scene_save", &[ptr_ty, i], Some(i)));
     hosts.insert("scene_load", import(jmod, "aurora_scene_load", &[ptr_ty, i], Some(i)));
@@ -3694,10 +3779,41 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "r3d_clear" => (vec![F64, F64, F64], None),
         "r3d_begin" => (vec![], None),
         "r3d_draw" => (vec![I64, F64, F64, F64, F64, F64, F64, F64], None),
-        "r3d_anim_play" => (vec![I64, I64, I64, F64], None),
+        "r3d_anim_play" => (vec![I64, I64, I64, F64, F64], None),
         "r3d_anim_update" => (vec![I64, F64], None),
         "r3d_clip_count" => (vec![I64], Some(I64)),
         "r3d_present" => (vec![], Some(I64)),
+        "r3d_fog" => (vec![F64, F64, F64, F64], None),
+        "r3d_sky" => (vec![I64, F64, F64, F64, F64, F64, F64], None),
+        "r3d_shadows" => (vec![I64], None),
+        "r3d_clear_lights" => (vec![], None),
+        "r3d_point_light" => (vec![F64, F64, F64, F64, F64, F64, F64, F64], None),
+        "r3d_make_sprite" => (vec![F64, F64, F64], Some(I64)),
+        "r3d_draw_billboard" => (vec![I64, F64, F64, F64, F64], None),
+        "r3d_debug_line" => (vec![F64, F64, F64, F64, F64, F64, F64, F64, F64], None),
+        "r3d_frustum_cull" => (vec![I64], None),
+        "r3d_screen_x" | "r3d_screen_y" => (vec![F64, F64, F64], Some(F64)),
+        // FPS input.
+        "mouse_dx" | "mouse_dy" | "mouse_scroll" => (vec![], Some(F64)),
+        "mouse_button" => (vec![I64], Some(I64)),
+        "grab_mouse" => (vec![I64], None),
+        // 3D positional audio.
+        "audio_listener" => (vec![F64, F64, F64, F64, F64, F64], None),
+        "play_sound_at" => (vec![I64, I64, F64, F64, F64], None),
+        // Rich 3D physics.
+        "phys3d_raycast_full" => (vec![F64, F64, F64, F64, F64, F64, F64], Some(I64)),
+        "phys3d_hit_x" | "phys3d_hit_y" | "phys3d_hit_z" => (vec![], Some(F64)),
+        "phys3d_hit_nx" | "phys3d_hit_ny" | "phys3d_hit_nz" => (vec![], Some(F64)),
+        "phys3d_hit_body" => (vec![], Some(I64)),
+        "phys3d_spherecast" => (vec![F64, F64, F64, F64, F64, F64, F64, F64], Some(F64)),
+        "phys3d_overlap_sphere" => (vec![F64, F64, F64, F64], Some(I64)),
+        "phys3d_apply_force" | "phys3d_apply_torque" | "phys3d_set_angvel" => {
+            (vec![I64, F64, F64, F64], None)
+        }
+        "phys3d_set_rot" => (vec![I64, F64, F64, F64, F64], None),
+        "phys3d_rot_qx" | "phys3d_rot_qy" | "phys3d_rot_qz" | "phys3d_rot_qw" => {
+            (vec![I64], Some(F64))
+        }
         _ => return None,
     };
     Some(sig)
