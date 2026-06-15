@@ -1,0 +1,21 @@
+[package]
+name = "aurora-render3d"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Aurora's GPU 3D renderer: a real wgpu forward renderer (indexed meshes, a
+# depth buffer, a perspective camera, directional + ambient lighting, base-color
+# textures, and GPU vertex skinning) plus glTF/OBJ model loading and skeletal
+# animation. The renderer operates on a borrowed wgpu device/queue so it can
+# render headlessly (offscreen, read back for tests) or onto the live window's
+# surface, sharing one device.
+
+[dependencies]
+wgpu = "22"
+pollster = "0.3"
+glam = { version = "0.29", features = ["bytemuck"] }
+bytemuck = { version = "1", features = ["derive"] }
+gltf = { version = "1.4", features = ["import", "utils", "names"] }
+tobj = "4"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
