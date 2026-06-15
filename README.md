@@ -156,7 +156,7 @@ The pipeline is `lex -> parse -> resolve -> typecheck -> ECS-safety -> move-chec
 
 ```sh
 cargo build --workspace      # builds the toolchain (Cranelift takes a moment first time)
-cargo test  --workspace      # 333 tests
+cargo test  --workspace      # 335 tests
 ```
 
 ## CLI
@@ -184,7 +184,7 @@ the auto-included standard library).
 ## Tests
 
 ```sh
-cargo test --workspace       # 333 tests across 23 crates, 0 warnings
+cargo test --workspace       # 335 tests across 23 crates, 0 warnings
 ```
 
 Every capability above is backed by passing tests and a runnable example in
@@ -199,8 +199,9 @@ with shadow mapping plus up to 16 point lights, a procedural sky, fog, 4x MSAA,
 transparency, billboards, debug lines, frustum culling, and GPU vertex skinning),
 **glTF/OBJ model loading with skeletal animation and crossfade blending**, a
 real-time window with **FPS mouse-look** (cursor capture + raw delta) and a HUD
-overlay, audio (including **3D positional** sound), reliable-UDP netcode, **2D and
-3D physics** (Rapier, with a kinematic capsule character controller, raycasts that
+overlay, audio (including **3D positional** sound), reliable-UDP netcode plus a
+**game-ready multiplayer layer** (authoritative server, client-side prediction +
+reconciliation, remote-player interpolation), **2D and 3D physics** (Rapier, with a kinematic capsule character controller, raycasts that
 return hit point/normal/body, shapecasts, and trigger overlaps), **2D and 3D
 pathfinding** (grid A* plus a navmesh with funnel string-pulling), an asset
 pipeline (PNG/JPEG/TTF/WAV), C and Rust FFI, a native debugger and profiler, and

@@ -69,6 +69,30 @@ run in parallel** (the §6.2 checker proves they can't race). `despawn(e)`,
 
 `net_bind(port)`, `net_connect(host, port)`, `net_send(msg)`, `net_recv() -> str`.
 
+## Multiplayer (authoritative server + client prediction)
+
+A game-ready layer for a multiplayer movement shooter: an authoritative UDP
+server with N clients, **client-side prediction** of the local player,
+**server reconciliation** (snap to authoritative + replay unacknowledged inputs),
+and **snapshot interpolation** of remote players. The client and server run the
+same movement model, so they cannot drift.
+
+| Builtin | Signature | Notes |
+|---|---|---|
+| `net_host(port) -> i64` | start an authoritative server | the host is also player 0 |
+| `net_join(host, port) -> i64` | join as a predicting client | 1 on success |
+| `net_config(speed, gravity, jump, ground)` | tune the shared movement model | |
+| `net_send_input(fwd, strafe, yaw, jump, dt) -> i64` | submit a frame's input | predicts locally + sends; returns the input seq |
+| `net_update(dt)` | pump the network | server simulates + broadcasts; client reconciles + interpolates |
+| `net_my_id() -> i64` / `net_is_server() -> i64` | identity | |
+| `net_player_count() -> i64` / `net_player_id_at(i) -> i64` | iterate players | |
+| `net_player_x/y/z/yaw(id) -> f64` | a player's transform | predicted for the local player, interpolated for remotes |
+| `net_local_x/y/z/yaw() -> f64` | the local player's transform | shorthand for the predicted self |
+
+A loop: each frame build input from keys/mouse, `net_send_input(...)`,
+`net_update(dt)`, point the camera at `net_local_*`, and draw every player with
+`net_player_*`. See [`examples/mp_shooter3d.aur`](../examples/mp_shooter3d.aur).
+
 ## Physics - Rapier 2D (`phys_*`)
 
 Real rigid-body simulation. Positions are body centres; units are whatever your

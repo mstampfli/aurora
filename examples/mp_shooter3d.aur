@@ -1,0 +1,105 @@
+// Multiplayer 3D movement shooter: an authoritative server with client-side
+// prediction and remote-player interpolation, all in the language. The local
+// player is predicted (responsive); other players are drawn from interpolated
+// server snapshots. Movement is the single shared model the server and client
+// both run, so they can't drift.
+//
+// Set `is_host` below: run one copy as the host (1) and others as clients (0),
+// then `aurorac run examples/mp_shooter3d.aur`. The host listens on UDP 7777;
+// clients join 127.0.0.1:7777 (change the address for LAN play).
+
+fn main() {
+    let is_host = 1
+
+    window_open(960, 540)
+    grab_mouse(1)
+    r3d_sky(1, 0.30, 0.50, 0.85, 0.70, 0.80, 0.92)
+    r3d_light(0.4, 1.0, 0.3, 1.0, 0.97, 0.9, 0.25)
+    r3d_shadows(1)
+
+    let ground_vis = r3d_make_plane(120.0, 60.0, 0.35, 0.5, 0.35)
+    let body_vis = r3d_make_box(0.4, 0.9, 0.4)
+    let spark = r3d_make_sprite(1.0, 0.85, 0.3)
+
+    // Movement tuning shared by client prediction and the server.
+    net_config(8.0, 22.0, 9.0, 0.0)
+    if is_host == 1 {
+        net_host(7777)
+    } else {
+        net_join("127.0.0.1", 7777)
+    }
+
+    let yaw = 0.0
+    let pitch = 0.0
+    let dt = 0.016
+    let cx = 480
+    let cy = 270
+
+    while r3d_present() {
+        r3d_begin()
+
+        // HUD crosshair (black is the transparent key).
+        clear(0, 0, 0)
+        let k = 0 - 6
+        while k <= 6 {
+            pixel(cx + k, cy, 230, 230, 230)
+            pixel(cx, cy + k, 230, 230, 230)
+            k = k + 1
+        }
+
+        // Mouse look.
+        yaw = yaw + mouse_dx() * 0.0025
+        pitch = pitch - mouse_dy() * 0.0025
+        if pitch > 1.4 { pitch = 1.4 }
+        if pitch < 0.0 - 1.4 { pitch = 0.0 - 1.4 }
+
+        // Input (WASD relative to yaw, space jumps, shift sprints handled by speed).
+        let fwd = 0.0
+        let strafe = 0.0
+        if key_down(5) { fwd = fwd + 1.0 }
+        if key_down(7) { fwd = fwd - 1.0 }
+        if key_down(8) { strafe = strafe + 1.0 }
+        if key_down(6) { strafe = strafe - 1.0 }
+        let jump = 0
+        if key_down(4) { jump = 1 }
+
+        // Send input (predicts locally on a client, authoritative on the host),
+        // then pump the network (server simulates + broadcasts; client reconciles).
+        net_send_input(fwd, strafe, yaw, jump, dt)
+        net_update(dt)
+
+        // Camera follows the local (predicted) player.
+        let px = net_local_x()
+        let py = net_local_y()
+        let pz = net_local_z()
+        let cp = cos(pitch)
+        let fx = cp * sin(yaw)
+        let fy = sin(pitch)
+        let fz = 0.0 - cp * cos(yaw)
+        let eye = py + 0.6
+        r3d_camera(px, eye, pz, px + fx, eye + fy, pz + fz, 80.0)
+
+        // Shoot: a tracer along the look ray.
+        if mouse_button(0) == 1 {
+            r3d_debug_line(px, eye - 0.1, pz, px + fx * 80.0, eye + fy * 80.0, pz + fz * 80.0, 1.0, 0.9, 0.4)
+        }
+
+        // Draw the world and every other player (interpolated from snapshots).
+        r3d_draw(ground_vis, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+        let n = net_player_count()
+        let me = net_my_id()
+        let i = 0
+        while i < n {
+            let id = net_player_id_at(i)
+            if id != me {
+                let ex = net_player_x(id)
+                let ey = net_player_y(id)
+                let ez = net_player_z(id)
+                let eyaw = net_player_yaw(id)
+                r3d_draw(body_vis, ex, ey + 0.9, ez, eyaw, 0.0, 0.0, 1.0)
+                r3d_draw_billboard(spark, ex, ey + 1.9, ez, 0.25)
+            }
+            i = i + 1
+        }
+    }
+}
