@@ -9,6 +9,8 @@
 use std::cell::RefCell;
 
 use rapier3d::control::{CharacterLength, KinematicCharacterController};
+use rapier3d::na::{Quaternion, UnitQuaternion};
+use rapier3d::parry::query::ShapeCastOptions;
 use rapier3d::prelude::*;
 
 struct Phys3 {
@@ -28,6 +30,10 @@ struct Phys3 {
     cols: Vec<ColliderHandle>,
     grounded: Vec<bool>,
     controller: KinematicCharacterController,
+    // Last raycast/shapecast hit (for `phys3d_hit_*`).
+    hit_point: [f64; 3],
+    hit_normal: [f64; 3],
+    hit_body: i64,
 }
 
 thread_local! {
@@ -59,6 +65,9 @@ pub extern "C" fn aurora_phys3d_init(gx: f64, gy: f64, gz: f64) {
         cols: Vec::new(),
         grounded: Vec::new(),
         controller,
+        hit_point: [0.0; 3],
+        hit_normal: [0.0; 3],
+        hit_body: -1,
     };
     PHYS3.with(|x| *x.borrow_mut() = Some(p));
 }
@@ -298,4 +307,199 @@ pub extern "C" fn aurora_phys3d_raycast(
             None => -1.0,
         }
     })
+}
+
+fn col_index(p: &Phys3, ch: ColliderHandle) -> i64 {
+    p.cols.iter().position(|&c| c == ch).map(|i| i as i64).unwrap_or(-1)
+}
+
+/// Cast a ray and record the hit: returns the hit body handle (or -1) and stores
+/// the hit point + surface normal for `phys3d_hit_*`. For shooting and grapples.
+#[no_mangle]
+pub extern "C" fn aurora_phys3d_raycast_full(
+    x: f64, y: f64, z: f64, dx: f64, dy: f64, dz: f64, max: f64,
+) -> i64 {
+    PHYS3.with(|p| {
+        let mut p = p.borrow_mut();
+        let Some(p) = p.as_mut() else { return -1 };
+        let ray = Ray::new(point![x as Real, y as Real, z as Real], vector![dx as Real, dy as Real, dz as Real]);
+        let hit = p.query.cast_ray_and_get_normal(
+            &p.bodies, &p.colliders, &ray, max as Real, true, QueryFilter::default(),
+        );
+        match hit {
+            Some((ch, inter)) => {
+                let pt = ray.point_at(inter.time_of_impact);
+                p.hit_point = [pt.x as f64, pt.y as f64, pt.z as f64];
+                p.hit_normal = [inter.normal.x as f64, inter.normal.y as f64, inter.normal.z as f64];
+                p.hit_body = col_index(p, ch);
+                p.hit_body
+            }
+            None => {
+                p.hit_body = -1;
+                -1
+            }
+        }
+    })
+}
+
+fn hit_pt(i: usize) -> f64 {
+    PHYS3.with(|p| p.borrow().as_ref().map(|p| p.hit_point[i]).unwrap_or(0.0))
+}
+fn hit_nrm(i: usize) -> f64 {
+    PHYS3.with(|p| p.borrow().as_ref().map(|p| p.hit_normal[i]).unwrap_or(0.0))
+}
+#[no_mangle]
+pub extern "C" fn aurora_phys3d_hit_x() -> f64 { hit_pt(0) }
+#[no_mangle]
+pub extern "C" fn aurora_phys3d_hit_y() -> f64 { hit_pt(1) }
+#[no_mangle]
+pub extern "C" fn aurora_phys3d_hit_z() -> f64 { hit_pt(2) }
+#[no_mangle]
+pub extern "C" fn aurora_phys3d_hit_nx() -> f64 { hit_nrm(0) }
+#[no_mangle]
+pub extern "C" fn aurora_phys3d_hit_ny() -> f64 { hit_nrm(1) }
+#[no_mangle]
+pub extern "C" fn aurora_phys3d_hit_nz() -> f64 { hit_nrm(2) }
+#[no_mangle]
+pub extern "C" fn aurora_phys3d_hit_body() -> i64 {
+    PHYS3.with(|p| p.borrow().as_ref().map(|p| p.hit_body).unwrap_or(-1))
+}
+
+/// Sweep a sphere of `radius` from (x,y,z) along (dx,dy,dz); returns the distance
+/// to the first hit, or -1. Thick projectiles, character probes.
+#[no_mangle]
+pub extern "C" fn aurora_phys3d_spherecast(
+    x: f64, y: f64, z: f64, dx: f64, dy: f64, dz: f64, radius: f64, max: f64,
+) -> f64 {
+    PHYS3.with(|p| {
+        let p = p.borrow();
+        let Some(p) = p.as_ref() else { return -1.0 };
+        let dir = vector![dx as Real, dy as Real, dz as Real];
+        let len = dir.norm();
+        if len < 1e-6 {
+            return -1.0;
+        }
+        let vel = dir / len; // unit direction -> time_of_impact is distance
+        let shape = Ball::new(radius as Real);
+        let pos = Isometry::translation(x as Real, y as Real, z as Real);
+        let opts = ShapeCastOptions::with_max_time_of_impact(max as Real);
+        match p.query.cast_shape(&p.bodies, &p.colliders, &pos, &vel, &shape, opts, QueryFilter::default()) {
+            Some((_, hit)) => hit.time_of_impact as f64,
+            None => -1.0,
+        }
+    })
+}
+
+/// First body whose collider overlaps a sphere at (x,y,z); -1 if none. Triggers,
+/// pickups, explosion queries.
+#[no_mangle]
+pub extern "C" fn aurora_phys3d_overlap_sphere(x: f64, y: f64, z: f64, radius: f64) -> i64 {
+    PHYS3.with(|p| {
+        let p = p.borrow();
+        let Some(p) = p.as_ref() else { return -1 };
+        let shape = Ball::new(radius as Real);
+        let pos = Isometry::translation(x as Real, y as Real, z as Real);
+        match p.query.intersection_with_shape(&p.bodies, &p.colliders, &pos, &shape, QueryFilter::default()) {
+            Some(ch) => col_index(p, ch),
+            None => -1,
+        }
+    })
+}
+
+/// Apply a continuous force (cleared each step) to a dynamic body.
+#[no_mangle]
+pub extern "C" fn aurora_phys3d_apply_force(h: i64, fx: f64, fy: f64, fz: f64) {
+    PHYS3.with(|p| {
+        let mut p = p.borrow_mut();
+        let Some(p) = p.as_mut() else { return };
+        if let Some(b) = p.handles.get(h.max(0) as usize).copied().and_then(|hd| p.bodies.get_mut(hd)) {
+            b.add_force(vector![fx as Real, fy as Real, fz as Real], true);
+        }
+    });
+}
+
+/// Apply a torque to a dynamic body.
+#[no_mangle]
+pub extern "C" fn aurora_phys3d_apply_torque(h: i64, tx: f64, ty: f64, tz: f64) {
+    PHYS3.with(|p| {
+        let mut p = p.borrow_mut();
+        let Some(p) = p.as_mut() else { return };
+        if let Some(b) = p.handles.get(h.max(0) as usize).copied().and_then(|hd| p.bodies.get_mut(hd)) {
+            b.add_torque(vector![tx as Real, ty as Real, tz as Real], true);
+        }
+    });
+}
+
+/// Set a body's angular velocity.
+#[no_mangle]
+pub extern "C" fn aurora_phys3d_set_angvel(h: i64, ax: f64, ay: f64, az: f64) {
+    PHYS3.with(|p| {
+        let mut p = p.borrow_mut();
+        let Some(p) = p.as_mut() else { return };
+        if let Some(b) = p.handles.get(h.max(0) as usize).copied().and_then(|hd| p.bodies.get_mut(hd)) {
+            b.set_angvel(vector![ax as Real, ay as Real, az as Real], true);
+        }
+    });
+}
+
+/// Set a body's orientation from a quaternion (x,y,z,w).
+#[no_mangle]
+pub extern "C" fn aurora_phys3d_set_rot(h: i64, qx: f64, qy: f64, qz: f64, qw: f64) {
+    PHYS3.with(|p| {
+        let mut p = p.borrow_mut();
+        let Some(p) = p.as_mut() else { return };
+        if let Some(b) = p.handles.get(h.max(0) as usize).copied().and_then(|hd| p.bodies.get_mut(hd)) {
+            let q = UnitQuaternion::from_quaternion(Quaternion::new(
+                qw as Real, qx as Real, qy as Real, qz as Real,
+            ));
+            b.set_rotation(q, true);
+        }
+    });
+}
+
+fn rot_comp(h: i64, i: usize) -> f64 {
+    PHYS3.with(|p| {
+        let p = p.borrow();
+        match p.as_ref().and_then(|p| p.handles.get(h.max(0) as usize).and_then(|&hd| p.bodies.get(hd))) {
+            Some(b) => {
+                let q = b.rotation();
+                [q.i, q.j, q.k, q.w][i] as f64
+            }
+            None => [0.0, 0.0, 0.0, 1.0][i],
+        }
+    })
+}
+#[no_mangle]
+pub extern "C" fn aurora_phys3d_rot_qx(h: i64) -> f64 { rot_comp(h, 0) }
+#[no_mangle]
+pub extern "C" fn aurora_phys3d_rot_qy(h: i64) -> f64 { rot_comp(h, 1) }
+#[no_mangle]
+pub extern "C" fn aurora_phys3d_rot_qz(h: i64) -> f64 { rot_comp(h, 2) }
+#[no_mangle]
+pub extern "C" fn aurora_phys3d_rot_qw(h: i64) -> f64 { rot_comp(h, 3) }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raycast_full_reports_body_point_and_normal() {
+        aurora_phys3d_init(0.0, -9.81, 0.0);
+        let ground = aurora_phys3d_add_box(0.0, 0.0, 0.0, 5.0, 1.0, 5.0, 0); // top at y=1
+        aurora_phys3d_step(0.016);
+        // Ray straight down from above the box.
+        let body = aurora_phys3d_raycast_full(0.0, 5.0, 0.0, 0.0, -1.0, 0.0, 20.0);
+        assert_eq!(body, ground, "should hit the ground box");
+        assert!((aurora_phys3d_hit_y() - 1.0).abs() < 0.05, "hit point on top face, got {}", aurora_phys3d_hit_y());
+        assert!(aurora_phys3d_hit_ny() > 0.9, "normal should point up, got {}", aurora_phys3d_hit_ny());
+    }
+
+    #[test]
+    fn overlap_sphere_finds_a_body() {
+        aurora_phys3d_init(0.0, 0.0, 0.0);
+        let b = aurora_phys3d_add_sphere(0.0, 0.0, 0.0, 1.0, 0);
+        aurora_phys3d_step(0.016);
+        assert_eq!(aurora_phys3d_overlap_sphere(0.5, 0.0, 0.0, 0.5), b, "overlapping sphere found");
+        assert_eq!(aurora_phys3d_overlap_sphere(20.0, 20.0, 20.0, 0.5), -1, "far query finds nothing");
+    }
 }

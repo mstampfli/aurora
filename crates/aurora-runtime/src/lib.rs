@@ -1246,8 +1246,8 @@ pub extern "C" fn aurora_r3d_draw(
     );
 }
 #[no_mangle]
-pub extern "C" fn aurora_r3d_anim_play(h: i64, clip: i64, looping: i64, speed: f64) {
-    aurora_window::imm_r3d_anim_play(h, clip, looping, speed as f32);
+pub extern "C" fn aurora_r3d_anim_play(h: i64, clip: i64, looping: i64, speed: f64, fade: f64) {
+    aurora_window::imm_r3d_anim_play(h, clip, looping, speed as f32, fade as f32);
 }
 #[no_mangle]
 pub extern "C" fn aurora_r3d_anim_update(h: i64, dt: f64) {
@@ -1259,11 +1259,92 @@ pub extern "C" fn aurora_r3d_clip_count(h: i64) -> i64 {
 }
 #[no_mangle]
 pub extern "C" fn aurora_r3d_present() -> i64 {
-    if aurora_window::imm_r3d_present() {
+    // Overlay the CPU framebuffer (HUD: text/crosshair/2D) over the 3D scene.
+    let rgba = FB.with(|fb| fb.borrow().as_ref().map(|f| f.rgba()).unwrap_or_default());
+    if aurora_window::imm_r3d_present(&rgba) {
         1
     } else {
         0
     }
+}
+#[no_mangle]
+pub extern "C" fn aurora_r3d_fog(r: f64, g: f64, b: f64, density: f64) {
+    aurora_window::imm_r3d_fog(r as f32, g as f32, b as f32, density as f32);
+}
+#[allow(clippy::too_many_arguments)]
+#[no_mangle]
+pub extern "C" fn aurora_r3d_sky(on: i64, tr: f64, tg: f64, tb: f64, hr: f64, hg: f64, hb: f64) {
+    aurora_window::imm_r3d_sky(on, tr as f32, tg as f32, tb as f32, hr as f32, hg as f32, hb as f32);
+}
+#[no_mangle]
+pub extern "C" fn aurora_r3d_shadows(on: i64) {
+    aurora_window::imm_r3d_shadows(on);
+}
+#[no_mangle]
+pub extern "C" fn aurora_r3d_clear_lights() {
+    aurora_window::imm_r3d_clear_lights();
+}
+#[allow(clippy::too_many_arguments)]
+#[no_mangle]
+pub extern "C" fn aurora_r3d_point_light(x: f64, y: f64, z: f64, r: f64, g: f64, b: f64, range: f64, intensity: f64) {
+    aurora_window::imm_r3d_point_light(
+        x as f32, y as f32, z as f32, r as f32, g as f32, b as f32, range as f32, intensity as f32,
+    );
+}
+#[no_mangle]
+pub extern "C" fn aurora_r3d_make_sprite(r: f64, g: f64, b: f64) -> i64 {
+    aurora_window::imm_r3d_make_sprite(r as f32, g as f32, b as f32)
+}
+#[no_mangle]
+pub extern "C" fn aurora_r3d_draw_billboard(h: i64, x: f64, y: f64, z: f64, size: f64) {
+    aurora_window::imm_r3d_draw_billboard(h, x as f32, y as f32, z as f32, size as f32);
+}
+#[allow(clippy::too_many_arguments)]
+#[no_mangle]
+pub extern "C" fn aurora_r3d_debug_line(ax: f64, ay: f64, az: f64, bx: f64, by: f64, bz: f64, r: f64, g: f64, b: f64) {
+    aurora_window::imm_r3d_debug_line(
+        ax as f32, ay as f32, az as f32, bx as f32, by as f32, bz as f32, r as f32, g as f32, b as f32,
+    );
+}
+#[no_mangle]
+pub extern "C" fn aurora_r3d_frustum_cull(on: i64) {
+    aurora_window::imm_r3d_frustum_cull(on);
+}
+#[no_mangle]
+pub extern "C" fn aurora_r3d_screen_x(wx: f64, wy: f64, wz: f64) -> f64 {
+    let (x, _, vis) = aurora_window::imm_r3d_world_to_screen(wx as f32, wy as f32, wz as f32);
+    if vis { x as f64 } else { -1.0 }
+}
+#[no_mangle]
+pub extern "C" fn aurora_r3d_screen_y(wx: f64, wy: f64, wz: f64) -> f64 {
+    let (_, y, vis) = aurora_window::imm_r3d_world_to_screen(wx as f32, wy as f32, wz as f32);
+    if vis { y as f64 } else { -1.0 }
+}
+
+// --- FPS input ---
+#[no_mangle]
+pub extern "C" fn aurora_mouse_dx() -> f64 {
+    aurora_window::imm_mouse_delta().0
+}
+#[no_mangle]
+pub extern "C" fn aurora_mouse_dy() -> f64 {
+    aurora_window::imm_mouse_delta().1
+}
+#[no_mangle]
+pub extern "C" fn aurora_mouse_scroll() -> f64 {
+    aurora_window::imm_scroll()
+}
+#[no_mangle]
+pub extern "C" fn aurora_mouse_button(b: i64) -> i64 {
+    if aurora_window::imm_mouse_button(b.max(0) as u32) {
+        1
+    } else {
+        0
+    }
+}
+#[no_mangle]
+pub extern "C" fn aurora_grab_mouse(on: i64) {
+    aurora_window::imm_grab_mouse(on != 0);
 }
 
 /// Play a note WITHOUT blocking — mixed into the persistent audio engine, so
@@ -1276,6 +1357,63 @@ pub extern "C" fn aurora_play_sound(semitone: i64, dur_ms: i64, looped: i64) {
         .wave(aurora_audio::Wave::Triangle)
         .gain(0.5);
     aurora_audio::play_mixed(&note.render(sr), sr, looped != 0);
+}
+
+// --- 3D positional audio ---------------------------------------------------
+
+thread_local! {
+    // Listener pose: position and forward direction (for panning).
+    static LISTENER: RefCell<([f64; 3], [f64; 3])> = const { RefCell::new(([0.0; 3], [0.0, 0.0, -1.0])) };
+}
+
+/// Set the audio listener's world position and forward direction. Spatial sounds
+/// are attenuated by distance and panned left/right relative to this pose.
+#[no_mangle]
+pub extern "C" fn aurora_audio_listener(x: f64, y: f64, z: f64, fx: f64, fy: f64, fz: f64) {
+    LISTENER.with(|l| *l.borrow_mut() = ([x, y, z], [fx, fy, fz]));
+}
+
+/// Compute (gain, pan) for a sound at `pos` relative to the current listener.
+/// `max_dist` is the audible range; falloff is quadratic.
+fn spatialize(pos: [f64; 3]) -> (f32, f32) {
+    LISTENER.with(|l| {
+        let (lp, fwd) = *l.borrow();
+        let to = [pos[0] - lp[0], pos[1] - lp[1], pos[2] - lp[2]];
+        let dist = (to[0] * to[0] + to[1] * to[1] + to[2] * to[2]).sqrt();
+        let max_dist = 35.0;
+        let g = (1.0 - dist / max_dist).clamp(0.0, 1.0);
+        let gain = (g * g) as f32;
+        // Pan by the listener's right vector (forward x up).
+        let f = norm3(fwd);
+        let right = norm3([f[2], 0.0, -f[0]]); // cross(forward, up=+Y), flattened
+        let dir = if dist > 1e-4 { [to[0] / dist, to[1] / dist, to[2] / dist] } else { [0.0; 3] };
+        let pan = (right[0] * dir[0] + right[1] * dir[1] + right[2] * dir[2]).clamp(-1.0, 1.0) as f32;
+        (gain, pan)
+    })
+}
+
+fn norm3(v: [f64; 3]) -> [f64; 3] {
+    let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if l > 1e-6 {
+        [v[0] / l, v[1] / l, v[2] / l]
+    } else {
+        [0.0, 0.0, -1.0]
+    }
+}
+
+/// Play a synthesized note at a world position, spatialized by distance + pan.
+#[no_mangle]
+pub extern "C" fn aurora_play_sound_at(semitone: i64, dur_ms: i64, x: f64, y: f64, z: f64) {
+    let (gain, pan) = spatialize([x, y, z]);
+    if gain <= 0.001 {
+        return;
+    }
+    let sr = 44_100;
+    let dur = (dur_ms.max(0) as f32) / 1000.0;
+    let note = aurora_audio::Note::new(aurora_audio::pitch(semitone as i32), dur)
+        .wave(aurora_audio::Wave::Triangle)
+        .gain(0.5);
+    aurora_audio::play_mixed_spatial(&note.render(sr), sr, false, gain, pan);
 }
 
 /// Load and play a WAV file at `path` through the audio mixer (downmixed to
@@ -1497,7 +1635,47 @@ pub extern "C" fn aurora_dbg_var_f64(name_ptr: *const u8, name_len: i64, value: 
 /// Touch every host symbol so the linker keeps this crate's object in an AOT
 /// link even when the Rust driver references nothing from it directly.
 pub fn force_link() -> usize {
-    let fns: [*const (); 121] = [
+    let fns: [*const (); 157] = [
+        // 3D rendering extras.
+        aurora_r3d_fog as *const (),
+        aurora_r3d_sky as *const (),
+        aurora_r3d_shadows as *const (),
+        aurora_r3d_clear_lights as *const (),
+        aurora_r3d_point_light as *const (),
+        aurora_r3d_make_sprite as *const (),
+        aurora_r3d_draw_billboard as *const (),
+        aurora_r3d_debug_line as *const (),
+        aurora_r3d_frustum_cull as *const (),
+        aurora_r3d_screen_x as *const (),
+        aurora_r3d_screen_y as *const (),
+        // FPS input.
+        aurora_mouse_dx as *const (),
+        aurora_mouse_dy as *const (),
+        aurora_mouse_scroll as *const (),
+        aurora_mouse_button as *const (),
+        aurora_grab_mouse as *const (),
+        // 3D positional audio.
+        aurora_audio_listener as *const (),
+        aurora_play_sound_at as *const (),
+        // Rich 3D physics queries.
+        aurora_phys3d_raycast_full as *const (),
+        aurora_phys3d_hit_x as *const (),
+        aurora_phys3d_hit_y as *const (),
+        aurora_phys3d_hit_z as *const (),
+        aurora_phys3d_hit_nx as *const (),
+        aurora_phys3d_hit_ny as *const (),
+        aurora_phys3d_hit_nz as *const (),
+        aurora_phys3d_hit_body as *const (),
+        aurora_phys3d_spherecast as *const (),
+        aurora_phys3d_overlap_sphere as *const (),
+        aurora_phys3d_apply_force as *const (),
+        aurora_phys3d_apply_torque as *const (),
+        aurora_phys3d_set_angvel as *const (),
+        aurora_phys3d_set_rot as *const (),
+        aurora_phys3d_rot_qx as *const (),
+        aurora_phys3d_rot_qy as *const (),
+        aurora_phys3d_rot_qz as *const (),
+        aurora_phys3d_rot_qw as *const (),
         // 3D physics (Rapier 3D).
         aurora_phys3d_init as *const (),
         aurora_phys3d_add_box as *const (),
