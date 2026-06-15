@@ -1,0 +1,80 @@
+// A 3D movement-shooter scaffold: GPU-rendered world, a kinematic capsule
+// player with gravity + jump that slides along walls, arrow-key look, WASD move.
+// Run with `aurorac run examples/shooter3d.aur` (opens a window; Esc quits).
+//
+// Primitives are used so it runs with no assets. To use a real animated
+// character, replace the player box with `r3d_load_model("hero.glb")`, then
+// `r3d_anim_play(model, 0, 1, 1.0)` and `r3d_anim_update(model, dt)` each frame.
+
+fn main() {
+    window_open(960, 540)
+    r3d_clear(0.5, 0.7, 0.95)
+    r3d_light(0.4, 1.0, 0.3, 1.0, 0.98, 0.9, 0.35)
+
+    // Renderable primitives.
+    let ground_vis = r3d_make_plane(80.0, 40.0, 0.4, 0.55, 0.4)
+    let player_vis = r3d_make_box(0.9, 0.3, 0.2)
+    let crate_vis = r3d_make_box(0.7, 0.5, 0.3)
+
+    // Physics world: a static ground, some obstacle boxes, a character capsule.
+    phys3d_init(0.0, -18.0, 0.0)
+    phys3d_add_box(0.0, -0.5, 0.0, 40.0, 0.5, 40.0, 0)
+    phys3d_add_box(6.0, 1.0, -4.0, 1.0, 1.0, 1.0, 0)
+    phys3d_add_box(-5.0, 1.0, 3.0, 1.0, 1.0, 1.0, 0)
+    phys3d_add_box(0.0, 1.5, -10.0, 3.0, 1.5, 1.0, 0)
+    let player = phys3d_add_character(0.0, 2.0, 8.0, 0.6, 0.4)
+
+    let yaw = 0.0
+    let vy = 0.0
+    let speed = 7.0
+    let dt = 0.016
+
+    while r3d_present() {
+        r3d_begin()
+
+        // Look: arrow keys turn; W/S forward, A/D strafe.
+        if key_down(0) { yaw = yaw - 2.0 * dt }
+        if key_down(1) { yaw = yaw + 2.0 * dt }
+        let fwd = 0.0
+        let strafe = 0.0
+        if key_down(5) { fwd = fwd + 1.0 }
+        if key_down(7) { fwd = fwd - 1.0 }
+        if key_down(8) { strafe = strafe + 1.0 }
+        if key_down(6) { strafe = strafe - 1.0 }
+
+        // Forward/right vectors from yaw (yaw 0 looks toward -z).
+        let fx = sin(yaw)
+        let fz = 0.0 - cos(yaw)
+        let rx = cos(yaw)
+        let rz = sin(yaw)
+        let dx = (fx * fwd + rx * strafe) * speed * dt
+        let dz = (fz * fwd + rz * strafe) * speed * dt
+
+        // Gravity + jump (kinematic: integrate vertical velocity ourselves).
+        let grounded = phys3d_grounded(player)
+        if grounded == 1 {
+            if vy < 0.0 { vy = 0.0 }
+            if key_down(4) { vy = 8.0 }
+        }
+        vy = vy - 18.0 * dt
+        let dy = vy * dt
+
+        phys3d_move_character(player, dx, dy, dz, dt)
+        phys3d_step(dt)
+
+        let px = phys3d_x(player)
+        let py = phys3d_y(player)
+        let pz = phys3d_z(player)
+
+        // First-person camera at the player's eye, looking along yaw.
+        let eye_y = py + 0.6
+        r3d_camera(px, eye_y, pz, px + fx, eye_y + 0.0, pz + fz, 75.0)
+
+        // Draw the world.
+        r3d_draw(ground_vis, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+        r3d_draw(crate_vis, 6.0, 1.0, -4.0, 0.0, 0.0, 0.0, 1.0)
+        r3d_draw(crate_vis, -5.0, 1.0, 3.0, 0.0, 0.0, 0.0, 1.0)
+        r3d_draw(crate_vis, 0.0, 1.5, -10.0, 0.0, 0.0, 0.0, 3.0)
+        r3d_draw(player_vis, px, py, pz, yaw, 0.0, 0.0, 1.0)
+    }
+}

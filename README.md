@@ -9,9 +9,11 @@ data-race.
 Aurora is opinionated about a small set of things:
 
 - **The compiler is the engine.** `component`, `system`, and `query` are syntax,
-  not a library. `spawn`/`despawn`/`run_systems` are builtins. So are graphics, a
-  real-time window, keyboard/mouse input, audio, networking, physics, and
-  pathfinding. You write a game, not glue code.
+  not a library. `spawn`/`despawn`/`run_systems` are builtins. So are 2D and 3D
+  graphics (a GPU renderer with depth, lighting, textures, and skeletal
+  animation), glTF/OBJ model loading, a real-time window, keyboard/mouse input,
+  audio, networking, 2D/3D physics, and 2D/3D pathfinding. You write a game, not
+  glue code.
 - **Parallel systems are proven safe, not hoped safe.** `run_systems()` groups
   systems into layers by access conflict and ordering, then runs each layer
   concurrently over one shared world. The race-freedom proof (spec section 6.2) is
@@ -71,6 +73,23 @@ A shader is just an Aurora function. `aurorac wgsl` lowers it to WGSL and
 }
 ```
 
+A GPU 3D scene: load a model, set a camera and light, and draw each frame. The
+renderer does the depth buffer, lighting, textures, and skeletal animation:
+
+```aurora
+window_open(960, 540)
+let hero = r3d_load_model("hero.glb")   // glTF/GLB/OBJ; or r3d_make_box(r,g,b)
+r3d_anim_play(hero, 0, 1, 1.0)          // clip 0, looping, 1x speed
+
+while r3d_present() {
+    r3d_begin()
+    r3d_anim_update(hero, 0.016)
+    r3d_camera(0.0, 2.0, 6.0,  0.0, 1.0, 0.0,  70.0)   // eye, target, fov
+    r3d_light(0.4, 1.0, 0.3,  1.0, 1.0, 1.0,  0.3)     // dir, color, ambient
+    r3d_draw(hero, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  1.0) // pos, euler, scale
+}
+```
+
 Generics monomorphize per concrete type (functions, structs, nested types, and
 enums used at multiple instantiations):
 
@@ -114,6 +133,7 @@ crates/
   aurora-gfx       CPU rasterizer (framebuffer, triangles, PPM)
   aurora-shader    Aurora @vertex/@fragment/@compute -> WGSL
   aurora-gpu       live GPU execution via wgpu (headless compute + render)
+  aurora-render3d  GPU 3D renderer (depth, camera/lights, textures, GPU skinning) + glTF/OBJ + animation
   aurora-window    real-time winit + wgpu window with keyboard/mouse input
   aurora-audio     synthesis (oscillators/ADSR/mixing) + cpal playback
   aurora-debug     native source-level debugger (machine-code instrumentation)
@@ -136,7 +156,7 @@ The pipeline is `lex -> parse -> resolve -> typecheck -> ECS-safety -> move-chec
 
 ```sh
 cargo build --workspace      # builds the toolchain (Cranelift takes a moment first time)
-cargo test  --workspace      # 313 tests
+cargo test  --workspace      # 320 tests
 ```
 
 ## CLI
@@ -164,7 +184,7 @@ the auto-included standard library).
 ## Tests
 
 ```sh
-cargo test --workspace       # 313 tests across 22 crates, 0 warnings
+cargo test --workspace       # 320 tests across 23 crates, 0 warnings
 ```
 
 Every capability above is backed by passing tests and a runnable example in
@@ -173,17 +193,19 @@ Every capability above is backed by passing tests and a runnable example in
 ## Status
 
 Real and working: a full compiler toolchain that JITs and AOT-compiles the whole
-language, with ECS, a CPU rasterizer, live GPU shaders, a real-time window, audio,
-reliable-UDP netcode, Rapier 2D physics, A* pathfinding, an asset pipeline
-(PNG/JPEG/TTF/WAV), C and Rust FFI, a native debugger and profiler, and an LSP.
+language, with ECS, a CPU rasterizer, live GPU shaders, a **GPU 3D renderer**
+(depth buffer, perspective camera, directional + ambient lighting, base-color
+textures, and GPU vertex skinning), **glTF/OBJ model loading with skeletal
+animation**, a real-time window, audio, reliable-UDP netcode, **2D and 3D physics**
+(Rapier, including a kinematic capsule character controller), **2D and 3D
+pathfinding** (grid A* plus a navmesh with funnel string-pulling), an asset
+pipeline (PNG/JPEG/TTF/WAV), C and Rust FFI, a native debugger and profiler, and
+an LSP.
 
 What is intentionally not here yet, but is on the road:
 
 - **An LLVM backend.** Codegen is Cranelift only (JIT + AOT, `opt_level=speed` for
   builds). Runtime speed is good, not maximal, and there is no autovectorization.
-- **A 3D mesh pipeline.** The shader path already speaks `Vec3`/`Mat4`/`vec4`, but
-  there is no model loader (glTF/OBJ) or vertex/index-buffer mesh draw yet; physics
-  is 2D (Rapier 2D).
 - **Editor-integrated debugger UI** and a **central package registry** (path and
   git dependencies do work today).
 - **Battle-testing.** This is a capable foundation, not yet a shipped-game-proven

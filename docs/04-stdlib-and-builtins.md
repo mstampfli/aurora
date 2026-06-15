@@ -1,4 +1,4 @@
-# Aurora — Builtins & Standard Library Reference
+# Aurora - Builtins & Standard Library Reference
 
 This is the practical reference for writing Aurora programs: the **builtins**
 (functions the compiler lowers to native runtime calls) and the **standard
@@ -29,14 +29,14 @@ newline or `;` (block-form `if`/`while`/`for`/`match` need no separator).
 | `abs`/`min`/`max`/`clamp`/`sqrt`/`sin`/`cos`/`tan`/`floor`/`ceil`/`round`/`pow` | math | float-typed |
 | `band`/`bor`/`bxor`/`shl`/`shr`/`bnot` | `(i64, i64) -> i64` | integer bitwise (`&`/`\|` are taken by refs/closures) |
 
-Arrays are fixed-size (`[T; N]`) and **bounds-checked** — an out-of-range or
+Arrays are fixed-size (`[T; N]`) and **bounds-checked** - an out-of-range or
 negative index panics with `array index N out of bounds (length L)`.
 
 ## ECS (the language)
 
 `component Position { x: f64 }` declares storage; `spawn(Position { .. }, ..)`
 creates an entity; `system move() { for (p, v) in query<&mut Position, &Velocity> { .. } }`
-defines behaviour. `run_systems()` runs them — **independent systems in a stage
+defines behaviour. `run_systems()` runs them - **independent systems in a stage
 run in parallel** (the §6.2 checker proves they can't race). `despawn(e)`,
 `entity_count()`.
 
@@ -69,7 +69,7 @@ run in parallel** (the §6.2 checker proves they can't race). `despawn(e)`,
 
 `net_bind(port)`, `net_connect(host, port)`, `net_send(msg)`, `net_recv() -> str`.
 
-## Physics — Rapier 2D (`phys_*`)
+## Physics - Rapier 2D (`phys_*`)
 
 Real rigid-body simulation. Positions are body centres; units are whatever your
 game uses (e.g. pixels). Bodies are referenced by an `i64` handle.
@@ -86,7 +86,7 @@ game uses (e.g. pixels). Bodies are referenced by an `i64` handle.
 | `phys_apply_force(h, fx, fy)` | continuous force | |
 | `phys_raycast(x, y, dx, dy, max) -> f64` | distance to first hit, or `-1` | run after `phys_step` |
 
-## Pathfinding — weighted A\* (`nav_*`)
+## Pathfinding - weighted A\* (`nav_*`)
 
 | Builtin | Signature |
 |---|---|
@@ -94,6 +94,69 @@ game uses (e.g. pixels). Bodies are referenced by an `i64` handle.
 | `nav_wall(x, y, blocked)` | mark a cell blocked (1) / open (0) |
 | `nav_find(sx, sy, gx, gy) -> i64` | A* search; returns path length in cells, or `-1` |
 | `nav_x(i) -> i64` / `nav_y(i) -> i64` | read the i-th path cell |
+
+## 3D rendering, models, and animation (`r3d_*`)
+
+A real GPU forward renderer (wgpu): indexed meshes with a depth buffer, a
+perspective camera, directional + ambient lighting, base-color textures, and GPU
+vertex skinning. It shares the live window's device, so 3D draws straight to the
+window. Colors are 0..1 floats; angles are radians; handles are `i64`.
+
+| Builtin | Signature | Notes |
+|---|---|---|
+| `r3d_load_model(path) -> i64` | load `.gltf`/`.glb`/`.obj` | meshes, materials, skeleton, clips; -1 on failure |
+| `r3d_make_box(r,g,b) -> i64` | unit cube primitive | greybox geometry |
+| `r3d_make_sphere(segments,r,g,b) -> i64` | UV sphere primitive | |
+| `r3d_make_plane(size,tiles,r,g,b) -> i64` | ground plane in XZ | `tiles` repeats the UVs |
+| `r3d_camera(ex,ey,ez, tx,ty,tz, fov_deg)` | eye, look-at target, vertical FOV | |
+| `r3d_light(dx,dy,dz, r,g,b, ambient)` | directional light + ambient | |
+| `r3d_clear(r,g,b)` | background color | |
+| `r3d_begin()` | start a frame (clear the draw queue) | call once per frame |
+| `r3d_draw(h, px,py,pz, yaw,pitch,roll, scale)` | queue a model at a transform | Euler radians, uniform scale |
+| `r3d_anim_play(h, clip, looping, speed)` | start an animation clip | `looping`/`speed` |
+| `r3d_anim_update(h, dt)` | advance the current clip | per frame |
+| `r3d_clip_count(h) -> i64` | number of animation clips | |
+| `r3d_present() -> i64` | render the queue to the window | 1 while open, 0 when closed |
+
+A frame loop is `while r3d_present() { r3d_begin(); ...camera/draw...; }`. See
+[`examples/shooter3d.aur`](../examples/shooter3d.aur).
+
+## 3D physics - Rapier 3D (`phys3d_*`)
+
+Real 3D rigid bodies plus a kinematic capsule character controller that slides
+along walls (the core of a fluid movement shooter). Bodies are `i64` handles.
+
+| Builtin | Signature | Notes |
+|---|---|---|
+| `phys3d_init(gx,gy,gz)` | create/reset the world with gravity | |
+| `phys3d_add_box(x,y,z, hx,hy,hz, dynamic) -> i64` | box (half-extents) | `dynamic` 1/0 |
+| `phys3d_add_sphere(x,y,z, r, dynamic) -> i64` | sphere | |
+| `phys3d_add_capsule(x,y,z, hh, r, dynamic) -> i64` | upright capsule | |
+| `phys3d_add_character(x,y,z, hh, r) -> i64` | kinematic character capsule | move with `move_character` |
+| `phys3d_add_trimesh(verts, indices) -> i64` | static mesh collider | `[f64;N]` xyz verts, `[i64;M]` indices |
+| `phys3d_step(dt)` | advance the simulation | |
+| `phys3d_x/y/z(h) -> f64` | body position | |
+| `phys3d_vel_x/y/z(h) -> f64` | linear velocity | |
+| `phys3d_set_vel(h, vx,vy,vz)` / `phys3d_set_pos(h, x,y,z)` | set state | |
+| `phys3d_apply_impulse(h, ix,iy,iz)` | instantaneous (jumps, knockback) | dynamic bodies |
+| `phys3d_move_character(h, dx,dy,dz, dt)` | move + slide a character | read position after `step` |
+| `phys3d_grounded(h) -> i64` | is the character on the ground | 1/0 |
+| `phys3d_raycast(x,y,z, dx,dy,dz, max) -> f64` | distance to first hit, or -1 | shooting, ground checks |
+
+## 3D pathfinding (`nav3d_*` grid, `navmesh_*` navmesh)
+
+A 26-connected voxel grid A*, and a polygon navmesh that runs A* over a triangle
+adjacency graph then string-pulls the corridor with the funnel algorithm for a
+smooth path.
+
+| Builtin | Signature | Notes |
+|---|---|---|
+| `nav3d_init(w,h,d)` / `nav3d_wall(x,y,z,blocked)` | build a voxel grid | |
+| `nav3d_find(sx,sy,sz, gx,gy,gz) -> i64` | A* path length in cells, or -1 | |
+| `nav3d_x/y/z(i) -> i64` | the i-th path cell | |
+| `navmesh_build(verts, indices) -> i64` | build a navmesh from triangles | `[f64;N]` verts, `[i64;M]` indices |
+| `navmesh_find(sx,sy,sz, gx,gy,gz) -> i64` | smooth path; waypoint count, or -1 | funnel string-pulled |
+| `navmesh_x/y/z(i) -> f64` | the i-th waypoint | |
 
 ## Data parallelism
 
@@ -115,7 +178,7 @@ A bodiless `@extern fn` is declared as an import. It resolves **at link time**
 for `aurorac build` (against the C runtime and anything linked into the
 executable) and **against registered symbols** for `aurorac run`.
 
-**Supported parameter/return types:** all scalars — `i64`, `f64`, `f32` — plus
+**Supported parameter/return types:** all scalars - `i64`, `f64`, `f32` - plus
 **structs and arrays of scalars**, passed **by pointer**. `i64`/`f64` aggregates
 read straight through (their 8-byte-slot layout matches C); aggregates containing
 `f32` are **marshaled to C's packed layout** at the call site (so an Aurora
@@ -124,7 +187,7 @@ vectors, and matrices that real C/Rust graphics and math APIs take.
 
 **Region contracts at the boundary.** Because an `@extern` function has no body
 to infer from, you can declare its region contract with `#region` annotations on
-parameter/return types — `@extern fn keep(t: #perm Thing)` or
+parameter/return types - `@extern fn keep(t: #perm Thing)` or
 `@extern fn tmp() -> #frame Buf`. The checker then enforces it at call sites
 (passing a `#frame` value where `#perm` is required is an `E0410` error), exactly
 as if the body had been visible.
@@ -162,21 +225,21 @@ Auto-included Aurora source. Highlights:
 
 **Lightweight engines** (zero-dependency defaults; for serious use prefer the
 `phys_*`/`nav_*` library builtins above):
-- `Grid` — 4-connected BFS pathfinding (`compute_field`/`next_to`).
-- `Body` — AABB physics (`step`/`collide`).
-- Immediate-mode UI — `fill_rect`, `ui_button`, `ui_label`, `ui_slider`.
+- `Grid` - 4-connected BFS pathfinding (`compute_field`/`next_to`).
+- `Body` - AABB physics (`step`/`collide`).
+- Immediate-mode UI - `fill_rect`, `ui_button`, `ui_label`, `ui_slider`.
 
-See [`examples/`](../examples/) — `gamedev.aur`, `physics.aur`, `ffi.aur`.
+See [`examples/`](../examples/) - `gamedev.aur`, `physics.aur`, `ffi.aur`.
 
 ---
 
 ## Known limitations
 
 - **FFI structs with sub-8-byte fields** (e.g. `{i32, i32}`) aren't passed by
-  value — they'd need layout packing. Scalars, pointers, and structs/arrays of
+  value - they'd need layout packing. Scalars, pointers, and structs/arrays of
   `i64`/`f64` (by pointer) all work.
 - **Performance** is Cranelift-level (release builds use `opt_level=speed`); there
   is no LLVM backend or autovectorization yet.
 - **Tooling**: there is a CLI debugger, profiler, and LSP (diagnostics + completion),
   but no editor-integrated debugger UI, no package registry, and the language is
-  young — treat it as a capable foundation, not a battle-tested production engine.
+  young - treat it as a capable foundation, not a battle-tested production engine.

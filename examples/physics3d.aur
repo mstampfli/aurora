@@ -1,0 +1,42 @@
+// 3D physics and pathfinding, headless (no window). Exercises the Rapier 3D
+// rigid bodies, the kinematic character controller, and 3D pathfinding.
+
+fn main() {
+    // A world with gravity; a static ground box and a dynamic ball above it.
+    phys3d_init(0.0, -9.81, 0.0)
+    let ground = phys3d_add_box(0.0, 0.0, 0.0, 50.0, 0.5, 50.0, 0)
+    let ball = phys3d_add_sphere(0.0, 10.0, 0.0, 0.5, 1)
+
+    // Simulate two seconds; the ball should fall and come to rest on the ground.
+    let i = 0
+    while i < 120 {
+        phys3d_step(0.016)
+        i = i + 1
+    }
+    println("ball resting height (expect ~1.0):")
+    println(phys3d_y(ball))
+
+    // A kinematic character: move it +x along the ground, sliding.
+    let player = phys3d_add_character(0.0, 1.0, 0.0, 0.5, 0.4)
+    let s = 0
+    while s < 30 {
+        phys3d_move_character(player, 0.1, 0.0, 0.0, 0.016)
+        phys3d_step(0.016)
+        s = s + 1
+    }
+    println("player x after walking (expect > 0):")
+    println(phys3d_x(player))
+    println("player grounded (expect 1):")
+    println(phys3d_grounded(player))
+
+    // A shot from the player toward +x should hit nothing far away here.
+    let hit = phys3d_raycast(0.0, 5.0, 0.0, 0.0, -1.0, 0.0, 20.0)
+    println("downward ray distance to ground (expect > 0):")
+    println(hit)
+
+    // 3D voxel-grid pathfinding across a 10x3x10 grid.
+    nav3d_init(10, 3, 10)
+    let cells = nav3d_find(0, 0, 0, 9, 0, 9)
+    println("grid path length in cells (expect > 0):")
+    println(cells)
+}
