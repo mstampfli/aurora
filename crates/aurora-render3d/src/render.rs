@@ -14,6 +14,7 @@ pub const MAX_LIGHTS: usize = 16;
 const OBJ_ALIGN: u64 = 256;
 const JOINT_BYTES: u64 = (MAX_JOINTS * 64) as u64;
 const SHADOW_SIZE: u32 = 2048;
+const NUM_CASCADES: usize = 3;
 
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
@@ -28,8 +29,9 @@ struct PointLightU {
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct GlobalsU {
     view_proj: [[f32; 4]; 4],
-    light_vp: [[f32; 4]; 4],     // directional shadow light view-projection
+    csm_vp: [[[f32; 4]; 4]; 4],   // per-cascade light view-projection (3 used)
     inv_view_proj: [[f32; 4]; 4], // for reconstructing skybox view rays
+    csm_splits: [f32; 4],         // cascade radii (x,y,z); selection by distance
     cam_pos: [f32; 4],
     dir_dir: [f32; 4],    // xyz direction toward the light, w intensity
     dir_color: [f32; 4],  // rgb color, w ambient
@@ -152,7 +154,8 @@ pub struct Renderer3D {
     color_format: wgpu::TextureFormat,
     msaa_color: Option<wgpu::TextureView>,
 
-    shadow_view: wgpu::TextureView,
+    shadow_layer_views: Vec<wgpu::TextureView>,
+    csm_buf: wgpu::Buffer,
     shadow_pipeline: wgpu::RenderPipeline,
     shadow_globals_bg: wgpu::BindGroup,
     shadow_extent: f32,
@@ -198,7 +201,7 @@ impl Renderer3D {
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Depth,
-                        view_dimension: wgpu::TextureViewDimension::D2,
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
                         multisampled: false,
                     },
                     count: None,
@@ -211,11 +214,12 @@ impl Renderer3D {
                 },
             ],
         });
-        // Shadow pass uses just the globals uniform (no shadow-map binding, since
-        // it renders INTO the shadow map).
+        // Shadow pass binds the current cascade's light matrix (dynamic offset
+        // into the per-cascade buffer) at binding 3, so it doesn't collide with
+        // the main pipeline's globals at binding 0.
         let shadow_g_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("shadow-globals"),
-            entries: &[uniform_entry(0, wgpu::ShaderStages::VERTEX, false, None)],
+            entries: &[uniform_entry(3, wgpu::ShaderStages::VERTEX, true, Some(64))],
         });
         let obj_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("object"),
@@ -301,11 +305,15 @@ impl Renderer3D {
             mapped_at_creation: false,
         });
 
-        // Shadow map (a depth texture rendered from the light's POV) + a
-        // comparison sampler for PCF filtering.
+        // Cascaded shadow maps: a depth-texture ARRAY (one layer per cascade) +
+        // a comparison sampler for PCF filtering.
         let shadow_tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("shadow-map"),
-            size: wgpu::Extent3d { width: SHADOW_SIZE, height: SHADOW_SIZE, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: SHADOW_SIZE,
+                height: SHADOW_SIZE,
+                depth_or_array_layers: NUM_CASCADES as u32,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -313,7 +321,23 @@ impl Renderer3D {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
-        let shadow_view = shadow_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        // One D2 view per cascade (render targets) + one array view (sampling).
+        let shadow_layer_views: Vec<wgpu::TextureView> = (0..NUM_CASCADES as u32)
+            .map(|i| {
+                shadow_tex.create_view(&wgpu::TextureViewDescriptor {
+                    label: Some("shadow-layer"),
+                    dimension: Some(wgpu::TextureViewDimension::D2),
+                    base_array_layer: i,
+                    array_layer_count: Some(1),
+                    ..Default::default()
+                })
+            })
+            .collect();
+        let shadow_array_view = shadow_tex.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("shadow-array"),
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
         let shadow_cmp_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("shadow-cmp"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -321,20 +345,34 @@ impl Renderer3D {
             compare: Some(wgpu::CompareFunction::LessEqual),
             ..Default::default()
         });
+        // Per-cascade light matrices, one 256-aligned block each (dynamic offset).
+        let csm_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("cascades"),
+            size: (NUM_CASCADES as u64) * 256,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
 
         let globals_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("globals"),
             layout: &globals_layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: globals_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&shadow_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&shadow_array_view) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&shadow_cmp_sampler) },
             ],
         });
         let shadow_globals_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("shadow-globals"),
             layout: &shadow_g_layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: globals_buf.as_entire_binding() }],
+            entries: &[wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &csm_buf,
+                    offset: 0,
+                    size: Some(std::num::NonZeroU64::new(64).unwrap()),
+                }),
+            }],
         });
 
         // Depth-only shadow pipeline (vertex transforms by light_vp; skinned too).
@@ -563,8 +601,9 @@ impl Renderer3D {
 
         let globals = GlobalsU {
             view_proj: Mat4::IDENTITY.to_cols_array_2d(),
-            light_vp: Mat4::IDENTITY.to_cols_array_2d(),
+            csm_vp: [Mat4::IDENTITY.to_cols_array_2d(); 4],
             inv_view_proj: Mat4::IDENTITY.to_cols_array_2d(),
+            csm_splits: [0.0; 4],
             cam_pos: [0.0, 0.0, 0.0, 1.0],
             dir_dir: Vec3::new(0.4, 1.0, 0.3).normalize().extend(1.0).into(),
             dir_color: [1.0, 1.0, 1.0, 0.15],
@@ -592,7 +631,8 @@ impl Renderer3D {
             sample_count,
             color_format,
             msaa_color,
-            shadow_view,
+            shadow_layer_views,
+            csm_buf,
             shadow_pipeline,
             shadow_globals_bg,
             shadow_extent: 50.0,
@@ -814,20 +854,26 @@ impl Renderer3D {
         color_view: &wgpu::TextureView,
         clear: [f32; 4],
     ) {
-        // Directional shadow light matrix: an orthographic box centered on the
-        // camera, looking along the light direction.
+        // Cascaded shadow maps: concentric orthographic boxes of increasing size
+        // centered on the camera, each crisper near and coarser far.
         let d = Vec3::new(self.globals.dir_dir[0], self.globals.dir_dir[1], self.globals.dir_dir[2])
             .normalize_or_zero();
         let center = Vec3::new(self.globals.cam_pos[0], self.globals.cam_pos[1], self.globals.cam_pos[2]);
-        let e = self.shadow_extent;
-        let eye = center + d * (e * 2.0);
         let up = if d.y.abs() > 0.95 { Vec3::Z } else { Vec3::Y };
-        let light_vp = Mat4::orthographic_rh(-e, e, -e, e, 0.1, e * 4.5)
-            * Mat4::look_at_rh(eye, center, up);
-        self.globals.light_vp = light_vp.to_cols_array_2d();
+        let factors = [0.12f32, 0.4, 1.0];
+        let mut csm_bytes = vec![0u8; NUM_CASCADES * 256];
+        for i in 0..NUM_CASCADES {
+            let e = self.shadow_extent * factors[i];
+            let eye = center + d * (e * 2.0);
+            let vp = Mat4::orthographic_rh(-e, e, -e, e, 0.1, e * 4.5) * Mat4::look_at_rh(eye, center, up);
+            self.globals.csm_vp[i] = vp.to_cols_array_2d();
+            self.globals.csm_splits[i] = e;
+            csm_bytes[i * 256..i * 256 + 64].copy_from_slice(bytemuck::bytes_of(&vp.to_cols_array()));
+        }
         self.globals.counts[1] = if self.shadows_on { 1.0 } else { 0.0 };
 
         queue.write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&self.globals));
+        queue.write_buffer(&self.csm_buf, 0, &csm_bytes);
 
         let stride = OBJ_ALIGN;
         let n = self.queue_cmds.len() as u64;
@@ -913,42 +959,45 @@ impl Renderer3D {
             }
         });
 
-        // Shadow pass: render scene depth from the light's POV into the shadow map.
+        // Shadow pass: render scene depth into each cascade layer from its light
+        // matrix (selected by dynamic offset into the per-cascade buffer).
         if self.shadows_on {
-            let mut sp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("shadow"),
-                color_attachments: &[],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.shadow_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
+            for cascade in 0..NUM_CASCADES {
+                let off = (cascade * 256) as u32;
+                let mut sp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("shadow"),
+                    color_attachments: &[],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &self.shadow_layer_views[cascade],
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
                     }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            sp.set_pipeline(&self.shadow_pipeline);
-            sp.set_bind_group(0, &self.shadow_globals_bg, &[]);
-            for (ci, &(obj_off, joint_off)) in offsets.iter().enumerate() {
-                let cmd = &self.queue_cmds[ci];
-                let m = &self.meshes[cmd.mesh];
-                sp.set_bind_group(1, &self.obj_bg, &[obj_off, joint_off]);
-                sp.set_vertex_buffer(0, m.vbuf.slice(..));
-                sp.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                sp.draw_indexed(0..m.index_count, 0, 0..1);
-            }
-            // Instanced shadow casters.
-            if !inst_ranges.is_empty() {
-                sp.set_pipeline(&self.inst_shadow_pipeline);
-                sp.set_bind_group(0, &self.shadow_globals_bg, &[]);
-                sp.set_vertex_buffer(1, self.inst_buf.slice(..));
-                for (mesh, _, start, count) in &inst_ranges {
-                    let m = &self.meshes[*mesh];
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                sp.set_pipeline(&self.shadow_pipeline);
+                sp.set_bind_group(0, &self.shadow_globals_bg, &[off]);
+                for (ci, &(obj_off, joint_off)) in offsets.iter().enumerate() {
+                    let cmd = &self.queue_cmds[ci];
+                    let m = &self.meshes[cmd.mesh];
+                    sp.set_bind_group(1, &self.obj_bg, &[obj_off, joint_off]);
                     sp.set_vertex_buffer(0, m.vbuf.slice(..));
                     sp.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                    sp.draw_indexed(0..m.index_count, 0, *start..*start + *count);
+                    sp.draw_indexed(0..m.index_count, 0, 0..1);
+                }
+                if !inst_ranges.is_empty() {
+                    sp.set_pipeline(&self.inst_shadow_pipeline);
+                    sp.set_bind_group(0, &self.shadow_globals_bg, &[off]);
+                    sp.set_vertex_buffer(1, self.inst_buf.slice(..));
+                    for (mesh, _, start, count) in &inst_ranges {
+                        let m = &self.meshes[*mesh];
+                        sp.set_vertex_buffer(0, m.vbuf.slice(..));
+                        sp.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                        sp.draw_indexed(0..m.index_count, 0, *start..*start + *count);
+                    }
                 }
             }
         }
@@ -1211,8 +1260,9 @@ const SHADER: &str = r#"
 struct PointLight { pos_range: vec4<f32>, color_int: vec4<f32> };
 struct Globals {
     view_proj: mat4x4<f32>,
-    light_vp: mat4x4<f32>,
+    csm_vp: array<mat4x4<f32>, 4>,
     inv_view_proj: mat4x4<f32>,
+    csm_splits: vec4<f32>,
     cam_pos: vec4<f32>,
     dir_dir: vec4<f32>,
     dir_color: vec4<f32>,
@@ -1223,8 +1273,12 @@ struct Globals {
     lights: array<PointLight, 16>,
 };
 @group(0) @binding(0) var<uniform> g: Globals;
-@group(0) @binding(1) var shadow_map: texture_depth_2d;
+@group(0) @binding(1) var shadow_map: texture_depth_2d_array;
 @group(0) @binding(2) var shadow_samp: sampler_comparison;
+// The current cascade's light matrix during the shadow pass (binding 3 so it
+// doesn't collide with `g`; pruned from pipelines that don't use it).
+struct CascadeU { vp: mat4x4<f32> };
+@group(0) @binding(3) var<uniform> csm: CascadeU;
 
 struct ObjU { model: mat4x4<f32>, normal_mat: mat4x4<f32>, params: vec4<f32> };
 @group(1) @binding(0) var<uniform> obj: ObjU;
@@ -1324,13 +1378,18 @@ fn vs_shadow(in: VsIn) -> @builtin(position) vec4<f32> {
                  + joints.m[in.j.z] * in.w.z + joints.m[in.j.w] * in.w.w;
         local = skin * local;
     }
-    return g.light_vp * (obj.model * local);
+    return csm.vp * (obj.model * local);
 }
 
-// Percentage-closer-filtered shadow factor (1 = lit, 0 = fully shadowed).
+// Percentage-closer-filtered cascaded shadow factor (1 = lit, 0 = shadowed).
 fn shadow_factor(world_pos: vec3<f32>, ndl: f32) -> f32 {
     if (g.counts.y < 0.5) { return 1.0; }
-    let lc = g.light_vp * vec4<f32>(world_pos, 1.0);
+    // Select the cascade by distance from the camera.
+    let dist = length(world_pos - g.cam_pos.xyz);
+    var ci = 0;
+    if (dist > g.csm_splits.x) { ci = 1; }
+    if (dist > g.csm_splits.y) { ci = 2; }
+    let lc = g.csm_vp[ci] * vec4<f32>(world_pos, 1.0);
     var proj = lc.xyz / lc.w;
     if (proj.z > 1.0 || proj.z < 0.0) { return 1.0; }
     let uv = vec2<f32>(proj.x * 0.5 + 0.5, 1.0 - (proj.y * 0.5 + 0.5));
@@ -1341,7 +1400,7 @@ fn shadow_factor(world_pos: vec3<f32>, ndl: f32) -> f32 {
     for (var dy = -1; dy <= 1; dy = dy + 1) {
         for (var dx = -1; dx <= 1; dx = dx + 1) {
             let o = vec2<f32>(f32(dx), f32(dy)) * texel;
-            sum = sum + textureSampleCompare(shadow_map, shadow_samp, uv + o, proj.z - bias);
+            sum = sum + textureSampleCompare(shadow_map, shadow_samp, uv + o, ci, proj.z - bias);
         }
     }
     return sum / 9.0;
@@ -1476,6 +1535,6 @@ fn fs_inst(in: InstOut) -> @location(0) vec4<f32> {
 @vertex
 fn vs_shadow_inst(in: InstIn) -> @builtin(position) vec4<f32> {
     let model = mat4x4<f32>(in.m0, in.m1, in.m2, in.m3);
-    return g.light_vp * (model * vec4<f32>(in.pos, 1.0));
+    return csm.vp * (model * vec4<f32>(in.pos, 1.0));
 }
 "#;
