@@ -12,10 +12,12 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 
-use aurora_net::InterpBuffer;
+use aurora_net::{InterpBuffer, LagComp};
 
 const TAG_INPUT: u8 = 1;
 const TAG_SNAPSHOT: u8 = 2;
+const TAG_FIRE: u8 = 3;
+const TAG_HIT: u8 = 4;
 
 #[derive(Clone, Copy)]
 struct Cfg {
@@ -23,11 +25,27 @@ struct Cfg {
     gravity: f32,
     jump: f32,
     ground: f32,
+    /// Player collision box half-extents: radius (x/z) and half-height (y).
+    pr: f32,
+    ph: f32,
+    /// Interest radius: a client is only told about players within this distance.
+    interest: f32,
 }
 impl Default for Cfg {
     fn default() -> Cfg {
-        Cfg { speed: 8.0, gravity: 22.0, jump: 9.0, ground: 0.0 }
+        Cfg { speed: 8.0, gravity: 22.0, jump: 9.0, ground: 0.0, pr: 0.4, ph: 0.9, interest: 80.0 }
     }
+}
+
+/// A static axis-aligned box the players collide against.
+#[derive(Clone, Copy)]
+struct Aabb {
+    cx: f32,
+    cy: f32,
+    cz: f32,
+    hx: f32,
+    hy: f32,
+    hz: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -58,7 +76,7 @@ struct Input {
 /// The shared, drift-proof movement step: run identically by client prediction
 /// and the authoritative server. Horizontal move relative to yaw, plus gravity
 /// and jump against a flat ground plane.
-fn apply_input(p: &mut PlayerState, inp: &Input, cfg: &Cfg) {
+fn apply_input(p: &mut PlayerState, inp: &Input, cfg: &Cfg, walls: &[Aabb]) {
     let (s, c) = (inp.yaw.sin(), inp.yaw.cos());
     // Forward is -z at yaw 0; right is +x.
     let (fx, fz) = (s, -c);
@@ -77,7 +95,46 @@ fn apply_input(p: &mut PlayerState, inp: &Input, cfg: &Cfg) {
     } else {
         p.grounded = false;
     }
+    resolve_walls(p, cfg, walls);
     p.yaw = inp.yaw;
+}
+
+/// Collide-and-slide the player box against static walls: push out along the
+/// axis of least penetration each iteration (so motion slides along surfaces),
+/// landing on tops and stopping under ceilings. Deterministic, so client
+/// prediction replay and the server agree.
+fn resolve_walls(p: &mut PlayerState, cfg: &Cfg, walls: &[Aabb]) {
+    for _ in 0..4 {
+        let mut any = false;
+        for w in walls {
+            let (cx, cy, cz) = (p.x, p.y + cfg.ph, p.z);
+            let (dx, dy, dz) = (cx - w.cx, cy - w.cy, cz - w.cz);
+            let px = (cfg.pr + w.hx) - dx.abs();
+            let py = (cfg.ph + w.hy) - dy.abs();
+            let pz = (cfg.pr + w.hz) - dz.abs();
+            if px <= 0.0 || py <= 0.0 || pz <= 0.0 {
+                continue;
+            }
+            any = true;
+            if px <= py && px <= pz {
+                p.x += if dx < 0.0 { -px } else { px };
+            } else if pz <= px && pz <= py {
+                p.z += if dz < 0.0 { -pz } else { pz };
+            } else if dy >= 0.0 {
+                p.y += py; // landed on top
+                p.vy = 0.0;
+                p.grounded = true;
+            } else {
+                p.y -= py; // bumped a ceiling
+                if p.vy > 0.0 {
+                    p.vy = 0.0;
+                }
+            }
+        }
+        if !any {
+            break;
+        }
+    }
 }
 
 struct SClient {
@@ -86,12 +143,24 @@ struct SClient {
     state: PlayerState,
     inbox: VecDeque<Input>,
     acked_seq: u32,
+    /// What we last told this client about each player (for delta compression).
+    last_sent: std::collections::HashMap<u32, PlayerState>,
 }
 
 struct Remote {
     interp: InterpBuffer,
     yaw: f32,
     last: PlayerState,
+    last_seen: u32,
+}
+
+/// Whether two player states differ enough to be worth re-sending (delta).
+fn state_differs(a: &PlayerState, b: &PlayerState) -> bool {
+    (a.x - b.x).abs() > 1e-3
+        || (a.y - b.y).abs() > 1e-3
+        || (a.z - b.z).abs() > 1e-3
+        || (a.yaw - b.yaw).abs() > 1e-3
+        || (a.vy - b.vy).abs() > 1e-3
 }
 
 /// One networking session (server or client).
@@ -114,6 +183,15 @@ pub struct Session {
     next_seq: u32,
     last_snap_tick: f32,
     remotes: Vec<(u32, Remote)>,
+    // Static world collision (shared by prediction + server).
+    walls: Vec<Aabb>,
+    // Server-side lag compensation: a rewindable history of player colliders.
+    lag: LagComp,
+    server_tick: u64,
+    last_server_tick: u32,
+    last_snap_players: usize,
+    // Last hitscan result (server: own shots; client: from a HIT packet).
+    last_hit: (i64, [f32; 3]),
 }
 
 impl Session {
@@ -147,7 +225,21 @@ impl Session {
             next_seq: 1,
             last_snap_tick: 0.0,
             remotes: Vec::new(),
+            walls: Vec::new(),
+            lag: LagComp::new(64),
+            server_tick: 0,
+            last_server_tick: 0,
+            last_snap_players: 0,
+            last_hit: (-1, [0.0; 3]),
         }
+    }
+
+    pub fn add_wall(&mut self, x: f32, y: f32, z: f32, hx: f32, hy: f32, hz: f32) {
+        self.walls.push(Aabb { cx: x, cy: y, cz: z, hx, hy, hz });
+    }
+    pub fn set_player_size(&mut self, radius: f32, half_height: f32) {
+        self.cfg.pr = radius.max(0.01);
+        self.cfg.ph = half_height.max(0.01);
     }
 
     pub fn local_addr(&self) -> SocketAddr {
@@ -157,18 +249,18 @@ impl Session {
     /// Apply this frame's input. On the server (host player) it is authoritative;
     /// on a client it predicts locally and sends the input to the server.
     pub fn send_input(&mut self, fwd: f32, strafe: f32, yaw: f32, jump: bool, dt: f32) -> u32 {
+        let cfg = self.cfg;
+        let walls = self.walls.clone();
         if self.is_server {
             let inp = Input { seq: 0, fwd, strafe, yaw, jump, dt };
-            let cfg = self.cfg;
-            apply_input(&mut self.host, &inp, &cfg);
+            apply_input(&mut self.host, &inp, &cfg, &walls);
             0
         } else {
             let seq = self.next_seq;
             self.next_seq += 1;
             let inp = Input { seq, fwd, strafe, yaw, jump, dt };
             // Predict immediately for a responsive local player.
-            let cfg = self.cfg;
-            apply_input(&mut self.pred, &inp, &cfg);
+            apply_input(&mut self.pred, &inp, &cfg, &walls);
             self.pending.push_back(inp);
             if let Some(addr) = self.server_addr {
                 let pkt = encode_input(&inp);
@@ -178,6 +270,33 @@ impl Session {
         }
     }
 
+    /// Fire a hitscan ray from `(o*)` along `(d*)`. On the host it resolves
+    /// authoritatively now; on a client it sends the shot with the view tick so
+    /// the server can lag-compensate, and the result arrives via `net_update`.
+    pub fn fire(&mut self, ox: f32, oy: f32, oz: f32, dx: f32, dy: f32, dz: f32) {
+        let o = [ox, oy, oz];
+        let d = [dx, dy, dz];
+        if self.is_server {
+            self.last_hit = match self.lag.raycast_at_tick(o, d, self.server_tick, 0) {
+                Some(h) => (
+                    h.entity as i64,
+                    [o[0] + d[0] * h.distance, o[1] + d[1] * h.distance, o[2] + d[2] * h.distance],
+                ),
+                None => (-1, [0.0; 3]),
+            };
+        } else if let Some(addr) = self.server_addr {
+            let vt = self.last_server_tick.saturating_sub(2);
+            let _ = self.sock.send_to(&encode_fire(vt, o, d), addr);
+        }
+    }
+
+    pub fn hit_player(&self) -> i64 {
+        self.last_hit.0
+    }
+    pub fn hit_point(&self) -> [f32; 3] {
+        self.last_hit.1
+    }
+
     pub fn update(&mut self, dt: f32) {
         // Drain incoming packets.
         loop {
@@ -185,9 +304,9 @@ impl Session {
                 Ok((n, from)) => {
                     let pkt = self.buf[..n].to_vec();
                     if self.is_server {
-                        self.on_input_packet(&pkt, from);
+                        self.on_server_packet(&pkt, from);
                     } else {
-                        self.on_snapshot_packet(&pkt);
+                        self.on_client_packet(&pkt);
                     }
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
@@ -198,37 +317,86 @@ impl Session {
         if self.is_server {
             // Apply each client's queued inputs authoritatively, then broadcast.
             let cfg = self.cfg;
+            let walls = self.walls.clone();
             for c in &mut self.clients {
                 while let Some(inp) = c.inbox.pop_front() {
-                    apply_input(&mut c.state, &inp, &cfg);
+                    apply_input(&mut c.state, &inp, &cfg, &walls);
                     c.acked_seq = inp.seq;
                 }
+            }
+            // Record collider history for lag-compensated hit validation.
+            self.server_tick += 1;
+            let st = self.server_tick;
+            let r = (cfg.pr * cfg.pr + cfg.ph * cfg.ph).sqrt();
+            self.lag.record(st, 0, [self.host.x, self.host.y + cfg.ph, self.host.z], r);
+            for c in &self.clients {
+                self.lag.record(st, c.id as u64, [c.state.x, c.state.y + cfg.ph, c.state.z], r);
             }
             self.tick += dt;
             self.broadcast();
             self.ids = std::iter::once(0u32).chain(self.clients.iter().map(|c| c.id)).collect();
         } else {
             self.tick += dt;
+            // Drop remotes we haven't heard about for a while (left interest /
+            // disconnected), so stale ghosts don't linger.
+            let now = self.last_server_tick;
+            self.remotes.retain(|(_, r)| now.saturating_sub(r.last_seen) <= 90);
             self.ids = std::iter::once(self.my_id).chain(self.remotes.iter().map(|(id, _)| *id)).collect();
         }
     }
 
-    fn broadcast(&self) {
-        // Snapshot of every player (host id 0 + each client).
-        let mut players: Vec<(u32, PlayerState)> = Vec::with_capacity(self.clients.len() + 1);
-        players.push((0, self.host));
+    pub fn last_snapshot_players(&self) -> usize {
+        self.last_snap_players
+    }
+
+    fn broadcast(&mut self) {
+        // All players (host id 0 + each client).
+        let mut all: Vec<(u32, PlayerState)> = Vec::with_capacity(self.clients.len() + 1);
+        all.push((0, self.host));
         for c in &self.clients {
-            players.push((c.id, c.state));
+            all.push((c.id, c.state));
         }
-        for c in &self.clients {
-            let pkt = encode_snapshot(c.id, c.acked_seq, self.tick, &players);
+        let interest2 = self.cfg.interest * self.cfg.interest;
+        // A periodic keyframe re-syncs everything regardless of the delta state.
+        let keyframe = self.server_tick % 30 == 0;
+        let tick = self.tick;
+        let stick = self.server_tick as u32;
+
+        for ci in 0..self.clients.len() {
+            let (cid, cpos, acked) = {
+                let c = &self.clients[ci];
+                (c.id, [c.state.x, c.state.y, c.state.z], c.acked_seq)
+            };
+            let mut included: Vec<(u32, PlayerState)> = Vec::new();
+            for (id, st) in &all {
+                // Interest management: skip players outside the client's radius
+                // (the client itself is always relevant).
+                if *id != cid {
+                    let d = [st.x - cpos[0], st.y - cpos[1], st.z - cpos[2]];
+                    if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > interest2 {
+                        continue;
+                    }
+                }
+                // Delta compression: only send players whose state changed since
+                // we last told this client (plus periodic keyframes).
+                let changed = self.clients[ci]
+                    .last_sent
+                    .get(id)
+                    .map(|p| state_differs(p, st))
+                    .unwrap_or(true);
+                if changed || keyframe {
+                    included.push((*id, *st));
+                    self.clients[ci].last_sent.insert(*id, *st);
+                }
+            }
+            let c = &self.clients[ci];
+            let pkt = encode_snapshot(cid, acked, tick, stick, &included);
             let _ = self.sock.send_to(&pkt, c.addr);
         }
     }
 
-    fn on_input_packet(&mut self, pkt: &[u8], from: SocketAddr) {
-        let Some(inp) = decode_input(pkt) else { return };
-        let idx = match self.clients.iter().position(|c| c.addr == from) {
+    fn ensure_client(&mut self, from: SocketAddr) -> usize {
+        match self.clients.iter().position(|c| c.addr == from) {
             Some(i) => i,
             None => {
                 let id = self.next_id;
@@ -239,17 +407,52 @@ impl Session {
                     state: PlayerState::spawn(),
                     inbox: VecDeque::new(),
                     acked_seq: 0,
+                    last_sent: std::collections::HashMap::new(),
                 });
                 self.clients.len() - 1
             }
-        };
-        self.clients[idx].inbox.push_back(inp);
+        }
     }
 
-    fn on_snapshot_packet(&mut self, pkt: &[u8]) {
-        let Some((your_id, acked, tick, players)) = decode_snapshot(pkt) else { return };
+    fn on_server_packet(&mut self, pkt: &[u8], from: SocketAddr) {
+        match pkt.first().copied() {
+            Some(TAG_INPUT) => {
+                let Some(inp) = decode_input(pkt) else { return };
+                let idx = self.ensure_client(from);
+                self.clients[idx].inbox.push_back(inp);
+            }
+            Some(TAG_FIRE) => {
+                let Some((vt, o, d)) = decode_fire(pkt) else { return };
+                let Some(shooter) = self.clients.iter().find(|c| c.addr == from).map(|c| c.id) else {
+                    return;
+                };
+                // Rewind colliders to the tick the shooter was seeing.
+                let tick = (vt as u64).min(self.server_tick);
+                let (id, point) = match self.lag.raycast_at_tick(o, d, tick, shooter as u64) {
+                    Some(h) => (
+                        h.entity as i64,
+                        [o[0] + d[0] * h.distance, o[1] + d[1] * h.distance, o[2] + d[2] * h.distance],
+                    ),
+                    None => (-1, [0.0; 3]),
+                };
+                let _ = self.sock.send_to(&encode_hit(id, point), from);
+            }
+            _ => {}
+        }
+    }
+
+    fn on_client_packet(&mut self, pkt: &[u8]) {
+        if pkt.first().copied() == Some(TAG_HIT) {
+            if let Some((id, p)) = decode_hit(pkt) {
+                self.last_hit = (id, p);
+            }
+            return;
+        }
+        let Some((your_id, acked, tick, stick, players)) = decode_snapshot(pkt) else { return };
         self.my_id = your_id;
         self.last_snap_tick = tick;
+        self.last_server_tick = stick;
+        self.last_snap_players = players.len();
         for (id, st) in players {
             if id == your_id {
                 // Reconcile: snap to authoritative, then replay unacked inputs.
@@ -258,21 +461,26 @@ impl Session {
                     self.pending.pop_front();
                 }
                 let cfg = self.cfg;
+                let walls = self.walls.clone();
                 let pending: Vec<Input> = self.pending.iter().copied().collect();
                 for inp in pending {
-                    apply_input(&mut self.pred, &inp, &cfg);
+                    apply_input(&mut self.pred, &inp, &cfg, &walls);
                 }
             } else {
                 let slot = match self.remotes.iter_mut().find(|(rid, _)| *rid == id) {
                     Some((_, r)) => r,
                     None => {
-                        self.remotes.push((id, Remote { interp: InterpBuffer::new(0.06), yaw: st.yaw, last: st }));
+                        self.remotes.push((
+                            id,
+                            Remote { interp: InterpBuffer::new(0.06), yaw: st.yaw, last: st, last_seen: stick },
+                        ));
                         &mut self.remotes.last_mut().unwrap().1
                     }
                 };
                 slot.interp.push(tick, [st.x, st.y, st.z]);
                 slot.yaw = st.yaw;
                 slot.last = st;
+                slot.last_seen = stick;
             }
         }
     }
@@ -323,7 +531,18 @@ impl Session {
         self.player_state(id).0.yaw as f64
     }
     pub fn set_cfg(&mut self, speed: f32, gravity: f32, jump: f32, ground: f32) {
-        self.cfg = Cfg { speed, gravity, jump, ground };
+        self.cfg = Cfg {
+            speed,
+            gravity,
+            jump,
+            ground,
+            pr: self.cfg.pr,
+            ph: self.cfg.ph,
+            interest: self.cfg.interest,
+        };
+    }
+    pub fn set_interest(&mut self, radius: f32) {
+        self.cfg.interest = radius.max(0.0);
     }
 }
 
@@ -367,12 +586,13 @@ fn decode_input(b: &[u8]) -> Option<Input> {
     })
 }
 
-fn encode_snapshot(your_id: u32, acked: u32, tick: f32, players: &[(u32, PlayerState)]) -> Vec<u8> {
-    let mut b = Vec::with_capacity(15 + players.len() * 24);
+fn encode_snapshot(your_id: u32, acked: u32, tick: f32, stick: u32, players: &[(u32, PlayerState)]) -> Vec<u8> {
+    let mut b = Vec::with_capacity(19 + players.len() * 24);
     b.push(TAG_SNAPSHOT);
     put_u32(&mut b, your_id);
     put_u32(&mut b, acked);
     put_f32(&mut b, tick);
+    put_u32(&mut b, stick);
     b.extend_from_slice(&(players.len() as u16).to_be_bytes());
     for (id, s) in players {
         put_u32(&mut b, *id);
@@ -384,16 +604,17 @@ fn encode_snapshot(your_id: u32, acked: u32, tick: f32, players: &[(u32, PlayerS
     }
     b
 }
-fn decode_snapshot(b: &[u8]) -> Option<(u32, u32, f32, Vec<(u32, PlayerState)>)> {
-    if b.len() < 15 || b[0] != TAG_SNAPSHOT {
+fn decode_snapshot(b: &[u8]) -> Option<(u32, u32, f32, u32, Vec<(u32, PlayerState)>)> {
+    if b.len() < 19 || b[0] != TAG_SNAPSHOT {
         return None;
     }
     let your_id = rd_u32(b, 1);
     let acked = rd_u32(b, 5);
     let tick = rd_f32(b, 9);
-    let count = u16::from_be_bytes([b[13], b[14]]) as usize;
+    let stick = rd_u32(b, 13);
+    let count = u16::from_be_bytes([b[17], b[18]]) as usize;
     let mut players = Vec::with_capacity(count);
-    let mut o = 15;
+    let mut o = 19;
     for _ in 0..count {
         if o + 24 > b.len() {
             break;
@@ -410,7 +631,42 @@ fn decode_snapshot(b: &[u8]) -> Option<(u32, u32, f32, Vec<(u32, PlayerState)>)>
         players.push((id, st));
         o += 24;
     }
-    Some((your_id, acked, tick, players))
+    Some((your_id, acked, tick, stick, players))
+}
+
+fn encode_fire(view_tick: u32, o: [f32; 3], d: [f32; 3]) -> Vec<u8> {
+    let mut b = Vec::with_capacity(29);
+    b.push(TAG_FIRE);
+    put_u32(&mut b, view_tick);
+    for v in o.iter().chain(d.iter()) {
+        put_f32(&mut b, *v);
+    }
+    b
+}
+fn decode_fire(b: &[u8]) -> Option<(u32, [f32; 3], [f32; 3])> {
+    if b.len() < 29 || b[0] != TAG_FIRE {
+        return None;
+    }
+    let vt = rd_u32(b, 1);
+    let o = [rd_f32(b, 5), rd_f32(b, 9), rd_f32(b, 13)];
+    let d = [rd_f32(b, 17), rd_f32(b, 21), rd_f32(b, 25)];
+    Some((vt, o, d))
+}
+fn encode_hit(id: i64, p: [f32; 3]) -> Vec<u8> {
+    let mut b = Vec::with_capacity(17);
+    b.push(TAG_HIT);
+    b.extend_from_slice(&(id as i32).to_be_bytes());
+    for v in p {
+        put_f32(&mut b, v);
+    }
+    b
+}
+fn decode_hit(b: &[u8]) -> Option<(i64, [f32; 3])> {
+    if b.len() < 17 || b[0] != TAG_HIT {
+        return None;
+    }
+    let id = i32::from_be_bytes([b[1], b[2], b[3], b[4]]) as i64;
+    Some((id, [rd_f32(b, 5), rd_f32(b, 9), rd_f32(b, 13)]))
 }
 
 // --- thread-local session + C-ABI builtins ---
@@ -464,6 +720,36 @@ pub extern "C" fn aurora_net_config(speed: f64, gravity: f64, jump: f64, ground:
     });
 }
 
+/// Register a static collision box (center + half-extents) for net movement.
+#[no_mangle]
+pub extern "C" fn aurora_net_add_wall(x: f64, y: f64, z: f64, hx: f64, hy: f64, hz: f64) {
+    NET.with(|n| {
+        if let Some(s) = n.borrow_mut().as_mut() {
+            s.add_wall(x as f32, y as f32, z as f32, hx as f32, hy as f32, hz as f32);
+        }
+    });
+}
+
+/// Set the player collision capsule-ish box: radius (x/z) and half-height (y).
+#[no_mangle]
+pub extern "C" fn aurora_net_player_size(radius: f64, half_height: f64) {
+    NET.with(|n| {
+        if let Some(s) = n.borrow_mut().as_mut() {
+            s.set_player_size(radius as f32, half_height as f32);
+        }
+    });
+}
+
+/// Set the interest radius: clients are only told about players within it.
+#[no_mangle]
+pub extern "C" fn aurora_net_interest(radius: f64) {
+    NET.with(|n| {
+        if let Some(s) = n.borrow_mut().as_mut() {
+            s.set_interest(radius as f32);
+        }
+    });
+}
+
 /// Submit this frame's input; returns the input sequence number (0 on the host).
 #[no_mangle]
 pub extern "C" fn aurora_net_send_input(fwd: f64, strafe: f64, yaw: f64, jump: i64, dt: f64) -> i64 {
@@ -484,6 +770,31 @@ pub extern "C" fn aurora_net_update(dt: f64) {
         }
     });
 }
+
+/// Fire a hitscan shot from origin `(ox,oy,oz)` along direction `(dx,dy,dz)`.
+#[allow(clippy::too_many_arguments)]
+#[no_mangle]
+pub extern "C" fn aurora_net_fire(ox: f64, oy: f64, oz: f64, dx: f64, dy: f64, dz: f64) {
+    NET.with(|n| {
+        if let Some(s) = n.borrow_mut().as_mut() {
+            s.fire(ox as f32, oy as f32, oz as f32, dx as f32, dy as f32, dz as f32);
+        }
+    });
+}
+/// The player id hit by the last shot (server-validated), or -1.
+#[no_mangle]
+pub extern "C" fn aurora_net_hit_player() -> i64 {
+    NET.with(|n| n.borrow().as_ref().map(|s| s.hit_player()).unwrap_or(-1))
+}
+fn hit_axis(i: usize) -> f64 {
+    NET.with(|n| n.borrow().as_ref().map(|s| s.hit_point()[i] as f64).unwrap_or(0.0))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_hit_x() -> f64 { hit_axis(0) }
+#[no_mangle]
+pub extern "C" fn aurora_net_hit_y() -> f64 { hit_axis(1) }
+#[no_mangle]
+pub extern "C" fn aurora_net_hit_z() -> f64 { hit_axis(2) }
 
 #[no_mangle]
 pub extern "C" fn aurora_net_my_id() -> i64 {
@@ -583,6 +894,103 @@ mod tests {
         // Client's predicted/reconciled z matches the server's (no drift).
         let client_z = client.pz(cid);
         assert!((client_z - server_z).abs() < 0.5, "client {client_z} should converge to server {server_z}");
+    }
+
+    #[test]
+    fn net_movement_collides_with_a_wall() {
+        // A wall at z = -3 blocks a player walking forward (-z); the shared model
+        // resolves it identically for the host (authoritative) here.
+        let mut server = Session::host(0).unwrap();
+        server.add_wall(0.0, 1.0, -3.0, 5.0, 1.0, 0.5); // spans z in [-3.5, -2.5]
+        let dt = 1.0 / 60.0;
+        for _ in 0..180 {
+            server.send_input(1.0, 0.0, 0.0, false, dt); // walk forward forever
+        }
+        let z = server.pz(0);
+        // Without the wall the host would reach z ~ -24; the wall stops it near
+        // its front face (-2.5) minus the player radius.
+        assert!(z > -3.0, "wall should stop the player, got z={z}");
+        assert!(z < -1.5, "player should reach the wall, got z={z}");
+    }
+
+    #[test]
+    fn lag_compensated_shot_hits_a_target() {
+        use std::f32::consts::PI;
+        let mut server = Session::host(0).unwrap();
+        let saddr = server.local_addr();
+        let mut a = Session::join(saddr).unwrap(); // shooter, stays at origin
+        let mut b = Session::join(saddr).unwrap(); // target, walks +x
+        let dt = 1.0 / 60.0;
+
+        for _ in 0..90 {
+            server.send_input(1.0, 0.0, -PI / 2.0, false, dt); // host walks -x, out of the way
+            a.send_input(0.0, 0.0, 0.0, false, dt);
+            b.send_input(1.0, 0.0, PI / 2.0, false, dt); // B walks +x
+            a.update(dt);
+            b.update(dt);
+            server.update(dt);
+            std::thread::sleep(std::time::Duration::from_micros(300));
+            a.update(dt);
+            b.update(dt);
+        }
+        let bid = b.my_id();
+        assert!(bid >= 1);
+
+        // A fires from its eye straight along +x, where B is.
+        a.fire(0.0, 0.9, 0.0, 1.0, 0.0, 0.0);
+        for _ in 0..10 {
+            a.update(dt);
+            server.update(dt);
+            std::thread::sleep(std::time::Duration::from_micros(300));
+            a.update(dt);
+        }
+        assert_eq!(a.hit_player(), bid as i64, "the rewound shot should hit B");
+        assert!(a.hit_point()[0] > 0.5, "hit point should be out along +x, got {:?}", a.hit_point());
+    }
+
+    #[test]
+    fn interest_management_culls_distant_players() {
+        use std::f32::consts::PI;
+        let mut server = Session::host(0).unwrap();
+        server.set_interest(5.0); // tiny radius
+        let saddr = server.local_addr();
+        let mut a = Session::join(saddr).unwrap();
+        let mut b = Session::join(saddr).unwrap();
+        let dt = 1.0 / 60.0;
+        // B walks far away (+x) past the interest radius; A stays put.
+        for _ in 0..150 {
+            server.send_input(1.0, 0.0, -PI / 2.0, false, dt); // host away (-x)
+            a.send_input(0.0, 0.0, 0.0, false, dt);
+            b.send_input(1.0, 0.0, PI / 2.0, false, dt);
+            a.update(dt);
+            b.update(dt);
+            server.update(dt);
+            std::thread::sleep(std::time::Duration::from_micros(300));
+            a.update(dt);
+            b.update(dt);
+        }
+        // A should no longer see B (out of interest) -> only itself.
+        assert_eq!(a.player_count(), 1, "A should have culled the distant B");
+    }
+
+    #[test]
+    fn delta_compression_shrinks_idle_snapshots() {
+        let mut server = Session::host(0).unwrap();
+        let saddr = server.local_addr();
+        let mut a = Session::join(saddr).unwrap();
+        let dt = 1.0 / 60.0;
+        // Register, then go idle and let several non-keyframe ticks pass.
+        for _ in 0..40 {
+            a.send_input(0.0, 0.0, 0.0, false, dt); // no movement
+            a.update(dt);
+            server.update(dt);
+            std::thread::sleep(std::time::Duration::from_micros(300));
+            a.update(dt);
+        }
+        // An idle player produces empty (delta) snapshots between keyframes; over
+        // many ticks the client must have received at least one zero-player one.
+        // (We can't observe every packet, but the latest should reflect delta.)
+        assert!(a.last_snapshot_players() <= 1, "idle snapshots should be delta-compressed, got {}", a.last_snapshot_players());
     }
 
     #[test]
