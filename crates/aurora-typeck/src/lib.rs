@@ -55,6 +55,9 @@ struct Typeck {
     fn_bounds: HashMap<String, Vec<(String, String)>>,
     /// User-defined type names (structs/components/enums) — shadow builtins.
     user_types: std::collections::HashSet<String>,
+    /// The declared return type of the function currently being checked, if it
+    /// was written explicitly — used to check `return expr` against it.
+    cur_ret: Option<Ty>,
 }
 
 impl Typeck {
@@ -71,6 +74,7 @@ impl Typeck {
             trait_impls: std::collections::HashSet::new(),
             fn_bounds: HashMap::new(),
             user_types: std::collections::HashSet::new(),
+            cur_ret: None,
         }
     }
 
@@ -199,13 +203,18 @@ impl Typeck {
                 Param::SelfParam { .. } => self.bind("self", Ty::Named("Self".into())),
             }
         }
+        // Make the declared return type available to `return expr` checks.
+        let declared_ret =
+            f.ret.as_ref().map(|ret| convert::type_to_ty(ret, &mut self.cx, &self.user_types));
+        let prev_ret = self.cur_ret.take();
+        self.cur_ret = declared_ret.clone();
         let body_ty = self.check_block_no_scope(body);
         // Only enforce the return type when it was written explicitly.
-        if let Some(ret) = &f.ret {
-            let ret_ty = convert::type_to_ty(ret, &mut self.cx, &self.user_types);
+        if let Some(ret_ty) = &declared_ret {
             let span = body.tail.as_ref().map(|e| e.span).unwrap_or(body.span);
-            self.expect(span, &ret_ty, &body_ty, "function return value");
+            self.expect(span, ret_ty, &body_ty, "function return value");
         }
+        self.cur_ret = prev_ret;
         self.pop();
     }
 
@@ -437,11 +446,21 @@ impl Typeck {
                 Ty::Unit
             }
             ExprKind::Region { value, .. } => self.infer(value),
-            ExprKind::Return(opt) | ExprKind::Break(opt) => {
+            ExprKind::Return(opt) => {
+                let actual = opt.as_ref().map(|inner| (inner.span, self.infer(inner)));
+                // Check the returned value against the function's declared return.
+                if let (Some(ret_ty), Some((span, actual))) = (self.cur_ret.clone(), &actual) {
+                    if !is_unknown(actual) {
+                        self.expect(*span, &ret_ty, actual, "returned value");
+                    }
+                }
+                // Diverging expressions: a fresh var unifies with any context.
+                self.cx.fresh()
+            }
+            ExprKind::Break(opt) => {
                 if let Some(inner) = opt {
                     self.infer(inner);
                 }
-                // Diverging expressions: a fresh var unifies with any context.
                 self.cx.fresh()
             }
             ExprKind::Continue => self.cx.fresh(),
@@ -563,6 +582,16 @@ impl Typeck {
                         for (param, (span, actual)) in params.iter().zip(&arg_tys) {
                             self.expect(*span, param, actual, "function argument");
                         }
+                    } else {
+                        self.diags.push(
+                            Diagnostic::error(format!(
+                                "`{name}` expects {} argument(s), found {}",
+                                params.len(),
+                                arg_tys.len()
+                            ))
+                            .with_code("E0312")
+                            .primary(p.span, "wrong number of arguments"),
+                        );
                     }
                     // Enforce trait bounds: each bounded generic param's resolved
                     // concrete (named) type must `impl` the required trait.
