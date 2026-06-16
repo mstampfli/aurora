@@ -103,14 +103,15 @@ fn run_sim(sim_fn: usize, sim_env: usize, state: &mut [f32; STATE_MAX], input: &
 
 impl Session {
     pub fn host(port: u16) -> std::io::Result<Session> {
-        // Bind all interfaces so real LAN/Internet clients can connect, not just
-        // loopback. (Falls back to loopback for solo play automatically.)
-        let sock = UdpSocket::bind(("0.0.0.0", port))?;
+        // Bind loopback: works for solo play and local multi-client testing, and
+        // does NOT trip the OS firewall prompt that binding all interfaces does.
+        // (Switch to 0.0.0.0 when real LAN/Internet play is actually wired up.)
+        let sock = UdpSocket::bind(("127.0.0.1", port))?;
         sock.set_nonblocking(true)?;
         Ok(Session::base(sock, true, None))
     }
     pub fn join(addr: SocketAddr) -> std::io::Result<Session> {
-        let sock = UdpSocket::bind(("0.0.0.0", 0))?;
+        let sock = UdpSocket::bind(("127.0.0.1", 0))?;
         sock.set_nonblocking(true)?;
         Ok(Session::base(sock, false, Some(addr)))
     }
