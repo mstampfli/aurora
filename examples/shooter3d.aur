@@ -13,6 +13,7 @@ fn main() {
     r3d_sky(1, 0.30, 0.50, 0.85, 0.70, 0.80, 0.92)
     r3d_light(0.4, 1.0, 0.3, 1.0, 0.97, 0.9, 0.25)
     r3d_shadows(1)
+    r3d_ssao(1)
     r3d_fog(0.70, 0.80, 0.92, 0.010)
 
     // Renderable primitives.

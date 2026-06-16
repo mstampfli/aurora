@@ -151,15 +151,18 @@ window. Colors are 0..1 floats; angles are radians; handles are `i64`.
 
 A frame loop is `while r3d_present() { r3d_begin(); ...camera/draw...; }`. See
 [`examples/shooter3d.aur`](../examples/shooter3d.aur). Materials are physically
-based (metallic/roughness, normal maps, emissive, all read from glTF); the
-renderer applies 4x MSAA automatically.
+based (metallic/roughness, normal maps, emissive, all read from glTF) with
+image-based lighting + reflections from the sky; the renderer applies 4x MSAA,
+cascaded shadows, and (optionally) SSAO automatically.
 
 More rendering controls:
 
 | Builtin | Signature | Notes |
 |---|---|---|
 | `r3d_sky(on, tr,tg,tb, hr,hg,hb)` | procedural sky | zenith + horizon colors, sun from the light |
-| `r3d_shadows(on)` | directional shadow map (PCF) | on by default |
+| `r3d_shadows(on)` | cascaded directional shadow maps (PCF) | on by default |
+| `r3d_ssao(on)` | screen-space ambient occlusion | off by default |
+| `r3d_point_shadows(on)` | omnidirectional shadows for the key point light | off by default |
 | `r3d_fog(r,g,b, density)` | exponential distance fog | density 0 = off |
 | `r3d_point_light(x,y,z, r,g,b, range, intensity)` | add a point light | up to 16; `r3d_clear_lights()` resets |
 | `r3d_make_sprite(r,g,b) -> i64` / `r3d_draw_billboard(h, x,y,z, size)` | camera-facing billboard | particles, markers |
