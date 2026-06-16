@@ -265,10 +265,18 @@ pub extern "C" fn aurora_phys3d_move_character(h: i64, dx: f64, dy: f64, dz: f64
         let idx = h.max(0) as usize;
         let (Some(&col_h), Some(&body_h)) = (p.cols.get(idx), p.handles.get(idx)) else { return };
         let desired = vector![dx as Real, dy as Real, dz as Real];
+        // Use the BODY's current translation as the shape's start position, not
+        // the collider's cached pose. The collider pose only syncs during a step,
+        // so if the caller just teleported the body with `phys3d_set_pos` (the
+        // rollback-safe pattern: write the authoritative position in each tick),
+        // the collider is still stale. The body translation reflects `set_pos`
+        // immediately, so the slide starts from the right place.
+        let body_t = p.bodies.get(body_h).map(|b| *b.translation()).unwrap_or(desired);
         let (new_t, grounded) = {
             let Some(collider) = p.colliders.get(col_h) else { return };
             let shape = collider.shape();
-            let pos = *collider.position();
+            let mut pos = *collider.position();
+            pos.translation.vector = body_t;
             let filter = QueryFilter::default().exclude_collider(col_h);
             let mvt = p.controller.move_shape(
                 dt as Real, &p.bodies, &p.colliders, &p.query, shape, &pos, desired, filter, |_| {},
@@ -326,6 +334,38 @@ pub extern "C" fn aurora_phys3d_raycast_full(
         let hit = p.query.cast_ray_and_get_normal(
             &p.bodies, &p.colliders, &ray, max as Real, true, QueryFilter::default(),
         );
+        match hit {
+            Some((ch, inter)) => {
+                let pt = ray.point_at(inter.time_of_impact);
+                p.hit_point = [pt.x as f64, pt.y as f64, pt.z as f64];
+                p.hit_normal = [inter.normal.x as f64, inter.normal.y as f64, inter.normal.z as f64];
+                p.hit_body = col_index(p, ch);
+                p.hit_body
+            }
+            None => {
+                p.hit_body = -1;
+                -1
+            }
+        }
+    })
+}
+
+/// Like `raycast_full`, but excludes one character/body's own collider (by its
+/// handle). Lets a body probe outward from its own centre - e.g. a wallrun side
+/// cast - without immediately hitting itself. Records hit point + normal too.
+#[no_mangle]
+pub extern "C" fn aurora_phys3d_raycast_ex(
+    exclude: i64, x: f64, y: f64, z: f64, dx: f64, dy: f64, dz: f64, max: f64,
+) -> i64 {
+    PHYS3.with(|p| {
+        let mut p = p.borrow_mut();
+        let Some(p) = p.as_mut() else { return -1 };
+        let filter = match p.cols.get(exclude.max(0) as usize).copied() {
+            Some(ch) => QueryFilter::default().exclude_collider(ch),
+            None => QueryFilter::default(),
+        };
+        let ray = Ray::new(point![x as Real, y as Real, z as Real], vector![dx as Real, dy as Real, dz as Real]);
+        let hit = p.query.cast_ray_and_get_normal(&p.bodies, &p.colliders, &ray, max as Real, true, filter);
         match hit {
             Some((ch, inter)) => {
                 let pt = ray.point_at(inter.time_of_impact);
