@@ -88,6 +88,13 @@ same movement model, so they cannot drift.
 | `net_player_count() -> i64` / `net_player_id_at(i) -> i64` | iterate players | |
 | `net_player_x/y/z/yaw(id) -> f64` | a player's transform | predicted for the local player, interpolated for remotes |
 | `net_local_x/y/z/yaw() -> f64` | the local player's transform | shorthand for the predicted self |
+| `net_add_wall(x,y,z, hx,hy,hz)` / `net_player_size(r, h)` | static collision + player box | movement collides + slides; register walls on every peer |
+| `net_interest(radius)` | relevancy radius | clients are only told about players within it |
+| `net_fire(ox,oy,oz, dx,dy,dz)` | lag-compensated hitscan | server rewinds targets to the shooter's view |
+| `net_hit_player() -> i64` / `net_hit_x/y/z() -> f64` | last validated hit | player id (-1 none) + world point |
+
+Snapshots are **delta-compressed** (only changed, in-interest players, with periodic
+keyframes), so idle players cost almost nothing.
 
 A loop: each frame build input from keys/mouse, `net_send_input(...)`,
 `net_update(dt)`, point the camera at `net_local_*`, and draw every player with

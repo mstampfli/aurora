@@ -21,13 +21,22 @@ fn main() {
     let body_vis = r3d_make_box(0.4, 0.9, 0.4)
     let spark = r3d_make_sprite(1.0, 0.85, 0.3)
 
+    let crate_vis = r3d_make_box(0.6, 0.45, 0.3)
+
     // Movement tuning shared by client prediction and the server.
     net_config(8.0, 22.0, 9.0, 0.0)
+    net_player_size(0.4, 0.9)
     if is_host == 1 {
         net_host(7777)
     } else {
         net_join("127.0.0.1", 7777)
     }
+
+    // Static cover: collision boxes (shared movement collides with these) + the
+    // visuals. Walls must be registered identically on every peer.
+    net_add_wall(6.0, 1.0, -4.0, 1.0, 1.0, 1.0)
+    net_add_wall(-5.0, 1.0, 3.0, 1.0, 1.0, 1.0)
+    net_add_wall(0.0, 1.5, -12.0, 3.0, 1.5, 1.0)
 
     let yaw = 0.0
     let pitch = 0.0
@@ -79,13 +88,21 @@ fn main() {
         let eye = py + 0.6
         r3d_camera(px, eye, pz, px + fx, eye + fy, pz + fz, 80.0)
 
-        // Shoot: a tracer along the look ray.
+        // Shoot: a lag-compensated hitscan, validated by the server.
         if mouse_button(0) == 1 {
+            net_fire(px, eye, pz, fx, fy, fz)
             r3d_debug_line(px, eye - 0.1, pz, px + fx * 80.0, eye + fy * 80.0, pz + fz * 80.0, 1.0, 0.9, 0.4)
         }
+        // The server reports the validated hit; show a spark on the victim.
+        if net_hit_player() >= 0 {
+            r3d_draw_billboard(spark, net_hit_x(), net_hit_y(), net_hit_z(), 0.5)
+        }
 
-        // Draw the world and every other player (interpolated from snapshots).
+        // Draw the world, cover, and every other player (interpolated).
         r3d_draw(ground_vis, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+        r3d_draw(crate_vis, 6.0, 1.0, -4.0, 0.0, 0.0, 0.0, 1.0)
+        r3d_draw(crate_vis, -5.0, 1.0, 3.0, 0.0, 0.0, 0.0, 1.0)
+        r3d_draw(crate_vis, 0.0, 1.5, -12.0, 0.0, 0.0, 0.0, 3.0)
         let n = net_player_count()
         let me = net_my_id()
         let i = 0
