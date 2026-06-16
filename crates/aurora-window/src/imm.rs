@@ -257,6 +257,10 @@ pub fn present(rgba: &[u8]) -> bool {
     IMM.with(|s| {
         let mut slot = s.borrow_mut();
         let Some((event_loop, app)) = slot.as_mut() else { return false };
+        // Clear last frame's per-frame input (mouse delta, scroll) BEFORE pumping,
+        // so the deltas accumulated this pump survive for the caller to read after
+        // present returns. Resetting after the pump would zero them first.
+        reset_frame_input(app);
         event_loop.pump_app_events(Some(Duration::ZERO), app);
         if app.open {
             // Only upload when the buffer matches the window's framebuffer size.
@@ -267,7 +271,6 @@ pub fn present(rgba: &[u8]) -> bool {
                 }
             }
         }
-        reset_frame_input(app);
         app.open
     })
 }
@@ -488,13 +491,15 @@ pub fn r3d_present(hud_rgba: &[u8]) -> bool {
     IMM.with(|s| {
         let mut slot = s.borrow_mut();
         let Some((event_loop, app)) = slot.as_mut() else { return false };
+        // Reset per-frame input before pumping so this frame's mouse/scroll delta
+        // survives for the caller to read after present returns (see `present`).
+        reset_frame_input(app);
         event_loop.pump_app_events(Some(Duration::ZERO), app);
         if app.open {
             if let Some(g) = app.gfx.as_mut() {
                 g.present_scene(hud_rgba);
             }
         }
-        reset_frame_input(app);
         app.open
     })
 }
