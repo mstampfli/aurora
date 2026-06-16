@@ -99,6 +99,12 @@ impl Scene {
     pub fn set_shadows(&mut self, on: bool) {
         self.renderer.set_shadows(on);
     }
+    pub fn set_ssao(&mut self, on: bool) {
+        self.renderer.set_ssao(on);
+    }
+    pub fn set_point_shadows(&mut self, on: bool) {
+        self.renderer.set_point_shadows(on);
+    }
     pub fn clear_point_lights(&mut self) {
         self.renderer.clear_point_lights();
     }

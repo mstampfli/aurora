@@ -15,6 +15,7 @@ const OBJ_ALIGN: u64 = 256;
 const JOINT_BYTES: u64 = (MAX_JOINTS * 64) as u64;
 const SHADOW_SIZE: u32 = 2048;
 const NUM_CASCADES: usize = 3;
+const PCUBE_SIZE: u32 = 1024;
 
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
@@ -182,6 +183,14 @@ pub struct Renderer3D {
     ao_layout: wgpu::BindGroupLayout,
     ssao_layout: wgpu::BindGroupLayout,
     blur_layout: wgpu::BindGroupLayout,
+    // Point-light shadows.
+    point_shadows_on: bool,
+    pshadow_pipeline: wgpu::RenderPipeline,
+    pshadow_g_bg: wgpu::BindGroup,
+    pshadow_buf: wgpu::Buffer,
+    pshadow_face_views: Vec<wgpu::TextureView>,
+    pshadow_depth: wgpu::TextureView,
+    pshadow_bg: wgpu::BindGroup,
 
     meshes: Vec<GpuMesh>,
     mesh_radius: Vec<f32>,
@@ -298,6 +307,27 @@ impl Renderer3D {
             // is unused by fs_blur and pruned.
             entries: &[tex_entry(1), samp_entry(2)],
         });
+        // Point-light shadow cube (group 4) + the per-face uniform (binding 5).
+        let pshadow_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("pshadow"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::Cube,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                samp_entry(1),
+            ],
+        });
+        let pshadow_g_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("pshadow-face"),
+            entries: &[uniform_entry(5, wgpu::ShaderStages::VERTEX_FRAGMENT, true, Some(80))],
+        });
 
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("render3d"),
@@ -309,7 +339,7 @@ impl Renderer3D {
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("render3d"),
-            bind_group_layouts: &[&globals_layout, &obj_layout, &mat_layout, &ao_layout],
+            bind_group_layouts: &[&globals_layout, &obj_layout, &mat_layout, &ao_layout, &pshadow_layout],
             push_constant_ranges: &[],
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -551,8 +581,8 @@ impl Renderer3D {
         let inst_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("inst"),
             // Same group indices as the main pipeline (globals=0, object=1 unused,
-            // material=2, ao=3) so the shared bindings keep their @group.
-            bind_group_layouts: &[&globals_layout, &obj_layout, &mat_layout, &ao_layout],
+            // material=2, ao=3, point-shadow=4) so shared bindings keep their @group.
+            bind_group_layouts: &[&globals_layout, &obj_layout, &mat_layout, &ao_layout, &pshadow_layout],
             push_constant_ranges: &[],
         });
         let inst_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -729,6 +759,93 @@ impl Renderer3D {
         });
         let ssao = build_ssao(device, &ssao_layout, &blur_layout, &ao_layout, &globals_buf, &sampler, w.max(1), h.max(1));
 
+        // Point-light shadow cube: 6 faces of distance-to-light (R16Float).
+        let pcube_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("pcube"),
+            size: wgpu::Extent3d { width: PCUBE_SIZE, height: PCUBE_SIZE, depth_or_array_layers: 6 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R16Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let pshadow_face_views: Vec<wgpu::TextureView> = (0..6)
+            .map(|i| {
+                pcube_tex.create_view(&wgpu::TextureViewDescriptor {
+                    label: Some("pcube-face"),
+                    dimension: Some(wgpu::TextureViewDimension::D2),
+                    base_array_layer: i,
+                    array_layer_count: Some(1),
+                    ..Default::default()
+                })
+            })
+            .collect();
+        let pcube_view = pcube_tex.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("pcube"),
+            dimension: Some(wgpu::TextureViewDimension::Cube),
+            ..Default::default()
+        });
+        let pshadow_depth = device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("pcube-depth"),
+                size: wgpu::Extent3d { width: PCUBE_SIZE, height: PCUBE_SIZE, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: DEPTH_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            })
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let pshadow_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("pcube-faces"),
+            size: 6 * 256,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let pshadow_g_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("pcube-face"),
+            layout: &pshadow_g_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 5,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &pshadow_buf,
+                    offset: 0,
+                    size: Some(std::num::NonZeroU64::new(80).unwrap()),
+                }),
+            }],
+        });
+        let pshadow_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("pcube"),
+            layout: &pshadow_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&pcube_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+            ],
+        });
+        let pshadow_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("pshadow"),
+            bind_group_layouts: &[&pshadow_g_layout, &obj_layout],
+            push_constant_ranges: &[],
+        });
+        let pshadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("pshadow"),
+            layout: Some(&pshadow_pl),
+            vertex: wgpu::VertexState { module: &module, entry_point: "vs_pshadow", compilation_options: Default::default(), buffers: &[Vertex::LAYOUT] },
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: "fs_pshadow",
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::R16Float, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+            }),
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, front_face: wgpu::FrontFace::Ccw, ..Default::default() },
+            depth_stencil: Some(wgpu::DepthStencilState { format: DEPTH_FORMAT, depth_write_enabled: true, depth_compare: wgpu::CompareFunction::Less, stencil: Default::default(), bias: Default::default() }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
         let globals = GlobalsU {
             view_proj: Mat4::IDENTITY.to_cols_array_2d(),
             csm_vp: [Mat4::IDENTITY.to_cols_array_2d(); 4],
@@ -788,6 +905,13 @@ impl Renderer3D {
             ao_layout,
             ssao_layout,
             blur_layout,
+            point_shadows_on: false,
+            pshadow_pipeline,
+            pshadow_g_bg,
+            pshadow_buf,
+            pshadow_face_views,
+            pshadow_depth,
+            pshadow_bg,
             meshes: Vec::new(),
             mesh_radius: Vec::new(),
             materials: Vec::new(),
@@ -819,6 +943,11 @@ impl Renderer3D {
     /// Toggle screen-space ambient occlusion.
     pub fn set_ssao(&mut self, on: bool) {
         self.ssao_on = on;
+    }
+
+    /// Toggle omnidirectional shadows for the first (key) point light.
+    pub fn set_point_shadows(&mut self, on: bool) {
+        self.point_shadows_on = on;
     }
 
     pub fn set_camera(&mut self, view_proj: Mat4, cam_pos: Vec3) {
@@ -1021,6 +1150,8 @@ impl Renderer3D {
             csm_bytes[i * 256..i * 256 + 64].copy_from_slice(bytemuck::bytes_of(&vp.to_cols_array()));
         }
         self.globals.counts[1] = if self.shadows_on { 1.0 } else { 0.0 };
+        let do_pshadow = self.point_shadows_on && self.globals.counts[0] >= 1.0;
+        self.globals.counts[3] = if do_pshadow { 1.0 } else { 0.0 };
         self.globals.screen = [
             self.depth_size.0 as f32,
             self.depth_size.1 as f32,
@@ -1219,6 +1350,64 @@ impl Renderer3D {
             }
         }
 
+        // Point-light shadow cube: render distance-to-light from light 0 across
+        // the 6 cube faces.
+        if do_pshadow {
+            let lp = Vec3::new(
+                self.globals.lights[0].pos_range[0],
+                self.globals.lights[0].pos_range[1],
+                self.globals.lights[0].pos_range[2],
+            );
+            let far = self.globals.lights[0].pos_range[3].max(1.0);
+            let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.05, far);
+            let faces = [
+                (Vec3::X, -Vec3::Y),
+                (-Vec3::X, -Vec3::Y),
+                (Vec3::Y, Vec3::Z),
+                (-Vec3::Y, -Vec3::Z),
+                (Vec3::Z, -Vec3::Y),
+                (-Vec3::Z, -Vec3::Y),
+            ];
+            let mut pf_bytes = vec![0u8; 6 * 256];
+            for (i, (dir, up)) in faces.iter().enumerate() {
+                let vp = proj * Mat4::look_at_rh(lp, lp + *dir, *up);
+                pf_bytes[i * 256..i * 256 + 64].copy_from_slice(bytemuck::bytes_of(&vp.to_cols_array()));
+                pf_bytes[i * 256 + 64..i * 256 + 80]
+                    .copy_from_slice(bytemuck::bytes_of(&[lp.x, lp.y, lp.z, 1.0f32]));
+            }
+            queue.write_buffer(&self.pshadow_buf, 0, &pf_bytes);
+            for face in 0..6 {
+                let off = (face * 256) as u32;
+                let mut fp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("pshadow"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &self.pshadow_face_views[face],
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color { r: far as f64, g: far as f64, b: far as f64, a: far as f64 }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &self.pshadow_depth,
+                        depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                fp.set_pipeline(&self.pshadow_pipeline);
+                fp.set_bind_group(0, &self.pshadow_g_bg, &[off]);
+                for (ci, &(obj_off, joint_off)) in offsets.iter().enumerate() {
+                    let m = &self.meshes[self.queue_cmds[ci].mesh];
+                    fp.set_bind_group(1, &self.obj_bg, &[obj_off, joint_off]);
+                    fp.set_vertex_buffer(0, m.vbuf.slice(..));
+                    fp.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                    fp.draw_indexed(0..m.index_count, 0, 0..1);
+                }
+            }
+        }
+
         // With MSAA, render into the multisampled color target and resolve into
         // the caller's view; otherwise render straight into it.
         let (attach_view, resolve) = match &self.msaa_color {
@@ -1260,6 +1449,7 @@ impl Renderer3D {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.globals_bg, &[]);
         pass.set_bind_group(3, ao_bg, &[]);
+        pass.set_bind_group(4, &self.pshadow_bg, &[]);
         let planes = frustum_planes(Mat4::from_cols_array_2d(&self.globals.view_proj));
         let mut drawn = 0usize;
         for &ci in &order {
@@ -1293,6 +1483,7 @@ impl Renderer3D {
             // to satisfy the layout; the ring's slot 0 is a valid dummy.
             pass.set_bind_group(1, &self.obj_bg, &[0, 0]);
             pass.set_bind_group(3, ao_bg, &[]);
+            pass.set_bind_group(4, &self.pshadow_bg, &[]);
             pass.set_vertex_buffer(1, self.inst_buf.slice(..));
             for (mesh, material, start, count) in &inst_ranges {
                 let m = &self.meshes[*mesh];
@@ -1583,6 +1774,11 @@ struct MatU { base_color: vec4<f32>, emissive: vec4<f32>, mr: vec4<f32>, flags: 
 @group(2) @binding(5) var samp: sampler;
 @group(3) @binding(0) var ao_tex: texture_2d<f32>;
 @group(3) @binding(1) var ao_samp: sampler;
+@group(4) @binding(0) var pcube: texture_cube<f32>;
+@group(4) @binding(1) var pcube_samp: sampler;
+// The current cube face's matrix + light position (point-shadow pass, binding 5).
+struct PFace { vp: mat4x4<f32>, light_pos: vec4<f32> };
+@group(0) @binding(5) var<uniform> pface: PFace;
 
 struct VsIn {
     @location(0) pos: vec3<f32>,
@@ -1737,6 +1933,42 @@ fn brdf(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, radiance: vec3<f32>, albedo: v
     return (kd * albedo / PI + spec) * radiance * ndl;
 }
 
+// Omnidirectional shadow for the key point light: compare the fragment's
+// distance to the light against the nearest occluder distance in the cube map.
+fn point_shadow(world_pos: vec3<f32>, light_pos: vec3<f32>) -> f32 {
+    let dir = world_pos - light_pos;
+    let cur = length(dir);
+    let stored = textureSample(pcube, pcube_samp, dir).r;
+    let bias = 0.08 + cur * 0.02;
+    if (cur - bias > stored) { return 0.0; }
+    return 1.0;
+}
+
+// The point-shadow pass: output distance-to-light into the cube face.
+@vertex
+fn vs_pshadow(in: VsIn) -> VsOut {
+    var local = vec4<f32>(in.pos, 1.0);
+    if (obj.params.x > 0.5) {
+        let skin = joints.m[in.j.x] * in.w.x + joints.m[in.j.y] * in.w.y
+                 + joints.m[in.j.z] * in.w.z + joints.m[in.j.w] * in.w.w;
+        local = skin * local;
+    }
+    let world = obj.model * local;
+    var out: VsOut;
+    out.clip = pface.vp * world;
+    out.world_pos = world.xyz;
+    out.world_normal = vec3<f32>(0.0, 1.0, 0.0);
+    out.uv = vec2<f32>(0.0);
+    out.world_tangent = vec3<f32>(1.0, 0.0, 0.0);
+    out.tangent_w = 1.0;
+    return out;
+}
+@fragment
+fn fs_pshadow(in: VsOut) -> @location(0) vec4<f32> {
+    let dist = length(in.world_pos - pface.light_pos.xyz);
+    return vec4<f32>(dist, dist, dist, dist);
+}
+
 // Shared lighting: PBR direct (directional + shadow + point lights) + ambient +
 // emissive + fog. Used by both the per-object and instanced fragment stages.
 fn shade(world_pos: vec3<f32>, n_in: vec3<f32>, albedo: vec3<f32>, alpha: f32, metallic: f32, rough: f32, emissive: vec3<f32>, ao: f32) -> vec4<f32> {
@@ -1753,7 +1985,9 @@ fn shade(world_pos: vec3<f32>, n_in: vec3<f32>, albedo: vec3<f32>, alpha: f32, m
         let d = length(to);
         let l = to / max(d, 1e-4);
         let att = clamp(1.0 - (d / range), 0.0, 1.0);
-        let radiance = g.lights[i].color_int.rgb * g.lights[i].color_int.w * att * att;
+        var psh = 1.0;
+        if (i == 0 && g.counts.w > 0.5) { psh = point_shadow(world_pos, lp); }
+        let radiance = g.lights[i].color_int.rgb * g.lights[i].color_int.w * att * att * psh;
         lo = lo + brdf(n, v, l, radiance, albedo, metallic, rough);
     }
     // Image-based ambient + specular reflection from the sky environment.
