@@ -378,6 +378,8 @@ const BUILTINS: &[&str] = &[
     "net_my_id", "net_is_server", "net_player_count", "net_player_id_at",
     "net_player_x", "net_player_y", "net_player_z", "net_player_yaw",
     "net_local_x", "net_local_y", "net_local_z", "net_local_yaw",
+    "net_add_wall", "net_player_size", "net_interest", "net_fire",
+    "net_hit_player", "net_hit_x", "net_hit_y", "net_hit_z",
 ];
 
 /// Byte size of a type (always a multiple of 8). Aggregates lay out their
@@ -675,6 +677,14 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_net_local_y", aurora_runtime::aurora_net_local_y as *const u8);
     builder.symbol("aurora_net_local_z", aurora_runtime::aurora_net_local_z as *const u8);
     builder.symbol("aurora_net_local_yaw", aurora_runtime::aurora_net_local_yaw as *const u8);
+    builder.symbol("aurora_net_add_wall", aurora_runtime::aurora_net_add_wall as *const u8);
+    builder.symbol("aurora_net_player_size", aurora_runtime::aurora_net_player_size as *const u8);
+    builder.symbol("aurora_net_interest", aurora_runtime::aurora_net_interest as *const u8);
+    builder.symbol("aurora_net_fire", aurora_runtime::aurora_net_fire as *const u8);
+    builder.symbol("aurora_net_hit_player", aurora_runtime::aurora_net_hit_player as *const u8);
+    builder.symbol("aurora_net_hit_x", aurora_runtime::aurora_net_hit_x as *const u8);
+    builder.symbol("aurora_net_hit_y", aurora_runtime::aurora_net_hit_y as *const u8);
+    builder.symbol("aurora_net_hit_z", aurora_runtime::aurora_net_hit_z as *const u8);
     builder.symbol("aurora_scene_save", aurora_runtime::aurora_scene_save as *const u8);
     builder.symbol("aurora_scene_load", aurora_runtime::aurora_scene_load as *const u8);
     builder.symbol("aurora_prof_enter", aurora_runtime::aurora_prof_enter as *const u8);
@@ -944,6 +954,14 @@ fn lower(
     hosts.insert("net_local_y", import(jmod, "aurora_net_local_y", &[], Some(f64t)));
     hosts.insert("net_local_z", import(jmod, "aurora_net_local_z", &[], Some(f64t)));
     hosts.insert("net_local_yaw", import(jmod, "aurora_net_local_yaw", &[], Some(f64t)));
+    hosts.insert("net_add_wall", import(jmod, "aurora_net_add_wall", &[f64t, f64t, f64t, f64t, f64t, f64t], None));
+    hosts.insert("net_player_size", import(jmod, "aurora_net_player_size", &[f64t, f64t], None));
+    hosts.insert("net_interest", import(jmod, "aurora_net_interest", &[f64t], None));
+    hosts.insert("net_fire", import(jmod, "aurora_net_fire", &[f64t, f64t, f64t, f64t, f64t, f64t], None));
+    hosts.insert("net_hit_player", import(jmod, "aurora_net_hit_player", &[], Some(i)));
+    hosts.insert("net_hit_x", import(jmod, "aurora_net_hit_x", &[], Some(f64t)));
+    hosts.insert("net_hit_y", import(jmod, "aurora_net_hit_y", &[], Some(f64t)));
+    hosts.insert("net_hit_z", import(jmod, "aurora_net_hit_z", &[], Some(f64t)));
     hosts.insert("draw_text", import(jmod, "aurora_draw_text", &[i, i, ptr_ty, i, i, i], None));
     hosts.insert("scene_save", import(jmod, "aurora_scene_save", &[ptr_ty, i], Some(i)));
     hosts.insert("scene_load", import(jmod, "aurora_scene_load", &[ptr_ty, i], Some(i)));
@@ -3877,6 +3895,12 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
             (vec![I64], Some(F64))
         }
         "net_local_x" | "net_local_y" | "net_local_z" | "net_local_yaw" => (vec![], Some(F64)),
+        "net_add_wall" => (vec![F64, F64, F64, F64, F64, F64], None),
+        "net_player_size" => (vec![F64, F64], None),
+        "net_interest" => (vec![F64], None),
+        "net_fire" => (vec![F64, F64, F64, F64, F64, F64], None),
+        "net_hit_player" => (vec![], Some(I64)),
+        "net_hit_x" | "net_hit_y" | "net_hit_z" => (vec![], Some(F64)),
         _ => return None,
     };
     Some(sig)
