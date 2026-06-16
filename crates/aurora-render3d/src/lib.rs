@@ -165,7 +165,7 @@ mod tests {
         // The cube fills the center; that pixel must be a lit red, not the black
         // clear color.
         let c = px(&img, w, w / 2, h / 2);
-        assert!(c[0] > 60, "center should be lit red, got {c:?}");
+        assert!(c[0] > 32, "center should be lit red, got {c:?}");
         assert!(c[0] > c[2], "red channel should dominate, got {c:?}");
         // A corner pixel should still be the background clear color.
         let corner = px(&img, w, 1, 1);
@@ -269,7 +269,31 @@ mod tests {
         r.draw(cube, red, Mat4::IDENTITY, None);
         let img = render_offscreen(&mut r, &device, &queue, w, h, [0.0, 0.0, 0.0, 1.0]);
         let c = px(&img, w, w / 2, h / 2);
-        assert!(c[0] > 60 && c[0] > c[2], "MSAA-resolved cube should be lit red, got {c:?}");
+        assert!(c[0] > 32 && c[0] > c[2], "MSAA-resolved cube should be lit red, got {c:?}");
+    }
+
+    #[test]
+    fn metallic_surface_reflects_the_sky() {
+        let _g = guard();
+        let Some((device, queue)) = headless_device() else { return };
+        let (w, h) = (64u32, 64u32);
+        let mut r = Renderer3D::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm, w, h, 1);
+        let sphere = r.add_mesh(&device, &MeshData::sphere(1.0, 32));
+        // A polished metal: it has no diffuse, so its color is the reflected sky.
+        let metal = r.add_material(
+            &device,
+            &queue,
+            &MaterialDesc { base_color: [0.6, 0.6, 0.6, 1.0], metallic: 1.0, roughness: 0.15, emissive: [0.0; 3], base_tex: None, normal_tex: None, mr_tex: None, emissive_tex: None },
+        );
+        r.set_camera(perspective(50f32.to_radians(), 1.0, 0.1, 100.0) * look_at(Vec3::new(0.0, 0.0, 4.0), Vec3::ZERO, Vec3::Y), Vec3::new(0.0, 0.0, 4.0));
+        // A strongly blue sky, near-zero direct light, IBL strength up.
+        r.set_sky(true, Vec3::new(0.1, 0.2, 0.95), Vec3::new(0.3, 0.45, 0.9));
+        r.set_light(Vec3::new(0.0, 1.0, 0.2), Vec3::splat(0.05), 1.6);
+        r.begin();
+        r.draw(sphere, metal, Mat4::IDENTITY, None);
+        let img = render_offscreen(&mut r, &device, &queue, w, h, [0.0, 0.0, 0.0, 1.0]);
+        let c = px(&img, w, w / 2, h / 2);
+        assert!(c[2] > c[0] + 15, "metal should reflect the blue sky, got {c:?}");
     }
 
     #[test]
@@ -310,9 +334,9 @@ mod tests {
         r.draw_instanced(cube, red, insts);
         let img = render_offscreen(&mut r, &device, &queue, w, h, [0.0, 0.0, 0.0, 1.0]);
         // The center and both flanking instances should be lit red.
-        assert!(px(&img, w, w / 2, h / 2)[0] > 60, "center instance should render");
-        assert!(px(&img, w, 8, h / 2)[0] > 60, "left instance should render");
-        assert!(px(&img, w, w - 8, h / 2)[0] > 60, "right instance should render");
+        assert!(px(&img, w, w / 2, h / 2)[0] > 32, "center instance should render");
+        assert!(px(&img, w, 8, h / 2)[0] > 32, "left instance should render");
+        assert!(px(&img, w, w - 8, h / 2)[0] > 32, "right instance should render");
     }
 
     #[test]

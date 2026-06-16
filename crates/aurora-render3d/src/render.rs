@@ -1357,17 +1357,23 @@ fn vs_sky(@builtin(vertex_index) i: u32) -> SkyOut {
     o.ndc = p[i];
     return o;
 }
+// The sky/environment radiance in a direction (gradient + sun). Used to draw the
+// skybox AND as the image-based lighting environment.
+fn sky_color(dir: vec3<f32>) -> vec3<f32> {
+    let t = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
+    var col = mix(g.sky_horizon.rgb, g.sky_top.rgb, pow(t, 0.6));
+    let sun = max(dot(dir, normalize(g.dir_dir.xyz)), 0.0);
+    col = col + g.dir_color.rgb * pow(sun, 600.0) * 3.0; // sun disk
+    col = col + g.dir_color.rgb * pow(sun, 8.0) * 0.15;  // glow
+    return col;
+}
+
 @fragment
 fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     let far = g.inv_view_proj * vec4<f32>(in.ndc, 1.0, 1.0);
     let world = far.xyz / far.w;
     let dir = normalize(world - g.cam_pos.xyz);
-    let t = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
-    var col = mix(g.sky_horizon.rgb, g.sky_top.rgb, pow(t, 0.6));
-    let sun = max(dot(dir, normalize(g.dir_dir.xyz)), 0.0);
-    col = col + g.dir_color.rgb * pow(sun, 600.0) * 3.0;       // sun disk
-    col = col + g.dir_color.rgb * pow(sun, 8.0) * 0.15;        // glow
-    return vec4<f32>(col, 1.0);
+    return vec4<f32>(sky_color(dir), 1.0);
 }
 
 @vertex
@@ -1459,7 +1465,15 @@ fn shade(world_pos: vec3<f32>, n_in: vec3<f32>, albedo: vec3<f32>, alpha: f32, m
         let radiance = g.lights[i].color_int.rgb * g.lights[i].color_int.w * att * att;
         lo = lo + brdf(n, v, l, radiance, albedo, metallic, rough);
     }
-    var color = lo + albedo * g.dir_color.w + emissive;
+    // Image-based ambient + specular reflection from the sky environment.
+    let amb = g.dir_color.w;
+    let f0 = mix(vec3<f32>(0.04), albedo, metallic);
+    let ndv = max(dot(n, v), 0.0);
+    let irradiance = sky_color(n) * albedo * (1.0 - metallic);
+    let env = sky_color(reflect(-v, n));
+    let fr = f0 + (max(vec3<f32>(1.0 - rough), f0) - f0) * pow(1.0 - ndv, 5.0);
+    let ambient = (irradiance + env * fr) * amb;
+    var color = lo + ambient + emissive;
     if (g.fog_color.w > 0.0) {
         let f = clamp(exp(-length(g.cam_pos.xyz - world_pos) * g.fog_color.w), 0.0, 1.0);
         color = mix(g.fog_color.rgb, color, f);
