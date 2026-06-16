@@ -1430,6 +1430,39 @@ pub extern "C" fn aurora_f32_store(ptr: i64, i: i64, v: f64) {
     unsafe { *(ptr as *mut f32).add(i as usize) = v as f32 };
 }
 
+// Transcendental math builtins. Cranelift has no native instruction for these,
+// so they are host calls into Rust's libm (a correct, ABI-safe path, unlike a
+// raw libcall import). `sqrt`/`floor`/`abs`/`min`/`max`/`clamp` stay native in
+// codegen; these are the ones that need a real function call.
+#[no_mangle]
+pub extern "C" fn aurora_sin(x: f64) -> f64 {
+    x.sin()
+}
+#[no_mangle]
+pub extern "C" fn aurora_cos(x: f64) -> f64 {
+    x.cos()
+}
+#[no_mangle]
+pub extern "C" fn aurora_tan(x: f64) -> f64 {
+    x.tan()
+}
+#[no_mangle]
+pub extern "C" fn aurora_pow(x: f64, y: f64) -> f64 {
+    x.powf(y)
+}
+#[no_mangle]
+pub extern "C" fn aurora_log(x: f64) -> f64 {
+    x.ln()
+}
+#[no_mangle]
+pub extern "C" fn aurora_exp(x: f64) -> f64 {
+    x.exp()
+}
+#[no_mangle]
+pub extern "C" fn aurora_atan2(y: f64, x: f64) -> f64 {
+    y.atan2(x)
+}
+
 /// Play a note WITHOUT blocking — mixed into the persistent audio engine, so
 /// sounds and music overlap. `looped` != 0 repeats it until volume/stop.
 #[no_mangle]
@@ -1718,7 +1751,7 @@ pub extern "C" fn aurora_dbg_var_f64(name_ptr: *const u8, name_len: i64, value: 
 /// Touch every host symbol so the linker keeps this crate's object in an AOT
 /// link even when the Rust driver references nothing from it directly.
 pub fn force_link() -> usize {
-    let fns: [*const (); 192] = [
+    let fns: [*const (); 199] = [
         aurora_r3d_ssao as *const (),
         aurora_r3d_point_shadows as *const (),
         // Multiplayer (generic framework: the game registers its Aurora sim).
@@ -1757,6 +1790,14 @@ pub fn force_link() -> usize {
         // Raw f32-blob accessors (for the Aurora net sim).
         aurora_f32_load as *const (),
         aurora_f32_store as *const (),
+        // Transcendental math builtins.
+        aurora_sin as *const (),
+        aurora_cos as *const (),
+        aurora_tan as *const (),
+        aurora_pow as *const (),
+        aurora_log as *const (),
+        aurora_exp as *const (),
+        aurora_atan2 as *const (),
         // 3D rendering extras.
         aurora_r3d_fog as *const (),
         aurora_r3d_sky as *const (),

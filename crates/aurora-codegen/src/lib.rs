@@ -336,6 +336,7 @@ impl Env {
 /// Builtin function names (handled specially, never user-defined / captured).
 const BUILTINS: &[&str] = &[
     "print", "println", "assert", "sqrt", "sin", "cos", "tan", "floor", "ceil", "round", "pow",
+    "log", "exp", "atan2",
     "abs", "min", "max", "clamp", "len", "str", "spawn", "despawn", "run_systems", "entity_count",
     "band", "bor", "bxor", "shl", "shr", "bnot",
     "framebuffer", "clear", "pixel", "triangle", "fb_get", "save_ppm",
@@ -699,6 +700,13 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_input_axis", aurora_runtime::aurora_input_axis as *const u8);
     builder.symbol("aurora_f32_load", aurora_runtime::aurora_f32_load as *const u8);
     builder.symbol("aurora_f32_store", aurora_runtime::aurora_f32_store as *const u8);
+    builder.symbol("aurora_sin", aurora_runtime::aurora_sin as *const u8);
+    builder.symbol("aurora_cos", aurora_runtime::aurora_cos as *const u8);
+    builder.symbol("aurora_tan", aurora_runtime::aurora_tan as *const u8);
+    builder.symbol("aurora_pow", aurora_runtime::aurora_pow as *const u8);
+    builder.symbol("aurora_log", aurora_runtime::aurora_log as *const u8);
+    builder.symbol("aurora_exp", aurora_runtime::aurora_exp as *const u8);
+    builder.symbol("aurora_atan2", aurora_runtime::aurora_atan2 as *const u8);
     builder.symbol("aurora_scene_save", aurora_runtime::aurora_scene_save as *const u8);
     builder.symbol("aurora_scene_load", aurora_runtime::aurora_scene_load as *const u8);
     builder.symbol("aurora_prof_enter", aurora_runtime::aurora_prof_enter as *const u8);
@@ -986,6 +994,13 @@ fn lower(
     hosts.insert("input_axis", import(jmod, "aurora_input_axis", &[i, i], Some(f64t)));
     hosts.insert("f32_load", import(jmod, "aurora_f32_load", &[i, i], Some(f64t)));
     hosts.insert("f32_store", import(jmod, "aurora_f32_store", &[i, i, f64t], None));
+    hosts.insert("sin", import(jmod, "aurora_sin", &[f64t], Some(f64t)));
+    hosts.insert("cos", import(jmod, "aurora_cos", &[f64t], Some(f64t)));
+    hosts.insert("tan", import(jmod, "aurora_tan", &[f64t], Some(f64t)));
+    hosts.insert("pow", import(jmod, "aurora_pow", &[f64t, f64t], Some(f64t)));
+    hosts.insert("log", import(jmod, "aurora_log", &[f64t], Some(f64t)));
+    hosts.insert("exp", import(jmod, "aurora_exp", &[f64t], Some(f64t)));
+    hosts.insert("atan2", import(jmod, "aurora_atan2", &[f64t, f64t], Some(f64t)));
     hosts.insert("draw_text", import(jmod, "aurora_draw_text", &[i, i, ptr_ty, i, i, i], None));
     hosts.insert("scene_save", import(jmod, "aurora_scene_save", &[ptr_ty, i], Some(i)));
     hosts.insert("scene_load", import(jmod, "aurora_scene_load", &[ptr_ty, i], Some(i)));
@@ -3361,6 +3376,29 @@ fn tr_call(
         return Ok(Term::Val(result.0, result.1));
     }
 
+    // Transcendental math (sin/cos/tan/pow/log/exp/atan2): no native Cranelift
+    // instruction, so these are host calls into libm. Args are coerced to f64;
+    // the result is demoted back to f32 if the (first) argument was f32, so the
+    // builtin is float-width-preserving like the native ones.
+    if matches!(name.as_str(), "sin" | "cos" | "tan" | "pow" | "log" | "exp" | "atan2") {
+        let want = if matches!(name.as_str(), "pow" | "atan2") { 2 } else { 1 };
+        if typed.len() == want && typed.iter().all(|(_, t)| *t == Cty::F32 || *t == Cty::F64) {
+            let was_f32 = typed[0].1 == Cty::F32;
+            let mut argv = Vec::with_capacity(want);
+            for (v, t) in &typed {
+                argv.push(if *t == Cty::F32 { b.ins().fpromote(types::F64, *v) } else { *v });
+            }
+            let f = m.declare_func_in_func(env.hosts[name.as_str()], b.func);
+            let call = b.ins().call(f, &argv);
+            let r = b.inst_results(call)[0];
+            return if was_f32 {
+                Ok(Term::Val(b.ins().fdemote(types::F32, r), Cty::F32))
+            } else {
+                Ok(Term::Val(r, Cty::F64))
+            };
+        }
+    }
+
     // `len(x)` — string length (slot 1) or fixed-array length.
     if name == "len" {
         if let Some((v, t)) = typed.first() {
@@ -3708,6 +3746,11 @@ fn math_builtin(b: &mut FunctionBuilder, name: &str, args: &[(Value, Cty)]) -> O
         ("abs", [(v, t)]) if is_float(t) => Some((b.ins().fabs(*v), t.clone())),
         ("min", [(a, t), (c, _)]) if is_float(t) => Some((b.ins().fmin(*a, *c), t.clone())),
         ("max", [(a, t), (c, _)]) if is_float(t) => Some((b.ins().fmax(*a, *c), t.clone())),
+        // clamp(x, lo, hi) = min(max(x, lo), hi), all native.
+        ("clamp", [(x, t), (lo, _), (hi, _)]) if is_float(t) => {
+            let lower = b.ins().fmax(*x, *lo);
+            Some((b.ins().fmin(lower, *hi), t.clone()))
+        }
         // Integer bitwise ops (flags, masks, packing). `&`/`|` are taken by
         // references and closures, so these are spelled as functions.
         ("band", [(a, t), (c, _)]) if !is_float(t) => Some((b.ins().band(*a, *c), Cty::I64)),

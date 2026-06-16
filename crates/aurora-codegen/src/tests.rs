@@ -110,6 +110,36 @@ fn par_for_runs_a_closure_across_threads() {
 }
 
 #[test]
+fn transcendental_math_builtins_compile_and_run() {
+    // Regression: sin/cos/tan/pow/log/exp/clamp must actually compile (host
+    // calls into libm), not silently fall back to a no-op stub. The stub bug
+    // made the whole calling function return 0 / do nothing, so asserting a
+    // post-call computation runs is the key check.
+    assert!((compile_call_f64("fn run() -> f64 { cos(0.0) }", "run", &[]) - 1.0).abs() < 1e-9);
+    assert!((compile_call_f64("fn run() -> f64 { sin(0.0) }", "run", &[]) - 0.0).abs() < 1e-9);
+    // Code after the math call must still execute (the stub bug dropped it).
+    let after = "fn run() -> f64 {
+        let c = cos(0.0)
+        c + 41.0
+    }";
+    assert!((compile_call_f64(after, "run", &[]) - 42.0).abs() < 1e-9);
+    assert!((compile_call_f64("fn run() -> f64 { pow(2.0, 10.0) }", "run", &[]) - 1024.0).abs() < 1e-6);
+    assert!((compile_call_f64("fn run() -> f64 { clamp(5.0, 0.0, 1.0) }", "run", &[]) - 1.0).abs() < 1e-9);
+    assert!((compile_call_f64("fn run() -> f64 { clamp(0.0 - 5.0, 0.0, 1.0) }", "run", &[]) - 0.0).abs() < 1e-9);
+    // In a loop (the OVERCLOCK mouse-look case): accumulate cos over iterations.
+    let loopy = "fn run() -> f64 {
+        let mut n = 0
+        let mut acc = 0.0
+        while n < 4 {
+            acc = acc + cos(0.0)
+            n = n + 1
+        }
+        acc
+    }";
+    assert!((compile_call_f64(loopy, "run", &[]) - 4.0).abs() < 1e-9);
+}
+
+#[test]
 fn dyn_trait_dispatches_dynamically() {
     // One `dyn Trait` parameter dispatches to the concrete impl at runtime
     // (via a type-id switch — true dynamic dispatch).

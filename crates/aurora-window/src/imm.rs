@@ -51,16 +51,24 @@ impl ApplicationHandler for ImmApp {
         let attrs = Window::default_attributes()
             .with_title("Aurora")
             .with_inner_size(winit::dpi::LogicalSize::new(self.width * 3, self.height * 3));
-        if let Ok(w) = el.create_window(attrs) {
-            let w = Arc::new(w);
-            if let Ok(g) = Gfx::new(w.clone(), self.width, self.height) {
-                self.gfx = Some(g);
-                self.window = Some(w);
-            } else {
+        match el.create_window(attrs) {
+            Ok(w) => {
+                let w = Arc::new(w);
+                match Gfx::new(w.clone(), self.width, self.height) {
+                    Ok(g) => {
+                        self.gfx = Some(g);
+                        self.window = Some(w);
+                    }
+                    Err(e) => {
+                        eprintln!("aurora-window: GPU init failed: {e}");
+                        self.open = false;
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("aurora-window: window creation failed: {e}");
                 self.open = false;
             }
-        } else {
-            self.open = false;
         }
     }
 
@@ -132,7 +140,10 @@ thread_local! {
 pub fn open(width: u32, height: u32) {
     let event_loop = match EventLoop::new() {
         Ok(e) => e,
-        Err(_) => return,
+        Err(e) => {
+            eprintln!("aurora-window: event loop creation failed: {e}");
+            return;
+        }
     };
     let app = ImmApp {
         width: width.max(1),
