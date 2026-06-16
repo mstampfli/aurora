@@ -329,6 +329,18 @@ pub fn r3d_shadows(on: i64) {
         s.set_shadows(on != 0);
     });
 }
+pub fn r3d_ssao(on: i64) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.set_ssao(on != 0);
+    });
+}
+pub fn r3d_point_shadows(on: i64) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.set_point_shadows(on != 0);
+    });
+}
 pub fn r3d_clear_lights() {
     with_gfx((), |gf| {
         let (_, _, s) = gf.scene_mut();

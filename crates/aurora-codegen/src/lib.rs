@@ -360,7 +360,7 @@ const BUILTINS: &[&str] = &[
     "r3d_load_model", "r3d_make_box", "r3d_make_sphere", "r3d_make_plane",
     "r3d_camera", "r3d_light", "r3d_clear", "r3d_begin", "r3d_draw",
     "r3d_anim_play", "r3d_anim_update", "r3d_clip_count", "r3d_present",
-    "r3d_fog", "r3d_sky", "r3d_shadows", "r3d_clear_lights", "r3d_point_light",
+    "r3d_fog", "r3d_sky", "r3d_shadows", "r3d_ssao", "r3d_point_shadows", "r3d_clear_lights", "r3d_point_light",
     "r3d_make_sprite", "r3d_draw_billboard", "r3d_debug_line", "r3d_frustum_cull",
     "r3d_screen_x", "r3d_screen_y",
     // FPS input.
@@ -627,6 +627,8 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_r3d_fog", aurora_runtime::aurora_r3d_fog as *const u8);
     builder.symbol("aurora_r3d_sky", aurora_runtime::aurora_r3d_sky as *const u8);
     builder.symbol("aurora_r3d_shadows", aurora_runtime::aurora_r3d_shadows as *const u8);
+    builder.symbol("aurora_r3d_ssao", aurora_runtime::aurora_r3d_ssao as *const u8);
+    builder.symbol("aurora_r3d_point_shadows", aurora_runtime::aurora_r3d_point_shadows as *const u8);
     builder.symbol("aurora_r3d_clear_lights", aurora_runtime::aurora_r3d_clear_lights as *const u8);
     builder.symbol("aurora_r3d_point_light", aurora_runtime::aurora_r3d_point_light as *const u8);
     builder.symbol("aurora_r3d_make_sprite", aurora_runtime::aurora_r3d_make_sprite as *const u8);
@@ -904,6 +906,8 @@ fn lower(
     hosts.insert("r3d_fog", import(jmod, "aurora_r3d_fog", &[f64t, f64t, f64t, f64t], None));
     hosts.insert("r3d_sky", import(jmod, "aurora_r3d_sky", &[i, f64t, f64t, f64t, f64t, f64t, f64t], None));
     hosts.insert("r3d_shadows", import(jmod, "aurora_r3d_shadows", &[i], None));
+    hosts.insert("r3d_ssao", import(jmod, "aurora_r3d_ssao", &[i], None));
+    hosts.insert("r3d_point_shadows", import(jmod, "aurora_r3d_point_shadows", &[i], None));
     hosts.insert("r3d_clear_lights", import(jmod, "aurora_r3d_clear_lights", &[], None));
     hosts.insert("r3d_point_light", import(jmod, "aurora_r3d_point_light", &[f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t], None));
     hosts.insert("r3d_make_sprite", import(jmod, "aurora_r3d_make_sprite", &[f64t, f64t, f64t], Some(i)));
@@ -3855,7 +3859,7 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "r3d_present" => (vec![], Some(I64)),
         "r3d_fog" => (vec![F64, F64, F64, F64], None),
         "r3d_sky" => (vec![I64, F64, F64, F64, F64, F64, F64], None),
-        "r3d_shadows" => (vec![I64], None),
+        "r3d_shadows" | "r3d_ssao" | "r3d_point_shadows" => (vec![I64], None),
         "r3d_clear_lights" => (vec![], None),
         "r3d_point_light" => (vec![F64, F64, F64, F64, F64, F64, F64, F64], None),
         "r3d_make_sprite" => (vec![F64, F64, F64], Some(I64)),

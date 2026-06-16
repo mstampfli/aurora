@@ -31,7 +31,8 @@ pub use imm::{
     r3d_load_model as imm_r3d_load_model, r3d_make_box as imm_r3d_make_box,
     r3d_make_plane as imm_r3d_make_plane, r3d_make_sphere as imm_r3d_make_sphere,
     r3d_make_sprite as imm_r3d_make_sprite, r3d_point_light as imm_r3d_point_light,
-    r3d_present as imm_r3d_present, r3d_shadows as imm_r3d_shadows, r3d_sky as imm_r3d_sky,
+    r3d_point_shadows as imm_r3d_point_shadows, r3d_present as imm_r3d_present,
+    r3d_shadows as imm_r3d_shadows, r3d_sky as imm_r3d_sky, r3d_ssao as imm_r3d_ssao,
     r3d_world_to_screen as imm_r3d_world_to_screen,
 };
 pub use input::{Input, Key};

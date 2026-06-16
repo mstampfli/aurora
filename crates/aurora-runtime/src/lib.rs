@@ -1285,6 +1285,14 @@ pub extern "C" fn aurora_r3d_shadows(on: i64) {
     aurora_window::imm_r3d_shadows(on);
 }
 #[no_mangle]
+pub extern "C" fn aurora_r3d_ssao(on: i64) {
+    aurora_window::imm_r3d_ssao(on);
+}
+#[no_mangle]
+pub extern "C" fn aurora_r3d_point_shadows(on: i64) {
+    aurora_window::imm_r3d_point_shadows(on);
+}
+#[no_mangle]
 pub extern "C" fn aurora_r3d_clear_lights() {
     aurora_window::imm_r3d_clear_lights();
 }
@@ -1639,7 +1647,9 @@ pub extern "C" fn aurora_dbg_var_f64(name_ptr: *const u8, name_len: i64, value: 
 /// Touch every host symbol so the linker keeps this crate's object in an AOT
 /// link even when the Rust driver references nothing from it directly.
 pub fn force_link() -> usize {
-    let fns: [*const (); 182] = [
+    let fns: [*const (); 184] = [
+        aurora_r3d_ssao as *const (),
+        aurora_r3d_point_shadows as *const (),
         // Multiplayer.
         aurora_net_add_wall as *const (),
         aurora_net_player_size as *const (),
