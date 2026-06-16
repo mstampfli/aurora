@@ -149,6 +149,11 @@ pub struct Renderer3D {
     obj_bg: wgpu::BindGroup,
     obj_cap: u64,
     joint_cap: u64,
+    // Reused CPU scratch for per-frame uploads (avoids re-allocating + zeroing
+    // these every frame, which caused frame-time spikes with many objects).
+    obj_scratch: Vec<u8>,
+    joint_scratch: Vec<u8>,
+    inst_scratch: Vec<InstanceRaw>,
 
     depth: wgpu::TextureView,
     depth_size: (u32, u32),
@@ -874,6 +879,9 @@ impl Renderer3D {
             obj_bg,
             obj_cap,
             joint_cap,
+            obj_scratch: Vec::new(),
+            joint_scratch: Vec::new(),
+            inst_scratch: Vec::new(),
             depth,
             depth_size: (w.max(1), h.max(1)),
             sample_count,
@@ -1175,8 +1183,14 @@ impl Renderer3D {
             self.obj_bg = bg;
         }
 
-        let mut obj_bytes = vec![0u8; (self.obj_cap * stride) as usize];
-        let mut joint_bytes = vec![0u8; (self.joint_cap * JOINT_BYTES) as usize];
+        // Reuse last frame's scratch buffers (taken out so the loop below can
+        // still borrow &self.queue_cmds); restored after the uploads.
+        let mut obj_bytes = std::mem::take(&mut self.obj_scratch);
+        obj_bytes.clear();
+        obj_bytes.resize((self.obj_cap * stride) as usize, 0);
+        let mut joint_bytes = std::mem::take(&mut self.joint_scratch);
+        joint_bytes.clear();
+        joint_bytes.resize((self.joint_cap * JOINT_BYTES) as usize, 0);
         write_joint_block(&mut joint_bytes, 0, &[Mat4::IDENTITY]);
 
         let mut offsets: Vec<(u32, u32)> = Vec::with_capacity(self.queue_cmds.len());
@@ -1204,9 +1218,12 @@ impl Renderer3D {
         }
         queue.write_buffer(&self.obj_buf, 0, &obj_bytes);
         queue.write_buffer(&self.joint_buf, 0, &joint_bytes);
+        self.obj_scratch = obj_bytes;
+        self.joint_scratch = joint_bytes;
 
-        // Flatten instanced batches into one instance buffer.
-        let mut inst_flat: Vec<InstanceRaw> = Vec::new();
+        // Flatten instanced batches into one instance buffer (reused scratch).
+        let mut inst_flat: Vec<InstanceRaw> = std::mem::take(&mut self.inst_scratch);
+        inst_flat.clear();
         let mut inst_ranges: Vec<(usize, usize, u32, u32)> = Vec::new();
         for (mesh, material, insts) in &self.inst_cmds {
             let start = inst_flat.len() as u32;
@@ -1226,8 +1243,9 @@ impl Renderer3D {
             }
             queue.write_buffer(&self.inst_buf, 0, bytemuck::cast_slice(&inst_flat));
         }
-
-        // Draw opaque first, then transparent back-to-front.
+        // The instance data now lives in the GPU buffer; the draw loop uses
+        // inst_ranges, so return the scratch Vec for reuse next frame.
+        self.inst_scratch = inst_flat;
         let cam = Vec3::from_slice(&self.globals.cam_pos[..3]);
         let mut order: Vec<usize> = (0..self.queue_cmds.len()).collect();
         order.sort_by(|&a, &b| {
