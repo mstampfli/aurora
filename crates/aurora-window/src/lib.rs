@@ -508,7 +508,13 @@ impl Gfx {
         }
         let surface_tex = match self.surface.get_current_texture() {
             Ok(t) => t,
-            Err(_) => {
+            Err(e) => {
+                // Lost/Outdated/Timeout are transient (e.g. during a resize):
+                // reconfigure and skip the frame quietly. Surface out of memory
+                // is serious and would otherwise be a silent black screen.
+                if matches!(e, wgpu::SurfaceError::OutOfMemory) {
+                    eprintln!("aurora-window: surface error (out of memory)");
+                }
                 self.surface.configure(&self.device, &self.config);
                 return;
             }
@@ -573,7 +579,13 @@ impl Gfx {
 
         let surface_tex = match self.surface.get_current_texture() {
             Ok(t) => t,
-            Err(_) => {
+            Err(e) => {
+                // Lost/Outdated/Timeout are transient (e.g. during a resize):
+                // reconfigure and skip the frame quietly. Surface out of memory
+                // is serious and would otherwise be a silent black screen.
+                if matches!(e, wgpu::SurfaceError::OutOfMemory) {
+                    eprintln!("aurora-window: surface error (out of memory)");
+                }
                 self.surface.configure(&self.device, &self.config);
                 return;
             }
