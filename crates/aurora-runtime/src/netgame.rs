@@ -88,6 +88,9 @@ pub struct Session {
     last_snap_players: usize,
     remotes: Vec<(u32, Remote)>,
     last_hit: (i64, [f32; 3]),
+    /// Spawn point new players start at (set via net_spawn_at); used so the
+    /// server places joining clients here instead of the origin.
+    spawn: [f32; 3],
 }
 
 /// Run the registered Aurora sim on `state` with `input` (mutating `state`).
@@ -142,6 +145,7 @@ impl Session {
             last_snap_players: 0,
             remotes: Vec::new(),
             last_hit: (-1, [0.0; 3]),
+            spawn: [0.0, 0.0, 0.0],
         }
     }
 
@@ -163,7 +167,9 @@ impl Session {
         self.hit_radius = r.max(0.01);
     }
     pub fn set_spawn(&mut self, x: f32, y: f32, z: f32) {
-        // Set the local player's starting position.
+        // Set the local player's starting position, and remember it as the spawn
+        // for any clients that join (so the server doesn't place them at origin).
+        self.spawn = [x, y, z];
         let p = if self.is_server { &mut self.host } else { &mut self.pred };
         p.s[0] = x;
         p.s[1] = y;
@@ -301,10 +307,15 @@ impl Session {
             None => {
                 let id = self.next_id;
                 self.next_id += 1;
+                let mut state = Player::spawn();
+                // Offset each client along x so players don't spawn stacked.
+                state.s[0] = self.spawn[0] + id as f32 * 2.0;
+                state.s[1] = self.spawn[1];
+                state.s[2] = self.spawn[2];
                 self.clients.push(SClient {
                     addr: from,
                     id,
-                    state: Player::spawn(),
+                    state,
                     inbox: VecDeque::new(),
                     acked_seq: 0,
                     last_sent: std::collections::HashMap::new(),

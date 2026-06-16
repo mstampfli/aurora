@@ -83,6 +83,15 @@ pub extern "C" fn aurora_frame_dt() -> f64 {
     })
 }
 
+/// Sleep the calling thread for `ms` milliseconds. For pacing a loop that has no
+/// other frame limiter (a headless server tick, or a non-windowed test).
+#[no_mangle]
+pub extern "C" fn aurora_sleep_ms(ms: i64) {
+    if ms > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(ms as u64));
+    }
+}
+
 /// FFI demonstration target (a Rust `extern "C"` function): dot product of two
 /// `n`-element `f64` buffers. Aurora arrays/structs of `f64` are contiguous
 /// 8-byte slots, so they pass straight through as `const double*` — this is what
@@ -1798,7 +1807,7 @@ pub extern "C" fn aurora_dbg_var_f64(name_ptr: *const u8, name_len: i64, value: 
 /// Touch every host symbol so the linker keeps this crate's object in an AOT
 /// link even when the Rust driver references nothing from it directly.
 pub fn force_link() -> usize {
-    let fns: [*const (); 205] = [
+    let fns: [*const (); 206] = [
         aurora_r3d_ssao as *const (),
         aurora_r3d_point_shadows as *const (),
         // Multiplayer (generic framework: the game registers its Aurora sim).
@@ -2002,6 +2011,7 @@ pub fn force_link() -> usize {
         aurora_print_nl as *const (),
         aurora_runtime_flush as *const (),
         aurora_frame_dt as *const (),
+        aurora_sleep_ms as *const (),
         aurora_framebuffer as *const (),
         aurora_clear as *const (),
         aurora_pixel as *const (),
