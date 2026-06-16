@@ -588,13 +588,31 @@ fn cmd_build(path: &str, rest: &[String]) -> ExitCode {
     }
 
     // Emit the native object file.
-    let obj = match aurora_codegen::build_object(&module) {
-        Ok(bytes) => bytes,
+    let (obj, failed) = match aurora_codegen::build_object(&module) {
+        Ok(out) => out,
         Err(e) => {
             eprintln!("build error: {e}");
             return ExitCode::FAILURE;
         }
     };
+
+    // A function that failed to compile was replaced with a no-op stub: the
+    // binary would silently do the wrong thing. Refuse to build if `main` (or any
+    // function) was stubbed, and report exactly which and why.
+    if !failed.is_empty() {
+        let mut names: Vec<&String> = failed.keys().collect();
+        names.sort();
+        eprintln!(
+            "build error: {} function(s) failed to compile and would be replaced \
+             with a no-op stub:",
+            failed.len()
+        );
+        for n in names {
+            eprintln!("  - {n}: {}", failed[n]);
+        }
+        eprintln!("refusing to emit a binary that silently does nothing for these.");
+        return ExitCode::FAILURE;
+    }
 
     let stem = Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("a");
     // Workspace root, relative to this crate's manifest (crates/aurorac).

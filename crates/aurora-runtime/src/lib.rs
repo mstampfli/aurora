@@ -95,6 +95,22 @@ pub extern "C" fn aurora_oob(idx: i64, len: i64) {
     std::process::exit(101);
 }
 
+/// Clean panic for integer division/remainder by zero, in place of a raw CPU
+/// trap (SIGFPE / "illegal instruction"), matching the interpreter's behavior.
+#[no_mangle]
+pub extern "C" fn aurora_divzero() {
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    eprintln!("panic: integer division or remainder by zero");
+    std::process::exit(101);
+}
+
+/// IEEE float remainder (`%` on floats), via libm fmod.
+#[no_mangle]
+pub extern "C" fn aurora_fmod(x: f64, y: f64) -> f64 {
+    x % y
+}
+
 // --- graphics: a thread-local CPU framebuffer ------------------------------
 
 thread_local! {
@@ -1763,7 +1779,7 @@ pub extern "C" fn aurora_dbg_var_f64(name_ptr: *const u8, name_len: i64, value: 
 /// Touch every host symbol so the linker keeps this crate's object in an AOT
 /// link even when the Rust driver references nothing from it directly.
 pub fn force_link() -> usize {
-    let fns: [*const (); 202] = [
+    let fns: [*const (); 204] = [
         aurora_r3d_ssao as *const (),
         aurora_r3d_point_shadows as *const (),
         // Multiplayer (generic framework: the game registers its Aurora sim).
@@ -1900,6 +1916,8 @@ pub fn force_link() -> usize {
         aurora_r3d_clip_count as *const (),
         aurora_r3d_present as *const (),
         aurora_oob as *const (),
+        aurora_divzero as *const (),
+        aurora_fmod as *const (),
         aurora_ffi_dot as *const (),
         aurora_ffi_dotf as *const (),
         aurora_phys_vel_x as *const (),

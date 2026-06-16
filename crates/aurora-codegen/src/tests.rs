@@ -24,7 +24,8 @@ fn build_object_emits_aot_object_with_entry_symbol() {
     fn main() { println(helper(21)) }";
     let (module, diags) = parse_str(src);
     assert!(!diags.iter().any(|d| d.is_error()), "parse failed");
-    let obj = build_object(&module).expect("object emission failed");
+    let (obj, failed) = build_object(&module).expect("object emission failed");
+    assert!(failed.is_empty(), "unexpected stubbed functions: {failed:?}");
     assert!(obj.len() > 64, "object file implausibly small: {} bytes", obj.len());
     // The renamed entry symbol appears verbatim in the object's symbol table.
     let needle = b"aurora_user_main";
@@ -107,6 +108,38 @@ fn par_for_runs_a_closure_across_threads() {
         out[3] + out[12]              // 9 + 144 = 153
     }";
     assert_eq!(compile_call(src, "run", &[]), 153);
+}
+
+#[test]
+fn integer_min_max_abs_clamp_compile_and_run() {
+    // Regression: these were float-only, so on i64 args they fell through to a
+    // no-op stub. They must compile and compute the right integer result.
+    assert_eq!(compile_call("fn run() -> i64 { min(3, 7) }", "run", &[]), 3);
+    assert_eq!(compile_call("fn run() -> i64 { max(3, 7) }", "run", &[]), 7);
+    assert_eq!(compile_call("fn run() -> i64 { min(0 - 2, 5) }", "run", &[]), -2);
+    assert_eq!(compile_call("fn run() -> i64 { abs(0 - 9) }", "run", &[]), 9);
+    assert_eq!(compile_call("fn run() -> i64 { abs(4) }", "run", &[]), 4);
+    assert_eq!(compile_call("fn run() -> i64 { clamp(12, 0, 10) }", "run", &[]), 10);
+    assert_eq!(compile_call("fn run() -> i64 { clamp(0 - 3, 0, 10) }", "run", &[]), 0);
+    assert_eq!(compile_call("fn run() -> i64 { clamp(5, 0, 10) }", "run", &[]), 5);
+}
+
+#[test]
+fn logical_and_or_are_canonical_and_short_circuit() {
+    // Was lowered to eager bitwise band/bor: `2 and 3` gave band(2,3)=2, not 1.
+    assert_eq!(compile_call("fn run() -> i64 { if 2 and 3 { 1 } else { 0 } }", "run", &[]), 1);
+    assert_eq!(compile_call("fn run() -> i64 { if 2 and 1 { 7 } else { 9 } }", "run", &[]), 7);
+    assert_eq!(compile_call("fn run() -> i64 { if 0 and 1 { 7 } else { 9 } }", "run", &[]), 9);
+    assert_eq!(compile_call("fn run() -> i64 { if 5 or 0 { 7 } else { 9 } }", "run", &[]), 7);
+    assert_eq!(compile_call("fn run() -> i64 { if 0 or 0 { 7 } else { 9 } }", "run", &[]), 9);
+    // Short-circuit: the right side must NOT be evaluated when the left decides
+    // it. If `and` evaluated `arr[i]` here (i=5, out of bounds) it would abort.
+    let sc = "fn run() -> i64 {
+        let a = [10, 20, 30]
+        let i = 5
+        if i < 3 and a[i] > 0 { 1 } else { 0 }
+    }";
+    assert_eq!(compile_call(sc, "run", &[]), 0);
 }
 
 #[test]

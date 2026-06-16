@@ -562,6 +562,8 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_frame_reset", aurora_runtime::aurora_frame_reset as *const u8);
     builder.symbol("aurora_load_ppm", aurora_runtime::aurora_load_ppm as *const u8);
     builder.symbol("aurora_oob", aurora_runtime::aurora_oob as *const u8);
+    builder.symbol("aurora_divzero", aurora_runtime::aurora_divzero as *const u8);
+    builder.symbol("aurora_fmod", aurora_runtime::aurora_fmod as *const u8);
     builder.symbol("aurora_load_image", aurora_runtime::aurora_load_image as *const u8);
     builder.symbol("aurora_load_font", aurora_runtime::aurora_load_font as *const u8);
     builder.symbol("aurora_draw_text", aurora_runtime::aurora_draw_text as *const u8);
@@ -795,7 +797,11 @@ fn register_ffi_symbols(builder: &mut JITBuilder) {
 /// symbol `aurora_user_main` so a tiny entry shim can wrap it; the program's
 /// `aurora_*` host calls are left as undefined imports, resolved against the
 /// `aurora-runtime` crate when the object is linked into an executable.
-pub fn build_object(module: &AstModule) -> Result<Vec<u8>, String> {
+/// Compile to a native object. Returns the object bytes plus the map of
+/// functions that FAILED to compile and were replaced with a no-op stub body
+/// (name -> reason). A non-empty map means the produced binary will silently do
+/// the wrong thing for those functions, so callers must surface it.
+pub fn build_object(module: &AstModule) -> Result<(Vec<u8>, HashMap<String, String>), String> {
     let mut flags = codegen::settings::builder();
     // Statically linked into an executable, not a shared object.
     let _ = flags.set("is_pic", "false");
@@ -810,9 +816,10 @@ pub fn build_object(module: &AstModule) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("object builder: {e}"))?;
     let mut omod = ObjectModule::new(builder);
     let module = monomorphized(module)?;
-    let _ = lower(&module, &mut omod, true, false, false, Vec::new())?;
+    let (_, failed) = lower(&module, &mut omod, true, false, false, Vec::new())?;
     let product = omod.finish();
-    product.emit().map_err(|e| format!("emit object: {e}"))
+    let bytes = product.emit().map_err(|e| format!("emit object: {e}"))?;
+    Ok((bytes, failed))
 }
 
 /// Declare and compile every function/method/closure/system in `module` into
@@ -859,6 +866,8 @@ fn lower(
     hosts.insert("frame_reset", import(jmod, "aurora_frame_reset", &[], None));
     hosts.insert("load_ppm", import(jmod, "aurora_load_ppm", &[ptr_ty, i], Some(i)));
     hosts.insert("oob", import(jmod, "aurora_oob", &[i, i], None));
+    hosts.insert("divzero", import(jmod, "aurora_divzero", &[], None));
+    hosts.insert("fmod", import(jmod, "aurora_fmod", &[types::F64, types::F64], Some(types::F64)));
     hosts.insert("load_image", import(jmod, "aurora_load_image", &[ptr_ty, i], Some(i)));
     hosts.insert("load_font", import(jmod, "aurora_load_font", &[ptr_ty, i], Some(i)));
     hosts.insert("play_wav", import(jmod, "aurora_play_wav", &[ptr_ty, i], Some(i)));
@@ -3658,6 +3667,40 @@ fn tr_binary(
     a: &Expr,
     c: &Expr,
 ) -> Result<(Value, Cty), String> {
+    // Short-circuit `and`/`or`: evaluate the right side only when needed (so
+    // `i < len and arr[i] > 0` never indexes when `i >= len`), and yield a
+    // canonical 0/1 (so `2 and 1` is true, not `band(2,1)=0`).
+    if matches!(op, BinOp::And | BinOp::Or) {
+        let (av, _) = val(m, b, l, env, a)?;
+        let a_true = b.ins().icmp_imm(IntCC::NotEqual, av, 0);
+        let result = b.declare_var(types::I64);
+        let rhs_b = b.create_block();
+        let short_b = b.create_block();
+        let merge = b.create_block();
+        // `and`: if a is true, result = (rhs != 0); else result = 0.
+        // `or`:  if a is true, result = 1;          else result = (rhs != 0).
+        if op == BinOp::And {
+            b.ins().brif(a_true, rhs_b, &[], short_b, &[]);
+        } else {
+            b.ins().brif(a_true, short_b, &[], rhs_b, &[]);
+        }
+        b.switch_to_block(rhs_b);
+        b.seal_block(rhs_b);
+        let (cv, _) = val(m, b, l, env, c)?;
+        let c_true = b.ins().icmp_imm(IntCC::NotEqual, cv, 0);
+        let c_i64 = b.ins().uextend(types::I64, c_true);
+        b.def_var(result, c_i64);
+        b.ins().jump(merge, &[]);
+        b.switch_to_block(short_b);
+        b.seal_block(short_b);
+        let short_val = b.ins().iconst(types::I64, if op == BinOp::And { 0 } else { 1 });
+        b.def_var(result, short_val);
+        b.ins().jump(merge, &[]);
+        b.switch_to_block(merge);
+        b.seal_block(merge);
+        return Ok((b.use_var(result), Cty::I64));
+    }
+
     let (av, at) = val(m, b, l, env, a)?;
     let (cv, ct) = val(m, b, l, env, c)?;
     // String operations: `+` concatenates, `==`/`!=` compare by bytes.
@@ -3682,6 +3725,42 @@ fn tr_binary(
                 return Ok((eq, Cty::I64));
             }
             _ => return Err("unsupported string operator in JIT".into()),
+        }
+    }
+
+    // Division / remainder need care: integer div/rem by zero must panic cleanly
+    // (not a raw CPU trap), and float remainder has no Cranelift instruction so it
+    // goes through libm fmod.
+    if matches!(op, BinOp::Div | BinOp::Rem) && at == ct {
+        let is_float = at == Cty::F32 || at == Cty::F64;
+        if is_float && op == BinOp::Rem {
+            let (a64, c64) = if at == Cty::F32 {
+                (b.ins().fpromote(types::F64, av), b.ins().fpromote(types::F64, cv))
+            } else {
+                (av, cv)
+            };
+            let f = m.declare_func_in_func(env.hosts["fmod"], b.func);
+            let call = b.ins().call(f, &[a64, c64]);
+            let mut r = b.inst_results(call)[0];
+            if at == Cty::F32 {
+                r = b.ins().fdemote(types::F32, r);
+            }
+            return Ok((r, at));
+        }
+        if !is_float {
+            // Guard divisor != 0 -> clean panic via the runtime.
+            let is_zero = b.ins().icmp_imm(IntCC::Equal, cv, 0);
+            let fail = b.create_block();
+            let ok = b.create_block();
+            b.ins().brif(is_zero, fail, &[], ok, &[]);
+            b.switch_to_block(fail);
+            b.seal_block(fail);
+            let f = m.declare_func_in_func(env.hosts["divzero"], b.func);
+            b.ins().call(f, &[]);
+            b.ins().trap(TrapCode::INTEGER_DIVISION_BY_ZERO);
+            b.switch_to_block(ok);
+            b.seal_block(ok);
+            // fall through to apply_bin for the actual sdiv/srem
         }
     }
     apply_bin(b, op, av, at, cv, ct)
@@ -3756,6 +3835,27 @@ fn math_builtin(b: &mut FunctionBuilder, name: &str, args: &[(Value, Cty)]) -> O
         ("clamp", [(x, t), (lo, _), (hi, _)]) if is_float(t) => {
             let lower = b.ins().fmax(*x, *lo);
             Some((b.ins().fmin(lower, *hi), t.clone()))
+        }
+        // Integer abs/min/max/clamp (these were unhandled, so any call on i64 args
+        // silently stubbed the whole function). Signed throughout.
+        ("abs", [(v, t)]) if !is_float(t) => {
+            let neg = b.ins().ineg(*v);
+            let is_neg = b.ins().icmp_imm(IntCC::SignedLessThan, *v, 0);
+            Some((b.ins().select(is_neg, neg, *v), Cty::I64))
+        }
+        ("min", [(a, t), (c, _)]) if !is_float(t) => {
+            let a_lt = b.ins().icmp(IntCC::SignedLessThan, *a, *c);
+            Some((b.ins().select(a_lt, *a, *c), Cty::I64))
+        }
+        ("max", [(a, t), (c, _)]) if !is_float(t) => {
+            let a_lt = b.ins().icmp(IntCC::SignedLessThan, *a, *c);
+            Some((b.ins().select(a_lt, *c, *a), Cty::I64))
+        }
+        ("clamp", [(x, t), (lo, _), (hi, _)]) if !is_float(t) => {
+            let below = b.ins().icmp(IntCC::SignedLessThan, *x, *lo);
+            let lower = b.ins().select(below, *lo, *x);
+            let above = b.ins().icmp(IntCC::SignedLessThan, *hi, lower);
+            Some((b.ins().select(above, *hi, lower), Cty::I64))
         }
         // Integer bitwise ops (flags, masks, packing). `&`/`|` are taken by
         // references and closures, so these are spelled as functions.
