@@ -216,6 +216,36 @@ mod tests {
     }
 
     #[test]
+    fn ssao_darkens_creases() {
+        let _g = guard();
+        let Some((device, queue)) = headless_device() else { return };
+        let (w, h) = (96u32, 96u32);
+        let mut r = Renderer3D::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm, w, h, 1);
+        let plane = r.add_mesh(&device, &MeshData::plane(20.0, 1.0));
+        let cube = r.add_mesh(&device, &MeshData::cube());
+        let white = r.add_material(&device, &queue, &MaterialDesc::flat([1.0, 1.0, 1.0, 1.0]));
+        r.set_camera(perspective(55f32.to_radians(), 1.0, 0.1, 100.0) * look_at(Vec3::new(4.0, 5.0, 6.0), Vec3::new(0.0, 0.5, 0.0), Vec3::Y), Vec3::new(4.0, 5.0, 6.0));
+        // Ambient-dominant lighting so AO (which only affects ambient) is visible.
+        r.set_light(Vec3::new(0.3, 1.0, 0.2), Vec3::splat(0.2), 0.8);
+        r.set_shadows(false); // isolate AO from shadowing
+        let scene = |r: &mut Renderer3D| {
+            r.begin();
+            r.draw(plane, white, Mat4::IDENTITY, None);
+            r.draw(cube, white, Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0)), None);
+        };
+        let luma = |img: &[u8]| -> u64 { img.chunks_exact(4).map(|p| p[0] as u64 + p[1] as u64 + p[2] as u64).sum() };
+        r.set_ssao(true);
+        scene(&mut r);
+        let with = render_offscreen(&mut r, &device, &queue, w, h, [0.0, 0.0, 0.0, 1.0]);
+        r.set_ssao(false);
+        scene(&mut r);
+        let without = render_offscreen(&mut r, &device, &queue, w, h, [0.0, 0.0, 0.0, 1.0]);
+        let (a, b) = (luma(&with), luma(&without));
+        assert!(a < b, "SSAO must darken (occlude) the scene: with={a} without={b}");
+        assert!(b - a > 500, "occlusion should be clearly present: with={a} without={b}");
+    }
+
+    #[test]
     fn shadows_darken_the_scene() {
         let _g = guard();
         let Some((device, queue)) = headless_device() else { return };

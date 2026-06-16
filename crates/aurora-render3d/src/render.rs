@@ -39,6 +39,7 @@ struct GlobalsU {
     sky_top: [f32; 4],    // zenith color
     sky_horizon: [f32; 4], // horizon color
     counts: [f32; 4],     // x = point light count, y = shadows on, z = sky on
+    screen: [f32; 4],     // x = width, y = height, z = ssao on
     lights: [PointLightU; MAX_LIGHTS],
 }
 
@@ -170,6 +171,17 @@ pub struct Renderer3D {
     inst_buf: wgpu::Buffer,
     inst_cap: u64,
     inst_cmds: Vec<(usize, usize, Vec<InstanceRaw>)>,
+    // SSAO.
+    ssao_on: bool,
+    prepass_pipeline: wgpu::RenderPipeline,
+    prepass_inst_pipeline: wgpu::RenderPipeline,
+    ssao_pipeline: wgpu::RenderPipeline,
+    blur_pipeline: wgpu::RenderPipeline,
+    ssao: Ssao,
+    ao_bg_white: wgpu::BindGroup,
+    ao_layout: wgpu::BindGroupLayout,
+    ssao_layout: wgpu::BindGroupLayout,
+    blur_layout: wgpu::BindGroupLayout,
 
     meshes: Vec<GpuMesh>,
     mesh_radius: Vec<f32>,
@@ -251,14 +263,53 @@ impl Renderer3D {
             label: Some("material"),
             entries: &mat_entries,
         });
+        // AO (group 3): the (blurred) SSAO texture sampled in the lighting pass.
+        let tex_entry = |b: u32| wgpu::BindGroupLayoutEntry {
+            binding: b,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
+        let samp_entry = |b: u32| wgpu::BindGroupLayoutEntry {
+            binding: b,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        };
+        let ao_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("ao"),
+            entries: &[tex_entry(0), samp_entry(1)],
+        });
+        let ssao_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("ssao-in"),
+            entries: &[
+                uniform_entry(0, wgpu::ShaderStages::FRAGMENT, false, None),
+                tex_entry(1),
+                samp_entry(2),
+            ],
+        });
+        let blur_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("blur-in"),
+            // Match the SSAO module's binding numbers (src=1, samp=2); group 0 (g)
+            // is unused by fs_blur and pruned.
+            entries: &[tex_entry(1), samp_entry(2)],
+        });
 
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("render3d"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
         });
+        let ssao_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("ssao"),
+            source: wgpu::ShaderSource::Wgsl(SSAO_WGSL.into()),
+        });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("render3d"),
-            bind_group_layouts: &[&globals_layout, &obj_layout, &mat_layout],
+            bind_group_layouts: &[&globals_layout, &obj_layout, &mat_layout, &ao_layout],
             push_constant_ranges: &[],
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -500,8 +551,8 @@ impl Renderer3D {
         let inst_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("inst"),
             // Same group indices as the main pipeline (globals=0, object=1 unused,
-            // material=2) so the shared material bindings keep their @group(2).
-            bind_group_layouts: &[&globals_layout, &obj_layout, &mat_layout],
+            // material=2, ao=3) so the shared bindings keep their @group.
+            bind_group_layouts: &[&globals_layout, &obj_layout, &mat_layout, &ao_layout],
             push_constant_ranges: &[],
         });
         let inst_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -599,6 +650,85 @@ impl Renderer3D {
             None
         };
 
+        // SSAO pipelines (geometry prepass -> occlusion -> blur). The prepass
+        // reuses the main vertex stages; the SSAO/blur passes are fullscreen.
+        let prepass_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("prepass"),
+            bind_group_layouts: &[&globals_layout, &obj_layout],
+            push_constant_ranges: &[],
+        });
+        let prepass_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("prepass"),
+            layout: Some(&prepass_pl),
+            vertex: wgpu::VertexState { module: &module, entry_point: "vs", compilation_options: Default::default(), buffers: &[Vertex::LAYOUT] },
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: "fs_prepass",
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba16Float, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+            }),
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: Some(wgpu::Face::Back), front_face: wgpu::FrontFace::Ccw, ..Default::default() },
+            depth_stencil: Some(wgpu::DepthStencilState { format: DEPTH_FORMAT, depth_write_enabled: true, depth_compare: wgpu::CompareFunction::Less, stencil: Default::default(), bias: Default::default() }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let prepass_inst_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("prepass-inst"),
+            bind_group_layouts: &[&globals_layout],
+            push_constant_ranges: &[],
+        });
+        let prepass_inst_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("prepass-inst"),
+            layout: Some(&prepass_inst_pl),
+            vertex: wgpu::VertexState { module: &module, entry_point: "vs_inst", compilation_options: Default::default(), buffers: &[Vertex::LAYOUT, InstanceRaw::LAYOUT] },
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: "fs_prepass_inst",
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba16Float, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+            }),
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: Some(wgpu::Face::Back), front_face: wgpu::FrontFace::Ccw, ..Default::default() },
+            depth_stencil: Some(wgpu::DepthStencilState { format: DEPTH_FORMAT, depth_write_enabled: true, depth_compare: wgpu::CompareFunction::Less, stencil: Default::default(), bias: Default::default() }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let fullscreen_pipe = |layout: &wgpu::PipelineLayout, fs: &str| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("ssao-pass"),
+                layout: Some(layout),
+                vertex: wgpu::VertexState { module: &ssao_module, entry_point: "vs_fs", compilation_options: Default::default(), buffers: &[] },
+                fragment: Some(wgpu::FragmentState {
+                    module: &ssao_module,
+                    entry_point: fs,
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::R8Unorm, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            })
+        };
+        let ssao_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("ssao"), bind_group_layouts: &[&ssao_layout], push_constant_ranges: &[] });
+        let blur_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("blur"), bind_group_layouts: &[&blur_layout], push_constant_ranges: &[] });
+        let ssao_pipeline = fullscreen_pipe(&ssao_pl, "fs_ssao");
+        let blur_pipeline = fullscreen_pipe(&blur_pl, "fs_blur");
+
+        // A 1x1 white AO texture used when SSAO is off (ao = 1, no change).
+        let white_ao = make_pixel_tex(device, queue, [255, 255, 255, 255], false);
+        let ao_bg_white = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ao-white"),
+            layout: &ao_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&white_ao) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+            ],
+        });
+        let ssao = build_ssao(device, &ssao_layout, &blur_layout, &ao_layout, &globals_buf, &sampler, w.max(1), h.max(1));
+
         let globals = GlobalsU {
             view_proj: Mat4::IDENTITY.to_cols_array_2d(),
             csm_vp: [Mat4::IDENTITY.to_cols_array_2d(); 4],
@@ -611,6 +741,7 @@ impl Renderer3D {
             sky_top: [0.20, 0.40, 0.75, 1.0],
             sky_horizon: [0.70, 0.80, 0.92, 1.0],
             counts: [0.0, 1.0, 0.0, 0.0],
+            screen: [w.max(1) as f32, h.max(1) as f32, 1.0, 0.0],
             lights: [PointLightU { pos_range: [0.0; 4], color_int: [0.0; 4] }; MAX_LIGHTS],
         };
 
@@ -647,6 +778,16 @@ impl Renderer3D {
             inst_buf,
             inst_cap,
             inst_cmds: Vec::new(),
+            ssao_on: false,
+            prepass_pipeline,
+            prepass_inst_pipeline,
+            ssao_pipeline,
+            blur_pipeline,
+            ssao,
+            ao_bg_white,
+            ao_layout,
+            ssao_layout,
+            blur_layout,
             meshes: Vec::new(),
             mesh_radius: Vec::new(),
             materials: Vec::new(),
@@ -667,8 +808,17 @@ impl Renderer3D {
             if self.sample_count > 1 {
                 self.msaa_color = Some(make_msaa_color(device, self.color_format, w, h, self.sample_count));
             }
+            self.ssao = build_ssao(
+                device, &self.ssao_layout, &self.blur_layout, &self.ao_layout, &self.globals_buf,
+                &self.sampler, w, h,
+            );
             self.depth_size = (w, h);
         }
+    }
+
+    /// Toggle screen-space ambient occlusion.
+    pub fn set_ssao(&mut self, on: bool) {
+        self.ssao_on = on;
     }
 
     pub fn set_camera(&mut self, view_proj: Mat4, cam_pos: Vec3) {
@@ -871,6 +1021,12 @@ impl Renderer3D {
             csm_bytes[i * 256..i * 256 + 64].copy_from_slice(bytemuck::bytes_of(&vp.to_cols_array()));
         }
         self.globals.counts[1] = if self.shadows_on { 1.0 } else { 0.0 };
+        self.globals.screen = [
+            self.depth_size.0 as f32,
+            self.depth_size.1 as f32,
+            if self.ssao_on { 1.0 } else { 0.0 },
+            0.0,
+        ];
 
         queue.write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&self.globals));
         queue.write_buffer(&self.csm_buf, 0, &csm_bytes);
@@ -1002,6 +1158,67 @@ impl Renderer3D {
             }
         }
 
+        // SSAO: geometry prepass (normal + distance) -> occlusion -> blur.
+        if self.ssao_on {
+            {
+                let mut pp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("prepass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &self.ssao.prepass_color,
+                        resolve_target: None,
+                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &self.ssao.prepass_depth,
+                        depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                pp.set_pipeline(&self.prepass_pipeline);
+                pp.set_bind_group(0, &self.globals_bg, &[]);
+                for (ci, &(obj_off, joint_off)) in offsets.iter().enumerate() {
+                    let m = &self.meshes[self.queue_cmds[ci].mesh];
+                    pp.set_bind_group(1, &self.obj_bg, &[obj_off, joint_off]);
+                    pp.set_vertex_buffer(0, m.vbuf.slice(..));
+                    pp.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                    pp.draw_indexed(0..m.index_count, 0, 0..1);
+                }
+                if !inst_ranges.is_empty() {
+                    pp.set_pipeline(&self.prepass_inst_pipeline);
+                    pp.set_bind_group(0, &self.globals_bg, &[]);
+                    pp.set_vertex_buffer(1, self.inst_buf.slice(..));
+                    for (mesh, _, start, count) in &inst_ranges {
+                        let m = &self.meshes[*mesh];
+                        pp.set_vertex_buffer(0, m.vbuf.slice(..));
+                        pp.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                        pp.draw_indexed(0..m.index_count, 0, *start..*start + *count);
+                    }
+                }
+            }
+            // Occlusion + blur (fullscreen).
+            for (pipe, bg, target) in [
+                (&self.ssao_pipeline, &self.ssao.ssao_input_bg, &self.ssao.ssao_view),
+                (&self.blur_pipeline, &self.ssao.blur_input_bg, &self.ssao.blur_view),
+            ] {
+                let mut fp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("ssao-fs"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: target,
+                        resolve_target: None,
+                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::WHITE), store: wgpu::StoreOp::Store },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                fp.set_pipeline(pipe);
+                fp.set_bind_group(0, bg, &[]);
+                fp.draw(0..3, 0..1);
+            }
+        }
+
         // With MSAA, render into the multisampled color target and resolve into
         // the caller's view; otherwise render straight into it.
         let (attach_view, resolve) = match &self.msaa_color {
@@ -1039,8 +1256,10 @@ impl Renderer3D {
             pass.set_bind_group(0, &self.globals_bg, &[]);
             pass.draw(0..3, 0..1);
         }
+        let ao_bg = if self.ssao_on { &self.ssao.ao_bg } else { &self.ao_bg_white };
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.globals_bg, &[]);
+        pass.set_bind_group(3, ao_bg, &[]);
         let planes = frustum_planes(Mat4::from_cols_array_2d(&self.globals.view_proj));
         let mut drawn = 0usize;
         for &ci in &order {
@@ -1073,6 +1292,7 @@ impl Renderer3D {
             // group1 (object) is unused by the instanced shaders but must be bound
             // to satisfy the layout; the ring's slot 0 is a valid dummy.
             pass.set_bind_group(1, &self.obj_bg, &[0, 0]);
+            pass.set_bind_group(3, ao_bg, &[]);
             pass.set_vertex_buffer(1, self.inst_buf.slice(..));
             for (mesh, material, start, count) in &inst_ranges {
                 let m = &self.meshes[*mesh];
@@ -1199,6 +1419,74 @@ fn make_depth(device: &wgpu::Device, w: u32, h: u32, samples: u32) -> wgpu::Text
     tex.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
+/// Size-dependent SSAO resources (recreated on resize).
+struct Ssao {
+    prepass_color: wgpu::TextureView,
+    prepass_depth: wgpu::TextureView,
+    ssao_view: wgpu::TextureView,
+    blur_view: wgpu::TextureView,
+    ssao_input_bg: wgpu::BindGroup,
+    blur_input_bg: wgpu::BindGroup,
+    ao_bg: wgpu::BindGroup,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_ssao(
+    device: &wgpu::Device,
+    ssao_layout: &wgpu::BindGroupLayout,
+    blur_layout: &wgpu::BindGroupLayout,
+    ao_layout: &wgpu::BindGroupLayout,
+    globals_buf: &wgpu::Buffer,
+    sampler: &wgpu::Sampler,
+    w: u32,
+    h: u32,
+) -> Ssao {
+    let target = |format: wgpu::TextureFormat, label: &str| {
+        device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+            .create_view(&wgpu::TextureViewDescriptor::default())
+    };
+    let prepass_color = target(wgpu::TextureFormat::Rgba16Float, "prepass");
+    let prepass_depth = target(DEPTH_FORMAT, "prepass-depth");
+    let ssao_view = target(wgpu::TextureFormat::R8Unorm, "ssao");
+    let blur_view = target(wgpu::TextureFormat::R8Unorm, "ssao-blur");
+    let ssao_input_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("ssao-in"),
+        layout: ssao_layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: globals_buf.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&prepass_color) },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(sampler) },
+        ],
+    });
+    let blur_input_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("blur-in"),
+        layout: blur_layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&ssao_view) },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(sampler) },
+        ],
+    });
+    let ao_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("ao"),
+        layout: ao_layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&blur_view) },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+        ],
+    });
+    Ssao { prepass_color, prepass_depth, ssao_view, blur_view, ssao_input_bg, blur_input_bg, ao_bg }
+}
+
 fn make_msaa_color(device: &wgpu::Device, format: wgpu::TextureFormat, w: u32, h: u32, samples: u32) -> wgpu::TextureView {
     let tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("msaa-color"),
@@ -1270,6 +1558,7 @@ struct Globals {
     sky_top: vec4<f32>,
     sky_horizon: vec4<f32>,
     counts: vec4<f32>,
+    screen: vec4<f32>,
     lights: array<PointLight, 16>,
 };
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -1292,6 +1581,8 @@ struct MatU { base_color: vec4<f32>, emissive: vec4<f32>, mr: vec4<f32>, flags: 
 @group(2) @binding(3) var mr_tex: texture_2d<f32>;
 @group(2) @binding(4) var emissive_tex: texture_2d<f32>;
 @group(2) @binding(5) var samp: sampler;
+@group(3) @binding(0) var ao_tex: texture_2d<f32>;
+@group(3) @binding(1) var ao_samp: sampler;
 
 struct VsIn {
     @location(0) pos: vec3<f32>,
@@ -1448,7 +1739,7 @@ fn brdf(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, radiance: vec3<f32>, albedo: v
 
 // Shared lighting: PBR direct (directional + shadow + point lights) + ambient +
 // emissive + fog. Used by both the per-object and instanced fragment stages.
-fn shade(world_pos: vec3<f32>, n_in: vec3<f32>, albedo: vec3<f32>, alpha: f32, metallic: f32, rough: f32, emissive: vec3<f32>) -> vec4<f32> {
+fn shade(world_pos: vec3<f32>, n_in: vec3<f32>, albedo: vec3<f32>, alpha: f32, metallic: f32, rough: f32, emissive: vec3<f32>, ao: f32) -> vec4<f32> {
     let n = normalize(n_in);
     let v = normalize(g.cam_pos.xyz - world_pos);
     let ndl = max(dot(n, normalize(g.dir_dir.xyz)), 0.0);
@@ -1472,7 +1763,7 @@ fn shade(world_pos: vec3<f32>, n_in: vec3<f32>, albedo: vec3<f32>, alpha: f32, m
     let irradiance = sky_color(n) * albedo * (1.0 - metallic);
     let env = sky_color(reflect(-v, n));
     let fr = f0 + (max(vec3<f32>(1.0 - rough), f0) - f0) * pow(1.0 - ndv, 5.0);
-    let ambient = (irradiance + env * fr) * amb;
+    let ambient = (irradiance + env * fr) * amb * ao;
     var color = lo + ambient + emissive;
     if (g.fog_color.w > 0.0) {
         let f = clamp(exp(-length(g.cam_pos.xyz - world_pos) * g.fog_color.w), 0.0, 1.0);
@@ -1503,7 +1794,14 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
     }
     var emissive = mat.emissive.rgb;
     if (mat.flags.w > 0.5) { emissive = emissive + textureSample(emissive_tex, samp, in.uv).rgb; }
-    return shade(in.world_pos, n, albedo.rgb, albedo.a, metallic, rough, emissive);
+    let ao = textureSample(ao_tex, ao_samp, in.clip.xy / g.screen.xy).r;
+    return shade(in.world_pos, n, albedo.rgb, albedo.a, metallic, rough, emissive, ao);
+}
+
+// Geometry prepass: world normal (rgb) + distance-from-camera (a) for SSAO.
+@fragment
+fn fs_prepass(in: VsOut) -> @location(0) vec4<f32> {
+    return vec4<f32>(normalize(in.world_normal), length(g.cam_pos.xyz - in.world_pos));
 }
 
 // --- instanced (per-instance model matrix + tint) ---
@@ -1544,11 +1842,109 @@ fn fs_inst(in: InstOut) -> @location(0) vec4<f32> {
     var albedo = mat.base_color * in.tint;
     if (mat.flags.x > 0.5) { albedo = albedo * textureSample(base_tex, samp, in.uv); }
     let rough = clamp(mat.mr.y, 0.04, 1.0);
-    return shade(in.world_pos, in.world_normal, albedo.rgb, albedo.a, mat.mr.x, rough, mat.emissive.rgb);
+    let ao = textureSample(ao_tex, ao_samp, in.clip.xy / g.screen.xy).r;
+    return shade(in.world_pos, in.world_normal, albedo.rgb, albedo.a, mat.mr.x, rough, mat.emissive.rgb, ao);
+}
+@fragment
+fn fs_prepass_inst(in: InstOut) -> @location(0) vec4<f32> {
+    return vec4<f32>(normalize(in.world_normal), length(g.cam_pos.xyz - in.world_pos));
 }
 @vertex
 fn vs_shadow_inst(in: InstIn) -> @builtin(position) vec4<f32> {
     let model = mat4x4<f32>(in.m0, in.m1, in.m2, in.m3);
     return csm.vp * (model * vec4<f32>(in.pos, 1.0));
+}
+"#;
+
+// Screen-space ambient occlusion: hemisphere-kernel SSAO from the normal+depth
+// prepass, then a box blur. Separate module (fullscreen passes).
+const SSAO_WGSL: &str = r#"
+struct PointLight { pos_range: vec4<f32>, color_int: vec4<f32> };
+struct Globals {
+    view_proj: mat4x4<f32>,
+    csm_vp: array<mat4x4<f32>, 4>,
+    inv_view_proj: mat4x4<f32>,
+    csm_splits: vec4<f32>,
+    cam_pos: vec4<f32>,
+    dir_dir: vec4<f32>,
+    dir_color: vec4<f32>,
+    fog_color: vec4<f32>,
+    sky_top: vec4<f32>,
+    sky_horizon: vec4<f32>,
+    counts: vec4<f32>,
+    screen: vec4<f32>,
+    lights: array<PointLight, 16>,
+};
+@group(0) @binding(0) var<uniform> g: Globals;
+@group(0) @binding(1) var src: texture_2d<f32>;
+@group(0) @binding(2) var samp: sampler;
+
+struct FsOut { @builtin(position) clip: vec4<f32>, @location(0) uv: vec2<f32> };
+@vertex
+fn vs_fs(@builtin(vertex_index) i: u32) -> FsOut {
+    var p = array<vec2<f32>, 3>(vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+    var o: FsOut;
+    let xy = p[i];
+    o.clip = vec4<f32>(xy, 0.0, 1.0);
+    o.uv = vec2<f32>(xy.x * 0.5 + 0.5, 1.0 - (xy.y * 0.5 + 0.5));
+    return o;
+}
+
+var<private> KERNEL: array<vec3<f32>, 16> = array<vec3<f32>, 16>(
+    vec3<f32>(0.05, 0.04, 0.06), vec3<f32>(-0.10, 0.08, 0.10), vec3<f32>(0.12, -0.09, 0.14),
+    vec3<f32>(-0.15, -0.12, 0.10), vec3<f32>(0.18, 0.14, 0.20), vec3<f32>(-0.06, 0.22, 0.16),
+    vec3<f32>(0.24, -0.06, 0.26), vec3<f32>(-0.28, 0.10, 0.20), vec3<f32>(0.10, 0.30, 0.30),
+    vec3<f32>(-0.20, -0.26, 0.28), vec3<f32>(0.34, 0.18, 0.10), vec3<f32>(-0.12, 0.36, 0.34),
+    vec3<f32>(0.40, -0.20, 0.30), vec3<f32>(-0.42, -0.10, 0.40), vec3<f32>(0.22, 0.44, 0.40),
+    vec3<f32>(-0.30, 0.30, 0.50),
+);
+
+@fragment
+fn fs_ssao(in: FsOut) -> @location(0) vec4<f32> {
+    let data = textureSample(src, samp, in.uv);
+    let n = data.xyz;
+    let dist = data.w;
+    if (dist <= 0.0) { return vec4<f32>(1.0); } // background = unoccluded
+    // Reconstruct the world position of this pixel.
+    let ndc = vec2<f32>(in.uv.x * 2.0 - 1.0, (1.0 - in.uv.y) * 2.0 - 1.0);
+    let far = g.inv_view_proj * vec4<f32>(ndc, 1.0, 1.0);
+    let ray = normalize(far.xyz / far.w - g.cam_pos.xyz);
+    let pos = g.cam_pos.xyz + ray * dist;
+    // A randomized tangent frame to rotate the kernel per pixel.
+    let rnd = fract(sin(dot(in.uv, vec2<f32>(12.9898, 78.233))) * 43758.5453) * 6.2831853;
+    let randv = normalize(vec3<f32>(cos(rnd), sin(rnd), 0.0));
+    let t = normalize(randv - n * dot(randv, n));
+    let b = cross(n, t);
+    let tbn = mat3x3<f32>(t, b, n);
+    let radius = 0.7;
+    var occ = 0.0;
+    for (var i = 0; i < 16; i = i + 1) {
+        let sp = pos + (tbn * KERNEL[i]) * radius;
+        let clip = g.view_proj * vec4<f32>(sp, 1.0);
+        let sndc = clip.xyz / clip.w;
+        let suv = vec2<f32>(sndc.x * 0.5 + 0.5, 1.0 - (sndc.y * 0.5 + 0.5));
+        if (suv.x < 0.0 || suv.x > 1.0 || suv.y < 0.0 || suv.y > 1.0) { continue; }
+        let sdist = textureSample(src, samp, suv).w;
+        let sample_dist = length(sp - g.cam_pos.xyz);
+        if (sdist > 0.0 && sdist < sample_dist - 0.02) {
+            occ = occ + smoothstep(0.0, 1.0, radius / max(abs(dist - sdist), 1e-3));
+        }
+    }
+    let ao = clamp(1.0 - occ / 16.0, 0.0, 1.0);
+    return vec4<f32>(ao, ao, ao, 1.0);
+}
+
+@fragment
+fn fs_blur(in: FsOut) -> @location(0) vec4<f32> {
+    let dim = vec2<f32>(textureDimensions(src));
+    let texel = 1.0 / dim;
+    var sum = 0.0;
+    for (var y = -2; y <= 1; y = y + 1) {
+        for (var x = -2; x <= 1; x = x + 1) {
+            sum = sum + textureSample(src, samp, in.uv + vec2<f32>(f32(x), f32(y)) * texel).r;
+        }
+    }
+    let v = sum / 16.0;
+    return vec4<f32>(v, v, v, 1.0);
 }
 "#;
