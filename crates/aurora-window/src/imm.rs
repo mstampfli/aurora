@@ -37,8 +37,11 @@ struct ImmApp {
     mouse_dy: f64,
     /// Scroll accumulated since the last present.
     scroll: f64,
-    /// Whether the cursor is grabbed + hidden (FPS look).
+    /// Whether the cursor is currently grabbed + hidden (FPS look).
     grabbed: bool,
+    /// Whether the game asked for a grab at all (so a click can re-capture after
+    /// Escape releases it).
+    grab_wanted: bool,
     /// Window inner size (to map cursor coords back to framebuffer pixels).
     win_size: (f64, f64),
 }
@@ -57,6 +60,12 @@ impl ApplicationHandler for ImmApp {
                 match Gfx::new(w.clone(), self.width, self.height) {
                     Ok(g) => {
                         self.gfx = Some(g);
+                        // The window is created lazily on the first frame, so a
+                        // grab requested at startup (before it existed) is applied
+                        // now that we have a window.
+                        if self.grabbed {
+                            apply_grab(&w, true);
+                        }
                         self.window = Some(w);
                     }
                     Err(e) => {
@@ -95,6 +104,14 @@ impl ApplicationHandler for ImmApp {
                     MouseButton::Middle => self.mouse_middle = down,
                     _ => {}
                 }
+                // Clicking back into the window re-captures the cursor after
+                // Escape released it (standard FPS / pointer-lock behaviour).
+                if down && self.grab_wanted && !self.grabbed {
+                    if let Some(w) = &self.window {
+                        apply_grab(w, true);
+                        self.grabbed = true;
+                    }
+                }
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 self.scroll += match delta {
@@ -104,8 +121,14 @@ impl ApplicationHandler for ImmApp {
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
-                    if code == KeyCode::Escape {
-                        self.open = false;
+                    // Escape releases the mouse (so you can reach other windows)
+                    // instead of quitting; click back in to re-capture. Close the
+                    // window to quit.
+                    if code == KeyCode::Escape && event.state == ElementState::Pressed {
+                        if let Some(w) = &self.window {
+                            apply_grab(w, false);
+                        }
+                        self.grabbed = false;
                     }
                     if event.state == ElementState::Pressed {
                         self.keys.insert(code);
@@ -160,6 +183,7 @@ pub fn open(width: u32, height: u32) {
         mouse_dy: 0.0,
         scroll: 0.0,
         grabbed: false,
+        grab_wanted: false,
         win_size: ((width.max(1) * 3) as f64, (height.max(1) * 3) as f64),
     };
     IMM.with(|s| *s.borrow_mut() = Some((event_loop, app)));
@@ -197,21 +221,32 @@ pub fn mouse_button(b: u32) -> bool {
 
 /// Grab + hide the cursor for FPS mouse-look (or release it). Falls back from
 /// locked to confined grab if the platform requires it.
+/// Apply (or release) the cursor grab + visibility on a window. Locked is the
+/// FPS ideal; fall back to Confined where the platform requires it.
+fn apply_grab(w: &Window, on: bool) {
+    if on {
+        let _ = w
+            .set_cursor_grab(winit::window::CursorGrabMode::Locked)
+            .or_else(|_| w.set_cursor_grab(winit::window::CursorGrabMode::Confined));
+        w.set_cursor_visible(false);
+    } else {
+        let _ = w.set_cursor_grab(winit::window::CursorGrabMode::None);
+        w.set_cursor_visible(true);
+    }
+}
+
 pub fn grab_mouse(on: bool) {
     IMM.with(|s| {
         let mut slot = s.borrow_mut();
         let Some((_, app)) = slot.as_mut() else { return };
         app.grabbed = on;
+        if on {
+            app.grab_wanted = true;
+        }
+        // If the window exists, apply now; otherwise `resumed` applies it when the
+        // window is created on the first frame.
         if let Some(w) = &app.window {
-            if on {
-                let _ = w
-                    .set_cursor_grab(winit::window::CursorGrabMode::Locked)
-                    .or_else(|_| w.set_cursor_grab(winit::window::CursorGrabMode::Confined));
-                w.set_cursor_visible(false);
-            } else {
-                let _ = w.set_cursor_grab(winit::window::CursorGrabMode::None);
-                w.set_cursor_visible(true);
-            }
+            apply_grab(w, on);
         }
     })
 }
@@ -288,6 +323,12 @@ pub fn r3d_make_box(r: f32, g: f32, b: f32) -> i64 {
     with_gfx(-1, |gf| {
         let (d, q, s) = gf.scene_mut();
         s.make_box(d, q, [r, g, b, 1.0])
+    })
+}
+pub fn r3d_make_box_sized(hx: f32, hy: f32, hz: f32, r: f32, g: f32, b: f32) -> i64 {
+    with_gfx(-1, |gf| {
+        let (d, q, s) = gf.scene_mut();
+        s.make_box_sized(d, q, hx, hy, hz, [r, g, b, 1.0])
     })
 }
 pub fn r3d_make_sphere(segments: i64, r: f32, g: f32, b: f32) -> i64 {

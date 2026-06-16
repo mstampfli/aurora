@@ -29,6 +29,7 @@ pub use imm::{
     r3d_draw_billboard as imm_r3d_draw_billboard, r3d_fog as imm_r3d_fog,
     r3d_frustum_cull as imm_r3d_frustum_cull, r3d_light as imm_r3d_light,
     r3d_load_model as imm_r3d_load_model, r3d_make_box as imm_r3d_make_box,
+    r3d_make_box_sized as imm_r3d_make_box_sized,
     r3d_make_plane as imm_r3d_make_plane, r3d_make_sphere as imm_r3d_make_sphere,
     r3d_make_sprite as imm_r3d_make_sprite, r3d_point_light as imm_r3d_point_light,
     r3d_point_shadows as imm_r3d_point_shadows, r3d_present as imm_r3d_present,

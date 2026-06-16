@@ -116,8 +116,14 @@ impl MeshData {
     /// An axis-aligned unit cube centered at the origin (side length 2), with
     /// per-face normals and UVs. Handy as a primitive and for tests.
     pub fn cube() -> MeshData {
+        MeshData::box_dims(1.0, 1.0, 1.0)
+    }
+
+    /// An axis-aligned box with the given half-extents (full size `2*hx` by
+    /// `2*hy` by `2*hz`, matching a physics box collider's extents).
+    pub fn box_dims(hx: f32, hy: f32, hz: f32) -> MeshData {
         let mut m = MeshData::default();
-        // (normal, four corners ccw) per face.
+        // (normal, four corners ccw) per face, on the unit cube.
         let faces: [([f32; 3], [[f32; 3]; 4]); 6] = [
             ([0.0, 0.0, 1.0], [[-1.0, -1.0, 1.0], [1.0, -1.0, 1.0], [1.0, 1.0, 1.0], [-1.0, 1.0, 1.0]]),
             ([0.0, 0.0, -1.0], [[1.0, -1.0, -1.0], [-1.0, -1.0, -1.0], [-1.0, 1.0, -1.0], [1.0, 1.0, -1.0]]),
@@ -130,7 +136,8 @@ impl MeshData {
             let base = m.vertices.len() as u32;
             let uvs = [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]];
             for (corner, uv) in corners.iter().zip(uvs) {
-                m.vertices.push(Vertex::new(*corner, normal, uv));
+                let p = [corner[0] * hx, corner[1] * hy, corner[2] * hz];
+                m.vertices.push(Vertex::new(p, normal, uv));
             }
             m.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
         }

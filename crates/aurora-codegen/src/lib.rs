@@ -358,7 +358,7 @@ const BUILTINS: &[&str] = &[
     "nav3d_init", "nav3d_wall", "nav3d_find", "nav3d_x", "nav3d_y", "nav3d_z",
     "navmesh_build", "navmesh_find", "navmesh_x", "navmesh_y", "navmesh_z",
     // 3D rendering.
-    "r3d_load_model", "r3d_make_box", "r3d_make_sphere", "r3d_make_plane",
+    "r3d_load_model", "r3d_make_box", "r3d_make_box_sized", "r3d_make_sphere", "r3d_make_plane",
     "r3d_camera", "r3d_light", "r3d_clear", "r3d_begin", "r3d_draw",
     "r3d_anim_play", "r3d_anim_update", "r3d_clip_count", "r3d_present",
     "r3d_fog", "r3d_sky", "r3d_shadows", "r3d_ssao", "r3d_point_shadows", "r3d_clear_lights", "r3d_point_light",
@@ -618,6 +618,7 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     // 3D rendering.
     builder.symbol("aurora_r3d_load_model", aurora_runtime::aurora_r3d_load_model as *const u8);
     builder.symbol("aurora_r3d_make_box", aurora_runtime::aurora_r3d_make_box as *const u8);
+    builder.symbol("aurora_r3d_make_box_sized", aurora_runtime::aurora_r3d_make_box_sized as *const u8);
     builder.symbol("aurora_r3d_make_sphere", aurora_runtime::aurora_r3d_make_sphere as *const u8);
     builder.symbol("aurora_r3d_make_plane", aurora_runtime::aurora_r3d_make_plane as *const u8);
     builder.symbol("aurora_r3d_camera", aurora_runtime::aurora_r3d_camera as *const u8);
@@ -913,6 +914,7 @@ fn lower(
     // 3D rendering.
     hosts.insert("r3d_load_model", import(jmod, "aurora_r3d_load_model", &[ptr_ty, i], Some(i)));
     hosts.insert("r3d_make_box", import(jmod, "aurora_r3d_make_box", &[f64t, f64t, f64t], Some(i)));
+    hosts.insert("r3d_make_box_sized", import(jmod, "aurora_r3d_make_box_sized", &[f64t, f64t, f64t, f64t, f64t, f64t], Some(i)));
     hosts.insert("r3d_make_sphere", import(jmod, "aurora_r3d_make_sphere", &[i, f64t, f64t, f64t], Some(i)));
     hosts.insert("r3d_make_plane", import(jmod, "aurora_r3d_make_plane", &[f64t, f64t, f64t, f64t, f64t], Some(i)));
     hosts.insert("r3d_camera", import(jmod, "aurora_r3d_camera", &[f64t, f64t, f64t, f64t, f64t, f64t, f64t], None));
@@ -3946,6 +3948,7 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "navmesh_x" | "navmesh_y" | "navmesh_z" => (vec![I64], Some(F64)),
         // 3D rendering.
         "r3d_make_box" => (vec![F64, F64, F64], Some(I64)),
+        "r3d_make_box_sized" => (vec![F64, F64, F64, F64, F64, F64], Some(I64)),
         "r3d_make_sphere" => (vec![I64, F64, F64, F64], Some(I64)),
         "r3d_make_plane" => (vec![F64, F64, F64, F64, F64], Some(I64)),
         "r3d_camera" => (vec![F64, F64, F64, F64, F64, F64, F64], None),

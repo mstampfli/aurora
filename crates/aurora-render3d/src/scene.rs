@@ -169,6 +169,17 @@ impl Scene {
     pub fn make_box(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, color: [f32; 4]) -> i64 {
         self.add_primitive(device, queue, &MeshData::cube(), color)
     }
+    pub fn make_box_sized(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        hx: f32,
+        hy: f32,
+        hz: f32,
+        color: [f32; 4],
+    ) -> i64 {
+        self.add_primitive(device, queue, &MeshData::box_dims(hx, hy, hz), color)
+    }
     pub fn make_sphere(
         &mut self,
         device: &wgpu::Device,

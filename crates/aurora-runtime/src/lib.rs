@@ -1210,6 +1210,13 @@ pub extern "C" fn aurora_r3d_load_model(ptr: *const u8, len: i64) -> i64 {
 pub extern "C" fn aurora_r3d_make_box(r: f64, g: f64, b: f64) -> i64 {
     aurora_window::imm_r3d_make_box(r as f32, g as f32, b as f32)
 }
+/// A box mesh sized by half-extents (matching a physics box collider), colored.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_make_box_sized(
+    hx: f64, hy: f64, hz: f64, r: f64, g: f64, b: f64,
+) -> i64 {
+    aurora_window::imm_r3d_make_box_sized(hx as f32, hy as f32, hz as f32, r as f32, g as f32, b as f32)
+}
 #[no_mangle]
 pub extern "C" fn aurora_r3d_make_sphere(segments: i64, r: f64, g: f64, b: f64) -> i64 {
     aurora_window::imm_r3d_make_sphere(segments, r as f32, g as f32, b as f32)
@@ -1751,7 +1758,7 @@ pub extern "C" fn aurora_dbg_var_f64(name_ptr: *const u8, name_len: i64, value: 
 /// Touch every host symbol so the linker keeps this crate's object in an AOT
 /// link even when the Rust driver references nothing from it directly.
 pub fn force_link() -> usize {
-    let fns: [*const (); 200] = [
+    let fns: [*const (); 201] = [
         aurora_r3d_ssao as *const (),
         aurora_r3d_point_shadows as *const (),
         // Multiplayer (generic framework: the game registers its Aurora sim).
@@ -1874,6 +1881,7 @@ pub fn force_link() -> usize {
         // 3D rendering.
         aurora_r3d_load_model as *const (),
         aurora_r3d_make_box as *const (),
+        aurora_r3d_make_box_sized as *const (),
         aurora_r3d_make_sphere as *const (),
         aurora_r3d_make_plane as *const (),
         aurora_r3d_camera as *const (),
