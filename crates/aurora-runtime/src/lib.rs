@@ -1232,6 +1232,11 @@ pub extern "C" fn aurora_r3d_camera(ex: f64, ey: f64, ez: f64, tx: f64, ty: f64,
         ex as f32, ey as f32, ez as f32, tx as f32, ty as f32, tz as f32, fov as f32,
     );
 }
+/// Set the camera roll (banking) in radians, for wallrun lean / strafe tilt.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_camera_roll(roll: f64) {
+    aurora_window::imm_r3d_camera_roll(roll as f32);
+}
 #[allow(clippy::too_many_arguments)]
 #[no_mangle]
 pub extern "C" fn aurora_r3d_light(dx: f64, dy: f64, dz: f64, r: f64, g: f64, b: f64, ambient: f64) {
@@ -1758,7 +1763,7 @@ pub extern "C" fn aurora_dbg_var_f64(name_ptr: *const u8, name_len: i64, value: 
 /// Touch every host symbol so the linker keeps this crate's object in an AOT
 /// link even when the Rust driver references nothing from it directly.
 pub fn force_link() -> usize {
-    let fns: [*const (); 201] = [
+    let fns: [*const (); 202] = [
         aurora_r3d_ssao as *const (),
         aurora_r3d_point_shadows as *const (),
         // Multiplayer (generic framework: the game registers its Aurora sim).
@@ -1885,6 +1890,7 @@ pub fn force_link() -> usize {
         aurora_r3d_make_sphere as *const (),
         aurora_r3d_make_plane as *const (),
         aurora_r3d_camera as *const (),
+        aurora_r3d_camera_roll as *const (),
         aurora_r3d_light as *const (),
         aurora_r3d_clear as *const (),
         aurora_r3d_begin as *const (),

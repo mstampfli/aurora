@@ -23,6 +23,8 @@ struct Camera {
     eye: Vec3,
     target: Vec3,
     up: Vec3,
+    /// View roll about the forward axis, in radians (camera banking).
+    roll: f32,
     fov_y: f32,
     near: f32,
     far: f32,
@@ -52,6 +54,7 @@ impl Scene {
                 eye: Vec3::new(0.0, 2.0, 6.0),
                 target: Vec3::ZERO,
                 up: Vec3::Y,
+                roll: 0.0,
                 fov_y: 60f32.to_radians(),
                 near: 0.05,
                 far: 500.0,
@@ -75,8 +78,22 @@ impl Scene {
     fn update_camera(&mut self) {
         let aspect = self.size.0 as f32 / self.size.1.max(1) as f32;
         let proj = crate::perspective(self.cam.fov_y, aspect, self.cam.near, self.cam.far);
-        let view = crate::look_at(self.cam.eye, self.cam.target, self.cam.up);
+        // Bank the camera by rolling the up vector about the forward axis. Forward
+        // is unchanged, so the centre of the screen still aims where you look.
+        let fwd = (self.cam.target - self.cam.eye).normalize_or_zero();
+        let up = if self.cam.roll.abs() > 1e-5 && fwd.length_squared() > 0.0 {
+            glam::Quat::from_axis_angle(fwd, self.cam.roll) * self.cam.up
+        } else {
+            self.cam.up
+        };
+        let view = crate::look_at(self.cam.eye, self.cam.target, up);
         self.renderer.set_camera(proj * view, self.cam.eye);
+    }
+
+    /// Set the camera roll (banking) in radians; applied on the next camera update.
+    pub fn set_camera_roll(&mut self, roll: f32) {
+        self.cam.roll = roll;
+        self.update_camera();
     }
 
     pub fn set_camera(&mut self, eye: Vec3, target: Vec3, fov_deg: f32) {

@@ -353,6 +353,12 @@ pub fn r3d_camera(ex: f32, ey: f32, ez: f32, tx: f32, ty: f32, tz: f32, fov_deg:
         s.set_camera(Vec3::new(ex, ey, ez), Vec3::new(tx, ty, tz), fov_deg);
     });
 }
+pub fn r3d_camera_roll(roll: f32) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.set_camera_roll(roll);
+    });
+}
 pub fn r3d_light(dx: f32, dy: f32, dz: f32, r: f32, g: f32, b: f32, ambient: f32) {
     with_gfx((), |gf| {
         let (_, _, s) = gf.scene_mut();
