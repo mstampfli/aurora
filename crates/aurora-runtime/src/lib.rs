@@ -64,6 +64,25 @@ pub extern "C" fn aurora_runtime_flush() {
     let _ = std::io::stdout().flush();
 }
 
+thread_local! {
+    static LAST_FRAME: RefCell<Option<std::time::Instant>> = const { RefCell::new(None) };
+}
+
+/// Real elapsed seconds since the previous call (0.016 on the first call),
+/// clamped to 0.1 so a stall can't make the game lurch or spiral. Lets the game
+/// loop run frame-rate-independent instead of assuming a fixed step.
+#[no_mangle]
+pub extern "C" fn aurora_frame_dt() -> f64 {
+    LAST_FRAME.with(|c| {
+        let now = std::time::Instant::now();
+        let dt = match c.borrow_mut().replace(now) {
+            Some(prev) => now.duration_since(prev).as_secs_f64(),
+            None => 1.0 / 60.0,
+        };
+        dt.clamp(0.0001, 0.1)
+    })
+}
+
 /// FFI demonstration target (a Rust `extern "C"` function): dot product of two
 /// `n`-element `f64` buffers. Aurora arrays/structs of `f64` are contiguous
 /// 8-byte slots, so they pass straight through as `const double*` — this is what
@@ -1779,7 +1798,7 @@ pub extern "C" fn aurora_dbg_var_f64(name_ptr: *const u8, name_len: i64, value: 
 /// Touch every host symbol so the linker keeps this crate's object in an AOT
 /// link even when the Rust driver references nothing from it directly.
 pub fn force_link() -> usize {
-    let fns: [*const (); 204] = [
+    let fns: [*const (); 205] = [
         aurora_r3d_ssao as *const (),
         aurora_r3d_point_shadows as *const (),
         // Multiplayer (generic framework: the game registers its Aurora sim).
@@ -1982,6 +2001,7 @@ pub fn force_link() -> usize {
         aurora_print_str as *const (),
         aurora_print_nl as *const (),
         aurora_runtime_flush as *const (),
+        aurora_frame_dt as *const (),
         aurora_framebuffer as *const (),
         aurora_clear as *const (),
         aurora_pixel as *const (),

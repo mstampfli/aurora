@@ -365,7 +365,7 @@ const BUILTINS: &[&str] = &[
     "r3d_make_sprite", "r3d_draw_billboard", "r3d_debug_line", "r3d_frustum_cull",
     "r3d_screen_x", "r3d_screen_y",
     // FPS input.
-    "mouse_dx", "mouse_dy", "mouse_scroll", "mouse_button", "grab_mouse",
+    "mouse_dx", "mouse_dy", "mouse_scroll", "mouse_button", "grab_mouse", "frame_dt",
     // 3D positional audio.
     "audio_listener", "play_sound_at",
     // Rich 3D physics queries.
@@ -562,6 +562,7 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_frame_reset", aurora_runtime::aurora_frame_reset as *const u8);
     builder.symbol("aurora_load_ppm", aurora_runtime::aurora_load_ppm as *const u8);
     builder.symbol("aurora_oob", aurora_runtime::aurora_oob as *const u8);
+    builder.symbol("aurora_frame_dt", aurora_runtime::aurora_frame_dt as *const u8);
     builder.symbol("aurora_divzero", aurora_runtime::aurora_divzero as *const u8);
     builder.symbol("aurora_fmod", aurora_runtime::aurora_fmod as *const u8);
     builder.symbol("aurora_load_image", aurora_runtime::aurora_load_image as *const u8);
@@ -866,6 +867,7 @@ fn lower(
     hosts.insert("frame_reset", import(jmod, "aurora_frame_reset", &[], None));
     hosts.insert("load_ppm", import(jmod, "aurora_load_ppm", &[ptr_ty, i], Some(i)));
     hosts.insert("oob", import(jmod, "aurora_oob", &[i, i], None));
+    hosts.insert("frame_dt", import(jmod, "aurora_frame_dt", &[], Some(types::F64)));
     hosts.insert("divzero", import(jmod, "aurora_divzero", &[], None));
     hosts.insert("fmod", import(jmod, "aurora_fmod", &[types::F64, types::F64], Some(types::F64)));
     hosts.insert("load_image", import(jmod, "aurora_load_image", &[ptr_ty, i], Some(i)));
@@ -4080,7 +4082,7 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "r3d_frustum_cull" => (vec![I64], None),
         "r3d_screen_x" | "r3d_screen_y" => (vec![F64, F64, F64], Some(F64)),
         // FPS input.
-        "mouse_dx" | "mouse_dy" | "mouse_scroll" => (vec![], Some(F64)),
+        "mouse_dx" | "mouse_dy" | "mouse_scroll" | "frame_dt" => (vec![], Some(F64)),
         "mouse_button" => (vec![I64], Some(I64)),
         "grab_mouse" => (vec![I64], None),
         // 3D positional audio.
