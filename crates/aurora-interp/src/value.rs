@@ -64,7 +64,15 @@ impl fmt::Display for Value {
         match self {
             Value::Unit => write!(f, "()"),
             Value::Int(n) => write!(f, "{n}"),
-            Value::Float(x) => write!(f, "{x}"),
+            // Match the native backend's float formatting: whole values keep a
+            // trailing `.0` (so `7.0` prints `7.0`, not `7`).
+            Value::Float(x) => {
+                if x.is_finite() && *x == x.trunc() {
+                    write!(f, "{x}.0")
+                } else {
+                    write!(f, "{x}")
+                }
+            }
             Value::Bool(b) => write!(f, "{b}"),
             Value::Char(c) => write!(f, "{c}"),
             Value::Str(s) => write!(f, "{s}"),

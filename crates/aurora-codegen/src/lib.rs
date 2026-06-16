@@ -3596,7 +3596,13 @@ fn emit_print(
     env: &Env,
     args: &[aurora_ast::Arg],
 ) -> Result<(), String> {
-    for a in args {
+    for (idx, a) in args.iter().enumerate() {
+        // Separate multiple arguments with a space, matching the interpreter.
+        if idx > 0 {
+            let (sp, sl) = emit_str_data(m, b, env, " ")?;
+            let f = m.declare_func_in_func(env.hosts["print_str"], b.func);
+            b.ins().call(f, &[sp, sl]);
+        }
         if let ExprKind::Str(s) = &a.value.kind {
             let (ptr, len) = emit_str_data(m, b, env, s)?;
             let f = m.declare_func_in_func(env.hosts["print_str"], b.func);

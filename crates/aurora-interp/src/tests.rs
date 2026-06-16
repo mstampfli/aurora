@@ -23,7 +23,8 @@ fn out(src: &str) -> String {
 fn arithmetic_and_println() {
     assert_eq!(out("fn main() { println(1 + 2 * 3) }"), "7\n");
     assert_eq!(out("fn main() { println(10 / 3) }"), "3\n");
-    assert_eq!(out("fn main() { println(2.5 + 0.5) }"), "3\n");
+    // Whole-valued floats keep a trailing `.0` (matches the native backend).
+    assert_eq!(out("fn main() { println(2.5 + 0.5) }"), "3.0\n");
 }
 
 #[test]
@@ -227,13 +228,13 @@ fn pipe_operator_threads_value_as_first_arg() {
 
 #[test]
 fn math_builtins() {
-    assert_eq!(out("fn main() { println(sqrt(16.0)) }"), "4\n");
+    assert_eq!(out("fn main() { println(sqrt(16.0)) }"), "4.0\n");
     assert_eq!(out("fn main() { println(abs(-5)) }"), "5\n"); // int abs stays int
     assert_eq!(out("fn main() { println(max(3, 7)) }"), "7\n");
     assert_eq!(out("fn main() { println(min(3.5, 1.5)) }"), "1.5\n");
-    assert_eq!(out("fn main() { println(pow(2.0, 10.0)) }"), "1024\n");
-    assert_eq!(out("fn main() { println(floor(3.9)) }"), "3\n");
-    assert_eq!(out("fn main() { println(clamp(12.0, 0.0, 9.0)) }"), "9\n");
+    assert_eq!(out("fn main() { println(pow(2.0, 10.0)) }"), "1024.0\n");
+    assert_eq!(out("fn main() { println(floor(3.9)) }"), "3.0\n");
+    assert_eq!(out("fn main() { println(clamp(12.0, 0.0, 9.0)) }"), "9.0\n");
 }
 
 #[test]
@@ -262,7 +263,7 @@ fn math_builtins_compose_for_geometry() {
     // Euclidean distance via sqrt + arithmetic — the kind of thing gameplay needs.
     let src = "fn dist(x: f64, y: f64) -> f64 { sqrt(x * x + y * y) }
     fn main() { println(dist(3.0, 4.0)) }";
-    assert_eq!(out(src), "5\n");
+    assert_eq!(out(src), "5.0\n");
 }
 
 // --- builtin graphics ----------------------------------------------------
@@ -499,4 +500,15 @@ fn entity_term_binds_id() {
         for (e, a) in query<Entity, &A> { println(a.v) }
     }";
     assert_eq!(out(src), "7\n");
+}
+
+#[test]
+fn bitwise_builtins_work_in_interpreter() {
+    // These were missing from the interpreter, so any program (incl. the bundled
+    // stdlib's rgb/red/...) calling them errored. They must match the native ops.
+    assert_eq!(out("fn main() { println(band(6, 3)) }"), "2\n");
+    assert_eq!(out("fn main() { println(bor(4, 1)) }"), "5\n");
+    assert_eq!(out("fn main() { println(bxor(5, 3)) }"), "6\n");
+    assert_eq!(out("fn main() { println(shl(1, 4)) }"), "16\n");
+    assert_eq!(out("fn main() { println(shr(32, 2)) }"), "8\n");
 }

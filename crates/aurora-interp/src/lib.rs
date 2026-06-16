@@ -773,7 +773,8 @@ impl<'a> Interp<'a> {
             "tan" => Ok(Value::Float(f64_arg(&argv, 0).tan())),
             "floor" => Ok(Value::Float(f64_arg(&argv, 0).floor())),
             "ceil" => Ok(Value::Float(f64_arg(&argv, 0).ceil())),
-            "round" => Ok(Value::Float(f64_arg(&argv, 0).round())),
+            // round-half-to-even, matching the native backend's `nearest`.
+            "round" => Ok(Value::Float(f64_arg(&argv, 0).round_ties_even())),
             "pow" => Ok(Value::Float(f64_arg(&argv, 0).powf(f64_arg(&argv, 1)))),
             "abs" => Ok(match argv.first() {
                 Some(Value::Int(n)) => Value::Int(n.abs()),
@@ -795,6 +796,21 @@ impl<'a> Interp<'a> {
                 let (v, lo, hi) = (f64_arg(&argv, 0), f64_arg(&argv, 1), f64_arg(&argv, 2));
                 Ok(Value::Float(v.clamp(lo, hi)))
             }
+            // Integer bitwise ops (the native backend has these; the bundled
+            // stdlib `rgb`/`red`/... call them, so the interpreter needs them too).
+            "band" | "bor" | "bxor" | "shl" | "shr" => {
+                let a = int_arg(&argv, 0);
+                let b = int_arg(&argv, 1);
+                let r = match name.as_str() {
+                    "band" => a & b,
+                    "bor" => a | b,
+                    "bxor" => a ^ b,
+                    "shl" => a.wrapping_shl(b as u32),
+                    _ => a.wrapping_shr(b as u32),
+                };
+                Ok(Value::Int(r as i128))
+            }
+            "bnot" => Ok(Value::Int(!int_arg(&argv, 0) as i128)),
             "str" => Ok(Value::Str(argv.first().map(|v| v.to_string()).unwrap_or_default())),
             "len" => Ok(Value::Int(match argv.first() {
                 Some(Value::Array(v)) | Some(Value::Tuple(v)) => v.len() as i128,
@@ -1099,24 +1115,29 @@ enum Acc {
 
 fn apply_arith(op: BinOp, a: Value, b: Value) -> Result<Value, String> {
     match (a, b) {
-        (Value::Int(x), Value::Int(y)) => Ok(Value::Int(match op {
-            BinOp::Add => x + y,
-            BinOp::Sub => x - y,
-            BinOp::Mul => x * y,
-            BinOp::Div => {
-                if y == 0 {
-                    return Err("division by zero".into());
+        (Value::Int(x), Value::Int(y)) => {
+            // Match the native backend: wrap at i64 (not i128 overflow-panic).
+            let (xi, yi) = (x as i64, y as i64);
+            let r = match op {
+                BinOp::Add => xi.wrapping_add(yi),
+                BinOp::Sub => xi.wrapping_sub(yi),
+                BinOp::Mul => xi.wrapping_mul(yi),
+                BinOp::Div => {
+                    if yi == 0 {
+                        return Err("division by zero".into());
+                    }
+                    xi.wrapping_div(yi)
                 }
-                x / y
-            }
-            BinOp::Rem => {
-                if y == 0 {
-                    return Err("remainder by zero".into());
+                BinOp::Rem => {
+                    if yi == 0 {
+                        return Err("remainder by zero".into());
+                    }
+                    xi.wrapping_rem(yi)
                 }
-                x % y
-            }
-            _ => return Err("not an arithmetic operator".into()),
-        })),
+                _ => return Err("not an arithmetic operator".into()),
+            };
+            Ok(Value::Int(r as i128))
+        }
         (Value::Float(x), Value::Float(y)) => Ok(Value::Float(match op {
             BinOp::Add => x + y,
             BinOp::Sub => x - y,
