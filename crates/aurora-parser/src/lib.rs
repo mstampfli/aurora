@@ -38,6 +38,14 @@ pub fn parse(tokens: Vec<Token>) -> (Module, Vec<Diagnostic>) {
     (module, parser.diags)
 }
 
+/// Max expression/type nesting before the parser gives up. Bounds recursion so
+/// pathological/generated input produces a diagnostic instead of a stack-overflow
+/// abort (which is uncatchable and crashes the whole compiler). Kept well under
+/// what would exhaust the stack: one expression nesting level is ~7 deep parser
+/// frames, and the resulting AST is walked recursively by later passes too, so a
+/// modest cap protects the whole pipeline. Real code never nests this deep.
+pub(crate) const MAX_PARSE_DEPTH: u32 = 100;
+
 pub(crate) struct Parser {
     tokens: Vec<Token>,
     pos: usize,
@@ -45,6 +53,8 @@ pub(crate) struct Parser {
     /// When set, a `{` following a path does not begin a struct literal (used
     /// while parsing `if`/`while`/`for`/`match` heads). Grammar spec §5.3 note.
     restrict_struct: bool,
+    /// Current expression/type recursion depth (see `MAX_PARSE_DEPTH`).
+    depth: u32,
 }
 
 impl Parser {
@@ -54,7 +64,7 @@ impl Parser {
             let at = tokens.last().map(|t| t.span.hi).unwrap_or(0);
             tokens.push(Token::new(TokenKind::Eof, Span::new(at, at)));
         }
-        Parser { tokens, pos: 0, diags: Vec::new(), restrict_struct: false }
+        Parser { tokens, pos: 0, diags: Vec::new(), restrict_struct: false, depth: 0 }
     }
 
     // --- cursor --------------------------------------------------------------

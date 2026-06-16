@@ -10,6 +10,18 @@ use aurora_lexer::lex;
 use aurora_span::SourceFile;
 
 fn main() -> ExitCode {
+    // Run the whole compiler on a large stack so deeply-nested source (handled by
+    // the recursive parser and every later recursive pass: typeck, checks,
+    // codegen) yields a diagnostic instead of an uncatchable stack-overflow abort.
+    std::thread::Builder::new()
+        .stack_size(256 * 1024 * 1024)
+        .spawn(run_cli)
+        .expect("spawn compiler thread")
+        .join()
+        .unwrap_or(ExitCode::FAILURE)
+}
+
+fn run_cli() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("lex") => match args.get(1) {

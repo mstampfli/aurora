@@ -243,3 +243,29 @@ fn region_annotated_parameter_type_parses() {
     assert!(matches!(region, RegionKind::Perm));
     assert!(matches!(&inner.kind, TypeKind::Path(_)));
 }
+
+#[test]
+fn deeply_nested_input_errors_instead_of_crashing() {
+    // Pathological/generated input must produce a diagnostic, never a
+    // stack-overflow abort. Run on a big stack so the test harness itself is
+    // safe regardless of the depth cap.
+    std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(|| {
+            let deep_expr = format!("fn main() {{ let x = {}1{} }}", "(".repeat(4000), ")".repeat(4000));
+            let (_, diags) = parse_str(&deep_expr);
+            assert!(
+                diags.iter().any(|d| d.is_error() && d.message.contains("nests too deeply")),
+                "expected a depth-limit diagnostic for deeply nested parens"
+            );
+            let deep_ty = format!("fn f(x: {}i32{}) {{}}", "[".repeat(4000), "]".repeat(4000));
+            let (_, diags) = parse_str(&deep_ty);
+            assert!(
+                diags.iter().any(|d| d.is_error() && d.message.contains("nests too deeply")),
+                "expected a depth-limit diagnostic for deeply nested types"
+            );
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}

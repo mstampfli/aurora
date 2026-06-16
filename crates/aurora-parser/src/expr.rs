@@ -154,6 +154,21 @@ impl Parser {
     // --- unary & postfix -----------------------------------------------------
 
     fn parse_unary(&mut self) -> Expr {
+        // Depth guard: every expression descent passes through here (binary ops
+        // call it, and prefix chains recurse it), so capping it bounds the whole
+        // expression recursion and prevents a stack-overflow abort.
+        if self.depth >= crate::MAX_PARSE_DEPTH {
+            let span = self.cur_span();
+            self.error(span, "expression nests too deeply", "simplify this expression");
+            return Expr { kind: ExprKind::Error, span };
+        }
+        self.depth += 1;
+        let e = self.parse_unary_inner();
+        self.depth -= 1;
+        e
+    }
+
+    fn parse_unary_inner(&mut self) -> Expr {
         let start = self.cur_span();
         let op = match self.kind() {
             TokenKind::Minus => Some(UnOp::Neg),

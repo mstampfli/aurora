@@ -30,6 +30,20 @@ impl Parser {
     }
 
     pub(crate) fn parse_type(&mut self) -> Type {
+        // Depth guard (see parse_unary): bound nested types like `[[[...]]]` /
+        // `&&&...` / `fn(fn(...))` so they can't overflow the stack.
+        if self.depth >= crate::MAX_PARSE_DEPTH {
+            let span = self.cur_span();
+            self.error(span, "type nests too deeply", "simplify this type");
+            return Type { kind: TypeKind::Error, span };
+        }
+        self.depth += 1;
+        let t = self.parse_type_inner();
+        self.depth -= 1;
+        t
+    }
+
+    fn parse_type_inner(&mut self) -> Type {
         let start = self.cur_span();
         let kind = match self.kind() {
             TokenKind::Tilde => {
