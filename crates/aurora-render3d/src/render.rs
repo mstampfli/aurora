@@ -1862,19 +1862,6 @@ fn vs_sky(@builtin(vertex_index) i: u32) -> SkyOut {
     o.ndc = p[i];
     return o;
 }
-// HDR -> display: ACES filmic tonemap (Narkowicz) rolls off bright highlights
-// (sun disk, emissive, point lights) instead of hard-clipping to white, then a
-// gamma encode maps the linear lighting result to the (non-sRGB) surface so the
-// scene isn't displayed too dark. HUD/debug-line colors are authored in display
-// space and intentionally skip this.
-fn tonemap_aces(x: vec3<f32>) -> vec3<f32> {
-    let a = 2.51; let b = 0.03; let c = 2.43; let d = 0.59; let e = 0.14;
-    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3<f32>(0.0), vec3<f32>(1.0));
-}
-fn to_display(c: vec3<f32>) -> vec3<f32> {
-    return pow(tonemap_aces(c), vec3<f32>(1.0 / 2.2));
-}
-
 // The sky/environment radiance in a direction (gradient + sun). Used to draw the
 // skybox AND as the image-based lighting environment.
 fn sky_color(dir: vec3<f32>) -> vec3<f32> {
@@ -1891,7 +1878,7 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     let far = g.inv_view_proj * vec4<f32>(in.ndc, 1.0, 1.0);
     let world = far.xyz / far.w;
     let dir = normalize(world - g.cam_pos.xyz);
-    return vec4<f32>(to_display(sky_color(dir)), 1.0);
+    return vec4<f32>(sky_color(dir), 1.0);
 }
 
 @vertex
@@ -2034,7 +2021,7 @@ fn shade(world_pos: vec3<f32>, n_in: vec3<f32>, albedo: vec3<f32>, alpha: f32, m
         let f = clamp(exp(-length(g.cam_pos.xyz - world_pos) * g.fog_color.w), 0.0, 1.0);
         color = mix(g.fog_color.rgb, color, f);
     }
-    return vec4<f32>(to_display(color), alpha);
+    return vec4<f32>(color, alpha);
 }
 
 @fragment
