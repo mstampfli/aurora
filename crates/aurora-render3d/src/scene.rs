@@ -238,10 +238,18 @@ impl Scene {
         self.draw(handle, model);
     }
 
-    /// Draw a handle once per transform (batched instancing).
+    /// Draw a handle many times in a single GPU instanced draw call per
+    /// primitive (one draw for all `transforms`, not N draws).
     pub fn draw_instances(&mut self, handle: i64, transforms: &[Mat4]) {
-        for &t in transforms {
-            self.draw(handle, t);
+        let idx = match self.resolve(handle) {
+            Some(i) => i,
+            None => return,
+        };
+        let prims = self.items[idx].prims.clone();
+        let insts: Vec<crate::render::InstanceRaw> =
+            transforms.iter().map(|&t| crate::render::InstanceRaw::new(t, [1.0; 4])).collect();
+        for (mesh, mat) in prims {
+            self.renderer.draw_instanced(mesh, mat, insts.clone());
         }
     }
 

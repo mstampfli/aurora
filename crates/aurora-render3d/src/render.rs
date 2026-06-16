@@ -111,6 +111,27 @@ impl LineVert {
     };
 }
 
+/// Per-instance data for GPU instancing: a model matrix and a color tint.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub struct InstanceRaw {
+    model: [[f32; 4]; 4],
+    tint: [f32; 4],
+}
+impl InstanceRaw {
+    pub fn new(model: Mat4, tint: [f32; 4]) -> InstanceRaw {
+        InstanceRaw { model: model.to_cols_array_2d(), tint }
+    }
+    const LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
+        array_stride: 80,
+        step_mode: wgpu::VertexStepMode::Instance,
+        attributes: &wgpu::vertex_attr_array![
+            6 => Float32x4, 7 => Float32x4, 8 => Float32x4, 9 => Float32x4, // model rows
+            10 => Float32x4, // tint
+        ],
+    };
+}
+
 pub struct Renderer3D {
     pipeline: wgpu::RenderPipeline,
     globals_buf: wgpu::Buffer,
@@ -141,6 +162,11 @@ pub struct Renderer3D {
     line_buf: wgpu::Buffer,
     line_cap: u64,
     line_verts: Vec<LineVert>,
+    inst_pipeline: wgpu::RenderPipeline,
+    inst_shadow_pipeline: wgpu::RenderPipeline,
+    inst_buf: wgpu::Buffer,
+    inst_cap: u64,
+    inst_cmds: Vec<(usize, usize, Vec<InstanceRaw>)>,
 
     meshes: Vec<GpuMesh>,
     mesh_radius: Vec<f32>,
@@ -431,6 +457,91 @@ impl Renderer3D {
             mapped_at_creation: false,
         });
 
+        // Instanced pipeline: one draw for many copies of a mesh, with per-instance
+        // model matrix + tint read from an instance buffer.
+        let inst_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("inst"),
+            // Same group indices as the main pipeline (globals=0, object=1 unused,
+            // material=2) so the shared material bindings keep their @group(2).
+            bind_group_layouts: &[&globals_layout, &obj_layout, &mat_layout],
+            push_constant_ranges: &[],
+        });
+        let inst_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("inst"),
+            layout: Some(&inst_pl),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: "vs_inst",
+                compilation_options: Default::default(),
+                buffers: &[Vertex::LAYOUT, InstanceRaw::LAYOUT],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: "fs_inst",
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: Some(wgpu::Face::Back),
+                front_face: wgpu::FrontFace::Ccw,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: wgpu::MultisampleState { count: sample_count, ..Default::default() },
+            multiview: None,
+            cache: None,
+        });
+        let inst_shadow_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("inst-shadow"),
+            bind_group_layouts: &[&shadow_g_layout],
+            push_constant_ranges: &[],
+        });
+        let inst_shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("inst-shadow"),
+            layout: Some(&inst_shadow_pl),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: "vs_shadow_inst",
+                compilation_options: Default::default(),
+                buffers: &[Vertex::LAYOUT, InstanceRaw::LAYOUT],
+            },
+            fragment: None,
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                front_face: wgpu::FrontFace::Ccw,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: Default::default(),
+                bias: wgpu::DepthBiasState { constant: 2, slope_scale: 2.0, clamp: 0.0 },
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let inst_cap = 256u64;
+        let inst_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("instances"),
+            size: inst_cap * std::mem::size_of::<InstanceRaw>() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("tex"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -491,6 +602,11 @@ impl Renderer3D {
             line_buf,
             line_cap,
             line_verts: Vec::new(),
+            inst_pipeline,
+            inst_shadow_pipeline,
+            inst_buf,
+            inst_cap,
+            inst_cmds: Vec::new(),
             meshes: Vec::new(),
             mesh_radius: Vec::new(),
             materials: Vec::new(),
@@ -672,12 +788,21 @@ impl Renderer3D {
     pub fn begin(&mut self) {
         self.queue_cmds.clear();
         self.line_verts.clear();
+        self.inst_cmds.clear();
     }
 
     pub fn draw(&mut self, mesh: usize, material: usize, model: Mat4, joints: Option<Vec<Mat4>>) {
         if mesh < self.meshes.len() {
             let material = if material < self.materials.len() { material } else { 0 };
             self.queue_cmds.push(DrawCmd { mesh, material, model, joints });
+        }
+    }
+
+    /// Draw `mesh`/`material` once per instance in a single instanced draw call.
+    pub fn draw_instanced(&mut self, mesh: usize, material: usize, instances: Vec<InstanceRaw>) {
+        if mesh < self.meshes.len() && !instances.is_empty() {
+            let material = if material < self.materials.len() { material } else { 0 };
+            self.inst_cmds.push((mesh, material, instances));
         }
     }
 
@@ -747,6 +872,28 @@ impl Renderer3D {
         queue.write_buffer(&self.obj_buf, 0, &obj_bytes);
         queue.write_buffer(&self.joint_buf, 0, &joint_bytes);
 
+        // Flatten instanced batches into one instance buffer.
+        let mut inst_flat: Vec<InstanceRaw> = Vec::new();
+        let mut inst_ranges: Vec<(usize, usize, u32, u32)> = Vec::new();
+        for (mesh, material, insts) in &self.inst_cmds {
+            let start = inst_flat.len() as u32;
+            inst_flat.extend_from_slice(insts);
+            inst_ranges.push((*mesh, *material, start, insts.len() as u32));
+        }
+        if !inst_flat.is_empty() {
+            let need = inst_flat.len() as u64;
+            if need > self.inst_cap {
+                self.inst_cap = need.next_power_of_two();
+                self.inst_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("instances"),
+                    size: self.inst_cap * std::mem::size_of::<InstanceRaw>() as u64,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+            }
+            queue.write_buffer(&self.inst_buf, 0, bytemuck::cast_slice(&inst_flat));
+        }
+
         // Draw opaque first, then transparent back-to-front.
         let cam = Vec3::from_slice(&self.globals.cam_pos[..3]);
         let mut order: Vec<usize> = (0..self.queue_cmds.len()).collect();
@@ -791,6 +938,18 @@ impl Renderer3D {
                 sp.set_vertex_buffer(0, m.vbuf.slice(..));
                 sp.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
                 sp.draw_indexed(0..m.index_count, 0, 0..1);
+            }
+            // Instanced shadow casters.
+            if !inst_ranges.is_empty() {
+                sp.set_pipeline(&self.inst_shadow_pipeline);
+                sp.set_bind_group(0, &self.shadow_globals_bg, &[]);
+                sp.set_vertex_buffer(1, self.inst_buf.slice(..));
+                for (mesh, _, start, count) in &inst_ranges {
+                    let m = &self.meshes[*mesh];
+                    sp.set_vertex_buffer(0, m.vbuf.slice(..));
+                    sp.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                    sp.draw_indexed(0..m.index_count, 0, *start..*start + *count);
+                }
             }
         }
 
@@ -856,6 +1015,23 @@ impl Renderer3D {
             pass.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..m.index_count, 0, 0..1);
             drawn += 1;
+        }
+
+        // Instanced batches (one draw call each), lit + shadowed like the rest.
+        if !inst_ranges.is_empty() {
+            pass.set_pipeline(&self.inst_pipeline);
+            pass.set_bind_group(0, &self.globals_bg, &[]);
+            // group1 (object) is unused by the instanced shaders but must be bound
+            // to satisfy the layout; the ring's slot 0 is a valid dummy.
+            pass.set_bind_group(1, &self.obj_bg, &[0, 0]);
+            pass.set_vertex_buffer(1, self.inst_buf.slice(..));
+            for (mesh, material, start, count) in &inst_ranges {
+                let m = &self.meshes[*mesh];
+                pass.set_bind_group(2, &self.materials[*material].bind_group, &[]);
+                pass.set_vertex_buffer(0, m.vbuf.slice(..));
+                pass.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..m.index_count, 0, *start..*start + *count);
+            }
         }
 
         // Debug lines, drawn last (depth-tested against the scene).
@@ -1205,6 +1381,33 @@ fn brdf(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, radiance: vec3<f32>, albedo: v
     return (kd * albedo / PI + spec) * radiance * ndl;
 }
 
+// Shared lighting: PBR direct (directional + shadow + point lights) + ambient +
+// emissive + fog. Used by both the per-object and instanced fragment stages.
+fn shade(world_pos: vec3<f32>, n_in: vec3<f32>, albedo: vec3<f32>, alpha: f32, metallic: f32, rough: f32, emissive: vec3<f32>) -> vec4<f32> {
+    let n = normalize(n_in);
+    let v = normalize(g.cam_pos.xyz - world_pos);
+    let ndl = max(dot(n, normalize(g.dir_dir.xyz)), 0.0);
+    let shadow = shadow_factor(world_pos, ndl);
+    var lo = brdf(n, v, normalize(g.dir_dir.xyz), g.dir_color.rgb * g.dir_dir.w, albedo, metallic, rough) * shadow;
+    let count = i32(g.counts.x);
+    for (var i = 0; i < count; i = i + 1) {
+        let lp = g.lights[i].pos_range.xyz;
+        let range = g.lights[i].pos_range.w;
+        let to = lp - world_pos;
+        let d = length(to);
+        let l = to / max(d, 1e-4);
+        let att = clamp(1.0 - (d / range), 0.0, 1.0);
+        let radiance = g.lights[i].color_int.rgb * g.lights[i].color_int.w * att * att;
+        lo = lo + brdf(n, v, l, radiance, albedo, metallic, rough);
+    }
+    var color = lo + albedo * g.dir_color.w + emissive;
+    if (g.fog_color.w > 0.0) {
+        let f = clamp(exp(-length(g.cam_pos.xyz - world_pos) * g.fog_color.w), 0.0, 1.0);
+        color = mix(g.fog_color.rgb, color, f);
+    }
+    return vec4<f32>(color, alpha);
+}
+
 @fragment
 fn fs(in: VsOut) -> @location(0) vec4<f32> {
     var albedo = mat.base_color;
@@ -1225,35 +1428,54 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
         let tn = textureSample(normal_tex, samp, in.uv).xyz * 2.0 - 1.0;
         n = normalize(mat3x3<f32>(t, b, n) * tn);
     }
-    let v = normalize(g.cam_pos.xyz - in.world_pos);
-
-    // Directional light, attenuated by the shadow map.
-    let ndl = max(dot(n, normalize(g.dir_dir.xyz)), 0.0);
-    let shadow = shadow_factor(in.world_pos, ndl);
-    var lo = brdf(n, v, normalize(g.dir_dir.xyz), g.dir_color.rgb * g.dir_dir.w, albedo.rgb, metallic, rough) * shadow;
-    // Point lights.
-    let count = i32(g.counts.x);
-    for (var i = 0; i < count; i = i + 1) {
-        let lp = g.lights[i].pos_range.xyz;
-        let range = g.lights[i].pos_range.w;
-        let to = lp - in.world_pos;
-        let d = length(to);
-        let l = to / max(d, 1e-4);
-        let att = clamp(1.0 - (d / range), 0.0, 1.0);
-        let radiance = g.lights[i].color_int.rgb * g.lights[i].color_int.w * att * att;
-        lo = lo + brdf(n, v, l, radiance, albedo.rgb, metallic, rough);
-    }
-    let ambient = albedo.rgb * g.dir_color.w;
     var emissive = mat.emissive.rgb;
     if (mat.flags.w > 0.5) { emissive = emissive + textureSample(emissive_tex, samp, in.uv).rgb; }
-    var color = lo + ambient + emissive;
+    return shade(in.world_pos, n, albedo.rgb, albedo.a, metallic, rough, emissive);
+}
 
-    // Fog (exponential by camera distance).
-    if (g.fog_color.w > 0.0) {
-        let dist = length(g.cam_pos.xyz - in.world_pos);
-        let f = clamp(exp(-dist * g.fog_color.w), 0.0, 1.0);
-        color = mix(g.fog_color.rgb, color, f);
-    }
-    return vec4<f32>(color, albedo.a);
+// --- instanced (per-instance model matrix + tint) ---
+struct InstIn {
+    @location(0) pos: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) uv: vec2<f32>,
+    @location(3) j: vec4<u32>,
+    @location(4) w: vec4<f32>,
+    @location(5) tangent: vec4<f32>,
+    @location(6) m0: vec4<f32>,
+    @location(7) m1: vec4<f32>,
+    @location(8) m2: vec4<f32>,
+    @location(9) m3: vec4<f32>,
+    @location(10) tint: vec4<f32>,
+};
+struct InstOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) world_normal: vec3<f32>,
+    @location(1) uv: vec2<f32>,
+    @location(2) world_pos: vec3<f32>,
+    @location(3) tint: vec4<f32>,
+};
+@vertex
+fn vs_inst(in: InstIn) -> InstOut {
+    let model = mat4x4<f32>(in.m0, in.m1, in.m2, in.m3);
+    let world = model * vec4<f32>(in.pos, 1.0);
+    var out: InstOut;
+    out.clip = g.view_proj * world;
+    out.world_normal = (model * vec4<f32>(in.normal, 0.0)).xyz;
+    out.uv = in.uv;
+    out.world_pos = world.xyz;
+    out.tint = in.tint;
+    return out;
+}
+@fragment
+fn fs_inst(in: InstOut) -> @location(0) vec4<f32> {
+    var albedo = mat.base_color * in.tint;
+    if (mat.flags.x > 0.5) { albedo = albedo * textureSample(base_tex, samp, in.uv); }
+    let rough = clamp(mat.mr.y, 0.04, 1.0);
+    return shade(in.world_pos, in.world_normal, albedo.rgb, albedo.a, mat.mr.x, rough, mat.emissive.rgb);
+}
+@vertex
+fn vs_shadow_inst(in: InstIn) -> @builtin(position) vec4<f32> {
+    let model = mat4x4<f32>(in.m0, in.m1, in.m2, in.m3);
+    return g.light_vp * (model * vec4<f32>(in.pos, 1.0));
 }
 "#;

@@ -17,7 +17,7 @@ pub use anim::{skin_matrices, skin_matrices_blended, AnimPlayer};
 pub use glam::{Mat4, Quat, Vec3};
 pub use mesh::{GpuMesh, MeshData, Vertex};
 pub use model::{Clip, Joint, Model, Primitive, Skeleton};
-pub use render::{Material, MaterialDesc, Renderer3D, DEPTH_FORMAT, MAX_JOINTS, MAX_LIGHTS};
+pub use render::{InstanceRaw, Material, MaterialDesc, Renderer3D, DEPTH_FORMAT, MAX_JOINTS, MAX_LIGHTS};
 pub use scene::Scene;
 
 /// A right-handed perspective projection with a wgpu-style depth range (z in
@@ -288,6 +288,31 @@ mod tests {
         let top = px(&img, w, w / 2, 2);
         assert!(top[2] > top[0], "sky should be blue-dominant, not the red clear, got {top:?}");
         assert!(top[2] > 100, "sky should be bright blue, got {top:?}");
+    }
+
+    #[test]
+    fn gpu_instancing_draws_many_in_one_call() {
+        let _g = guard();
+        let Some((device, queue)) = headless_device() else { return };
+        let (w, h) = (64u32, 64u32);
+        let mut r = Renderer3D::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm, w, h, 1);
+        let cube = r.add_mesh(&device, &MeshData::cube());
+        let red = r.add_material(&device, &queue, &MaterialDesc::flat([0.9, 0.2, 0.2, 1.0]));
+        r.set_camera(perspective(60f32.to_radians(), 1.0, 0.1, 100.0) * look_at(Vec3::new(0.0, 1.0, 8.0), Vec3::ZERO, Vec3::Y), Vec3::new(0.0, 1.0, 8.0));
+        r.set_light(Vec3::new(0.3, 1.0, 0.4), Vec3::ONE, 0.3);
+        r.begin();
+        // Three cubes in a row via ONE instanced draw call.
+        let insts = vec![
+            InstanceRaw::new(Mat4::from_translation(Vec3::new(-2.5, 0.0, 0.0)), [1.0, 1.0, 1.0, 1.0]),
+            InstanceRaw::new(Mat4::from_translation(Vec3::new(0.0, 0.0, 0.0)), [1.0, 1.0, 1.0, 1.0]),
+            InstanceRaw::new(Mat4::from_translation(Vec3::new(2.5, 0.0, 0.0)), [1.0, 1.0, 1.0, 1.0]),
+        ];
+        r.draw_instanced(cube, red, insts);
+        let img = render_offscreen(&mut r, &device, &queue, w, h, [0.0, 0.0, 0.0, 1.0]);
+        // The center and both flanking instances should be lit red.
+        assert!(px(&img, w, w / 2, h / 2)[0] > 60, "center instance should render");
+        assert!(px(&img, w, 8, h / 2)[0] > 60, "left instance should render");
+        assert!(px(&img, w, w - 8, h / 2)[0] > 60, "right instance should render");
     }
 
     #[test]
