@@ -44,6 +44,16 @@ struct ImmApp {
     grab_wanted: bool,
     /// Window inner size (to map cursor coords back to framebuffer pixels).
     win_size: (f64, f64),
+    /// Speed/wind lines overlay state (intensity 0..1, animation time).
+    sl_intensity: f32,
+    sl_time: f32,
+    /// Damage overlay: low-health vignette, hit-glow intensity, hit direction.
+    dmg_vig: f32,
+    dmg_hit: f32,
+    dmg_dx: f32,
+    dmg_dy: f32,
+    /// Gold overclock tint intensity (0..1).
+    dmg_oc: f32,
 }
 
 impl ApplicationHandler for ImmApp {
@@ -53,7 +63,10 @@ impl ApplicationHandler for ImmApp {
         }
         let attrs = Window::default_attributes()
             .with_title("Aurora")
-            .with_inner_size(winit::dpi::LogicalSize::new(self.width * 3, self.height * 3));
+            // PHYSICAL-pixel size so the surface is EXACTLY width x height regardless
+            // of the display's DPI scaling. The framebuffer/HUD is the same size, so
+            // it blits 1:1 - pixel-sharp and perfectly centered, no DPI upscaling.
+            .with_inner_size(winit::dpi::PhysicalSize::new(self.width, self.height));
         match el.create_window(attrs) {
             Ok(w) => {
                 let w = Arc::new(w);
@@ -184,7 +197,14 @@ pub fn open(width: u32, height: u32) {
         scroll: 0.0,
         grabbed: false,
         grab_wanted: false,
-        win_size: ((width.max(1) * 3) as f64, (height.max(1) * 3) as f64),
+        win_size: (width.max(1) as f64, height.max(1) as f64),
+        sl_intensity: 0.0,
+        sl_time: 0.0,
+        dmg_vig: 0.0,
+        dmg_hit: 0.0,
+        dmg_dx: 0.0,
+        dmg_dy: 0.0,
+        dmg_oc: 0.0,
     };
     IMM.with(|s| *s.borrow_mut() = Some((event_loop, app)));
 }
@@ -332,6 +352,12 @@ pub fn r3d_make_box_sized(hx: f32, hy: f32, hz: f32, r: f32, g: f32, b: f32) -> 
     with_gfx(-1, |gf| {
         let (d, q, s) = gf.scene_mut();
         s.make_box_sized(d, q, hx, hy, hz, [r, g, b, 1.0])
+    })
+}
+pub fn r3d_make_box_emissive(hx: f32, hy: f32, hz: f32, r: f32, g: f32, b: f32) -> i64 {
+    with_gfx(-1, |gf| {
+        let (d, q, s) = gf.scene_mut();
+        s.make_box_emissive(d, q, hx, hy, hz, [r, g, b])
     })
 }
 pub fn r3d_make_sphere(segments: i64, r: f32, g: f32, b: f32) -> i64 {
@@ -493,7 +519,7 @@ pub fn r3d_clip_count(handle: i64) -> i64 {
 /// Render the queued 3D scene to the window and overlay `hud_rgba` (the CPU
 /// framebuffer; black is transparent), pump events, and return whether the
 /// window is still open.
-pub fn r3d_present(hud_rgba: &[u8]) -> bool {
+pub fn r3d_present(hud_rgba: &[u8], hud_w: u32, hud_h: u32) -> bool {
     IMM.with(|s| {
         let mut slot = s.borrow_mut();
         let Some((event_loop, app)) = slot.as_mut() else { return false };
@@ -502,12 +528,48 @@ pub fn r3d_present(hud_rgba: &[u8]) -> bool {
         reset_frame_input(app);
         event_loop.pump_app_events(Some(Duration::ZERO), app);
         if app.open {
+            let (sli, slt) = (app.sl_intensity, app.sl_time);
+            let (dv, dh, ddx, ddy, doc) =
+                (app.dmg_vig, app.dmg_hit, app.dmg_dx, app.dmg_dy, app.dmg_oc);
             if let Some(g) = app.gfx.as_mut() {
-                g.present_scene(hud_rgba);
+                g.present_scene(hud_rgba, hud_w, hud_h, sli, slt, dv, dh, ddx, ddy, doc);
             }
         }
         app.open
     })
+}
+
+/// Set the speed/wind-lines overlay intensity (0..1) and animation time.
+pub fn speedlines(intensity: f32, time: f32) {
+    IMM.with(|s| {
+        if let Some((_, app)) = s.borrow_mut().as_mut() {
+            app.sl_intensity = intensity;
+            app.sl_time = time;
+        }
+    });
+}
+
+/// Set the damage overlay: low-health vignette (0..1), directional hit glow (0..1),
+/// and the hit direction in screen space (dx, dy).
+pub fn damage(vig: f32, hit: f32, dx: f32, dy: f32, oc: f32) {
+    IMM.with(|s| {
+        if let Some((_, app)) = s.borrow_mut().as_mut() {
+            app.dmg_vig = vig;
+            app.dmg_hit = hit;
+            app.dmg_dx = dx;
+            app.dmg_dy = dy;
+            app.dmg_oc = oc;
+        }
+    });
+}
+
+/// Current window inner size in physical pixels (the surface size). 0 before the
+/// window exists. Lets a game size its HUD framebuffer to the live window.
+pub fn surface_w() -> u32 {
+    IMM.with(|s| s.borrow().as_ref().map(|(_, a)| a.win_size.0 as u32).unwrap_or(0))
+}
+pub fn surface_h() -> u32 {
+    IMM.with(|s| s.borrow().as_ref().map(|(_, a)| a.win_size.1 as u32).unwrap_or(0))
 }
 
 /// Project a world point to framebuffer pixel coords; returns `(x, y, visible)`

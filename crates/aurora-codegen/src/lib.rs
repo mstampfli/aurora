@@ -340,9 +340,10 @@ const BUILTINS: &[&str] = &[
     "abs", "min", "max", "clamp", "len", "str", "spawn", "despawn", "run_systems", "entity_count",
     "band", "bor", "bxor", "shl", "shr", "bnot",
     "framebuffer", "clear", "pixel", "triangle", "fb_get", "save_ppm",
-    "play_note", "play_sound", "audio_volume", "audio_stop", "window_open", "window_present",
+    "play_note", "play_sound", "play_noise", "audio_volume", "audio_stop", "window_open", "window_present",
+    "surface_w", "surface_h",
     "key_down", "mouse_x", "mouse_y", "mouse_down", "gpu_render",
-    "load_ppm", "load_image", "load_font", "draw_text", "play_wav", "scene_save", "scene_load", "frame_reset",
+    "load_ppm", "load_image", "load_font", "draw_text", "draw_int", "play_wav", "scene_save", "scene_load", "frame_reset",
     "phys_init", "phys_add", "phys_step", "phys_x", "phys_y", "phys_set_vel",
     "phys_vel_x", "phys_vel_y", "phys_apply_impulse", "phys_apply_force", "phys_set_pos", "phys_raycast",
     "nav_init", "nav_wall", "nav_find", "nav_x", "nav_y",
@@ -358,10 +359,10 @@ const BUILTINS: &[&str] = &[
     "nav3d_init", "nav3d_wall", "nav3d_find", "nav3d_x", "nav3d_y", "nav3d_z",
     "navmesh_build", "navmesh_find", "navmesh_x", "navmesh_y", "navmesh_z",
     // 3D rendering.
-    "r3d_load_model", "r3d_make_box", "r3d_make_box_sized", "r3d_make_sphere", "r3d_make_plane",
+    "r3d_load_model", "r3d_make_box", "r3d_make_box_sized", "r3d_make_box_emissive", "r3d_make_sphere", "r3d_make_plane",
     "r3d_camera", "r3d_camera_roll", "r3d_light", "r3d_clear", "r3d_begin", "r3d_draw",
     "r3d_anim_play", "r3d_anim_update", "r3d_clip_count", "r3d_present",
-    "r3d_fog", "r3d_sky", "r3d_shadows", "r3d_ssao", "r3d_point_shadows", "r3d_clear_lights", "r3d_point_light",
+    "r3d_fog", "r3d_speedlines", "r3d_damage", "r3d_sky", "r3d_shadows", "r3d_ssao", "r3d_point_shadows", "r3d_clear_lights", "r3d_point_light",
     "r3d_make_sprite", "r3d_draw_billboard", "r3d_debug_line", "r3d_frustum_cull",
     "r3d_screen_x", "r3d_screen_y",
     // FPS input.
@@ -569,6 +570,7 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_load_image", aurora_runtime::aurora_load_image as *const u8);
     builder.symbol("aurora_load_font", aurora_runtime::aurora_load_font as *const u8);
     builder.symbol("aurora_draw_text", aurora_runtime::aurora_draw_text as *const u8);
+    builder.symbol("aurora_draw_int", aurora_runtime::aurora_draw_int as *const u8);
     builder.symbol("aurora_play_wav", aurora_runtime::aurora_play_wav as *const u8);
     builder.symbol("aurora_phys_init", aurora_runtime::aurora_phys_init as *const u8);
     builder.symbol("aurora_phys_add", aurora_runtime::aurora_phys_add as *const u8);
@@ -623,6 +625,7 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_r3d_load_model", aurora_runtime::aurora_r3d_load_model as *const u8);
     builder.symbol("aurora_r3d_make_box", aurora_runtime::aurora_r3d_make_box as *const u8);
     builder.symbol("aurora_r3d_make_box_sized", aurora_runtime::aurora_r3d_make_box_sized as *const u8);
+    builder.symbol("aurora_r3d_make_box_emissive", aurora_runtime::aurora_r3d_make_box_emissive as *const u8);
     builder.symbol("aurora_r3d_make_sphere", aurora_runtime::aurora_r3d_make_sphere as *const u8);
     builder.symbol("aurora_r3d_make_plane", aurora_runtime::aurora_r3d_make_plane as *const u8);
     builder.symbol("aurora_r3d_camera", aurora_runtime::aurora_r3d_camera as *const u8);
@@ -636,6 +639,8 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_r3d_clip_count", aurora_runtime::aurora_r3d_clip_count as *const u8);
     builder.symbol("aurora_r3d_present", aurora_runtime::aurora_r3d_present as *const u8);
     builder.symbol("aurora_r3d_fog", aurora_runtime::aurora_r3d_fog as *const u8);
+    builder.symbol("aurora_r3d_speedlines", aurora_runtime::aurora_r3d_speedlines as *const u8);
+    builder.symbol("aurora_r3d_damage", aurora_runtime::aurora_r3d_damage as *const u8);
     builder.symbol("aurora_r3d_sky", aurora_runtime::aurora_r3d_sky as *const u8);
     builder.symbol("aurora_r3d_shadows", aurora_runtime::aurora_r3d_shadows as *const u8);
     builder.symbol("aurora_r3d_ssao", aurora_runtime::aurora_r3d_ssao as *const u8);
@@ -727,6 +732,9 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_float_to_str", aurora_runtime::aurora_float_to_str as *const u8);
     builder.symbol("aurora_play_note", aurora_runtime::aurora_play_note as *const u8);
     builder.symbol("aurora_play_sound", aurora_runtime::aurora_play_sound as *const u8);
+    builder.symbol("aurora_play_noise", aurora_runtime::aurora_play_noise as *const u8);
+    builder.symbol("aurora_surface_w", aurora_runtime::aurora_surface_w as *const u8);
+    builder.symbol("aurora_surface_h", aurora_runtime::aurora_surface_h as *const u8);
     builder.symbol("aurora_audio_volume", aurora_runtime::aurora_audio_volume as *const u8);
     builder.symbol("aurora_audio_stop", aurora_runtime::aurora_audio_stop as *const u8);
     builder.symbol("aurora_gpu_render", aurora_runtime::aurora_gpu_render as *const u8);
@@ -929,6 +937,7 @@ fn lower(
     hosts.insert("r3d_load_model", import(jmod, "aurora_r3d_load_model", &[ptr_ty, i], Some(i)));
     hosts.insert("r3d_make_box", import(jmod, "aurora_r3d_make_box", &[f64t, f64t, f64t], Some(i)));
     hosts.insert("r3d_make_box_sized", import(jmod, "aurora_r3d_make_box_sized", &[f64t, f64t, f64t, f64t, f64t, f64t], Some(i)));
+    hosts.insert("r3d_make_box_emissive", import(jmod, "aurora_r3d_make_box_emissive", &[f64t, f64t, f64t, f64t, f64t, f64t], Some(i)));
     hosts.insert("r3d_make_sphere", import(jmod, "aurora_r3d_make_sphere", &[i, f64t, f64t, f64t], Some(i)));
     hosts.insert("r3d_make_plane", import(jmod, "aurora_r3d_make_plane", &[f64t, f64t, f64t, f64t, f64t], Some(i)));
     hosts.insert("r3d_camera", import(jmod, "aurora_r3d_camera", &[f64t, f64t, f64t, f64t, f64t, f64t, f64t], None));
@@ -942,6 +951,8 @@ fn lower(
     hosts.insert("r3d_clip_count", import(jmod, "aurora_r3d_clip_count", &[i], Some(i)));
     hosts.insert("r3d_present", import(jmod, "aurora_r3d_present", &[], Some(i)));
     hosts.insert("r3d_fog", import(jmod, "aurora_r3d_fog", &[f64t, f64t, f64t, f64t], None));
+    hosts.insert("r3d_speedlines", import(jmod, "aurora_r3d_speedlines", &[f64t, f64t], None));
+    hosts.insert("r3d_damage", import(jmod, "aurora_r3d_damage", &[f64t, f64t, f64t, f64t, f64t], None));
     hosts.insert("r3d_sky", import(jmod, "aurora_r3d_sky", &[i, f64t, f64t, f64t, f64t, f64t, f64t], None));
     hosts.insert("r3d_shadows", import(jmod, "aurora_r3d_shadows", &[i], None));
     hosts.insert("r3d_ssao", import(jmod, "aurora_r3d_ssao", &[i], None));
@@ -1021,6 +1032,7 @@ fn lower(
     hosts.insert("exp", import(jmod, "aurora_exp", &[f64t], Some(f64t)));
     hosts.insert("atan2", import(jmod, "aurora_atan2", &[f64t, f64t], Some(f64t)));
     hosts.insert("draw_text", import(jmod, "aurora_draw_text", &[i, i, ptr_ty, i, i, i], None));
+    hosts.insert("draw_int", import(jmod, "aurora_draw_int", &[i, i, i, i, i], None));
     hosts.insert("scene_save", import(jmod, "aurora_scene_save", &[ptr_ty, i], Some(i)));
     hosts.insert("scene_load", import(jmod, "aurora_scene_load", &[ptr_ty, i], Some(i)));
     hosts.insert("prof_enter", import(jmod, "aurora_prof_enter", &[ptr_ty, i], None));
@@ -1034,11 +1046,14 @@ fn lower(
     hosts.insert("float_to_str", import(jmod, "aurora_float_to_str", &[ptr_ty, types::F64], None));
     hosts.insert("play_note", import(jmod, "aurora_play_note", &[i, i], None));
     hosts.insert("play_sound", import(jmod, "aurora_play_sound", &[i, i, i], None));
+    hosts.insert("play_noise", import(jmod, "aurora_play_noise", &[i, i], None));
     hosts.insert("audio_volume", import(jmod, "aurora_audio_volume", &[i], None));
     hosts.insert("audio_stop", import(jmod, "aurora_audio_stop", &[], None));
     hosts.insert("gpu_render", import(jmod, "aurora_gpu_render", &[ptr_ty, i, i], None));
     hosts.insert("window_open", import(jmod, "aurora_window_open", &[i, i], None));
     hosts.insert("window_present", import(jmod, "aurora_window_present", &[], Some(i)));
+    hosts.insert("surface_w", import(jmod, "aurora_surface_w", &[], Some(i)));
+    hosts.insert("surface_h", import(jmod, "aurora_surface_h", &[], Some(i)));
     hosts.insert("key_down", import(jmod, "aurora_key_down", &[i], Some(i)));
     hosts.insert("mouse_x", import(jmod, "aurora_mouse_x", &[], Some(i)));
     hosts.insert("mouse_y", import(jmod, "aurora_mouse_y", &[], Some(i)));
@@ -3268,10 +3283,14 @@ fn tr_call(
         name.as_str(),
         "play_note"
             | "play_sound"
+            | "play_noise"
+            | "draw_int"
             | "audio_volume"
             | "audio_stop"
             | "window_open"
             | "window_present"
+            | "surface_w"
+            | "surface_h"
             | "key_down"
             | "mouse_x"
             | "mouse_y"
@@ -3290,7 +3309,7 @@ fn tr_call(
         let call = b.ins().call(f, &argv);
         let returns_int = matches!(
             name.as_str(),
-            "window_present" | "key_down" | "mouse_x" | "mouse_y" | "mouse_down"
+            "window_present" | "surface_w" | "surface_h" | "key_down" | "mouse_x" | "mouse_y" | "mouse_down"
         );
         let result = if returns_int {
             b.inst_results(call)[0]
@@ -4061,6 +4080,7 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         // 3D rendering.
         "r3d_make_box" => (vec![F64, F64, F64], Some(I64)),
         "r3d_make_box_sized" => (vec![F64, F64, F64, F64, F64, F64], Some(I64)),
+        "r3d_make_box_emissive" => (vec![F64, F64, F64, F64, F64, F64], Some(I64)),
         "r3d_make_sphere" => (vec![I64, F64, F64, F64], Some(I64)),
         "r3d_make_plane" => (vec![F64, F64, F64, F64, F64], Some(I64)),
         "r3d_camera" => (vec![F64, F64, F64, F64, F64, F64, F64], None),
@@ -4074,6 +4094,8 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "r3d_clip_count" => (vec![I64], Some(I64)),
         "r3d_present" => (vec![], Some(I64)),
         "r3d_fog" => (vec![F64, F64, F64, F64], None),
+        "r3d_speedlines" => (vec![F64, F64], None),
+        "r3d_damage" => (vec![F64, F64, F64, F64, F64], None),
         "r3d_sky" => (vec![I64, F64, F64, F64, F64, F64, F64], None),
         "r3d_shadows" | "r3d_ssao" | "r3d_point_shadows" => (vec![I64], None),
         "r3d_clear_lights" => (vec![], None),

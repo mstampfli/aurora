@@ -110,7 +110,8 @@ fn main() {
     println(hypot(3.0, 4.0))                 // 5.0
     load_image("hero.png")                   // PNG/JPEG into the framebuffer
     load_font("C:/Windows/Fonts/arial.ttf")
-    draw_text(8, 8, "Score: 1234", 28, rgb(255, 255, 255))
+    draw_text(8, 8, "Score:", 28, rgb(255, 255, 255))
+    draw_int(110, 8, 1234, 28, rgb(255, 255, 255))   // integers without allocating
 }
 ```
 
@@ -198,7 +199,8 @@ language, with ECS, a CPU rasterizer, live GPU shaders, a **GPU 3D renderer**
 reflections** from the sky, a directional light with **cascaded shadow maps** plus
 up to 16 point lights with **omnidirectional shadows**, **SSAO**, a procedural sky,
 fog, 4x MSAA, transparency, **true GPU instancing**, billboards, debug lines,
-frustum culling, and GPU vertex skinning),
+frustum culling, GPU vertex skinning, and **full-screen post effects** (speed
+lines, a directional damage vignette)),
 **glTF/OBJ model loading with skeletal animation and crossfade blending**, a
 real-time window with **FPS mouse-look** (cursor capture + raw delta) and a HUD
 overlay, audio (including **3D positional** sound), reliable-UDP netcode plus a

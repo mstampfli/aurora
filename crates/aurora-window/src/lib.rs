@@ -30,12 +30,14 @@ pub use imm::{
     r3d_draw_billboard as imm_r3d_draw_billboard, r3d_fog as imm_r3d_fog,
     r3d_frustum_cull as imm_r3d_frustum_cull, r3d_light as imm_r3d_light,
     r3d_load_model as imm_r3d_load_model, r3d_make_box as imm_r3d_make_box,
+    r3d_make_box_emissive as imm_r3d_make_box_emissive,
     r3d_make_box_sized as imm_r3d_make_box_sized,
     r3d_make_plane as imm_r3d_make_plane, r3d_make_sphere as imm_r3d_make_sphere,
     r3d_make_sprite as imm_r3d_make_sprite, r3d_point_light as imm_r3d_point_light,
     r3d_point_shadows as imm_r3d_point_shadows, r3d_present as imm_r3d_present,
     r3d_shadows as imm_r3d_shadows, r3d_sky as imm_r3d_sky, r3d_ssao as imm_r3d_ssao,
-    r3d_world_to_screen as imm_r3d_world_to_screen,
+    damage as imm_damage, r3d_world_to_screen as imm_r3d_world_to_screen,
+    speedlines as imm_speedlines, surface_h as imm_surface_h, surface_w as imm_surface_w,
 };
 pub use input::{Input, Key};
 
@@ -259,6 +261,14 @@ pub(crate) struct Gfx {
     /// black as transparent (a color key).
     hud_pipeline: wgpu::RenderPipeline,
     hud_bind_group: wgpu::BindGroup,
+    /// Procedural speed/wind lines overlay (a uniform-driven fullscreen pass).
+    sl_pipeline: wgpu::RenderPipeline,
+    sl_bind_group: wgpu::BindGroup,
+    sl_buf: wgpu::Buffer,
+    /// Damage feedback overlay (low-health vignette + directional hit glow).
+    dmg_pipeline: wgpu::RenderPipeline,
+    dmg_bind_group: wgpu::BindGroup,
+    dmg_buf: wgpu::Buffer,
 }
 
 const HUD_WGSL: &str = r#"
@@ -280,6 +290,98 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
     // Pure black is the transparent key; everything else is HUD.
     if (c.r + c.g + c.b < 0.012) { discard; }
     return vec4<f32>(c.rgb, 1.0);
+}
+"#;
+
+// Procedural radial speed/wind lines: soft, diffuse white streaks anchored at the
+// screen edges, fading to a clear centre. Driven by a wind intensity + time uniform.
+const SPEEDLINES_WGSL: &str = r#"
+struct SL { wind: f32, time: f32, aspect: f32, pad: f32 };
+@group(0) @binding(0) var<uniform> u: SL;
+struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
+@vertex
+fn vs(@builtin(vertex_index) i: u32) -> VOut {
+    var p = array<vec2<f32>, 3>(vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+    var o: VOut;
+    let xy = p[i];
+    o.pos = vec4<f32>(xy, 0.0, 1.0);
+    o.uv = vec2<f32>(xy.x * 0.5 + 0.5, 1.0 - (xy.y * 0.5 + 0.5));
+    return o;
+}
+// Periodic value noise over the circle (so streaks are IRREGULAR, no seam at +-pi).
+fn hashp(n: f32, period: f32) -> f32 {
+    let m = n - floor(n / period) * period;
+    return fract(sin(m * 17.23) * 43758.5453);
+}
+fn vnoisep(x: f32, period: f32) -> f32 {
+    let i = floor(x);
+    let f = fract(x);
+    let w = f * f * (3.0 - 2.0 * f);
+    return mix(hashp(i, period), hashp(i + 1.0, period), w);
+}
+@fragment
+fn fs(in: VOut) -> @location(0) vec4<f32> {
+    var p = in.uv * 2.0 - 1.0;
+    p.x = p.x * u.aspect;
+    let r = length(p);
+    let a = atan2(p.y, p.x);
+    let ta = a / 6.2831853 + 0.5;          // 0..1 around the circle
+    // Irregular multi-scale angular streaks (value noise -> random widths/spacing).
+    var s = vnoisep(ta * 23.0, 23.0) * 0.6
+          + vnoisep(ta * 57.0, 57.0) * 0.3
+          + vnoisep(ta * 131.0, 131.0) * 0.1;
+    s = pow(clamp(s, 0.0, 1.0), 9.5);      // high contrast -> crisp, defined streaks
+    s = s * (0.7 + 0.3 * sin(u.time * 2.0 + ta * 60.0));   // subtle shimmer
+    // Clear centre, ramping to the edges; wind pushes the inner edge inward (longer).
+    // Per-angle noise varies how far IN each streak reaches, so lengths are irregular.
+    let lenvar = vnoisep(ta * 19.0, 19.0);
+    let inner = 1.0 - 0.6 * u.wind * (0.4 + 0.6 * lenvar);
+    let radial = smoothstep(inner, 1.25, r);
+    // Per-angle brightness so some streaks are much stronger than others (irregular).
+    let intvar = 0.35 + 1.0 * vnoisep(ta * 13.0, 13.0);
+    let alpha = clamp(s * radial * intvar * u.wind * 5.2, 0.0, 1.0);
+    return vec4<f32>(1.0, 1.0, 1.0, alpha);
+}
+"#;
+
+// Damage feedback: a red low-health vignette (edges, scaled by `vig`) plus a
+// directional red glow at the edge in the hit direction (`dir`, scaled by `hit`).
+const DAMAGE_WGSL: &str = r#"
+struct DMG { vig: f32, hit: f32, dirx: f32, diry: f32, aspect: f32, oc: f32, p1: f32, p2: f32 };
+@group(0) @binding(0) var<uniform> u: DMG;
+struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
+@vertex
+fn vs(@builtin(vertex_index) i: u32) -> VOut {
+    var p = array<vec2<f32>, 3>(vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+    var o: VOut;
+    let xy = p[i];
+    o.pos = vec4<f32>(xy, 0.0, 1.0);
+    o.uv = vec2<f32>(xy.x * 0.5 + 0.5, 1.0 - (xy.y * 0.5 + 0.5));
+    return o;
+}
+@fragment
+fn fs(in: VOut) -> @location(0) vec4<f32> {
+    let p = in.uv * 2.0 - 1.0;
+    let pa = vec2<f32>(p.x * u.aspect, p.y);
+    let r = length(pa);
+    // Low-health vignette: red glow at the edges, stronger as vig rises.
+    let vig = smoothstep(0.35, 1.15, r) * u.vig;
+    // Directional hit glow: a red cone at the edge pointing at the attacker.
+    var dirg = 0.0;
+    if (u.hit > 0.001 && length(p) > 0.001) {
+        let pd = p / length(p);
+        let d = dot(pd, vec2<f32>(u.dirx, u.diry));
+        dirg = pow(max(d, 0.0), 3.0) * smoothstep(0.15, 1.1, r) * u.hit;
+    }
+    let dmg_a = clamp(vig + dirg, 0.0, 1.0);
+    // Overclock: gently DARKEN the surroundings (a bit more at the edges) so glowing
+    // enemies pop - a Reyna/Empress-style highlight rather than a full screen tint.
+    let oc_a = clamp(u.oc * (0.22 + 0.12 * smoothstep(0.2, 1.25, r)), 0.0, 1.0);
+    let tot = dmg_a + oc_a;
+    if (tot < 0.001) { return vec4<f32>(0.0, 0.0, 0.0, 0.0); }
+    // red damage tint + near-black overclock dim, blended by weight.
+    let col = (vec3<f32>(0.92, 0.06, 0.06) * dmg_a + vec3<f32>(0.02, 0.02, 0.05) * oc_a) / tot;
+    return vec4<f32>(col, clamp(tot, 0.0, 1.0));
 }
 "#;
 
@@ -434,13 +536,146 @@ impl Gfx {
             multiview: None,
             cache: None,
         });
+        // The HUD overlay is a low-res framebuffer stretched over the full surface,
+        // so sample it LINEARLY (the 2D retro `present` path keeps the Nearest
+        // `sampler` for crisp pixel art). Linear smooths the upscale so the HUD
+        // reads clean instead of chunky/blocky.
+        let hud_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("hud-linear"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
         let hud_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("hud"),
             layout: &hud_pipeline.get_bind_group_layout(0),
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&hud_sampler) },
             ],
+        });
+
+        // Speed/wind lines: a uniform-driven procedural fullscreen pass (alpha-blended).
+        let sl_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("speedlines"),
+            source: wgpu::ShaderSource::Wgsl(SPEEDLINES_WGSL.into()),
+        });
+        let sl_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("speedlines-uniform"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let sl_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("speedlines"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let sl_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("speedlines"),
+            bind_group_layouts: &[&sl_layout],
+            push_constant_ranges: &[],
+        });
+        let sl_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("speedlines"),
+            layout: Some(&sl_pl),
+            vertex: wgpu::VertexState {
+                module: &sl_module,
+                entry_point: "vs",
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &sl_module,
+                entry_point: "fs",
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let sl_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("speedlines"),
+            layout: &sl_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: sl_buf.as_entire_binding(),
+            }],
+        });
+
+        // Damage feedback overlay (same uniform-driven fullscreen pattern).
+        let dmg_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("damage"),
+            source: wgpu::ShaderSource::Wgsl(DAMAGE_WGSL.into()),
+        });
+        let dmg_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("damage-uniform"),
+            size: 32,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let dmg_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("damage"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let dmg_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("damage"),
+            bind_group_layouts: &[&dmg_layout],
+            push_constant_ranges: &[],
+        });
+        let dmg_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("damage"),
+            layout: Some(&dmg_pl),
+            vertex: wgpu::VertexState {
+                module: &dmg_module,
+                entry_point: "vs",
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &dmg_module,
+                entry_point: "fs",
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let dmg_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("damage"),
+            layout: &dmg_layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: dmg_buf.as_entire_binding() }],
         });
 
         Ok(Gfx {
@@ -456,6 +691,12 @@ impl Gfx {
             scene: None,
             hud_pipeline,
             hud_bind_group,
+            sl_pipeline,
+            sl_bind_group,
+            sl_buf,
+            dmg_pipeline,
+            dmg_bind_group,
+            dmg_buf,
         })
     }
 
@@ -479,12 +720,84 @@ impl Gfx {
 
     /// Render the 3D scene to the surface, then overlay the HUD framebuffer
     /// (`hud_rgba`, the CPU framebuffer; pure-black pixels are transparent).
-    fn present_scene(&mut self, hud_rgba: &[u8]) {
+    /// Recreate the HUD/blit texture (and its bind groups) at a new size, so the
+    /// HUD framebuffer can track the window size dynamically.
+    fn resize_hud_texture(&mut self, w: u32, h: u32) {
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("framebuffer"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let nearest = self.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("blit"),
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        let linear = self.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("hud-linear"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        self.bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("blit"),
+            layout: &self.pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&nearest) },
+            ],
+        });
+        self.hud_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("hud"),
+            layout: &self.hud_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&linear) },
+            ],
+        });
+        self.texture = texture;
+        self.tex_w = w;
+        self.tex_h = h;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn present_scene(
+        &mut self, hud_rgba: &[u8], hud_w: u32, hud_h: u32, sl_wind: f32, sl_time: f32,
+        dmg_vig: f32, dmg_hit: f32, dmg_dx: f32, dmg_dy: f32, dmg_oc: f32,
+    ) {
         let (w, h) = (self.config.width.max(1), self.config.height.max(1));
+        // Update the speed-lines uniform (wind, time, aspect).
+        let aspect = w as f32 / h.max(1) as f32;
+        let mut slu = [0u8; 16];
+        slu[0..4].copy_from_slice(&sl_wind.to_ne_bytes());
+        slu[4..8].copy_from_slice(&sl_time.to_ne_bytes());
+        slu[8..12].copy_from_slice(&aspect.to_ne_bytes());
+        self.queue.write_buffer(&self.sl_buf, 0, &slu);
+        // Update the damage uniform (vig, hit, dir, aspect).
+        let mut dmu = [0u8; 32];
+        dmu[0..4].copy_from_slice(&dmg_vig.to_ne_bytes());
+        dmu[4..8].copy_from_slice(&dmg_hit.to_ne_bytes());
+        dmu[8..12].copy_from_slice(&dmg_dx.to_ne_bytes());
+        dmu[12..16].copy_from_slice(&dmg_dy.to_ne_bytes());
+        dmu[16..20].copy_from_slice(&aspect.to_ne_bytes());
+        dmu[20..24].copy_from_slice(&dmg_oc.to_ne_bytes());
+        self.queue.write_buffer(&self.dmg_buf, 0, &dmu);
         if let Some(scene) = self.scene.as_mut() {
             scene.resize(&self.device, w, h);
         } else {
             return;
+        }
+        // Resize the HUD texture to match the framebuffer the game gave us, so a
+        // game can size its HUD to the live window and have it blit 1:1 (crisp).
+        if hud_w > 0 && hud_h > 0 && (hud_w != self.tex_w || hud_h != self.tex_h) {
+            self.resize_hud_texture(hud_w, hud_h);
         }
         // Upload the HUD framebuffer for the overlay pass.
         let hud_bytes = (self.tex_w * self.tex_h * 4) as usize;
@@ -524,6 +837,40 @@ impl Gfx {
             self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         if let Some(scene) = self.scene.as_mut() {
             scene.render(&self.device, &self.queue, &mut enc, &view);
+        }
+        // Speed/wind lines pass (over the 3D, under the HUD) when wind is active.
+        if sl_wind > 0.001 {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("speedlines"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.sl_pipeline);
+            pass.set_bind_group(0, &self.sl_bind_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        // Damage feedback pass (red vignette + hit glow + gold overclock) when active.
+        if dmg_vig > 0.001 || dmg_hit > 0.001 || dmg_oc > 0.001 {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("damage"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.dmg_pipeline);
+            pass.set_bind_group(0, &self.dmg_bind_group, &[]);
+            pass.draw(0..3, 0..1);
         }
         // HUD overlay pass (load the 3D result, blend the HUD on top).
         if has_hud {

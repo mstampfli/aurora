@@ -428,11 +428,7 @@ pub extern "C" fn aurora_load_font(ptr: *const u8, len: i64) -> i64 {
 /// over the existing pixels. No-op if no font was loaded or no framebuffer is
 /// active. Backs the `draw_text` builtin.
 #[no_mangle]
-pub extern "C" fn aurora_draw_text(x: i64, y: i64, ptr: *const u8, len: i64, px: i64, color: i64) {
-    let text = {
-        let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
-        String::from_utf8_lossy(s).into_owned()
-    };
+fn render_text(x: i64, y: i64, text: &str, px: i64, color: i64) {
     let px = px.max(1) as f32;
     let (cr, cg, cb) = (((color >> 16) & 255) as u8, ((color >> 8) & 255) as u8, (color & 255) as u8);
     FONT.with(|font| {
@@ -468,6 +464,22 @@ pub extern "C" fn aurora_draw_text(x: i64, y: i64, ptr: *const u8, len: i64, px:
             }
         });
     });
+}
+
+#[no_mangle]
+pub extern "C" fn aurora_draw_text(x: i64, y: i64, ptr: *const u8, len: i64, px: i64, color: i64) {
+    let text = {
+        let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
+        String::from_utf8_lossy(s).into_owned()
+    };
+    render_text(x, y, &text, px, color);
+}
+
+/// Draw an integer as text (formats it in Rust, renders like `draw_text`). Lets a
+/// game show dynamic numbers (scores, timers) without string formatting in Aurora.
+#[no_mangle]
+pub extern "C" fn aurora_draw_int(x: i64, y: i64, n: i64, px: i64, color: i64) {
+    render_text(x, y, &n.to_string(), px, color);
 }
 
 // --- real 2D physics (Rapier) -----------------------------------------------
@@ -1261,6 +1273,13 @@ pub extern "C" fn aurora_r3d_make_box_sized(
 ) -> i64 {
     aurora_window::imm_r3d_make_box_sized(hx as f32, hy as f32, hz as f32, r as f32, g as f32, b as f32)
 }
+/// An emissive (self-lit, glowing) box mesh. Color is the emissive RGB.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_make_box_emissive(
+    hx: f64, hy: f64, hz: f64, r: f64, g: f64, b: f64,
+) -> i64 {
+    aurora_window::imm_r3d_make_box_emissive(hx as f32, hy as f32, hz as f32, r as f32, g as f32, b as f32)
+}
 #[no_mangle]
 pub extern "C" fn aurora_r3d_make_sphere(segments: i64, r: f64, g: f64, b: f64) -> i64 {
     aurora_window::imm_r3d_make_sphere(segments, r as f32, g as f32, b as f32)
@@ -1319,17 +1338,45 @@ pub extern "C" fn aurora_r3d_clip_count(h: i64) -> i64 {
 }
 #[no_mangle]
 pub extern "C" fn aurora_r3d_present() -> i64 {
-    // Overlay the CPU framebuffer (HUD: text/crosshair/2D) over the 3D scene.
-    let rgba = FB.with(|fb| fb.borrow().as_ref().map(|f| f.rgba()).unwrap_or_default());
-    if aurora_window::imm_r3d_present(&rgba) {
+    // Overlay the CPU framebuffer (HUD: text/crosshair/2D) over the 3D scene. Pass
+    // the framebuffer dimensions so the HUD texture can track its size (a game can
+    // size its HUD framebuffer to the live window for a crisp 1:1 overlay).
+    let (rgba, w, h) = FB.with(|fb| {
+        fb.borrow()
+            .as_ref()
+            .map(|f| (f.rgba(), f.width(), f.height()))
+            .unwrap_or((Vec::new(), 0, 0))
+    });
+    if aurora_window::imm_r3d_present(&rgba, w, h) {
         1
     } else {
         0
     }
 }
+
+/// Current window/surface size in physical pixels (0 before the window exists).
+#[no_mangle]
+pub extern "C" fn aurora_surface_w() -> i64 {
+    aurora_window::imm_surface_w() as i64
+}
+#[no_mangle]
+pub extern "C" fn aurora_surface_h() -> i64 {
+    aurora_window::imm_surface_h() as i64
+}
 #[no_mangle]
 pub extern "C" fn aurora_r3d_fog(r: f64, g: f64, b: f64, density: f64) {
     aurora_window::imm_r3d_fog(r as f32, g as f32, b as f32, density as f32);
+}
+/// Set the procedural speed/wind-lines overlay (intensity 0..1, animation time).
+#[no_mangle]
+pub extern "C" fn aurora_r3d_speedlines(intensity: f64, time: f64) {
+    aurora_window::imm_speedlines(intensity as f32, time as f32);
+}
+/// Set the damage overlay: low-health vignette (0..1), directional hit glow (0..1),
+/// the hit direction in screen space (dx, dy), and a gold overclock tint `oc` (0..1).
+#[no_mangle]
+pub extern "C" fn aurora_r3d_damage(vig: f64, hit: f64, dx: f64, dy: f64, oc: f64) {
+    aurora_window::imm_damage(vig as f32, hit as f32, dx as f32, dy as f32, oc as f32);
 }
 #[allow(clippy::too_many_arguments)]
 #[no_mangle]
@@ -1525,10 +1572,49 @@ pub extern "C" fn aurora_atan2(y: f64, x: f64) -> f64 {
 pub extern "C" fn aurora_play_sound(semitone: i64, dur_ms: i64, looped: i64) {
     let sr = 44_100;
     let dur = (dur_ms.max(0) as f32) / 1000.0;
-    let note = aurora_audio::Note::new(aurora_audio::pitch(semitone as i32), dur)
+    let mut note = aurora_audio::Note::new(aurora_audio::pitch(semitone as i32), dur)
         .wave(aurora_audio::Wave::Triangle)
-        .gain(0.5);
+        .gain(0.4);
+    // One-shot SFX get a percussive pluck envelope (fast attack, no sustain) so
+    // they read as a crisp tick instead of a flat held beep. Looped sounds keep
+    // the default sustained envelope (for tones/music).
+    if looped == 0 {
+        note.adsr = aurora_audio::Adsr {
+            attack: 0.001,
+            decay: (dur * 0.6).max(0.004),
+            sustain: 0.0,
+            release: 0.02,
+        };
+    }
     aurora_audio::play_mixed(&note.render(sr), sr, looped != 0);
+}
+
+/// Play a short white-noise burst (percussive, pitch-less) for impact/hit SFX
+/// that should read as a "thwack/click" rather than a tone. `gain_pct` is 0..200.
+#[no_mangle]
+pub extern "C" fn aurora_play_noise(dur_ms: i64, gain_pct: i64) {
+    let sr = 44_100;
+    let dur = (dur_ms.max(1) as f32) / 1000.0;
+    let g = (gain_pct.clamp(0, 200) as f32) / 100.0;
+    let mut note =
+        aurora_audio::Note::new(440.0, dur).wave(aurora_audio::Wave::Noise).gain(g);
+    note.adsr = aurora_audio::Adsr {
+        attack: 0.003,                  // soft attack (no click) for a smooth onset
+        decay: (dur * 0.85).max(0.004), // long gentle fade
+        sustain: 0.0,
+        release: 0.02,
+    };
+    // Heavily low-pass the white noise so it reads as a soft, smooth "pf/pap" (like
+    // a muffled hit on paper/cloth), not a piercing high hiss. Lower coefficient =
+    // darker/smoother.
+    let raw = note.render(sr);
+    let mut buf = Vec::with_capacity(raw.len());
+    let mut lp = 0.0f32;
+    for s in raw {
+        lp += 0.09 * (s - lp);
+        buf.push(lp);
+    }
+    aurora_audio::play_mixed(&buf, sr, false);
 }
 
 // --- 3D positional audio ---------------------------------------------------
@@ -1807,7 +1893,7 @@ pub extern "C" fn aurora_dbg_var_f64(name_ptr: *const u8, name_len: i64, value: 
 /// Touch every host symbol so the linker keeps this crate's object in an AOT
 /// link even when the Rust driver references nothing from it directly.
 pub fn force_link() -> usize {
-    let fns: [*const (); 206] = [
+    let fns: [*const (); 213] = [
         aurora_r3d_ssao as *const (),
         aurora_r3d_point_shadows as *const (),
         // Multiplayer (generic framework: the game registers its Aurora sim).
@@ -1931,6 +2017,7 @@ pub fn force_link() -> usize {
         aurora_r3d_load_model as *const (),
         aurora_r3d_make_box as *const (),
         aurora_r3d_make_box_sized as *const (),
+        aurora_r3d_make_box_emissive as *const (),
         aurora_r3d_make_sphere as *const (),
         aurora_r3d_make_plane as *const (),
         aurora_r3d_camera as *const (),
@@ -1991,6 +2078,12 @@ pub fn force_link() -> usize {
         aurora_float_to_str as *const (),
         aurora_play_note as *const (),
         aurora_play_sound as *const (),
+        aurora_play_noise as *const (),
+        aurora_surface_w as *const (),
+        aurora_surface_h as *const (),
+        aurora_r3d_speedlines as *const (),
+        aurora_r3d_damage as *const (),
+        aurora_draw_int as *const (),
         aurora_audio_volume as *const (),
         aurora_audio_stop as *const (),
         aurora_gpu_render as *const (),

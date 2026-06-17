@@ -197,6 +197,36 @@ impl Scene {
     ) -> i64 {
         self.add_primitive(device, queue, &MeshData::box_dims(hx, hy, hz), color)
     }
+    /// A box that GLOWS (emissive material, self-lit regardless of scene lighting).
+    pub fn make_box_emissive(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        hx: f32,
+        hy: f32,
+        hz: f32,
+        color: [f32; 3],
+    ) -> i64 {
+        let m = self.renderer.add_mesh(device, &MeshData::box_dims(hx, hy, hz));
+        let desc = MaterialDesc {
+            base_color: [0.0, 0.0, 0.0, 1.0],
+            metallic: 0.0,
+            roughness: 1.0,
+            emissive: color,
+            base_tex: None,
+            normal_tex: None,
+            mr_tex: None,
+            emissive_tex: None,
+        };
+        let mat = self.renderer.add_material(device, queue, &desc);
+        self.items.push(Renderable {
+            prims: vec![(m, mat)],
+            model: None,
+            player: AnimPlayer::new(),
+            skinned: false,
+        });
+        (self.items.len() - 1) as i64
+    }
     pub fn make_sphere(
         &mut self,
         device: &wgpu::Device,

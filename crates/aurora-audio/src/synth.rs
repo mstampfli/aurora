@@ -11,6 +11,9 @@ pub enum Wave {
     Square,
     Saw,
     Triangle,
+    /// White noise (percussive). `sample()` returns hashed noise from the phase;
+    /// [`Note::render`] generates proper pitch-independent per-sample noise.
+    Noise,
 }
 
 impl Wave {
@@ -28,6 +31,12 @@ impl Wave {
             }
             Wave::Saw => 2.0 * p - 1.0,
             Wave::Triangle => 4.0 * (p - 0.5).abs() - 1.0,
+            Wave::Noise => {
+                // Hashed pseudo-noise from the phase (kept in range). Note::render
+                // uses a per-sample RNG instead for proper white noise.
+                let h = ((p * 1_000_003.0) as u32).wrapping_mul(2_654_435_761);
+                (h as f32 / u32::MAX as f32) * 2.0 - 1.0
+            }
         }
     }
 }
@@ -110,11 +119,21 @@ impl Note {
         let total = self.adsr.total(self.dur);
         let n = (total * sample_rate as f32).ceil() as usize;
         let mut out = Vec::with_capacity(n);
+        // Per-render RNG so noise is pitch-independent white noise, not a wrapped
+        // (and therefore tonal) phase hash.
+        let mut rng: u32 = 0x9E37_79B9 ^ (n as u32).wrapping_mul(2_654_435_761);
         for i in 0..n {
             let t = i as f32 / sample_rate as f32;
-            let phase = self.freq * t;
             let amp = self.adsr.amplitude(t, self.dur);
-            out.push(self.wave.sample(phase) * amp * self.gain);
+            let raw = if self.wave == Wave::Noise {
+                rng ^= rng << 13;
+                rng ^= rng >> 17;
+                rng ^= rng << 5;
+                (rng as f32 / u32::MAX as f32) * 2.0 - 1.0
+            } else {
+                self.wave.sample(self.freq * t)
+            };
+            out.push(raw * amp * self.gain);
         }
         out
     }

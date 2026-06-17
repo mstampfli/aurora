@@ -6,11 +6,11 @@
 // 0=Left 1=Right 2=Up 3=Down 4=Space 5=W 6=A 7=S 8=D 9=Enter.
 
 fn main() {
-    framebuffer(200, 150)
-    window_open(200, 150)
+    framebuffer(640, 480)
+    window_open(640, 480)
 
-    let mut x = 100
-    let mut y = 75
+    let mut x = 320
+    let mut y = 240
 
     // The game loop runs until the window is closed (window_present returns 0).
     while window_present() == 1 {
@@ -21,9 +21,9 @@ fn main() {
         if key_down(4) == 1 { play_note(7, 80) }  // Space → play a note
 
         clear(12, 14, 24)
-        // Draw a small box at (x, y).
-        for dy in 0..6 {
-            for dx in 0..6 {
+        // Draw a box at (x, y).
+        for dy in 0..20 {
+            for dx in 0..20 {
                 pixel(x + dx, y + dy, 120, 200, 255)
             }
         }

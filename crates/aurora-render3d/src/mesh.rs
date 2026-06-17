@@ -170,7 +170,10 @@ impl MeshData {
             for s in 0..seg {
                 let a = ring * stride + s;
                 let b = a + stride;
-                m.indices.extend_from_slice(&[a, b, a + 1, a + 1, b, b + 1]);
+                // Wound so the OUTWARD faces are CCW (front-facing) to match the
+                // engine's back-face culling, otherwise the outside is culled and
+                // you see straight through to the inner surface.
+                m.indices.extend_from_slice(&[a, a + 1, b, a + 1, b + 1, b]);
             }
         }
         m.compute_tangents();
