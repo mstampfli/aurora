@@ -178,6 +178,17 @@ thread_local! {
     static IMM: RefCell<Option<(EventLoop<()>, ImmApp)>> = const { RefCell::new(None) };
 }
 
+/// Leak the window + GPU state instead of dropping it. Call right before the process
+/// exits: wgpu/winit panic if their state is torn down in a thread-local destructor at
+/// process exit ("thread local panicked on drop"). Leaking it makes shutdown graceful.
+pub fn imm_leak() {
+    IMM.with(|s| {
+        if let Some(inner) = s.borrow_mut().take() {
+            std::mem::forget(inner);
+        }
+    });
+}
+
 /// Open a window backing a `width`×`height` framebuffer. Replaces any prior one.
 pub fn open(width: u32, height: u32) {
     let event_loop = match EventLoop::new() {

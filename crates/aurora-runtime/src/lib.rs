@@ -64,6 +64,14 @@ pub extern "C" fn aurora_runtime_flush() {
     let _ = std::io::stdout().flush();
 }
 
+/// Graceful-shutdown hook: leak the window + GPU/audio state so it is NOT torn down in a
+/// thread-local destructor at process exit (wgpu/winit panic if it is). Called by the AOT
+/// entry shim right before `process::exit`.
+#[no_mangle]
+pub extern "C" fn aurora_runtime_shutdown() {
+    aurora_window::imm_leak();
+}
+
 thread_local! {
     static LAST_FRAME: RefCell<Option<std::time::Instant>> = const { RefCell::new(None) };
 }

@@ -22,5 +22,8 @@ fn main() {
     let _ = aurora_runtime::force_link();
     let code = unsafe { aurora_user_main() };
     aurora_runtime::aurora_runtime_flush();
+    // Leak the window/GPU state so it isn't dropped in a TLS destructor at exit (that makes
+    // wgpu/winit panic "thread local panicked on drop"). This is the graceful shutdown.
+    aurora_runtime::aurora_runtime_shutdown();
     std::process::exit(code as i32);
 }
