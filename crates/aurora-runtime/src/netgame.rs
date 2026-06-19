@@ -23,7 +23,7 @@ const TAG_FIRE: u8 = 3;
 const TAG_HIT: u8 = 4;
 
 const STATE_MAX: usize = 32; // max floats in a player state blob
-const INPUT_MAX: usize = 16; // max floats in an input blob
+const INPUT_MAX: usize = 24; // max floats in an input blob
 
 /// The Aurora sim closure's native ABI: `(env, state_ptr_bits, input_ptr_bits)`,
 /// matching how compiled Aurora closures are called (see `aurora_par_for`).
