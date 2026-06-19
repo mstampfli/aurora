@@ -70,6 +70,7 @@ pub extern "C" fn aurora_runtime_flush() {
 #[no_mangle]
 pub extern "C" fn aurora_runtime_shutdown() {
     aurora_window::imm_leak();
+    aurora_audio::leak_audio();
 }
 
 thread_local! {

@@ -64,6 +64,17 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+/// Leak the output stream instead of dropping it. Call right before the process exits:
+/// cpal's `Stream` panics if torn down in a thread-local destructor at process exit
+/// ("thread local panicked on drop"). Leaking it makes shutdown graceful.
+pub fn leak() {
+    STREAM.with(|s| {
+        if let Some(stream) = s.borrow_mut().take() {
+            std::mem::forget(stream);
+        }
+    });
+}
+
 fn mixer() -> &'static Arc<Mutex<Mixer>> {
     MIXER.get_or_init(|| Arc::new(Mutex::new(Mixer { voices: Vec::new(), volume: 1.0, device_rate: 44_100 })))
 }
