@@ -475,6 +475,26 @@ pub extern "C" fn aurora_draw_text(x: i64, y: i64, ptr: *const u8, len: i64, px:
     render_text(x, y, &text, px, color);
 }
 
+/// Pixel width of `text` at size `px` in the loaded font (sum of glyph advances).
+/// Lets a game centre/right-align labels. Returns 0 if no font is loaded.
+#[no_mangle]
+pub extern "C" fn aurora_text_width(ptr: *const u8, len: i64, px: i64) -> i64 {
+    let text = {
+        let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
+        String::from_utf8_lossy(s).into_owned()
+    };
+    let px = px.max(1) as f32;
+    FONT.with(|font| {
+        let font = font.borrow();
+        let Some(font) = font.as_ref() else { return 0 };
+        let mut w = 0i64;
+        for ch in text.chars() {
+            w += font.metrics(ch, px).advance_width as i64;
+        }
+        w
+    })
+}
+
 /// Draw an integer as text (formats it in Rust, renders like `draw_text`). Lets a
 /// game show dynamic numbers (scores, timers) without string formatting in Aurora.
 #[no_mangle]
@@ -1661,17 +1681,62 @@ fn norm3(v: [f64; 3]) -> [f64; 3] {
 
 /// Play a synthesized note at a world position, spatialized by distance + pan.
 #[no_mangle]
-pub extern "C" fn aurora_play_sound_at(semitone: i64, dur_ms: i64, x: f64, y: f64, z: f64) {
+pub extern "C" fn aurora_play_sound_at(
+    semitone: i64, dur_ms: i64, gain_pct: i64, x: f64, y: f64, z: f64,
+) {
     let (gain, pan) = spatialize([x, y, z]);
     if gain <= 0.001 {
         return;
     }
     let sr = 44_100;
     let dur = (dur_ms.max(0) as f32) / 1000.0;
+    // gain_pct lets callers mix levels: quiet background ticks (e.g. gunfire) vs loud
+    // foreground hits (explosions). 100 = the old default.
+    let g = 0.5 * (gain_pct.max(0) as f32) / 100.0;
     let note = aurora_audio::Note::new(aurora_audio::pitch(semitone as i32), dur)
         .wave(aurora_audio::Wave::Triangle)
-        .gain(0.5);
+        .gain(g);
     aurora_audio::play_mixed_spatial(&note.render(sr), sr, false, gain, pan);
+}
+
+/// Persist a small settings blob (`len` f64 values) to a fixed file on disk, one
+/// value per line. Backs the `save_settings` builtin (keybinds, sensitivity, volume).
+#[no_mangle]
+pub extern "C" fn aurora_save_settings(data: *const f64, len: i64) -> i64 {
+    if data.is_null() || len <= 0 {
+        return 0;
+    }
+    let slice = unsafe { std::slice::from_raw_parts(data, len as usize) };
+    let mut s = String::new();
+    for v in slice {
+        s.push_str(&format!("{}\n", v));
+    }
+    let _ = std::fs::write("overclock_settings.txt", s);
+    0
+}
+
+/// Read the settings blob back into `data` (up to `len` values); returns the count
+/// read, or -1 if the file is missing. Backs the `load_settings` builtin.
+#[no_mangle]
+pub extern "C" fn aurora_load_settings(data: *mut f64, len: i64) -> i64 {
+    if data.is_null() || len <= 0 {
+        return -1;
+    }
+    let Ok(s) = std::fs::read_to_string("overclock_settings.txt") else {
+        return -1;
+    };
+    let slice = unsafe { std::slice::from_raw_parts_mut(data, len as usize) };
+    let mut n = 0usize;
+    for line in s.lines() {
+        if n >= len as usize {
+            break;
+        }
+        if let Ok(v) = line.trim().parse::<f64>() {
+            slice[n] = v;
+            n += 1;
+        }
+    }
+    n as i64
 }
 
 /// Load and play a WAV file at `path` through the audio mixer (downmixed to
@@ -1893,7 +1958,11 @@ pub extern "C" fn aurora_dbg_var_f64(name_ptr: *const u8, name_len: i64, value: 
 /// Touch every host symbol so the linker keeps this crate's object in an AOT
 /// link even when the Rust driver references nothing from it directly.
 pub fn force_link() -> usize {
-    let fns: [*const (); 213] = [
+    let fns: [*const (); 217] = [
+        aurora_text_width as *const (),
+        aurora_phys3d_add_box_rot as *const (),
+        aurora_save_settings as *const (),
+        aurora_load_settings as *const (),
         aurora_r3d_ssao as *const (),
         aurora_r3d_point_shadows as *const (),
         // Multiplayer (generic framework: the game registers its Aurora sim).

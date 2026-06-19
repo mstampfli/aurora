@@ -343,14 +343,14 @@ const BUILTINS: &[&str] = &[
     "play_note", "play_sound", "play_noise", "audio_volume", "audio_stop", "window_open", "window_present",
     "surface_w", "surface_h",
     "key_down", "mouse_x", "mouse_y", "mouse_down", "gpu_render",
-    "load_ppm", "load_image", "load_font", "draw_text", "draw_int", "play_wav", "scene_save", "scene_load", "frame_reset",
+    "load_ppm", "load_image", "load_font", "draw_text", "draw_int", "text_width", "play_wav", "scene_save", "scene_load", "frame_reset",
     "phys_init", "phys_add", "phys_step", "phys_x", "phys_y", "phys_set_vel",
     "phys_vel_x", "phys_vel_y", "phys_apply_impulse", "phys_apply_force", "phys_set_pos", "phys_raycast",
     "nav_init", "nav_wall", "nav_find", "nav_x", "nav_y",
     "char_at", "substr", "starts_with", "net_bind", "net_connect", "net_send", "net_recv",
     "gpu_compute", "par_for",
     // 3D physics (Rapier 3D).
-    "phys3d_init", "phys3d_add_box", "phys3d_add_sphere", "phys3d_add_capsule",
+    "phys3d_init", "phys3d_add_box", "phys3d_add_box_rot", "phys3d_add_sphere", "phys3d_add_capsule",
     "phys3d_add_character", "phys3d_add_trimesh", "phys3d_step",
     "phys3d_x", "phys3d_y", "phys3d_z", "phys3d_vel_x", "phys3d_vel_y", "phys3d_vel_z",
     "phys3d_set_vel", "phys3d_set_pos", "phys3d_apply_impulse", "phys3d_move_character",
@@ -385,6 +385,7 @@ const BUILTINS: &[&str] = &[
     "net_hit_player", "net_hit_x", "net_hit_y", "net_hit_z",
     // Rebindable input-action layer + raw f32-blob accessors.
     "input_bind", "input_binding", "input_down", "input_axis",
+    "save_settings", "load_settings",
     "f32_load", "f32_store",
 ];
 
@@ -571,6 +572,7 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_load_font", aurora_runtime::aurora_load_font as *const u8);
     builder.symbol("aurora_draw_text", aurora_runtime::aurora_draw_text as *const u8);
     builder.symbol("aurora_draw_int", aurora_runtime::aurora_draw_int as *const u8);
+    builder.symbol("aurora_text_width", aurora_runtime::aurora_text_width as *const u8);
     builder.symbol("aurora_play_wav", aurora_runtime::aurora_play_wav as *const u8);
     builder.symbol("aurora_phys_init", aurora_runtime::aurora_phys_init as *const u8);
     builder.symbol("aurora_phys_add", aurora_runtime::aurora_phys_add as *const u8);
@@ -592,6 +594,7 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     // 3D physics (Rapier 3D).
     builder.symbol("aurora_phys3d_init", aurora_runtime::aurora_phys3d_init as *const u8);
     builder.symbol("aurora_phys3d_add_box", aurora_runtime::aurora_phys3d_add_box as *const u8);
+    builder.symbol("aurora_phys3d_add_box_rot", aurora_runtime::aurora_phys3d_add_box_rot as *const u8);
     builder.symbol("aurora_phys3d_add_sphere", aurora_runtime::aurora_phys3d_add_sphere as *const u8);
     builder.symbol("aurora_phys3d_add_capsule", aurora_runtime::aurora_phys3d_add_capsule as *const u8);
     builder.symbol("aurora_phys3d_add_character", aurora_runtime::aurora_phys3d_add_character as *const u8);
@@ -683,6 +686,8 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_net_join", aurora_runtime::aurora_net_join as *const u8);
     builder.symbol("aurora_net_sim", aurora_runtime::aurora_net_sim as *const u8);
     builder.symbol("aurora_net_send_input", aurora_runtime::aurora_net_send_input as *const u8);
+    builder.symbol("aurora_save_settings", aurora_runtime::aurora_save_settings as *const u8);
+    builder.symbol("aurora_load_settings", aurora_runtime::aurora_load_settings as *const u8);
     builder.symbol("aurora_net_update", aurora_runtime::aurora_net_update as *const u8);
     builder.symbol("aurora_net_my_id", aurora_runtime::aurora_net_my_id as *const u8);
     builder.symbol("aurora_net_is_server", aurora_runtime::aurora_net_is_server as *const u8);
@@ -904,6 +909,7 @@ fn lower(
     // 3D physics (Rapier 3D).
     hosts.insert("phys3d_init", import(jmod, "aurora_phys3d_init", &[f64t, f64t, f64t], None));
     hosts.insert("phys3d_add_box", import(jmod, "aurora_phys3d_add_box", &[f64t, f64t, f64t, f64t, f64t, f64t, i], Some(i)));
+    hosts.insert("phys3d_add_box_rot", import(jmod, "aurora_phys3d_add_box_rot", &[f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, i], Some(i)));
     hosts.insert("phys3d_add_sphere", import(jmod, "aurora_phys3d_add_sphere", &[f64t, f64t, f64t, f64t, i], Some(i)));
     hosts.insert("phys3d_add_capsule", import(jmod, "aurora_phys3d_add_capsule", &[f64t, f64t, f64t, f64t, f64t, i], Some(i)));
     hosts.insert("phys3d_add_character", import(jmod, "aurora_phys3d_add_character", &[f64t, f64t, f64t, f64t, f64t], Some(i)));
@@ -971,7 +977,7 @@ fn lower(
     hosts.insert("mouse_button", import(jmod, "aurora_mouse_button", &[i], Some(i)));
     hosts.insert("grab_mouse", import(jmod, "aurora_grab_mouse", &[i], None));
     hosts.insert("audio_listener", import(jmod, "aurora_audio_listener", &[f64t, f64t, f64t, f64t, f64t, f64t], None));
-    hosts.insert("play_sound_at", import(jmod, "aurora_play_sound_at", &[i, i, f64t, f64t, f64t], None));
+    hosts.insert("play_sound_at", import(jmod, "aurora_play_sound_at", &[i, i, i, f64t, f64t, f64t], None));
     hosts.insert("phys3d_raycast_full", import(jmod, "aurora_phys3d_raycast_full", &[f64t, f64t, f64t, f64t, f64t, f64t, f64t], Some(i)));
     hosts.insert("phys3d_raycast_ex", import(jmod, "aurora_phys3d_raycast_ex", &[i, f64t, f64t, f64t, f64t, f64t, f64t, f64t], Some(i)));
     hosts.insert("phys3d_hit_x", import(jmod, "aurora_phys3d_hit_x", &[], Some(f64t)));
@@ -995,6 +1001,8 @@ fn lower(
     hosts.insert("net_join", import(jmod, "aurora_net_join", &[ptr_ty, i, i], Some(i)));
     hosts.insert("net_sim", import(jmod, "aurora_net_sim", &[ptr_ty, ptr_ty, i, i], None));
     hosts.insert("net_send_input", import(jmod, "aurora_net_send_input", &[ptr_ty, i], Some(i)));
+    hosts.insert("save_settings", import(jmod, "aurora_save_settings", &[ptr_ty, i], Some(i)));
+    hosts.insert("load_settings", import(jmod, "aurora_load_settings", &[ptr_ty, i], Some(i)));
     hosts.insert("net_update", import(jmod, "aurora_net_update", &[f64t], None));
     hosts.insert("net_my_id", import(jmod, "aurora_net_my_id", &[], Some(i)));
     hosts.insert("net_is_server", import(jmod, "aurora_net_is_server", &[], Some(i)));
@@ -1033,6 +1041,7 @@ fn lower(
     hosts.insert("atan2", import(jmod, "aurora_atan2", &[f64t, f64t], Some(f64t)));
     hosts.insert("draw_text", import(jmod, "aurora_draw_text", &[i, i, ptr_ty, i, i, i], None));
     hosts.insert("draw_int", import(jmod, "aurora_draw_int", &[i, i, i, i, i], None));
+    hosts.insert("text_width", import(jmod, "aurora_text_width", &[ptr_ty, i, i], Some(i)));
     hosts.insert("scene_save", import(jmod, "aurora_scene_save", &[ptr_ty, i], Some(i)));
     hosts.insert("scene_load", import(jmod, "aurora_scene_load", &[ptr_ty, i], Some(i)));
     hosts.insert("prof_enter", import(jmod, "aurora_prof_enter", &[ptr_ty, i], None));
@@ -1452,7 +1461,7 @@ fn compile_body(
     b.append_block_params_for_function_params(entry);
     b.switch_to_block(entry);
 
-    let mut locals = Locals { scope: HashMap::new(), sret: None };
+    let mut locals = Locals { scope: HashMap::new(), sret: None, loops: Vec::new() };
     if sret {
         // Record the caller's result slot so early returns can copy into it.
         locals.sret = Some((b.block_params(entry)[0], ret_cty.clone()));
@@ -1531,7 +1540,7 @@ fn compile_lambda(
     let entry = b.create_block();
     b.append_block_params_for_function_params(entry);
     b.switch_to_block(entry);
-    let mut locals = Locals { scope: HashMap::new(), sret: None };
+    let mut locals = Locals { scope: HashMap::new(), sret: None, loops: Vec::new() };
     // Param 0 is the env pointer; load each captured value from it.
     let env_ptr = b.block_params(entry)[0];
     for (i, cap) in captures.iter().enumerate() {
@@ -1576,7 +1585,7 @@ fn compile_system(
     let entry = b.create_block();
     b.switch_to_block(entry);
     b.seal_block(entry);
-    let mut locals = Locals { scope: HashMap::new(), sret: None };
+    let mut locals = Locals { scope: HashMap::new(), sret: None, loops: Vec::new() };
     for pn in pnames {
         let var = b.declare_var(types::I64);
         let zero = b.ins().iconst(types::I64, 0);
@@ -1694,6 +1703,20 @@ struct Locals {
     /// For an sret (aggregate-returning) function: the caller's result pointer
     /// and the return type, so an early `return <aggregate>` can copy into it.
     sret: Option<(Value, Cty)>,
+    /// Stack of enclosing loops so `break`/`continue` know where to jump. The
+    /// innermost loop is last. `continue_to` is the loop's latch (the increment
+    /// step for `for`, the condition header for `while`/`loop`); `break_to` is
+    /// the exit block. `cont_used` records whether `continue` actually targeted
+    /// this loop, so a `for`'s step block isn't left as a dead block.
+    loops: Vec<LoopFrame>,
+}
+
+#[derive(Clone)]
+struct LoopFrame {
+    // cranelift IR blocks (the bare `Block` name resolves to `aurora_ast::Block`).
+    continue_to: cranelift::prelude::Block,
+    break_to: cranelift::prelude::Block,
+    cont_used: std::rc::Rc<std::cell::Cell<bool>>,
 }
 
 // --- memory helpers --------------------------------------------------------
@@ -2167,13 +2190,64 @@ fn tr_expr(
             b.ins().brif(c, body_b, &[], exit, &[]);
             b.switch_to_block(body_b);
             b.seal_block(body_b);
-            if let Term::Val(..) = tr_block(m, b, l, env, body)? {
+            // `continue` jumps back to the condition header; `break` to the exit.
+            l.loops.push(LoopFrame {
+                continue_to: header,
+                break_to: exit,
+                cont_used: std::rc::Rc::new(std::cell::Cell::new(false)),
+            });
+            let term = tr_block(m, b, l, env, body)?;
+            l.loops.pop();
+            if let Term::Val(..) = term {
                 b.ins().jump(header, &[]);
             }
             b.seal_block(header);
             b.switch_to_block(exit);
             b.seal_block(exit);
             (b.ins().iconst(types::I64, 0), Cty::I64)
+        }
+        ExprKind::Loop(body) => {
+            // `loop { .. }` runs forever until a `break`. The exit block is only
+            // reachable from a `break`, so it is dead if the loop has none.
+            let header = b.create_block();
+            let exit = b.create_block();
+            b.ins().jump(header, &[]);
+            b.switch_to_block(header);
+            l.loops.push(LoopFrame {
+                continue_to: header,
+                break_to: exit,
+                cont_used: std::rc::Rc::new(std::cell::Cell::new(false)),
+            });
+            let term = tr_block(m, b, l, env, body)?;
+            l.loops.pop();
+            if let Term::Val(..) = term {
+                b.ins().jump(header, &[]);
+            }
+            b.seal_block(header);
+            b.switch_to_block(exit);
+            b.seal_block(exit);
+            (b.ins().iconst(types::I64, 0), Cty::I64)
+        }
+        ExprKind::Break(opt) => {
+            // Evaluate any break value for its side effects (value-bearing
+            // `break expr` is not yet wired to a loop result).
+            if let Some(x) = opt {
+                val(m, b, l, env, x)?;
+            }
+            let target = l
+                .loops
+                .last()
+                .ok_or("`break` used outside of a loop")?
+                .break_to;
+            b.ins().jump(target, &[]);
+            return Ok(Term::Diverged);
+        }
+        ExprKind::Continue => {
+            let frame = l.loops.last().ok_or("`continue` used outside of a loop")?;
+            frame.cont_used.set(true);
+            let target = frame.continue_to;
+            b.ins().jump(target, &[]);
+            return Ok(Term::Diverged);
         }
         ExprKind::For { pat, iter, body } => return tr_for(m, b, l, env, pat, iter, body),
         ExprKind::Call { callee, args, .. } => return tr_call(m, b, l, env, callee, args),
@@ -2483,6 +2557,7 @@ fn tr_for(
 
     let header = b.create_block();
     let body_b = b.create_block();
+    let step = b.create_block();
     let exit = b.create_block();
     b.ins().jump(header, &[]);
     b.switch_to_block(header);
@@ -2502,12 +2577,28 @@ fn tr_for(
         addr
     };
     b.def_var(elem_var, ev);
-    if let Term::Val(..) = tr_block(m, b, l, env, body)? {
+    // `continue` advances the index via the step block; `break` exits.
+    let cont_used = std::rc::Rc::new(std::cell::Cell::new(false));
+    l.loops.push(LoopFrame { continue_to: step, break_to: exit, cont_used: cont_used.clone() });
+    let term = tr_block(m, b, l, env, body)?;
+    l.loops.pop();
+    let body_falls = matches!(term, Term::Val(..));
+    if body_falls {
+        b.ins().jump(step, &[]);
+    }
+    // Step block: bump the index and re-test. If the body always diverges and no
+    // `continue` reaches here, the block is dead - send it straight to the exit so
+    // the index variable is never read in an unreachable block.
+    b.seal_block(step);
+    b.switch_to_block(step);
+    if body_falls || cont_used.get() {
         let i2 = b.use_var(idx);
         let one = b.ins().iconst(types::I64, 1);
         let next = b.ins().iadd(i2, one);
         b.def_var(idx, next);
         b.ins().jump(header, &[]);
+    } else {
+        b.ins().jump(exit, &[]);
     }
     b.seal_block(header);
     b.switch_to_block(exit);
@@ -2856,6 +2947,7 @@ fn loop_count(
 ) -> Result<(), String> {
     let header = b.create_block();
     let body_b = b.create_block();
+    let step = b.create_block();
     let exit = b.create_block();
     b.ins().jump(header, &[]);
     b.switch_to_block(header);
@@ -2865,12 +2957,25 @@ fn loop_count(
     b.ins().brif(c, body_b, &[], exit, &[]);
     b.switch_to_block(body_b);
     b.seal_block(body_b);
-    if let Term::Val(..) = tr_block(m, b, l, env, body)? {
+    // `continue` advances the counter via the step block; `break` exits.
+    let cont_used = std::rc::Rc::new(std::cell::Cell::new(false));
+    l.loops.push(LoopFrame { continue_to: step, break_to: exit, cont_used: cont_used.clone() });
+    let term = tr_block(m, b, l, env, body)?;
+    l.loops.pop();
+    let body_falls = matches!(term, Term::Val(..));
+    if body_falls {
+        b.ins().jump(step, &[]);
+    }
+    b.seal_block(step);
+    b.switch_to_block(step);
+    if body_falls || cont_used.get() {
         let cur2 = b.use_var(var);
         let one = b.ins().iconst(types::I64, 1);
         let next = b.ins().iadd(cur2, one);
         b.def_var(var, next);
         b.ins().jump(header, &[]);
+    } else {
+        b.ins().jump(exit, &[]);
     }
     b.seal_block(header);
     b.switch_to_block(exit);
@@ -3237,6 +3342,27 @@ fn tr_call(
         b.ins().call(f, &[fn_ptr, env_ptr, sl, il]);
         return Ok(Term::Val(b.ins().iconst(types::I64, 0), Cty::I64));
     }
+    // `text_width("...", px)` - measure a literal string's pixel width for centering.
+    if name == "text_width" {
+        if let Some(ExprKind::Str(s)) = args.first().map(|a| &a.value.kind) {
+            let (ptr, len) = emit_str_data(m, b, env, s)?;
+            let px = if let Some(a) = args.get(1) {
+                let (v, t) = val(m, b, l, env, &a.value)?;
+                if t == Cty::F32 || t == Cty::F64 {
+                    b.ins().fcvt_to_sint_sat(types::I64, v)
+                } else {
+                    v
+                }
+            } else {
+                b.ins().iconst(types::I64, 0)
+            };
+            let f = m.declare_func_in_func(env.hosts["text_width"], b.func);
+            let call = b.ins().call(f, &[ptr, len, px]);
+            return Ok(Term::Val(b.inst_results(call)[0], Cty::I64));
+        }
+        return Ok(Term::Val(b.ins().iconst(types::I64, 0), Cty::I64));
+    }
+
     // `net_send_input(input_array)` - submit this tick's input blob from an
     // `[f64; n]` array (the length is taken from the array type).
     if name == "net_send_input" {
@@ -3247,6 +3373,20 @@ fn tr_call(
         };
         let nv = b.ins().iconst(types::I64, n);
         let f = m.declare_func_in_func(env.hosts["net_send_input"], b.func);
+        let call = b.ins().call(f, &[arr, nv]);
+        return Ok(Term::Val(b.inst_results(call)[0], Cty::I64));
+    }
+
+    // `save_settings(arr)` / `load_settings(arr)` - persist/restore an [f64; n] blob to
+    // a fixed file. Length is taken from the array type (like net_send_input).
+    if name == "save_settings" || name == "load_settings" {
+        let (arr, at) = val(m, b, l, env, &args[0].value)?;
+        let n = match &at {
+            Cty::Array(_, n) => *n as i64,
+            _ => return Err("save_settings/load_settings expect an [f64; n] array".into()),
+        };
+        let nv = b.ins().iconst(types::I64, n);
+        let f = m.declare_func_in_func(env.hosts[name.as_str()], b.func);
         let call = b.ins().call(f, &[arr, nv]);
         return Ok(Term::Val(b.inst_results(call)[0], Cty::I64));
     }
@@ -4058,6 +4198,7 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         // 3D physics.
         "phys3d_init" => (vec![F64, F64, F64], None),
         "phys3d_add_box" => (vec![F64, F64, F64, F64, F64, F64, I64], Some(I64)),
+        "phys3d_add_box_rot" => (vec![F64, F64, F64, F64, F64, F64, F64, F64, F64, I64], Some(I64)),
         "phys3d_add_sphere" => (vec![F64, F64, F64, F64, I64], Some(I64)),
         "phys3d_add_capsule" => (vec![F64, F64, F64, F64, F64, I64], Some(I64)),
         "phys3d_add_character" => (vec![F64, F64, F64, F64, F64], Some(I64)),
@@ -4112,7 +4253,7 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "grab_mouse" => (vec![I64], None),
         // 3D positional audio.
         "audio_listener" => (vec![F64, F64, F64, F64, F64, F64], None),
-        "play_sound_at" => (vec![I64, I64, F64, F64, F64], None),
+        "play_sound_at" => (vec![I64, I64, I64, F64, F64, F64], None),
         // Rich 3D physics.
         "phys3d_raycast_full" => (vec![F64, F64, F64, F64, F64, F64, F64], Some(I64)),
         "phys3d_raycast_ex" => (vec![I64, F64, F64, F64, F64, F64, F64, F64], Some(I64)),

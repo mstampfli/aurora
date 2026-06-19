@@ -100,6 +100,25 @@ pub extern "C" fn aurora_phys3d_add_box(
     })
 }
 
+/// Add a box rotated by the axis-angle vector (rx,ry,rz) - e.g. a tilt about X gives a
+/// ramp/slope. Pass the same angles to `r3d_draw`'s euler to make the visual match.
+#[no_mangle]
+pub extern "C" fn aurora_phys3d_add_box_rot(
+    x: f64, y: f64, z: f64, hx: f64, hy: f64, hz: f64, rx: f64, ry: f64, rz: f64, dynamic: i64,
+) -> i64 {
+    PHYS3.with(|p| {
+        let mut p = p.borrow_mut();
+        let Some(p) = p.as_mut() else { return -1 };
+        let b = if dynamic != 0 { RigidBodyBuilder::dynamic() } else { RigidBodyBuilder::fixed() };
+        let rb = b
+            .translation(vector![x as Real, y as Real, z as Real])
+            .rotation(vector![rx as Real, ry as Real, rz as Real])
+            .build();
+        let col = ColliderBuilder::cuboid(hx as Real, hy as Real, hz as Real).build();
+        push_body(p, rb, col)
+    })
+}
+
 /// Add a sphere of `radius` at (x,y,z).
 #[no_mangle]
 pub extern "C" fn aurora_phys3d_add_sphere(x: f64, y: f64, z: f64, radius: f64, dynamic: i64) -> i64 {
@@ -134,7 +153,11 @@ pub extern "C" fn aurora_phys3d_add_character(x: f64, y: f64, z: f64, hh: f64, r
         let rb = RigidBodyBuilder::kinematic_position_based()
             .translation(vector![x as Real, y as Real, z as Real])
             .build();
-        let col = ColliderBuilder::capsule_y(hh as Real, r as Real).build();
+        // Characters are in group 2; the move query (below) only collides with group 1
+        // (world), so characters never stand on / trap each other - they pass through.
+        let col = ColliderBuilder::capsule_y(hh as Real, r as Real)
+            .collision_groups(InteractionGroups::new(Group::GROUP_2, Group::ALL))
+            .build();
         push_body(p, rb, col)
     })
 }
@@ -277,7 +300,12 @@ pub extern "C" fn aurora_phys3d_move_character(h: i64, dx: f64, dy: f64, dz: f64
             let shape = collider.shape();
             let mut pos = *collider.position();
             pos.translation.vector = body_t;
-            let filter = QueryFilter::default().exclude_collider(col_h);
+            // Group 1 (world) only: a character slides on the world but not on other
+            // characters, so no stacking/trapping. Raycasts (default filter) still hit
+            // characters, so shooting is unaffected.
+            let filter = QueryFilter::default()
+                .exclude_collider(col_h)
+                .groups(InteractionGroups::new(Group::GROUP_2, Group::GROUP_1));
             let mvt = p.controller.move_shape(
                 dt as Real, &p.bodies, &p.colliders, &p.query, shape, &pos, desired, filter, |_| {},
             );

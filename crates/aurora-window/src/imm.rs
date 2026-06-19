@@ -99,6 +99,12 @@ impl ApplicationHandler for ImmApp {
             WindowEvent::CloseRequested => self.open = false,
             WindowEvent::Resized(size) => {
                 self.win_size = (size.width.max(1) as f64, size.height.max(1) as f64);
+                // Track the REAL window size so the cursor mapping + surface_w()/_h()
+                // (and any framebuffer sized to them) all agree - otherwise the reported
+                // mouse position drifts from the OS cursor when the window isn't exactly
+                // the requested size (DPI scaling, resize, etc.).
+                self.width = size.width.max(1);
+                self.height = size.height.max(1);
                 if let Some(g) = self.gfx.as_mut() {
                     g.resize(size.width, size.height);
                 }
@@ -260,9 +266,10 @@ pub fn grab_mouse(on: bool) {
         let mut slot = s.borrow_mut();
         let Some((_, app)) = slot.as_mut() else { return };
         app.grabbed = on;
-        if on {
-            app.grab_wanted = true;
-        }
+        // Track intent both ways: releasing for a menu (on=false) must clear
+        // grab_wanted, or the click-to-recapture path would re-grab on the first
+        // menu click. (Escape leaves grab_wanted set, so click-back still works in play.)
+        app.grab_wanted = on;
         // If the window exists, apply now; otherwise `resumed` applies it when the
         // window is created on the first frame.
         if let Some(w) = &app.window {
@@ -616,6 +623,7 @@ fn code_to_key(code: u32) -> Option<KeyCode> {
         17 => KeyF,
         18 => KeyC,
         19 => KeyV,
+        20 => Escape,
         30..=39 => DIGITS[(code - 30) as usize],
         40..=65 => LETTERS[(code - 40) as usize],
         _ => return None,
