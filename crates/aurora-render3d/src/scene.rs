@@ -340,6 +340,21 @@ impl Scene {
         }
     }
 
+    /// Start an upper-body overlay clip on a model, masked to joint `mask_root` and its
+    /// descendants (so the legs keep the base clip). Fades in over `fade` seconds.
+    pub fn anim_play_upper(&mut self, handle: i64, clip: i64, looping: bool, speed: f32, fade: f32, mask_root: i64) {
+        if let Some(r) = self.item_mut(handle) {
+            r.player.play_upper(clip.max(0) as usize, looping, speed, fade, mask_root.max(0) as usize);
+        }
+    }
+
+    /// Fade out a model's upper-body overlay over `fade` seconds.
+    pub fn anim_stop_upper(&mut self, handle: i64, fade: f32) {
+        if let Some(r) = self.item_mut(handle) {
+            r.player.stop_upper(fade);
+        }
+    }
+
     pub fn begin(&mut self) {
         self.renderer.begin();
     }

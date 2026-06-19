@@ -527,6 +527,18 @@ pub fn r3d_anim_update(handle: i64, dt: f32) {
         s.anim_update(handle, dt);
     });
 }
+pub fn r3d_anim_play_upper(handle: i64, clip: i64, looping: i64, speed: f32, fade: f32, mask_root: i64) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.anim_play_upper(handle, clip, looping != 0, speed, fade, mask_root);
+    });
+}
+pub fn r3d_anim_stop_upper(handle: i64, fade: f32) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.anim_stop_upper(handle, fade);
+    });
+}
 pub fn r3d_clip_count(handle: i64) -> i64 {
     with_gfx(0, |gf| {
         let (_, _, s) = gf.scene_mut();
