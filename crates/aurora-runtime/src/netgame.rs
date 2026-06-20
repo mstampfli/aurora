@@ -43,9 +43,10 @@ const OBJ_RADIUS: f32 = 0.45;
 
 const STATE_MAX: usize = 32; // max floats in a player state blob
 const INPUT_MAX: usize = 24; // max floats in an input blob
-const META_LEN: usize = 12; // per-player metadata floats (hp/shield/oc/respawn/cells/heal/kills/
-                            // deaths in 0..7; 8 = melee-swing flag; 9..11 spare) replicated
-                           // SEPARATELY from the sim state, so they never touch reconciliation.
+const META_LEN: usize = 16; // per-player metadata floats (hp/shield/oc/respawn/cells/heal/kills/
+                            // deaths in 0..7; 8 = melee-swing flag; 9 = respawn-ack; 10/11 = round
+                            // timer/over; 12..14 = grapple anchor xyz; 15 = grapple active) -
+                           // replicated SEPARATELY from the sim state, so never touch reconciliation.
 const NAME_MAX: usize = 20; // per-player display name: a fixed byte field (NOT chars packed into
                             // floats), re-sent on the input/snapshot stream so UDP loss self-heals.
 
@@ -2087,6 +2088,25 @@ mod meta_replication_test {
             client.clear_kills();
         }
         assert!(total >= 1, "client received no kill event");
+    }
+
+    // player_count() on the host = itself + connected CLIENTS only (bots ride a separate list),
+    // so the game's "active_bots = bot_count - (player_count-1)" correctly drops a bot per joiner.
+    #[test]
+    fn bots_do_not_inflate_player_count() {
+        let mut host = Session::host(0).expect("host bind");
+        let host_addr = host.local_addr();
+        let mut client = Session::join(host_addr).expect("client bind");
+        host.set_bot_count(3); // host runs 3 bots
+        let input = [0.0f32; 4];
+        for _ in 0..15 {
+            client.send_input(&input);
+            host.send_input(&input);
+            client.update(0.016);
+            host.update(0.016);
+            client.update(0.016);
+        }
+        assert_eq!(host.player_count(), 2, "host should count itself + 1 client, NOT the 3 bots");
     }
 
     // The host announces a SHOT effect (shooter, origin, endpoint, weapon); the client receives it
