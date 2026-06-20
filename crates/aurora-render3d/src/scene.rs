@@ -381,7 +381,7 @@ impl Scene {
         }
     }
 
-    /// Like [`draw`] but tints the model's albedo by `tint` (RGB multiply).
+    /// Like [`draw`] but shifts the model's albedo by `tint` (RGB additive offset).
     pub fn draw_tint(&mut self, handle: i64, transform: Mat4, tint: [f32; 3]) {
         let idx = match self.resolve(handle) {
             Some(i) => i,

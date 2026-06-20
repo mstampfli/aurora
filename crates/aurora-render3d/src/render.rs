@@ -1120,10 +1120,10 @@ impl Renderer3D {
     }
 
     pub fn draw(&mut self, mesh: usize, material: usize, model: Mat4, joints: Option<Vec<Mat4>>) {
-        self.draw_tint(mesh, material, model, joints, [1.0, 1.0, 1.0]);
+        self.draw_tint(mesh, material, model, joints, [0.0, 0.0, 0.0]);
     }
 
-    /// Like [`draw`] but multiplies the albedo by a per-draw RGB `tint`.
+    /// Like [`draw`] but adds a per-draw RGB `tint` OFFSET to the albedo (identity (0,0,0)).
     pub fn draw_tint(&mut self, mesh: usize, material: usize, model: Mat4, joints: Option<Vec<Mat4>>, tint: [f32; 3]) {
         if mesh < self.meshes.len() {
             let material = if material < self.materials.len() { material } else { 0 };
@@ -2032,7 +2032,9 @@ fn shade(world_pos: vec3<f32>, n_in: vec3<f32>, albedo: vec3<f32>, alpha: f32, m
 
 @fragment
 fn fs(in: VsOut) -> @location(0) vec4<f32> {
-    var albedo = mat.base_color * vec4<f32>(obj.params.y, obj.params.z, obj.params.w, 1.0);
+    // params.yzw is an additive colour OFFSET (not a multiply): it shifts the albedo
+    // toward a hue without crushing the other channels to black. Identity is (0,0,0).
+    var albedo = vec4<f32>(max(mat.base_color.rgb + vec3<f32>(obj.params.y, obj.params.z, obj.params.w), vec3<f32>(0.0)), mat.base_color.a);
     if (mat.flags.x > 0.5) { albedo = albedo * textureSample(base_tex, samp, in.uv); }
     var metallic = mat.mr.x;
     var rough = mat.mr.y;
