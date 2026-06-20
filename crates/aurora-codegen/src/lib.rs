@@ -362,7 +362,7 @@ const BUILTINS: &[&str] = &[
     "r3d_load_model", "r3d_make_box", "r3d_make_box_sized", "r3d_make_box_emissive", "r3d_make_sphere", "r3d_make_plane",
     "r3d_camera", "r3d_camera_roll", "r3d_light", "r3d_clear", "r3d_begin", "r3d_draw", "r3d_draw_tint",
     "r3d_anim_play", "r3d_anim_update", "r3d_anim_play_upper", "r3d_anim_stop_upper", "r3d_clip_count", "r3d_present",
-    "r3d_fog", "r3d_speedlines", "r3d_damage", "r3d_sky", "r3d_shadows", "r3d_ssao", "r3d_point_shadows", "r3d_clear_lights", "r3d_point_light",
+    "r3d_fog", "r3d_speedlines", "r3d_damage", "r3d_blur", "r3d_sky", "r3d_shadows", "r3d_ssao", "r3d_point_shadows", "r3d_clear_lights", "r3d_point_light",
     "r3d_make_sprite", "r3d_draw_billboard", "r3d_debug_line", "r3d_frustum_cull",
     "r3d_screen_x", "r3d_screen_y",
     // FPS input.
@@ -384,7 +384,7 @@ const BUILTINS: &[&str] = &[
     "net_spawn_at", "net_fire",
     "net_hit_player", "net_hit_x", "net_hit_y", "net_hit_z",
     // Rebindable input-action layer + raw f32-blob accessors.
-    "input_bind", "input_binding", "input_down", "input_axis",
+    "input_bind", "input_binding", "input_down", "input_axis", "input_suppress",
     "save_settings", "load_settings",
     "f32_load", "f32_store",
 ];
@@ -647,6 +647,7 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_r3d_fog", aurora_runtime::aurora_r3d_fog as *const u8);
     builder.symbol("aurora_r3d_speedlines", aurora_runtime::aurora_r3d_speedlines as *const u8);
     builder.symbol("aurora_r3d_damage", aurora_runtime::aurora_r3d_damage as *const u8);
+    builder.symbol("aurora_r3d_blur", aurora_runtime::aurora_r3d_blur as *const u8);
     builder.symbol("aurora_r3d_sky", aurora_runtime::aurora_r3d_sky as *const u8);
     builder.symbol("aurora_r3d_shadows", aurora_runtime::aurora_r3d_shadows as *const u8);
     builder.symbol("aurora_r3d_ssao", aurora_runtime::aurora_r3d_ssao as *const u8);
@@ -717,6 +718,7 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_input_bind", aurora_runtime::aurora_input_bind as *const u8);
     builder.symbol("aurora_input_binding", aurora_runtime::aurora_input_binding as *const u8);
     builder.symbol("aurora_input_down", aurora_runtime::aurora_input_down as *const u8);
+    builder.symbol("aurora_input_suppress", aurora_runtime::aurora_input_suppress as *const u8);
     builder.symbol("aurora_input_axis", aurora_runtime::aurora_input_axis as *const u8);
     builder.symbol("aurora_f32_load", aurora_runtime::aurora_f32_load as *const u8);
     builder.symbol("aurora_f32_store", aurora_runtime::aurora_f32_store as *const u8);
@@ -967,6 +969,7 @@ fn lower(
     hosts.insert("r3d_fog", import(jmod, "aurora_r3d_fog", &[f64t, f64t, f64t, f64t], None));
     hosts.insert("r3d_speedlines", import(jmod, "aurora_r3d_speedlines", &[f64t, f64t], None));
     hosts.insert("r3d_damage", import(jmod, "aurora_r3d_damage", &[f64t, f64t, f64t, f64t, f64t], None));
+    hosts.insert("r3d_blur", import(jmod, "aurora_r3d_blur", &[f64t], None));
     hosts.insert("r3d_sky", import(jmod, "aurora_r3d_sky", &[i, f64t, f64t, f64t, f64t, f64t, f64t], None));
     hosts.insert("r3d_shadows", import(jmod, "aurora_r3d_shadows", &[i], None));
     hosts.insert("r3d_ssao", import(jmod, "aurora_r3d_ssao", &[i], None));
@@ -1038,6 +1041,7 @@ fn lower(
     hosts.insert("input_binding", import(jmod, "aurora_input_binding", &[i], Some(i)));
     hosts.insert("input_down", import(jmod, "aurora_input_down", &[i], Some(i)));
     hosts.insert("input_axis", import(jmod, "aurora_input_axis", &[i, i], Some(f64t)));
+    hosts.insert("input_suppress", import(jmod, "aurora_input_suppress", &[i], None));
     hosts.insert("f32_load", import(jmod, "aurora_f32_load", &[i, i], Some(f64t)));
     hosts.insert("f32_store", import(jmod, "aurora_f32_store", &[i, i, f64t], None));
     hosts.insert("sin", import(jmod, "aurora_sin", &[f64t], Some(f64t)));
@@ -4252,6 +4256,7 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "r3d_fog" => (vec![F64, F64, F64, F64], None),
         "r3d_speedlines" => (vec![F64, F64], None),
         "r3d_damage" => (vec![F64, F64, F64, F64, F64], None),
+        "r3d_blur" => (vec![F64], None),
         "r3d_sky" => (vec![I64, F64, F64, F64, F64, F64, F64], None),
         "r3d_shadows" | "r3d_ssao" | "r3d_point_shadows" => (vec![I64], None),
         "r3d_clear_lights" => (vec![], None),
@@ -4304,6 +4309,7 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "net_hit_x" | "net_hit_y" | "net_hit_z" => (vec![], Some(F64)),
         // Rebindable input-action layer + raw f32-blob accessors.
         "input_bind" => (vec![I64, I64], None),
+        "input_suppress" => (vec![I64], None),
         "input_binding" | "input_down" => (vec![I64], Some(I64)),
         "input_axis" => (vec![I64, I64], Some(F64)),
         "f32_load" => (vec![I64, I64], Some(F64)),

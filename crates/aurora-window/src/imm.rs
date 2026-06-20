@@ -58,6 +58,8 @@ struct ImmApp {
     dmg_dy: f32,
     /// Gold overclock tint intensity (0..1).
     dmg_oc: f32,
+    /// Fullscreen blur radius in pixels (0 = off); used for the paused/menu backdrop.
+    blur: f32,
 }
 
 impl ApplicationHandler for ImmApp {
@@ -249,6 +251,7 @@ pub fn open(width: u32, height: u32) {
         dmg_dx: 0.0,
         dmg_dy: 0.0,
         dmg_oc: 0.0,
+        blur: 0.0,
     };
     IMM.with(|s| *s.borrow_mut() = Some((event_loop, app)));
 }
@@ -645,12 +648,24 @@ pub fn r3d_present(hud_rgba: &[u8], hud_w: u32, hud_h: u32) -> bool {
             let (sli, slt) = (app.sl_intensity, app.sl_time);
             let (dv, dh, ddx, ddy, doc) =
                 (app.dmg_vig, app.dmg_hit, app.dmg_dx, app.dmg_dy, app.dmg_oc);
+            let blur = app.blur;
             if let Some(g) = app.gfx.as_mut() {
-                g.present_scene(hud_rgba, hud_w, hud_h, sli, slt, dv, dh, ddx, ddy, doc);
+                g.present_scene(hud_rgba, hud_w, hud_h, sli, slt, dv, dh, ddx, ddy, doc, blur);
             }
         }
         app.open
     })
+}
+
+/// Set the fullscreen blur radius in pixels (0 = off). Used for the paused/menu
+/// backdrop: the scene keeps rendering (and, in multiplayer, simulating) but is
+/// blurred so the menu reads on top.
+pub fn blur(radius: f32) {
+    IMM.with(|s| {
+        if let Some((_, app)) = s.borrow_mut().as_mut() {
+            app.blur = radius;
+        }
+    });
 }
 
 /// Set the speed/wind-lines overlay intensity (0..1) and animation time.

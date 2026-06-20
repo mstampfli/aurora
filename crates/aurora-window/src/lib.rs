@@ -39,6 +39,7 @@ pub use imm::{
     r3d_make_sprite as imm_r3d_make_sprite, r3d_point_light as imm_r3d_point_light,
     r3d_point_shadows as imm_r3d_point_shadows, r3d_present as imm_r3d_present,
     r3d_shadows as imm_r3d_shadows, r3d_sky as imm_r3d_sky, r3d_ssao as imm_r3d_ssao,
+    blur as imm_blur,
     damage as imm_damage, r3d_world_to_screen as imm_r3d_world_to_screen,
     speedlines as imm_speedlines, surface_h as imm_surface_h, surface_w as imm_surface_w,
 };
@@ -272,6 +273,16 @@ pub(crate) struct Gfx {
     dmg_pipeline: wgpu::RenderPipeline,
     dmg_bind_group: wgpu::BindGroup,
     dmg_buf: wgpu::Buffer,
+    /// Offscreen colour target the 3D scene renders into, so the blur pass has a
+    /// texture to sample. Then a fullscreen blur/blit pass copies it to the surface.
+    post_tex: wgpu::Texture,
+    post_view: wgpu::TextureView,
+    post_w: u32,
+    post_h: u32,
+    blur_pipeline: wgpu::RenderPipeline,
+    blur_bind_group: wgpu::BindGroup,
+    blur_sampler: wgpu::Sampler,
+    blur_buf: wgpu::Buffer,
 }
 
 const HUD_WGSL: &str = r#"
@@ -404,6 +415,40 @@ fn vs(@builtin(vertex_index) i: u32) -> VOut {
 @fragment
 fn fs(in: VOut) -> @location(0) vec4<f32> {
     return textureSample(tex, samp, in.uv);
+}
+"#;
+
+// Fullscreen blur of the rendered scene. Samples a 24-tap golden-angle spiral disc
+// (linear filtering) at a uniform-driven pixel radius. At radius 0 it is a plain copy,
+// so the scene looks identical when the blur is off. Used for the paused/menu backdrop.
+const BLUR_WGSL: &str = r#"
+struct BL { radius: f32, texx: f32, texy: f32, pad: f32 };
+@group(0) @binding(0) var tex: texture_2d<f32>;
+@group(0) @binding(1) var samp: sampler;
+@group(0) @binding(2) var<uniform> u: BL;
+struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
+@vertex
+fn vs(@builtin(vertex_index) i: u32) -> VOut {
+    var p = array<vec2<f32>, 3>(vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+    var o: VOut;
+    let xy = p[i];
+    o.pos = vec4<f32>(xy, 0.0, 1.0);
+    o.uv = vec2<f32>(xy.x * 0.5 + 0.5, 1.0 - (xy.y * 0.5 + 0.5));
+    return o;
+}
+@fragment
+fn fs(in: VOut) -> @location(0) vec4<f32> {
+    if (u.radius < 0.25) { return textureSampleLevel(tex, samp, in.uv, 0.0); }
+    var acc = vec3<f32>(0.0);
+    let texel = vec2<f32>(u.texx, u.texy);
+    for (var k: i32 = 0; k < 24; k = k + 1) {
+        let fk = f32(k);
+        let ang = fk * 2.39996323;                       // golden angle -> even spread
+        let rad = sqrt((fk + 0.5) / 24.0) * u.radius;    // even disc coverage
+        let off = vec2<f32>(cos(ang), sin(ang)) * rad * texel;
+        acc = acc + textureSampleLevel(tex, samp, in.uv + off, 0.0).rgb;
+    }
+    return vec4<f32>(acc / 24.0, 1.0);
 }
 "#;
 
@@ -681,6 +726,106 @@ impl Gfx {
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: dmg_buf.as_entire_binding() }],
         });
 
+        // Offscreen scene target + fullscreen blur/blit pass (the paused/menu backdrop).
+        let (post_w, post_h) = (config.width.max(1), config.height.max(1));
+        let post_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("post-scene"),
+            size: wgpu::Extent3d { width: post_w, height: post_h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let post_view = post_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let blur_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("blur"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let blur_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("blur"),
+            source: wgpu::ShaderSource::Wgsl(BLUR_WGSL.into()),
+        });
+        let blur_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("blur-uniform"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let blur_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("blur"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let blur_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("blur"),
+            bind_group_layouts: &[&blur_layout],
+            push_constant_ranges: &[],
+        });
+        let blur_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("blur"),
+            layout: Some(&blur_pl),
+            vertex: wgpu::VertexState {
+                module: &blur_module,
+                entry_point: "vs",
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &blur_module,
+                entry_point: "fs",
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let blur_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("blur"),
+            layout: &blur_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&post_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&blur_sampler) },
+                wgpu::BindGroupEntry { binding: 2, resource: blur_buf.as_entire_binding() },
+            ],
+        });
+
         Ok(Gfx {
             surface,
             device,
@@ -700,6 +845,14 @@ impl Gfx {
             dmg_pipeline,
             dmg_bind_group,
             dmg_buf,
+            post_tex,
+            post_view,
+            post_w,
+            post_h,
+            blur_pipeline,
+            blur_bind_group,
+            blur_sampler,
+            blur_buf,
         })
     }
 
@@ -771,11 +924,44 @@ impl Gfx {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn present_scene(
         &mut self, hud_rgba: &[u8], hud_w: u32, hud_h: u32, sl_wind: f32, sl_time: f32,
-        dmg_vig: f32, dmg_hit: f32, dmg_dx: f32, dmg_dy: f32, dmg_oc: f32,
+        dmg_vig: f32, dmg_hit: f32, dmg_dx: f32, dmg_dy: f32, dmg_oc: f32, blur: f32,
     ) {
         let (w, h) = (self.config.width.max(1), self.config.height.max(1));
+        // Keep the offscreen scene target sized to the surface, recreating its bind group
+        // so the blur pass samples a matching texture.
+        if w != self.post_w || h != self.post_h {
+            self.post_tex = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("post-scene"),
+                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.config.format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            self.post_view = self.post_tex.create_view(&wgpu::TextureViewDescriptor::default());
+            self.blur_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("blur"),
+                layout: &self.blur_pipeline.get_bind_group_layout(0),
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.post_view) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.blur_sampler) },
+                    wgpu::BindGroupEntry { binding: 2, resource: self.blur_buf.as_entire_binding() },
+                ],
+            });
+            self.post_w = w;
+            self.post_h = h;
+        }
+        // Blur uniform: radius in pixels + texel size.
+        let mut blu = [0u8; 16];
+        blu[0..4].copy_from_slice(&blur.to_ne_bytes());
+        blu[4..8].copy_from_slice(&(1.0f32 / w as f32).to_ne_bytes());
+        blu[8..12].copy_from_slice(&(1.0f32 / h as f32).to_ne_bytes());
+        self.queue.write_buffer(&self.blur_buf, 0, &blu);
         // Update the speed-lines uniform (wind, time, aspect).
         let aspect = w as f32 / h.max(1) as f32;
         let mut slu = [0u8; 16];
@@ -838,8 +1024,26 @@ impl Gfx {
         let view = surface_tex.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut enc =
             self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        // Render the 3D scene into the offscreen target, then a fullscreen pass copies it
+        // to the surface - blurred when `blur` > 0 (paused/menu), an exact copy otherwise.
         if let Some(scene) = self.scene.as_mut() {
-            scene.render(&self.device, &self.queue, &mut enc, &view);
+            scene.render(&self.device, &self.queue, &mut enc, &self.post_view);
+        }
+        {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("blur"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.blur_pipeline);
+            pass.set_bind_group(0, &self.blur_bind_group, &[]);
+            pass.draw(0..3, 0..1);
         }
         // Speed/wind lines pass (over the 3D, under the HUD) when wind is active.
         if sl_wind > 0.001 {

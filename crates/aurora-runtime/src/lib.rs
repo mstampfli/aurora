@@ -1435,6 +1435,11 @@ pub extern "C" fn aurora_r3d_speedlines(intensity: f64, time: f64) {
 pub extern "C" fn aurora_r3d_damage(vig: f64, hit: f64, dx: f64, dy: f64, oc: f64) {
     aurora_window::imm_damage(vig as f32, hit as f32, dx as f32, dy as f32, oc as f32);
 }
+/// Set the fullscreen blur radius in pixels (0 = off): the paused/menu backdrop.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_blur(radius: f64) {
+    aurora_window::imm_blur(radius as f32);
+}
 #[allow(clippy::too_many_arguments)]
 #[no_mangle]
 pub extern "C" fn aurora_r3d_sky(on: i64, tr: f64, tg: f64, tb: f64, hr: f64, hg: f64, hb: f64) {
@@ -1529,6 +1534,18 @@ pub extern "C" fn aurora_grab_mouse(on: i64) {
 thread_local! {
     static BINDINGS: RefCell<std::collections::HashMap<i64, i64>> =
         RefCell::new(std::collections::HashMap::new());
+    // When set, the bind-layer reads (input_down / input_axis) all report "not held",
+    // so a game can freeze player actions in one call (e.g. a pause overlay) without
+    // touching the raw mouse used by menus.
+    static INPUT_SUPPRESS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Suppress (1) or restore (0) all bound-action input. While suppressed, every
+/// `input_down`/`input_axis` reads as zero; the raw mouse/keyboard queries are
+/// untouched so menus still work.
+#[no_mangle]
+pub extern "C" fn aurora_input_suppress(on: i64) {
+    INPUT_SUPPRESS.with(|s| s.set(on != 0));
 }
 
 fn code_is_down(code: i64) -> bool {
@@ -1558,6 +1575,9 @@ pub extern "C" fn aurora_input_binding(action: i64) -> i64 {
 /// Whether an action's bound input is currently held (1) or not (0).
 #[no_mangle]
 pub extern "C" fn aurora_input_down(action: i64) -> i64 {
+    if INPUT_SUPPRESS.with(|s| s.get()) {
+        return 0;
+    }
     let code = BINDINGS.with(|b| b.borrow().get(&action).copied().unwrap_or(-1));
     code_is_down(code) as i64
 }
@@ -1995,7 +2015,9 @@ pub extern "C" fn aurora_dbg_var_f64(name_ptr: *const u8, name_len: i64, value: 
 /// Touch every host symbol so the linker keeps this crate's object in an AOT
 /// link even when the Rust driver references nothing from it directly.
 pub fn force_link() -> usize {
-    let fns: [*const (); 222] = [
+    let fns: [*const (); 224] = [
+        aurora_r3d_blur as *const (),
+        aurora_input_suppress as *const (),
         aurora_text_width as *const (),
         aurora_phys3d_add_box_rot as *const (),
         aurora_save_settings as *const (),
