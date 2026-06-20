@@ -391,6 +391,7 @@ const BUILTINS: &[&str] = &[
     "net_server_hit_count", "net_server_hit_shooter", "net_server_hit_victim", "net_server_hit_weapon",
     "net_server_hit_x", "net_server_hit_y", "net_server_hit_z", "net_server_hits_clear",
     "net_push_kill", "net_kill_count", "net_kill_killer", "net_kill_victim", "net_kills_clear",
+    "net_push_shot", "net_shot_count", "net_shot_shooter", "net_shot_field", "net_shot_weapon", "net_shots_clear",
     "net_projectile_intent", "net_server_projectile_count", "net_server_projectile_shooter",
     "net_server_projectile_kind", "net_server_projectile_ox", "net_server_projectile_oy",
     "net_server_projectile_oz", "net_server_projectile_vx", "net_server_projectile_vy",
@@ -766,6 +767,12 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_net_kill_killer", aurora_runtime::aurora_net_kill_killer as *const u8);
     builder.symbol("aurora_net_kill_victim", aurora_runtime::aurora_net_kill_victim as *const u8);
     builder.symbol("aurora_net_kills_clear", aurora_runtime::aurora_net_kills_clear as *const u8);
+    builder.symbol("aurora_net_push_shot", aurora_runtime::aurora_net_push_shot as *const u8);
+    builder.symbol("aurora_net_shot_count", aurora_runtime::aurora_net_shot_count as *const u8);
+    builder.symbol("aurora_net_shot_shooter", aurora_runtime::aurora_net_shot_shooter as *const u8);
+    builder.symbol("aurora_net_shot_field", aurora_runtime::aurora_net_shot_field as *const u8);
+    builder.symbol("aurora_net_shot_weapon", aurora_runtime::aurora_net_shot_weapon as *const u8);
+    builder.symbol("aurora_net_shots_clear", aurora_runtime::aurora_net_shots_clear as *const u8);
     builder.symbol("aurora_net_projectile_intent", aurora_runtime::aurora_net_projectile_intent as *const u8);
     builder.symbol("aurora_net_server_projectile_count", aurora_runtime::aurora_net_server_projectile_count as *const u8);
     builder.symbol("aurora_net_server_projectile_shooter", aurora_runtime::aurora_net_server_projectile_shooter as *const u8);
@@ -1143,6 +1150,12 @@ fn lower(
     hosts.insert("net_kill_killer", import(jmod, "aurora_net_kill_killer", &[i], Some(i)));
     hosts.insert("net_kill_victim", import(jmod, "aurora_net_kill_victim", &[i], Some(i)));
     hosts.insert("net_kills_clear", import(jmod, "aurora_net_kills_clear", &[], None));
+    hosts.insert("net_push_shot", import(jmod, "aurora_net_push_shot", &[i, f64t, f64t, f64t, f64t, f64t, f64t, i], None));
+    hosts.insert("net_shot_count", import(jmod, "aurora_net_shot_count", &[], Some(i)));
+    hosts.insert("net_shot_shooter", import(jmod, "aurora_net_shot_shooter", &[i], Some(i)));
+    hosts.insert("net_shot_field", import(jmod, "aurora_net_shot_field", &[i, i], Some(f64t)));
+    hosts.insert("net_shot_weapon", import(jmod, "aurora_net_shot_weapon", &[i], Some(i)));
+    hosts.insert("net_shots_clear", import(jmod, "aurora_net_shots_clear", &[], None));
     hosts.insert("net_projectile_intent", import(jmod, "aurora_net_projectile_intent", &[i, f64t, f64t, f64t, f64t, f64t, f64t], None));
     hosts.insert("net_server_projectile_count", import(jmod, "aurora_net_server_projectile_count", &[], Some(i)));
     hosts.insert("net_server_projectile_shooter", import(jmod, "aurora_net_server_projectile_shooter", &[i], Some(i)));
@@ -4498,6 +4511,11 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "net_kill_count" => (vec![], Some(I64)),
         "net_kill_killer" | "net_kill_victim" => (vec![I64], Some(I64)),
         "net_kills_clear" => (vec![], None),
+        "net_push_shot" => (vec![I64, F64, F64, F64, F64, F64, F64, I64], None),
+        "net_shot_count" => (vec![], Some(I64)),
+        "net_shot_shooter" | "net_shot_weapon" => (vec![I64], Some(I64)),
+        "net_shot_field" => (vec![I64, I64], Some(F64)),
+        "net_shots_clear" => (vec![], None),
         "net_projectile_intent" => (vec![I64, F64, F64, F64, F64, F64, F64], None),
         "net_server_projectile_count" => (vec![], Some(I64)),
         "net_server_projectile_shooter" | "net_server_projectile_kind" => (vec![I64], Some(I64)),

@@ -27,6 +27,8 @@ const TAG_KILL: u8 = 7; // host -> clients: an authoritative kill event (killer,
 const TAG_PROJECTILE: u8 = 8; // client -> host: I LAUNCHED a rocket/grenade (intent only; the
                               // host simulates it and decides where + how hard it detonates)
 const TAG_FX: u8 = 9; // host -> clients: transient visuals (loot drops + in-flight projectiles)
+const TAG_SHOTFX: u8 = 10; // host -> clients: a shot was fired (shooter, origin, endpoint, weapon)
+                           // so every machine can draw the tracer + play the fire sound.
 
 /// Reserved id range for host-controlled bots. They ride the SAME player
 /// replication channel as humans (state + meta + name), so a guest receives and
@@ -110,6 +112,17 @@ struct ServerProjectile {
     vel: [f32; 3],
 }
 
+/// A SHOT-effect event: the host announces every shot (its own, its bots', and relayed client
+/// shots) so all machines draw the tracer + play the fire sound. Purely cosmetic - rare UDP loss
+/// just drops a tracer. `shooter` is the net id (so each machine skips its own predicted shot).
+#[derive(Clone, Copy)]
+struct ShotFx {
+    shooter: u32,
+    o: [f32; 3],
+    e: [f32; 3],
+    weapon: u8,
+}
+
 /// One networking session (server or client).
 pub struct Session {
     sock: UdpSocket,
@@ -148,6 +161,10 @@ pub struct Session {
     /// drive the red kill-marker/sound/feed (NOT the predicted per-hit hitmarker).
     kill_out: Vec<(u32, u32)>,
     kill_in: Vec<(u32, u32)>,
+    /// Shot effects. Host: filled each frame (own + bot + relayed client shots), broadcast, then
+    /// cleared. Client: received shots, drained by the game each frame to spawn tracers + sounds.
+    shots_out: Vec<ShotFx>,
+    shots_in: Vec<ShotFx>,
     next_id: u32,
     lag: LagComp,
     server_tick: u64,
@@ -229,6 +246,8 @@ impl Session {
             last_fx_empty: true,
             kill_out: Vec::new(),
             kill_in: Vec::new(),
+            shots_out: Vec::new(),
+            shots_in: Vec::new(),
             next_id: 1,
             lag: LagComp::new(64),
             server_tick: 0,
@@ -478,6 +497,8 @@ impl Session {
                 }
             }
         }
+        // Shot effects are flushed separately at END of frame (flush_shots), after the host's
+        // combat has pushed its own + bots' + relayed client shots for this frame.
     }
 
     /// Find (or admit) a client by address. Returns None if it is NEW and the lobby is
@@ -550,6 +571,15 @@ impl Session {
                 if id >= 0 {
                     self.server_hits.push(ServerHit { shooter, victim: id, point, weapon });
                 }
+                // Announce the SHOT effect (tracer + fire sound) to every machine - hit OR miss,
+                // so a remote player's shots are always seen/heard. Endpoint = the hit point, else
+                // far along the aim. (The shooter skips its own when rendering - it predicted it.)
+                let end = if id >= 0 {
+                    point
+                } else {
+                    [o[0] + d[0] * 120.0, o[1] + d[1] * 120.0, o[2] + d[2] * 120.0]
+                };
+                self.shots_out.push(ShotFx { shooter, o, e: end, weapon });
             }
             Some(TAG_PROJECTILE) => {
                 let Some((kind, origin, vel)) = decode_projectile(pkt) else { return };
@@ -588,6 +618,12 @@ impl Session {
         if pkt.first().copied() == Some(TAG_KILL) {
             if let Some((killer, victim)) = decode_kill(pkt) {
                 self.kill_in.push((killer, victim));
+            }
+            return;
+        }
+        if pkt.first().copied() == Some(TAG_SHOTFX) {
+            if let Some(shots) = decode_shots(pkt) {
+                self.shots_in.extend(shots); // accumulated; the game drains them each frame
             }
             return;
         }
@@ -882,6 +918,55 @@ impl Session {
     pub fn clear_kills(&mut self) {
         self.kill_in.clear();
     }
+
+    // --- shot effects: host announces every shot; clients draw the tracer + play the sound ---
+    /// Host: announce a shot (net-id shooter, origin, endpoint, weapon), broadcast this frame.
+    pub fn push_shot(&mut self, shooter: u32, ox: f64, oy: f64, oz: f64, ex: f64, ey: f64, ez: f64, weapon: i64) {
+        self.shots_out.push(ShotFx {
+            shooter,
+            o: [ox as f32, oy as f32, oz as f32],
+            e: [ex as f32, ey as f32, ez as f32],
+            weapon: weapon as u8,
+        });
+    }
+    // Read accessors source from shots_out on the HOST (it fills + renders + broadcasts its own
+    // list) and shots_in on a CLIENT (it renders the received list) - so the game render code is
+    // identical on both.
+    fn shots_view(&self) -> &[ShotFx] {
+        if self.is_server { &self.shots_out } else { &self.shots_in }
+    }
+    /// How many shot effects to render this frame.
+    pub fn shot_count(&self) -> usize {
+        self.shots_view().len()
+    }
+    pub fn shot_shooter(&self, i: usize) -> i64 {
+        self.shots_view().get(i).map(|s| s.shooter as i64).unwrap_or(-1)
+    }
+    /// field 0-2 = origin x/y/z, 3-5 = endpoint x/y/z.
+    pub fn shot_field(&self, i: usize, field: usize) -> f64 {
+        self.shots_view()
+            .get(i)
+            .map(|s| if field < 3 { s.o[field] } else { s.e[(field - 3).min(2)] } as f64)
+            .unwrap_or(0.0)
+    }
+    pub fn shot_weapon(&self, i: usize) -> i64 {
+        self.shots_view().get(i).map(|s| s.weapon as i64).unwrap_or(0)
+    }
+    /// End of frame: the HOST broadcasts this frame's shots to clients then clears; a CLIENT just
+    /// clears the rendered batch. Called once per frame after the game has drawn the shot effects.
+    pub fn flush_shots(&mut self) {
+        if self.is_server {
+            if !self.shots_out.is_empty() {
+                let spkt = encode_shots(&self.shots_out);
+                for c in &self.clients {
+                    let _ = self.sock.send_to(&spkt, c.addr);
+                }
+                self.shots_out.clear();
+            }
+        } else {
+            self.shots_in.clear();
+        }
+    }
 }
 
 // --- wire format (big-endian) ---
@@ -1087,6 +1172,41 @@ fn decode_kill(b: &[u8]) -> Option<(u32, u32)> {
         return None;
     }
     Some((rd_u32(b, 1), rd_u32(b, 5)))
+}
+fn encode_shots(shots: &[ShotFx]) -> Vec<u8> {
+    // tag + u16 count, then per shot: u32 shooter, 6*f32 (o,e), u8 weapon = 29 bytes.
+    let mut b = Vec::with_capacity(3 + shots.len() * 29);
+    b.push(TAG_SHOTFX);
+    b.extend_from_slice(&(shots.len() as u16).to_be_bytes());
+    for s in shots {
+        put_u32(&mut b, s.shooter);
+        for v in s.o.iter().chain(s.e.iter()) {
+            put_f32(&mut b, *v);
+        }
+        b.push(s.weapon);
+    }
+    b
+}
+fn decode_shots(b: &[u8]) -> Option<Vec<ShotFx>> {
+    if b.len() < 3 || b[0] != TAG_SHOTFX {
+        return None;
+    }
+    let count = u16::from_be_bytes([b[1], b[2]]) as usize;
+    let mut shots = Vec::with_capacity(count);
+    let mut o = 3;
+    for _ in 0..count {
+        if o + 29 > b.len() {
+            break;
+        }
+        shots.push(ShotFx {
+            shooter: rd_u32(b, o),
+            o: [rd_f32(b, o + 4), rd_f32(b, o + 8), rd_f32(b, o + 12)],
+            e: [rd_f32(b, o + 16), rd_f32(b, o + 20), rd_f32(b, o + 24)],
+            weapon: b[o + 28],
+        });
+        o += 29;
+    }
+    Some(shots)
 }
 fn objects_differ(a: &[[f32; 3]], b: &[[f32; 3]]) -> bool {
     if a.len() != b.len() {
@@ -1507,6 +1627,33 @@ pub extern "C" fn aurora_net_kill_victim(i: i64) -> i64 {
 #[no_mangle]
 pub extern "C" fn aurora_net_kills_clear() {
     with((), |s| s.clear_kills());
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_push_shot(
+    shooter: i64, ox: f64, oy: f64, oz: f64, ex: f64, ey: f64, ez: f64, weapon: i64,
+) {
+    with((), |s| s.push_shot(shooter.max(0) as u32, ox, oy, oz, ex, ey, ez, weapon));
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_shot_count() -> i64 {
+    read(0, |s| s.shot_count() as i64)
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_shot_shooter(i: i64) -> i64 {
+    read(-1, |s| s.shot_shooter(i.max(0) as usize))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_shot_field(i: i64, field: i64) -> f64 {
+    read(0.0, |s| s.shot_field(i.max(0) as usize, field.max(0) as usize))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_shot_weapon(i: i64) -> i64 {
+    read(0, |s| s.shot_weapon(i.max(0) as usize))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_shots_clear() {
+    // End-of-frame: host broadcasts this frame's shots then clears; client clears the rendered batch.
+    with((), |s| s.flush_shots());
 }
 #[no_mangle]
 pub extern "C" fn aurora_net_hit_player() -> i64 {
@@ -1940,6 +2087,42 @@ mod meta_replication_test {
             client.clear_kills();
         }
         assert!(total >= 1, "client received no kill event");
+    }
+
+    // The host announces a SHOT effect (shooter, origin, endpoint, weapon); the client receives it
+    // so it can draw the tracer + play the fire sound for a remote player's shot.
+    #[test]
+    fn shots_reach_client() {
+        let mut host = Session::host(0).expect("host bind");
+        let host_addr = host.local_addr();
+        let mut client = Session::join(host_addr).expect("client bind");
+        let input = [0.0f32; 4];
+        for _ in 0..10 {
+            client.send_input(&input);
+            host.send_input(&input);
+            client.update(0.016);
+            host.update(0.016);
+            client.update(0.016);
+        }
+        let mut got = 0;
+        for _ in 0..6 {
+            host.push_shot(BOT_ID_BASE as u32, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 0);
+            host.flush_shots(); // broadcast this frame's shots, then clears the host's list
+            client.update(0.016);
+            if client.shot_count() > 0 {
+                got += 1;
+                assert_eq!(client.shot_shooter(0), BOT_ID_BASE as i64, "shooter id");
+                assert!((client.shot_field(0, 0) - 1.0).abs() < 0.01, "origin x");
+                assert!((client.shot_field(0, 5) - 6.0).abs() < 0.01, "endpoint z");
+            }
+            client.flush_shots();
+        }
+        assert!(got >= 1, "client received no shot effect");
+        // The HOST reads its own pushed shots (shots_out) so it can render them locally too.
+        host.push_shot(7, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0);
+        assert_eq!(host.shot_count(), 1, "host should see its own queued shot for local render");
+        host.flush_shots();
+        assert_eq!(host.shot_count(), 0, "flush clears the host list");
     }
 
     // A client's projectile LAUNCH (intent: kind + origin + velocity) is queued on the host,
