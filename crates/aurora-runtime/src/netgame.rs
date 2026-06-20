@@ -24,6 +24,8 @@ const TAG_HIT: u8 = 4;
 
 const STATE_MAX: usize = 32; // max floats in a player state blob
 const INPUT_MAX: usize = 24; // max floats in an input blob
+const META_LEN: usize = 8; // per-player metadata floats (hp/shield/cells/oc/name...) replicated
+                           // SEPARATELY from the sim state, so they never touch reconciliation.
 
 /// The Aurora sim closure's native ABI: `(env, state_ptr_bits, input_ptr_bits)`,
 /// matching how compiled Aurora closures are called (see `aurora_par_for`).
@@ -34,10 +36,13 @@ type SimFn = extern "C" fn(i64, i64, i64) -> i64;
 #[derive(Clone, Copy)]
 struct Player {
     s: [f32; STATE_MAX],
+    /// Game-owned metadata (hp/shield/etc.), replicated separately from `s` and NOT run
+    /// through the sim, so it can never clobber local-only state slots on reconciliation.
+    meta: [f32; META_LEN],
 }
 impl Player {
     fn spawn() -> Player {
-        Player { s: [0.0; STATE_MAX] }
+        Player { s: [0.0; STATE_MAX], meta: [0.0; META_LEN] }
     }
 }
 
@@ -91,6 +96,8 @@ pub struct Session {
     /// Spawn point new players start at (set via net_spawn_at); used so the
     /// server places joining clients here instead of the origin.
     spawn: [f32; 3],
+    /// The local player's outgoing metadata (set via net_set_meta), broadcast each frame.
+    local_meta: [f32; META_LEN],
 }
 
 /// Run the registered Aurora sim on `state` with `input` (mutating `state`).
@@ -146,6 +153,7 @@ impl Session {
             remotes: Vec::new(),
             last_hit: (-1, [0.0; 3]),
             spawn: [0.0, 0.0, 0.0],
+            local_meta: [0.0; META_LEN],
         }
     }
 
@@ -185,14 +193,16 @@ impl Session {
         }
         if self.is_server {
             run_sim(self.sim_fn, self.sim_env, &mut self.host.s, &blob);
+            self.host.meta = self.local_meta; // host owns its own metadata
             0
         } else {
             let seq = self.next_seq;
             self.next_seq += 1;
             run_sim(self.sim_fn, self.sim_env, &mut self.pred.s, &blob);
+            self.pred.meta = self.local_meta;
             self.pending.push_back((seq, blob));
             if let Some(addr) = self.server_addr {
-                let _ = self.sock.send_to(&encode_input(seq, &blob, self.input_len), addr);
+                let _ = self.sock.send_to(&encode_input(seq, &blob, self.input_len, &self.local_meta), addr);
             }
             seq
         }
@@ -288,7 +298,7 @@ impl Session {
                 let changed = self.clients[ci]
                     .last_sent
                     .get(id)
-                    .map(|p| state_differs(&p.s, &st.s, slen))
+                    .map(|p| state_differs(&p.s, &st.s, slen) || meta_differs(&p.meta, &st.meta))
                     .unwrap_or(true);
                 if changed || keyframe {
                     included.push((*id, *st));
@@ -328,9 +338,10 @@ impl Session {
     fn on_server_packet(&mut self, pkt: &[u8], from: SocketAddr) {
         match pkt.first().copied() {
             Some(TAG_INPUT) => {
-                if let Some((seq, blob)) = decode_input(pkt, self.input_len) {
+                if let Some((seq, blob, meta)) = decode_input(pkt, self.input_len) {
                     let idx = self.ensure_client(from);
                     self.clients[idx].inbox.push_back((seq, blob));
+                    self.clients[idx].state.meta = meta; // relay this client's self-reported metadata
                 }
             }
             Some(TAG_FIRE) => {
@@ -439,6 +450,19 @@ impl Session {
         }
         self.player_blob(id).0.s[i] as f64
     }
+    /// Set the LOCAL player's metadata slot (broadcast next frame).
+    pub fn set_meta(&mut self, slot: usize, v: f64) {
+        if slot < META_LEN {
+            self.local_meta[slot] = v as f32;
+        }
+    }
+    /// Read a player's replicated metadata slot (hp/shield/etc.).
+    pub fn meta(&self, id: u32, slot: usize) -> f64 {
+        if slot >= META_LEN {
+            return 0.0;
+        }
+        self.player_blob(id).0.meta[slot] as f64
+    }
     pub fn local_state(&self, i: usize) -> f64 {
         self.state(self.my_id, i)
     }
@@ -462,18 +486,24 @@ fn rd_f32(b: &[u8], o: usize) -> f32 {
 fn state_differs(a: &[f32; STATE_MAX], b: &[f32; STATE_MAX], len: usize) -> bool {
     (0..len).any(|i| (a[i] - b[i]).abs() > 1e-3)
 }
+fn meta_differs(a: &[f32; META_LEN], b: &[f32; META_LEN]) -> bool {
+    (0..META_LEN).any(|i| (a[i] - b[i]).abs() > 1e-3)
+}
 
-fn encode_input(seq: u32, blob: &InputBlob, len: usize) -> Vec<u8> {
-    let mut b = Vec::with_capacity(5 + len * 4);
+fn encode_input(seq: u32, blob: &InputBlob, len: usize, meta: &[f32; META_LEN]) -> Vec<u8> {
+    let mut b = Vec::with_capacity(5 + len * 4 + META_LEN * 4);
     b.push(TAG_INPUT);
     put_u32(&mut b, seq);
     for v in blob.iter().take(len) {
         put_f32(&mut b, *v);
     }
+    for v in meta.iter() {
+        put_f32(&mut b, *v);
+    }
     b
 }
-fn decode_input(b: &[u8], len: usize) -> Option<(u32, InputBlob)> {
-    if b.len() < 5 + len * 4 || b[0] != TAG_INPUT {
+fn decode_input(b: &[u8], len: usize) -> Option<(u32, InputBlob, [f32; META_LEN])> {
+    if b.len() < 5 + len * 4 + META_LEN * 4 || b[0] != TAG_INPUT {
         return None;
     }
     let seq = rd_u32(b, 1);
@@ -481,11 +511,15 @@ fn decode_input(b: &[u8], len: usize) -> Option<(u32, InputBlob)> {
     for i in 0..len {
         blob[i] = rd_f32(b, 5 + i * 4);
     }
-    Some((seq, blob))
+    let mut meta = [0.0f32; META_LEN];
+    for i in 0..META_LEN {
+        meta[i] = rd_f32(b, 5 + len * 4 + i * 4);
+    }
+    Some((seq, blob, meta))
 }
 
 fn encode_snapshot(your_id: u32, acked: u32, tick: f32, stick: u32, slen: usize, players: &[(u32, Player)]) -> Vec<u8> {
-    let mut b = Vec::with_capacity(19 + players.len() * (4 + slen * 4));
+    let mut b = Vec::with_capacity(19 + players.len() * (4 + (slen + META_LEN) * 4));
     b.push(TAG_SNAPSHOT);
     put_u32(&mut b, your_id);
     put_u32(&mut b, acked);
@@ -497,6 +531,9 @@ fn encode_snapshot(your_id: u32, acked: u32, tick: f32, stick: u32, slen: usize,
         put_u32(&mut b, *id);
         for i in 0..slen {
             put_f32(&mut b, p.s[i]);
+        }
+        for i in 0..META_LEN {
+            put_f32(&mut b, p.meta[i]);
         }
     }
     b
@@ -511,7 +548,7 @@ fn decode_snapshot(b: &[u8]) -> Option<(u32, u32, f32, u32, Vec<(u32, Player)>)>
     let stick = rd_u32(b, 13);
     let count = u16::from_be_bytes([b[17], b[18]]) as usize;
     let slen = (b[19] as usize).min(STATE_MAX);
-    let stride = 4 + slen * 4;
+    let stride = 4 + (slen + META_LEN) * 4;
     let mut players = Vec::with_capacity(count);
     let mut o = 20;
     for _ in 0..count {
@@ -522,6 +559,9 @@ fn decode_snapshot(b: &[u8]) -> Option<(u32, u32, f32, u32, Vec<(u32, Player)>)>
         let mut p = Player::spawn();
         for i in 0..slen {
             p.s[i] = rd_f32(b, o + 4 + i * 4);
+        }
+        for i in 0..META_LEN {
+            p.meta[i] = rd_f32(b, o + 4 + slen * 4 + i * 4);
         }
         players.push((id, p));
         o += stride;
@@ -688,6 +728,16 @@ pub extern "C" fn aurora_net_player_yaw(id: i64) -> f64 {
 pub extern "C" fn aurora_net_player_state(id: i64, slot: i64) -> f64 {
     read(0.0, |s| s.state(id.max(0) as u32, slot.max(0) as usize))
 }
+/// Set the local player's metadata slot (hp/shield/etc.), replicated to everyone next frame.
+#[no_mangle]
+pub extern "C" fn aurora_net_set_meta(slot: i64, v: f64) {
+    with((), |s| s.set_meta(slot.max(0) as usize, v))
+}
+/// Read a player's replicated metadata slot (works on host AND clients).
+#[no_mangle]
+pub extern "C" fn aurora_net_player_meta(id: i64, slot: i64) -> f64 {
+    read(0.0, |s| s.meta(id.max(0) as u32, slot.max(0) as usize))
+}
 #[no_mangle]
 pub extern "C" fn aurora_net_local_x() -> f64 {
     read(0.0, |s| s.px(s.my_id()))
@@ -834,5 +884,39 @@ mod tests {
             b.update(dt);
         }
         assert_eq!(a.player_count(), 1, "A should cull the distant B");
+    }
+}
+
+#[cfg(test)]
+mod meta_replication_test {
+    use super::*;
+    // Two real Sessions (host + client) over the loopback UDP socket - a HEADLESS 2-player
+    // test that the metadata channel replicates BOTH ways.
+    #[test]
+    fn metadata_replicates_host_and_client() {
+        let mut host = Session::host(0).expect("host bind");
+        let host_addr = host.local_addr();
+        let mut client = Session::join(host_addr).expect("client bind");
+        host.set_meta(0, 75.0); // host hp = 75
+        client.set_meta(0, 42.0); // client hp = 42
+        let input = [0.0f32; 4];
+        for _ in 0..40 {
+            client.send_input(&input); // client joins + sends its meta
+            host.send_input(&input); // host steps + sets host.meta
+            client.update(0.016);
+            host.update(0.016); // host receives client input + sends a snapshot
+            client.update(0.016); // client receives the snapshot (host + client meta)
+        }
+        let host_hp_seen_by_client = client.meta(0, 0);
+        assert!(
+            (host_hp_seen_by_client - 75.0).abs() < 0.01,
+            "client saw host hp = {host_hp_seen_by_client}, expected 75"
+        );
+        let client_id = client.my_id();
+        let client_hp_seen_by_host = host.meta(client_id, 0);
+        assert!(
+            (client_hp_seen_by_host - 42.0).abs() < 0.01,
+            "host saw client hp = {client_hp_seen_by_host}, expected 42"
+        );
     }
 }
