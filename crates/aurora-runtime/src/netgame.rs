@@ -24,6 +24,7 @@ const TAG_HIT: u8 = 4;
 const TAG_REJECT: u8 = 5; // host -> a joiner it can't fit: the lobby is full
 const TAG_OBJECTS: u8 = 6; // host -> clients: authoritative world-object (crate) positions
 const TAG_KILL: u8 = 7; // host -> clients: an authoritative kill event (killer, victim) net ids
+const TAG_EXPLODE: u8 = 8; // client -> host: my rocket/grenade exploded here (host applies the damage)
 
 /// Reserved id range for host-controlled bots. They ride the SAME player
 /// replication channel as humans (state + meta + name), so a guest receives and
@@ -92,6 +93,15 @@ struct ServerHit {
     weapon: u8,
 }
 
+/// A client's explosion (rocket/grenade) the host applies authoritative radial damage for.
+/// Not lag-compensated (an area effect, far more forgiving than a hitscan ray).
+#[derive(Clone, Copy)]
+struct ServerExplosion {
+    shooter: u32,
+    center: [f32; 3],
+    intensity: f32,
+}
+
 /// One networking session (server or client).
 pub struct Session {
     sock: UdpSocket,
@@ -130,6 +140,8 @@ pub struct Session {
     server_tick: u64,
     /// Validated client shots awaiting the host game's authoritative damage (drained per frame).
     server_hits: Vec<ServerHit>,
+    /// Client explosions awaiting the host game's authoritative radial damage.
+    server_explosions: Vec<ServerExplosion>,
     // Client.
     pred: Player,
     pending: VecDeque<(u32, InputBlob)>,
@@ -202,6 +214,7 @@ impl Session {
             lag: LagComp::new(64),
             server_tick: 0,
             server_hits: Vec::new(),
+            server_explosions: Vec::new(),
             pred: Player::spawn(),
             pending: VecDeque::new(),
             next_seq: 1,
@@ -296,6 +309,16 @@ impl Session {
         } else if let Some(addr) = self.server_addr {
             let vt = self.last_server_tick.saturating_sub(2);
             let _ = self.sock.send_to(&encode_fire(vt, o, d, weapon), addr);
+        }
+    }
+    /// A rocket/grenade exploded at `c` with `intensity`. The host applies its own explosions
+    /// locally (it is the authority); a client sends it so the host applies the radial damage.
+    pub fn explode_at(&mut self, cx: f32, cy: f32, cz: f32, intensity: f32) {
+        if self.is_server {
+            return;
+        }
+        if let Some(addr) = self.server_addr {
+            let _ = self.sock.send_to(&encode_explode([cx, cy, cz], intensity), addr);
         }
     }
     pub fn hit_player(&self) -> i64 {
@@ -474,6 +497,13 @@ impl Session {
                 if id >= 0 {
                     self.server_hits.push(ServerHit { shooter, victim: id, point, weapon });
                 }
+            }
+            Some(TAG_EXPLODE) => {
+                let Some((center, intensity)) = decode_explode(pkt) else { return };
+                let Some(shooter) = self.clients.iter().find(|c| c.addr == from).map(|c| c.id) else {
+                    return;
+                };
+                self.server_explosions.push(ServerExplosion { shooter, center, intensity });
             }
             _ => {}
         }
@@ -705,6 +735,23 @@ impl Session {
         self.server_hits.clear();
     }
 
+    // --- host: client explosions awaiting authoritative radial damage ---
+    pub fn server_explosion_count(&self) -> usize {
+        self.server_explosions.len()
+    }
+    pub fn server_explosion_shooter(&self, i: usize) -> i64 {
+        self.server_explosions.get(i).map(|e| e.shooter as i64).unwrap_or(-1)
+    }
+    pub fn server_explosion_pos(&self, i: usize, axis: usize) -> f64 {
+        self.server_explosions.get(i).map(|e| e.center[axis.min(2)] as f64).unwrap_or(0.0)
+    }
+    pub fn server_explosion_intensity(&self, i: usize) -> f64 {
+        self.server_explosions.get(i).map(|e| e.intensity as f64).unwrap_or(0.0)
+    }
+    pub fn clear_server_explosions(&mut self) {
+        self.server_explosions.clear();
+    }
+
     // --- kill events: host announces, clients consume (kill confirm only, never hits) ---
     /// Host: announce an authoritative kill (killer + victim net ids), broadcast next frame.
     pub fn push_kill(&mut self, killer: u32, victim: u32) {
@@ -860,6 +907,21 @@ fn decode_objects(b: &[u8]) -> Option<Vec<[f32; 3]>> {
         o += 12;
     }
     Some(objs)
+}
+fn encode_explode(c: [f32; 3], intensity: f32) -> Vec<u8> {
+    let mut b = Vec::with_capacity(17);
+    b.push(TAG_EXPLODE);
+    for v in c.iter() {
+        put_f32(&mut b, *v);
+    }
+    put_f32(&mut b, intensity);
+    b
+}
+fn decode_explode(b: &[u8]) -> Option<([f32; 3], f32)> {
+    if b.len() < 17 || b[0] != TAG_EXPLODE {
+        return None;
+    }
+    Some(([rd_f32(b, 1), rd_f32(b, 5), rd_f32(b, 9)], rd_f32(b, 13)))
 }
 fn encode_kill(killer: u32, victim: u32) -> Vec<u8> {
     let mut b = Vec::with_capacity(9);
@@ -1193,6 +1255,39 @@ pub extern "C" fn aurora_net_server_hit_z(i: i64) -> f64 {
 #[no_mangle]
 pub extern "C" fn aurora_net_server_hits_clear() {
     with((), |s| s.clear_server_hits());
+}
+// --- explosions: client announces its blast; host drains + applies radial damage game-side ---
+#[no_mangle]
+pub extern "C" fn aurora_net_explosion(cx: f64, cy: f64, cz: f64, intensity: f64) {
+    with((), |s| s.explode_at(cx as f32, cy as f32, cz as f32, intensity as f32));
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_server_explosion_count() -> i64 {
+    read(0, |s| s.server_explosion_count() as i64)
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_server_explosion_shooter(i: i64) -> i64 {
+    read(-1, |s| s.server_explosion_shooter(i.max(0) as usize))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_server_explosion_x(i: i64) -> f64 {
+    read(0.0, |s| s.server_explosion_pos(i.max(0) as usize, 0))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_server_explosion_y(i: i64) -> f64 {
+    read(0.0, |s| s.server_explosion_pos(i.max(0) as usize, 1))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_server_explosion_z(i: i64) -> f64 {
+    read(0.0, |s| s.server_explosion_pos(i.max(0) as usize, 2))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_server_explosion_intensity(i: i64) -> f64 {
+    read(0.0, |s| s.server_explosion_intensity(i.max(0) as usize))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_server_explosions_clear() {
+    with((), |s| s.clear_server_explosions());
 }
 // --- kill events: host announces (push), clients consume (count/killer/victim/clear) ---
 #[no_mangle]
@@ -1549,5 +1644,33 @@ mod meta_replication_test {
             client.clear_kills();
         }
         assert!(total >= 1, "client received no kill event");
+    }
+
+    // A client's explosion is queued on the host for authoritative radial damage (shooter +
+    // center + intensity intact). Like the hit queue, but area-effect (not lag-compensated).
+    #[test]
+    fn explosions_queue_on_host() {
+        let mut host = Session::host(0).expect("host bind");
+        let host_addr = host.local_addr();
+        let mut client = Session::join(host_addr).expect("client bind");
+        let input = [0.0f32; 4];
+        for _ in 0..10 {
+            client.send_input(&input);
+            host.send_input(&input);
+            client.update(0.016);
+            host.update(0.016);
+            client.update(0.016);
+        }
+        host.clear_server_explosions();
+        client.explode_at(7.0, 1.5, -3.0, 1.1);
+        for _ in 0..6 {
+            client.update(0.016);
+            host.update(0.016);
+        }
+        assert!(host.server_explosion_count() >= 1, "host queued no explosion");
+        let cid = client.my_id();
+        assert_eq!(host.server_explosion_shooter(0), cid as i64, "shooter id");
+        assert!((host.server_explosion_pos(0, 0) - 7.0).abs() < 0.01, "explosion x");
+        assert!((host.server_explosion_intensity(0) - 1.1).abs() < 0.01, "intensity");
     }
 }
