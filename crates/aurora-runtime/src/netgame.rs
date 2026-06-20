@@ -22,12 +22,18 @@ const TAG_SNAPSHOT: u8 = 2;
 const TAG_FIRE: u8 = 3;
 const TAG_HIT: u8 = 4;
 const TAG_REJECT: u8 = 5; // host -> a joiner it can't fit: the lobby is full
+const TAG_OBJECTS: u8 = 6; // host -> clients: authoritative world-object (crate) positions
 
 /// Reserved id range for host-controlled bots. They ride the SAME player
 /// replication channel as humans (state + meta + name), so a guest receives and
 /// renders a bot exactly like a remote player - the guest never runs the AI and
 /// needs no "bot" concept. Ids `BOT_ID_BASE + i` stay clear of client ids (1..).
 const BOT_ID_BASE: u32 = 1000;
+/// Reserved lag-comp id range for world objects (crates). Recorded each tick so
+/// the host rewinds them for shot validation; never collides with players/bots.
+const OBJ_ID_BASE: u64 = 2000;
+/// Lag-comp sphere radius approximating a crate (half-extent ~0.4).
+const OBJ_RADIUS: f32 = 0.45;
 
 const STATE_MAX: usize = 32; // max floats in a player state blob
 const INPUT_MAX: usize = 24; // max floats in an input blob
@@ -108,6 +114,11 @@ pub struct Session {
     /// BOT_ID_BASE+i). The host's game writes these each frame from its local
     /// AI; clients receive them as remotes and never run the AI themselves.
     bots: Vec<Player>,
+    /// World objects (crate positions). Host: authoritative, written each frame +
+    /// replicated + recorded in lag-comp. Client: the last received host positions.
+    objects: Vec<[f32; 3]>,
+    /// Host change-detection: objects are static until shot, so we only resend when moved.
+    last_sent_objects: Vec<[f32; 3]>,
     next_id: u32,
     lag: LagComp,
     server_tick: u64,
@@ -177,6 +188,8 @@ impl Session {
             clients: Vec::new(),
             host: Player::spawn(),
             bots: Vec::new(),
+            objects: Vec::new(),
+            last_sent_objects: Vec::new(),
             next_id: 1,
             lag: LagComp::new(64),
             server_tick: 0,
@@ -319,6 +332,10 @@ impl Session {
             for (i, b) in self.bots.iter().enumerate() {
                 self.lag.record(st, (BOT_ID_BASE + i as u32) as u64, [b.s[0], b.s[1], b.s[2]], r);
             }
+            // Record world objects (crates) so a rewound shot is blocked by where a box WAS.
+            for (i, o) in self.objects.iter().enumerate() {
+                self.lag.record(st, OBJ_ID_BASE + i as u64, *o, OBJ_RADIUS);
+            }
             self.tick += dt;
             self.broadcast();
             self.ids = std::iter::once(0u32).chain(self.clients.iter().map(|c| c.id)).collect();
@@ -370,6 +387,15 @@ impl Session {
             let c = &self.clients[ci];
             let pkt = encode_snapshot(cid, acked, tick, stick, slen, &included);
             let _ = self.sock.send_to(&pkt, c.addr);
+        }
+        // Replicate world-object (crate) positions to every client when they move (boxes are
+        // static until shot, so change-detection keeps this near-zero traffic) or on a keyframe.
+        if objects_differ(&self.objects, &self.last_sent_objects) || keyframe {
+            let opkt = encode_objects(&self.objects);
+            for c in &self.clients {
+                let _ = self.sock.send_to(&opkt, c.addr);
+            }
+            self.last_sent_objects = self.objects.clone();
         }
     }
 
@@ -443,6 +469,12 @@ impl Session {
         if pkt.first().copied() == Some(TAG_HIT) {
             if let Some((id, p)) = decode_hit(pkt) {
                 self.last_hit = (id, p);
+            }
+            return;
+        }
+        if pkt.first().copied() == Some(TAG_OBJECTS) {
+            if let Some(objs) = decode_objects(pkt) {
+                self.objects = objs; // authoritative crate positions from the host
             }
             return;
         }
@@ -602,6 +634,26 @@ impl Session {
         }
     }
 
+    // --- world objects (crates): host writes + replicates; clients read ---
+    pub fn set_object_count(&mut self, n: usize) {
+        if n > self.objects.len() {
+            self.objects.resize(n, [0.0; 3]);
+        } else {
+            self.objects.truncate(n);
+        }
+    }
+    pub fn set_object(&mut self, i: usize, x: f64, y: f64, z: f64) {
+        if let Some(o) = self.objects.get_mut(i) {
+            *o = [x as f32, y as f32, z as f32];
+        }
+    }
+    pub fn object_count(&self) -> usize {
+        self.objects.len()
+    }
+    pub fn object_pos(&self, i: usize, axis: usize) -> f64 {
+        self.objects.get(i).map(|o| o[axis.min(2)] as f64).unwrap_or(0.0)
+    }
+
     // --- host: validated client shots awaiting authoritative damage (drained per frame) ---
     pub fn server_hit_count(&self) -> usize {
         self.server_hits.len()
@@ -736,6 +788,40 @@ fn decode_snapshot(b: &[u8]) -> Option<(u32, u32, f32, u32, Vec<(u32, Player)>)>
         o += stride;
     }
     Some((your_id, acked, tick, stick, players))
+}
+
+fn encode_objects(objs: &[[f32; 3]]) -> Vec<u8> {
+    let mut b = Vec::with_capacity(3 + objs.len() * 12);
+    b.push(TAG_OBJECTS);
+    b.extend_from_slice(&(objs.len() as u16).to_be_bytes());
+    for o in objs {
+        for v in o {
+            put_f32(&mut b, *v);
+        }
+    }
+    b
+}
+fn decode_objects(b: &[u8]) -> Option<Vec<[f32; 3]>> {
+    if b.len() < 3 || b[0] != TAG_OBJECTS {
+        return None;
+    }
+    let count = u16::from_be_bytes([b[1], b[2]]) as usize;
+    let mut objs = Vec::with_capacity(count);
+    let mut o = 3;
+    for _ in 0..count {
+        if o + 12 > b.len() {
+            break;
+        }
+        objs.push([rd_f32(b, o), rd_f32(b, o + 4), rd_f32(b, o + 8)]);
+        o += 12;
+    }
+    Some(objs)
+}
+fn objects_differ(a: &[[f32; 3]], b: &[[f32; 3]]) -> bool {
+    if a.len() != b.len() {
+        return true;
+    }
+    a.iter().zip(b.iter()).any(|(x, y)| (0..3).any(|i| (x[i] - y[i]).abs() > 1e-3))
 }
 
 fn encode_fire(view_tick: u32, o: [f32; 3], d: [f32; 3], weapon: u8) -> Vec<u8> {
@@ -962,6 +1048,31 @@ pub extern "C" fn aurora_net_set_bot_name(i: i64, ptr: *const u8, len: i64) {
 #[no_mangle]
 pub extern "C" fn aurora_net_bot_count() -> i64 {
     read(0, |s| s.bot_count() as i64)
+}
+// --- world objects (crates): host writes its authoritative positions; clients read them ---
+#[no_mangle]
+pub extern "C" fn aurora_net_set_object_count(n: i64) {
+    with((), |s| s.set_object_count(n.max(0) as usize))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_set_object(i: i64, x: f64, y: f64, z: f64) {
+    with((), |s| s.set_object(i.max(0) as usize, x, y, z))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_object_count() -> i64 {
+    read(0, |s| s.object_count() as i64)
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_object_x(i: i64) -> f64 {
+    read(0.0, |s| s.object_pos(i.max(0) as usize, 0))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_object_y(i: i64) -> f64 {
+    read(0.0, |s| s.object_pos(i.max(0) as usize, 1))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_object_z(i: i64) -> f64 {
+    read(0.0, |s| s.object_pos(i.max(0) as usize, 2))
 }
 #[no_mangle]
 pub extern "C" fn aurora_net_local_x() -> f64 {
@@ -1293,5 +1404,42 @@ mod meta_replication_test {
         assert_eq!(host.server_hit_weapon(0), 2, "weapon should round-trip");
         // The shooter also got its predicted hit echoed back (same bot).
         assert_eq!(client.hit_player(), BOT_ID_BASE as i64, "client should confirm its hitmarker");
+    }
+
+    // World objects (crates) replicate host -> client: the host owns the authoritative
+    // positions, and a moved crate (as if shot) updates on the client via change-detection.
+    #[test]
+    fn objects_replicate_to_client() {
+        let mut host = Session::host(0).expect("host bind");
+        let host_addr = host.local_addr();
+        let mut client = Session::join(host_addr).expect("client bind");
+        let input = [0.0f32; 4];
+        for _ in 0..30 {
+            host.set_object_count(3);
+            host.set_object(0, 10.0, 0.5, -4.0);
+            host.set_object(1, 11.0, 0.5, -4.0);
+            host.set_object(2, 12.0, 0.5, -4.0);
+            client.send_input(&input);
+            host.send_input(&input);
+            client.update(0.016);
+            host.update(0.016);
+            client.update(0.016);
+        }
+        assert_eq!(client.object_count(), 3, "client should see 3 crates");
+        assert!((client.object_pos(1, 0) - 11.0).abs() < 0.01, "crate 1 x = {}", client.object_pos(1, 0));
+        // Move crate 2 (as if shot) and confirm the change replicates.
+        for _ in 0..20 {
+            host.set_object_count(3);
+            host.set_object(0, 10.0, 0.5, -4.0);
+            host.set_object(1, 11.0, 0.5, -4.0);
+            host.set_object(2, 18.0, 1.5, -2.0);
+            client.send_input(&input);
+            host.send_input(&input);
+            client.update(0.016);
+            host.update(0.016);
+            client.update(0.016);
+        }
+        assert!((client.object_pos(2, 0) - 18.0).abs() < 0.01, "moved crate 2 x = {}", client.object_pos(2, 0));
+        assert!((client.object_pos(2, 1) - 1.5).abs() < 0.01, "moved crate 2 y = {}", client.object_pos(2, 1));
     }
 }
