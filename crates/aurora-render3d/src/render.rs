@@ -2067,17 +2067,22 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
     }
     var emissive = mat.emissive.rgb;
     if (mat.flags.w > 0.5) { emissive = emissive + textureSample(emissive_tex, samp, in.uv).rgb; }
-    // Energy-shield Fresnel rim: a cyan shell that lights the silhouette edges and crackles
-    // with scrolling noise. params2.x = strength (0 = off), params2.y = time.
+    // Energy-shield FIELD: a cyan shell enveloping the whole body (base sheen + Fresnel rim +
+    // crackle + scrolling scan bands), not just a thin edge. params2.x = strength, .y = time.
     let shield_str = obj.params2.x;
     if (shield_str > 0.001) {
         let vdir = normalize(g.cam_pos.xyz - in.world_pos);
-        let fres = pow(1.0 - max(dot(n, vdir), 0.0), 2.5);
+        let ndotv = max(dot(n, vdir), 0.0);
+        // Softer Fresnel (pow 1.8 not 2.5) so the glow spreads off the silhouette, PLUS a base
+        // sheen over the whole surface -> an energy FIELD around them, not a hairline rim.
+        let fres = pow(1.0 - ndotv, 1.8);
         let tm = obj.params2.y;
-        let crackle = 0.5 + 0.5 * sin(in.world_pos.y * 22.0 + tm * 9.0) * sin(in.world_pos.x * 17.0 - tm * 6.0);
-        let pulse = 0.7 + 0.3 * sin(tm * 4.0);
-        let rim = fres * shield_str * pulse * (0.5 + 0.5 * crackle);
-        emissive = emissive + vec3<f32>(0.25, 0.85, 1.0) * rim * 2.4;
+        let crackle = 0.5 + 0.5 * sin(in.world_pos.y * 24.0 + tm * 10.0) * sin(in.world_pos.x * 18.0 - tm * 7.0);
+        let scan = 0.5 + 0.5 * sin(in.world_pos.y * 9.0 - tm * 3.5);   // scrolling energy bands
+        let pulse = 0.8 + 0.2 * sin(tm * 4.0);
+        // base fill (0.45) lights the whole body; the Fresnel term brightens the rim on top.
+        let field = (0.45 + 1.0 * fres) * (0.65 + 0.35 * crackle) * (0.75 + 0.25 * scan) * pulse;
+        emissive = emissive + vec3<f32>(0.3, 0.85, 1.0) * field * shield_str * 4.5;
     }
     let ao = textureSample(ao_tex, ao_samp, in.clip.xy / g.screen.xy).r;
     return shade(in.world_pos, n, albedo.rgb, albedo.a, metallic, rough, emissive, ao);
