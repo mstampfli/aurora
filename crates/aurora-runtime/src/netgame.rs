@@ -41,7 +41,8 @@ const OBJ_RADIUS: f32 = 0.45;
 
 const STATE_MAX: usize = 32; // max floats in a player state blob
 const INPUT_MAX: usize = 24; // max floats in an input blob
-const META_LEN: usize = 8; // per-player metadata floats (hp/shield/cells/oc) replicated
+const META_LEN: usize = 12; // per-player metadata floats (hp/shield/oc/respawn/cells/heal/kills/
+                            // deaths in 0..7; 8 = melee-swing flag; 9..11 spare) replicated
                            // SEPARATELY from the sim state, so they never touch reconciliation.
 const NAME_MAX: usize = 20; // per-player display name: a fixed byte field (NOT chars packed into
                             // floats), re-sent on the input/snapshot stream so UDP loss self-heals.
