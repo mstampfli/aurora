@@ -328,7 +328,12 @@ impl Session {
             let seq = self.next_seq;
             self.next_seq += 1;
             run_sim(self.sim_fn, self.sim_env, &mut self.pred.s, &blob);
-            self.pred.meta = self.local_meta;
+            // NOTE: do NOT copy local_meta into pred.meta here. The client's own metadata
+            // (hp/shield/kills/deaths/respawn-ack/...) is HOST-AUTHORITATIVE and arrives via the
+            // snapshot reconcile. Overwriting it each frame with our outgoing local_meta (whose
+            // host-owned slots are stale 0s) made any direct read of it FLICKER between 0 and the
+            // real value (visible as the scoreboard showing 0/0 for yourself). local_meta is still
+            // sent on the wire below, so our intent signals (respawn/heal/melee/grapple) reach the host.
             self.pred.name = self.local_name;
             self.pending.push_back((seq, blob));
             if let Some(addr) = self.server_addr {
