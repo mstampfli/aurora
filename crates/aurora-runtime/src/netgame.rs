@@ -74,7 +74,6 @@ struct SClient {
     addr: SocketAddr,
     id: u32,
     state: Player,
-    inbox: VecDeque<(u32, InputBlob)>,
     acked_seq: u32,
     last_sent: std::collections::HashMap<u32, Player>,
     /// Per-meta-slot: true once the host has taken authority over it (hp/shield), so the
@@ -301,7 +300,7 @@ impl Session {
             self.pending.push_back((seq, blob));
             if let Some(addr) = self.server_addr {
                 let _ = self.sock.send_to(
-                    &encode_input(seq, &blob, self.input_len, &self.local_meta, &self.local_name),
+                    &encode_input(seq, &blob, self.input_len, &self.local_meta, &self.local_name, &self.pred.s, self.state_len),
                     addr,
                 );
             }
@@ -361,13 +360,10 @@ impl Session {
         }
 
         if self.is_server {
-            let (sim_fn, sim_env) = (self.sim_fn, self.sim_env);
-            for c in &mut self.clients {
-                while let Some((seq, inp)) = c.inbox.pop_front() {
-                    run_sim(sim_fn, sim_env, &mut c.state.s, &inp);
-                    c.acked_seq = seq;
-                }
-            }
+            // Clients' movement is now TRUSTED from their reported state (stored + acked in
+            // on_server_packet); the host no longer re-simulates them in its physics world (that
+            // mis-simulated remote bodies -> broken gravity/position). Lag-comp below records the
+            // trusted positions, so hit validation still works against where the client actually is.
             self.server_tick += 1;
             let st = self.server_tick;
             let r = self.hit_radius;
@@ -485,7 +481,6 @@ impl Session {
             addr: from,
             id,
             state,
-            inbox: VecDeque::new(),
             acked_seq: 0,
             last_sent: std::collections::HashMap::new(),
             meta_owned: [false; META_LEN],
@@ -496,13 +491,23 @@ impl Session {
     fn on_server_packet(&mut self, pkt: &[u8], from: SocketAddr) {
         match pkt.first().copied() {
             Some(TAG_INPUT) => {
-                if let Some((seq, blob, meta, name)) = decode_input(pkt, self.input_len) {
+                let sl = self.state_len;
+                if let Some((seq, _blob, meta, name, cstate)) = decode_input(pkt, self.input_len, sl) {
                     let Some(idx) = self.ensure_client(from) else {
                         // Lobby full: tell the joiner clearly instead of silently dropping it.
                         let _ = self.sock.send_to(&[TAG_REJECT], from);
                         return;
                     };
-                    self.clients[idx].inbox.push_back((seq, blob));
+                    // MOVEMENT is client-predicted: TRUST the client's reported movement state
+                    // (newer packets only). The host can't reliably re-simulate a remote body in
+                    // its own physics world, so accepting the client's own sim_step result is what
+                    // makes a guest move exactly like the local player. Combat stays host-owned.
+                    if seq > self.clients[idx].acked_seq {
+                        for i in 0..sl {
+                            self.clients[idx].state.s[i] = cstate[i];
+                        }
+                        self.clients[idx].acked_seq = seq;
+                    }
                     // Relay the client's self-reported metadata, EXCEPT slots the host has taken
                     // authority over (hp/shield) - those keep the host's authoritative value.
                     for s in 0..META_LEN {
@@ -575,27 +580,16 @@ impl Session {
         self.tick = tick;
         self.last_server_tick = stick;
         self.last_snap_players = players.len();
-        let (sim_fn, sim_env) = (self.sim_fn, self.sim_env);
         for (id, st) in players {
             if id == your_id {
-                // Snap the REPLICATED movement slots (0..state_len) to authoritative, but PRESERVE
-                // the local-only working slots (state_len..STATE_MAX). Slot 21 there holds the
-                // client's OWN physics-body handle - a full `self.pred = st` zeroed it (the
-                // snapshot only carries state_len slots), so sim_step re-created the body every
-                // reconcile: a body LEAK (worsening lag) + a perpetually-fresh body (no gravity /
-                // infinite jump / wrong position so the host couldn't hit it). meta/name are
-                // authoritative, so copy those too.
-                for i in 0..self.state_len {
-                    self.pred.s[i] = st.s[i];
-                }
+                // MOVEMENT is client-authoritative: KEEP our own predicted `s` (the host trusts it,
+                // so there's nothing to snap to and no input replay). Only the host-OWNED metadata
+                // (hp/shield/cells) reconciles - that's what makes damage authoritative while
+                // movement stays exactly the local sim (no rubber-band, no broken host re-sim).
                 self.pred.meta = st.meta;
                 self.pred.name = st.name;
                 while self.pending.front().map(|(s, _)| *s <= acked).unwrap_or(false) {
                     self.pending.pop_front();
-                }
-                let pend: Vec<(u32, InputBlob)> = self.pending.iter().copied().collect();
-                for (_, inp) in pend {
-                    run_sim(sim_fn, sim_env, &mut self.pred.s, &inp);
                 }
             } else {
                 let slot = match self.remotes.iter_mut().find(|(rid, _)| *rid == id) {
@@ -885,8 +879,8 @@ fn meta_differs(a: &[f32; META_LEN], b: &[f32; META_LEN]) -> bool {
     (0..META_LEN).any(|i| (a[i] - b[i]).abs() > 1e-3)
 }
 
-fn encode_input(seq: u32, blob: &InputBlob, len: usize, meta: &[f32; META_LEN], name: &[u8; NAME_MAX]) -> Vec<u8> {
-    let mut b = Vec::with_capacity(5 + len * 4 + META_LEN * 4 + NAME_MAX);
+fn encode_input(seq: u32, blob: &InputBlob, len: usize, meta: &[f32; META_LEN], name: &[u8; NAME_MAX], state: &[f32; STATE_MAX], slen: usize) -> Vec<u8> {
+    let mut b = Vec::with_capacity(5 + len * 4 + META_LEN * 4 + NAME_MAX + slen * 4);
     b.push(TAG_INPUT);
     put_u32(&mut b, seq);
     for v in blob.iter().take(len) {
@@ -896,10 +890,16 @@ fn encode_input(seq: u32, blob: &InputBlob, len: usize, meta: &[f32; META_LEN], 
         put_f32(&mut b, *v);
     }
     b.extend_from_slice(name);
+    // The client's PREDICTED movement state (the replicated slots). Movement is client-predicted
+    // and the host trusts this (it can't re-simulate a remote body in its own physics world), so
+    // the guest moves exactly like the local player. Combat (hits/hp) stays host-authoritative.
+    for v in state.iter().take(slen) {
+        put_f32(&mut b, *v);
+    }
     b
 }
-fn decode_input(b: &[u8], len: usize) -> Option<(u32, InputBlob, [f32; META_LEN], [u8; NAME_MAX])> {
-    if b.len() < 5 + len * 4 + META_LEN * 4 + NAME_MAX || b[0] != TAG_INPUT {
+fn decode_input(b: &[u8], len: usize, slen: usize) -> Option<(u32, InputBlob, [f32; META_LEN], [u8; NAME_MAX], [f32; STATE_MAX])> {
+    if b.len() < 5 + len * 4 + META_LEN * 4 + NAME_MAX + slen * 4 || b[0] != TAG_INPUT {
         return None;
     }
     let seq = rd_u32(b, 1);
@@ -914,7 +914,12 @@ fn decode_input(b: &[u8], len: usize) -> Option<(u32, InputBlob, [f32; META_LEN]
     let no = 5 + len * 4 + META_LEN * 4;
     let mut name = [0u8; NAME_MAX];
     name.copy_from_slice(&b[no..no + NAME_MAX]);
-    Some((seq, blob, meta, name))
+    let so = no + NAME_MAX;
+    let mut state = [0.0f32; STATE_MAX];
+    for i in 0..slen {
+        state[i] = rd_f32(b, so + i * 4);
+    }
+    Some((seq, blob, meta, name, state))
 }
 
 fn encode_snapshot(your_id: u32, acked: u32, tick: f32, stick: u32, slen: usize, players: &[(u32, Player)]) -> Vec<u8> {
