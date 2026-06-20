@@ -197,7 +197,11 @@ impl Session {
         Ok(Session::base(sock, true, None))
     }
     pub fn join(addr: SocketAddr) -> std::io::Result<Session> {
-        let sock = UdpSocket::bind(("127.0.0.1", 0))?;
+        // Bind the wildcard 0.0.0.0 (not 127.0.0.1) so the OS routes our packets OUT the real
+        // network interface to a remote host - a loopback-bound socket can only reach itself, so a
+        // 127.0.0.1 bind made joining a non-local host impossible. Sending to 127.0.0.1 still works
+        // from a wildcard socket, so same-machine play is unaffected.
+        let sock = UdpSocket::bind(("0.0.0.0", 0))?;
         sock.set_nonblocking(true)?;
         Ok(Session::base(sock, false, Some(addr)))
     }
