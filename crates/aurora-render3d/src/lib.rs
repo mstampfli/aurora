@@ -501,6 +501,7 @@ mod tests {
                 t: Vec3::ZERO,
                 r: Quat::IDENTITY,
                 s: Vec3::ONE,
+                name: String::new(),
             }],
         };
         let clip = Clip {
@@ -528,7 +529,7 @@ mod tests {
     fn animation_blends_two_clips() {
         use crate::model::{Channel, Clip, Interp, Joint, Path, Skeleton};
         let skel = Skeleton {
-            joints: vec![Joint { parent: None, inverse_bind: Mat4::IDENTITY, t: Vec3::ZERO, r: Quat::IDENTITY, s: Vec3::ONE }],
+            joints: vec![Joint { parent: None, inverse_bind: Mat4::IDENTITY, t: Vec3::ZERO, r: Quat::IDENTITY, s: Vec3::ONE, name: String::new() }],
         };
         let still = Clip { name: "a".into(), duration: 1.0, channels: vec![] }; // stays at default (0,0,0)
         let up = Clip {

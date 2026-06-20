@@ -155,6 +155,45 @@ impl AnimPlayer {
         }
         locals_to_skin(skel, &t, &r, &s)
     }
+
+    /// Model-space global transform of one joint in the CURRENT pose (NOT skinned - no
+    /// inverse-bind). For attaching a prop (a weapon) to a bone: world = draw * this.
+    pub fn joint_global(&self, model: &Model, joint: usize) -> Option<Mat4> {
+        let skel = model.skeleton.as_ref()?;
+        if joint >= skel.joints.len() {
+            return None;
+        }
+        let (mut t, mut r, mut s) = if self.blend >= 1.0 {
+            sample_locals(skel, model.clips.get(self.clip), self.time)
+        } else {
+            blended_locals(
+                skel,
+                model.clips.get(self.prev_clip),
+                self.prev_time,
+                model.clips.get(self.clip),
+                self.time,
+                self.blend,
+            )
+        };
+        if self.upper && self.uweight > 0.001 {
+            let (ut, ur, us) = sample_locals(skel, model.clips.get(self.uclip), self.utime);
+            let mask = upper_mask(skel, self.umask_root);
+            let w = self.uweight.clamp(0.0, 1.0);
+            for i in 0..skel.joints.len() {
+                if mask[i] {
+                    t[i] = t[i].lerp(ut[i], w);
+                    r[i] = r[i].slerp(ur[i], w);
+                    s[i] = s[i].lerp(us[i], w);
+                }
+            }
+        }
+        let n = skel.joints.len();
+        let local: Vec<Mat4> =
+            (0..n).map(|i| Mat4::from_scale_rotation_translation(s[i], r[i], t[i])).collect();
+        let mut global: Vec<Option<Mat4>> = vec![None; n];
+        resolve_global(skel, &local, joint, &mut global);
+        global[joint]
+    }
 }
 
 fn advance_time(time: &mut f32, clip: Option<&crate::model::Clip>, dt: f32, looping: bool) {

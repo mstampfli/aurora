@@ -30,6 +30,7 @@ pub use imm::{
     r3d_camera_roll as imm_r3d_camera_roll, r3d_clear as imm_r3d_clear,
     r3d_clear_lights as imm_r3d_clear_lights, r3d_clip_count as imm_r3d_clip_count,
     r3d_debug_line as imm_r3d_debug_line, r3d_draw as imm_r3d_draw, r3d_draw_tint as imm_r3d_draw_tint,
+    r3d_draw_on_joint as imm_r3d_draw_on_joint, r3d_joint_dump as imm_r3d_joint_dump,
     r3d_draw_billboard as imm_r3d_draw_billboard, r3d_fog as imm_r3d_fog,
     r3d_frustum_cull as imm_r3d_frustum_cull, r3d_light as imm_r3d_light,
     r3d_load_model as imm_r3d_load_model, r3d_make_box as imm_r3d_make_box,

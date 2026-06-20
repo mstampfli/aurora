@@ -34,6 +34,8 @@ pub struct Joint {
     pub t: Vec3,
     pub r: Quat,
     pub s: Vec3,
+    /// glTF node name (e.g. "Hand.R") - lets a game find a bone to attach props to.
+    pub name: String,
 }
 
 /// A skeleton: joints in skinning order with their default local transforms.
@@ -190,6 +192,7 @@ impl Model {
                     t: Vec3::from(t),
                     r: Quat::from_array(r),
                     s: Vec3::from(s),
+                    name: n.name().unwrap_or("").to_string(),
                 });
             }
             skeleton = Some(Skeleton { joints });

@@ -602,6 +602,38 @@ pub fn r3d_draw_tint(
     });
 }
 
+/// Draw `weapon` attached to `joint` of `host` (posed at the h* transform), with the
+/// weapon's own o* offset relative to that bone. So a 3rd-person weapon rides the hand.
+#[allow(clippy::too_many_arguments)]
+pub fn r3d_draw_on_joint(
+    weapon: i64, host: i64, joint: i64,
+    hx: f32, hy: f32, hz: f32, hyaw: f32, hpitch: f32, hroll: f32, hscale: f32,
+    ox: f32, oy: f32, oz: f32, oyaw: f32, opitch: f32, oroll: f32, oscale: f32,
+) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        let host_xform = Mat4::from_scale_rotation_translation(
+            Vec3::splat(hscale),
+            Quat::from_euler(EulerRot::YXZ, hyaw, hpitch, hroll),
+            Vec3::new(hx, hy, hz),
+        );
+        let local = Mat4::from_scale_rotation_translation(
+            Vec3::splat(oscale),
+            Quat::from_euler(EulerRot::YXZ, oyaw, opitch, oroll),
+            Vec3::new(ox, oy, oz),
+        );
+        s.draw_on_joint(weapon, host, joint, host_xform, local);
+    });
+}
+
+/// Print every joint index + name of a model to stdout (bone-discovery helper).
+pub fn r3d_joint_dump(host: i64) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.dump_joints(host);
+    });
+}
+
 pub fn r3d_anim_play(handle: i64, clip: i64, looping: i64, speed: f32, fade: f32) {
     with_gfx((), |gf| {
         let (_, _, s) = gf.scene_mut();

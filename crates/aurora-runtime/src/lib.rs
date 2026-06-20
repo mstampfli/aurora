@@ -1373,6 +1373,23 @@ pub extern "C" fn aurora_r3d_draw_tint(
         r as f32, g as f32, b as f32,
     );
 }
+#[allow(clippy::too_many_arguments)]
+#[no_mangle]
+pub extern "C" fn aurora_r3d_draw_on_joint(
+    weapon: i64, host: i64, joint: i64,
+    hx: f64, hy: f64, hz: f64, hyaw: f64, hpitch: f64, hroll: f64, hscale: f64,
+    ox: f64, oy: f64, oz: f64, oyaw: f64, opitch: f64, oroll: f64, oscale: f64,
+) {
+    aurora_window::imm_r3d_draw_on_joint(
+        weapon, host, joint,
+        hx as f32, hy as f32, hz as f32, hyaw as f32, hpitch as f32, hroll as f32, hscale as f32,
+        ox as f32, oy as f32, oz as f32, oyaw as f32, opitch as f32, oroll as f32, oscale as f32,
+    );
+}
+#[no_mangle]
+pub extern "C" fn aurora_r3d_joint_dump(host: i64) {
+    aurora_window::imm_r3d_joint_dump(host);
+}
 #[no_mangle]
 pub extern "C" fn aurora_r3d_anim_play(h: i64, clip: i64, looping: i64, speed: f64, fade: f64) {
     aurora_window::imm_r3d_anim_play(h, clip, looping, speed as f32, fade as f32);
@@ -2015,7 +2032,9 @@ pub extern "C" fn aurora_dbg_var_f64(name_ptr: *const u8, name_len: i64, value: 
 /// Touch every host symbol so the linker keeps this crate's object in an AOT
 /// link even when the Rust driver references nothing from it directly.
 pub fn force_link() -> usize {
-    let fns: [*const (); 224] = [
+    let fns: [*const (); 226] = [
+        aurora_r3d_draw_on_joint as *const (),
+        aurora_r3d_joint_dump as *const (),
         aurora_r3d_blur as *const (),
         aurora_input_suppress as *const (),
         aurora_text_width as *const (),

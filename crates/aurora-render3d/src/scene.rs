@@ -402,6 +402,41 @@ impl Scene {
         }
     }
 
+    /// Draw `weapon` attached to `joint` of `host` (posed at `host_xform`), with the
+    /// weapon's own `local` offset relative to that bone:
+    ///   weapon_world = host_xform * joint_global(host pose) * local.
+    /// Falls back to host_xform * local if the joint/skeleton is missing.
+    pub fn draw_on_joint(&mut self, weapon: i64, host: i64, joint: i64, host_xform: Mat4, local: Mat4) {
+        let g = self
+            .resolve(host)
+            .and_then(|idx| {
+                let r = &self.items[idx];
+                r.model.as_ref().and_then(|m| r.player.joint_global(m, joint.max(0) as usize))
+            })
+            .unwrap_or(Mat4::IDENTITY);
+        self.draw(weapon, host_xform * g * local);
+    }
+
+    /// Print every joint index + name of `host` to stdout (bone-discovery helper).
+    pub fn dump_joints(&self, host: i64) {
+        let Some(idx) = self.resolve(host) else {
+            println!("joint dump: bad handle {host}");
+            return;
+        };
+        let Some(model) = self.items[idx].model.as_ref() else {
+            println!("joint dump: no model");
+            return;
+        };
+        let Some(skel) = model.skeleton.as_ref() else {
+            println!("joint dump: no skeleton");
+            return;
+        };
+        println!("== joint dump: {} joints ==", skel.joints.len());
+        for (i, j) in skel.joints.iter().enumerate() {
+            println!("  [{i}] '{}' (parent {:?})", j.name, j.parent);
+        }
+    }
+
     pub fn render(
         &mut self,
         device: &wgpu::Device,
