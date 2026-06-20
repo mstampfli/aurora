@@ -74,6 +74,7 @@ struct SClient {
     addr: SocketAddr,
     id: u32,
     state: Player,
+    inbox: VecDeque<(u32, InputBlob)>,
     acked_seq: u32,
     last_sent: std::collections::HashMap<u32, Player>,
     /// Per-meta-slot: true once the host has taken authority over it (hp/shield), so the
@@ -360,10 +361,16 @@ impl Session {
         }
 
         if self.is_server {
-            // Clients' movement is now TRUSTED from their reported state (stored + acked in
-            // on_server_packet); the host no longer re-simulates them in its physics world (that
-            // mis-simulated remote bodies -> broken gravity/position). Lag-comp below records the
-            // trusted positions, so hit validation still works against where the client actually is.
+            // HOST-AUTHORITATIVE movement: re-simulate each client's queued inputs in order on the
+            // host's own state (c.state.s), so the host - not the client - decides where everyone is.
+            // Clients still predict locally and reconcile against this.
+            let (sim_fn, sim_env) = (self.sim_fn, self.sim_env);
+            for c in &mut self.clients {
+                while let Some((seq, inp)) = c.inbox.pop_front() {
+                    run_sim(sim_fn, sim_env, &mut c.state.s, &inp);
+                    c.acked_seq = seq;
+                }
+            }
             self.server_tick += 1;
             let st = self.server_tick;
             let r = self.hit_radius;
@@ -481,6 +488,7 @@ impl Session {
             addr: from,
             id,
             state,
+            inbox: VecDeque::new(),
             acked_seq: 0,
             last_sent: std::collections::HashMap::new(),
             meta_owned: [false; META_LEN],
@@ -492,21 +500,17 @@ impl Session {
         match pkt.first().copied() {
             Some(TAG_INPUT) => {
                 let sl = self.state_len;
-                if let Some((seq, _blob, meta, name, cstate)) = decode_input(pkt, self.input_len, sl) {
+                if let Some((seq, blob, meta, name, _cstate)) = decode_input(pkt, self.input_len, sl) {
                     let Some(idx) = self.ensure_client(from) else {
                         // Lobby full: tell the joiner clearly instead of silently dropping it.
                         let _ = self.sock.send_to(&[TAG_REJECT], from);
                         return;
                     };
-                    // MOVEMENT is client-predicted: TRUST the client's reported movement state
-                    // (newer packets only). The host can't reliably re-simulate a remote body in
-                    // its own physics world, so accepting the client's own sim_step result is what
-                    // makes a guest move exactly like the local player. Combat stays host-owned.
+                    // HOST-AUTHORITATIVE movement: queue the input to be re-simulated on the host's
+                    // own copy of this client's state (in update()). The client's reported movement
+                    // state (_cstate) is NOT trusted - only its inputs are.
                     if seq > self.clients[idx].acked_seq {
-                        for i in 0..sl {
-                            self.clients[idx].state.s[i] = cstate[i];
-                        }
-                        self.clients[idx].acked_seq = seq;
+                        self.clients[idx].inbox.push_back((seq, blob));
                     }
                     // Relay the client's self-reported metadata, EXCEPT slots the host has taken
                     // authority over (hp/shield) - those keep the host's authoritative value.
@@ -582,14 +586,25 @@ impl Session {
         self.last_snap_players = players.len();
         for (id, st) in players {
             if id == your_id {
-                // MOVEMENT is client-authoritative: KEEP our own predicted `s` (the host trusts it,
-                // so there's nothing to snap to and no input replay). Only the host-OWNED metadata
-                // (hp/shield/cells) reconciles - that's what makes damage authoritative while
-                // movement stays exactly the local sim (no rubber-band, no broken host re-sim).
+                // RECONCILE against the host's authoritative state. Snap the REPLICATED movement
+                // slots (0..state_len) to authoritative, but PRESERVE the local-only working slots
+                // (state_len..STATE_MAX) - slot 21 there holds the client's OWN physics-body handle,
+                // and a full snap would zero it (the snapshot only carries state_len slots), forcing
+                // sim_step to re-create the body every reconcile (a body LEAK + perpetually-fresh
+                // body). meta/name are authoritative too.
+                for i in 0..self.state_len {
+                    self.pred.s[i] = st.s[i];
+                }
                 self.pred.meta = st.meta;
                 self.pred.name = st.name;
+                // Drop acked inputs, then REPLAY the still-unacked ones on top of the authoritative
+                // base so local prediction stays ahead of the last server snapshot.
                 while self.pending.front().map(|(s, _)| *s <= acked).unwrap_or(false) {
                     self.pending.pop_front();
+                }
+                let pend: Vec<(u32, InputBlob)> = self.pending.iter().copied().collect();
+                for (_, inp) in pend {
+                    run_sim(self.sim_fn, self.sim_env, &mut self.pred.s, &inp);
                 }
             } else {
                 let slot = match self.remotes.iter_mut().find(|(rid, _)| *rid == id) {
@@ -1639,6 +1654,104 @@ mod meta_replication_test {
         };
         assert_eq!(read_name(&client, 0), "REAPER", "client should see the host's name");
         assert_eq!(read_name(&host, client_id), "NOVA", "host should see the client's name");
+    }
+
+    // RECONCILE must not inflate the client's position. A trivial deterministic sim (fall 1
+    // unit per step, no physics) makes any "flying / infinite jump" purely a reconcile artifact
+    // (the user's clue: when the host left, the client fell correctly -> reconcile was lifting it).
+    #[test]
+    fn reconcile_does_not_inflate_position() {
+        extern "C" fn fall_sim(_env: i64, state_ptr: i64, _input_ptr: i64) {
+            let s = unsafe { &mut *(state_ptr as *mut [f32; STATE_MAX]) };
+            s[1] -= 1.0; // "gravity": fall one unit per sim step
+        }
+        let mut host = Session::host(0).unwrap();
+        let host_addr = host.local_addr();
+        let mut client = Session::join(host_addr).unwrap();
+        host.set_sim(fall_sim as usize, 0, 21, 17);
+        client.set_sim(fall_sim as usize, 0, 21, 17);
+        let input = [0.0f32; INPUT_MAX];
+        let mut sends = 0;
+        for f in 0..25 {
+            client.send_input(&input);
+            sends += 1;
+            host.update(0.016);
+            client.update(0.016);
+            let cid = client.my_id();
+            eprintln!(
+                "frame {f}: client_sends={sends} client_pred_y={:.1} host_auth_y={:.1} acked seen",
+                client.py(cid),
+                host.py(cid),
+            );
+        }
+        let cy = client.py(client.my_id());
+        assert!(cy < -10.0, "client should have fallen well below 0 after 25 steps, got {cy}");
+    }
+
+    // FAITHFUL repro: the reconcile REPLAYS each pending input through the REAL sim_step, which
+    // teleports the body (set_pos), applies manual gravity, moves, and steps phys3d + does
+    // edge-triggered jump logic. This mirrors sim_step's core so we can see if replay makes the
+    // client fly even though the linear test above is clean. (host + client share one phys3d world
+    // here, as two instances on one machine effectively would for the shared static arena.)
+    #[test]
+    fn reconcile_with_physics_does_not_fly() {
+        use crate::phys3d::*;
+        extern "C" fn phys_fall_sim(_env: i64, state_ptr: i64, input_ptr: i64) {
+            let s = unsafe { &mut *(state_ptr as *mut [f32; STATE_MAX]) };
+            let inp = unsafe { &*(input_ptr as *const [f32; INPUT_MAX]) };
+            let dt = 0.016f64;
+            let mut player = s[21] as i64 - 1;
+            if player < 0 {
+                player = aurora_phys3d_add_character(s[0] as f64, s[1] as f64, s[2] as f64, 0.6, 0.3);
+                s[21] = (player + 1) as f32;
+            }
+            let (px, py, pz) = (s[0] as f64, s[1] as f64, s[2] as f64);
+            aurora_phys3d_set_pos(player, px, py, pz);
+            let grounded = aurora_phys3d_raycast_world(player, px, py, pz, 0.0, -1.0, 0.0, 1.2) >= 0;
+            let mut vy = s[5];
+            let jump = inp[3] > 0.5;
+            let last_jump = s[10] > 0.5;
+            if jump && !last_jump && grounded {
+                vy = 8.0;
+            }
+            s[10] = inp[3];
+            let mut g = 16.0f32;
+            if vy < 0.0 {
+                g = 16.0 * 1.6;
+            }
+            vy -= g * dt as f32;
+            aurora_phys3d_move_character(player, 0.0, (vy as f64) * dt, 0.0, dt);
+            aurora_phys3d_step(dt);
+            s[0] = aurora_phys3d_x(player) as f32;
+            s[1] = aurora_phys3d_y(player) as f32;
+            s[2] = aurora_phys3d_z(player) as f32;
+            let landed = aurora_phys3d_grounded(player) == 1;
+            if (landed || grounded) && vy < 0.0 {
+                vy = 0.0;
+            }
+            s[5] = vy;
+        }
+        aurora_phys3d_init(0.0, -9.81, 0.0);
+        aurora_phys3d_add_box(0.0, -0.5, 0.0, 100.0, 0.5, 100.0, 0); // ground, top y=0
+        let mut host = Session::host(0).unwrap();
+        let host_addr = host.local_addr();
+        let mut client = Session::join(host_addr).unwrap();
+        host.set_sim(phys_fall_sim as usize, 0, 21, 17);
+        client.set_sim(phys_fall_sim as usize, 0, 21, 17);
+        host.set_spawn(0.0, 8.0, 0.0); // host grounds quickly
+        client.set_spawn(20.0, 8.0, 0.0); // client falls from y=8
+        let no_jump = [0.0f32; INPUT_MAX];
+        for f in 0..120 {
+            client.send_input(&no_jump);
+            host.update(0.016);
+            client.update(0.016);
+            if f % 15 == 0 {
+                let cid = client.my_id();
+                eprintln!("frame {f}: client_pred_y={:.2} host_auth_y={:.2}", client.py(cid), host.py(cid));
+            }
+        }
+        let cy = client.py(client.my_id());
+        assert!(cy < 1.5 && cy > 0.4, "client should rest on the floor (~0.9), got {cy}");
     }
 
     // A join past the host's cap is REJECTED with a clear signal (presized game arrays

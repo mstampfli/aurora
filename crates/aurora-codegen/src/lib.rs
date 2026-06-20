@@ -371,7 +371,7 @@ const BUILTINS: &[&str] = &[
     // 3D positional audio.
     "audio_listener", "play_sound_at",
     // Rich 3D physics queries.
-    "phys3d_raycast_full", "phys3d_raycast_ex", "phys3d_hit_x", "phys3d_hit_y", "phys3d_hit_z",
+    "phys3d_raycast_full", "phys3d_raycast_ex", "phys3d_raycast_world", "phys3d_hit_x", "phys3d_hit_y", "phys3d_hit_z",
     "phys3d_hit_nx", "phys3d_hit_ny", "phys3d_hit_nz", "phys3d_hit_body",
     "phys3d_spherecast", "phys3d_overlap_sphere", "phys3d_apply_force",
     "phys3d_apply_torque", "phys3d_set_angvel", "phys3d_set_rot",
@@ -684,6 +684,7 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_play_sound_at", aurora_runtime::aurora_play_sound_at as *const u8);
     builder.symbol("aurora_phys3d_raycast_full", aurora_runtime::aurora_phys3d_raycast_full as *const u8);
     builder.symbol("aurora_phys3d_raycast_ex", aurora_runtime::aurora_phys3d_raycast_ex as *const u8);
+    builder.symbol("aurora_phys3d_raycast_world", aurora_runtime::aurora_phys3d_raycast_world as *const u8);
     builder.symbol("aurora_phys3d_hit_x", aurora_runtime::aurora_phys3d_hit_x as *const u8);
     builder.symbol("aurora_phys3d_hit_y", aurora_runtime::aurora_phys3d_hit_y as *const u8);
     builder.symbol("aurora_phys3d_hit_z", aurora_runtime::aurora_phys3d_hit_z as *const u8);
@@ -1060,6 +1061,7 @@ fn lower(
     hosts.insert("play_sound_at", import(jmod, "aurora_play_sound_at", &[i, i, i, f64t, f64t, f64t], None));
     hosts.insert("phys3d_raycast_full", import(jmod, "aurora_phys3d_raycast_full", &[f64t, f64t, f64t, f64t, f64t, f64t, f64t], Some(i)));
     hosts.insert("phys3d_raycast_ex", import(jmod, "aurora_phys3d_raycast_ex", &[i, f64t, f64t, f64t, f64t, f64t, f64t, f64t], Some(i)));
+    hosts.insert("phys3d_raycast_world", import(jmod, "aurora_phys3d_raycast_world", &[i, f64t, f64t, f64t, f64t, f64t, f64t, f64t], Some(i)));
     hosts.insert("phys3d_hit_x", import(jmod, "aurora_phys3d_hit_x", &[], Some(f64t)));
     hosts.insert("phys3d_hit_y", import(jmod, "aurora_phys3d_hit_y", &[], Some(f64t)));
     hosts.insert("phys3d_hit_z", import(jmod, "aurora_phys3d_hit_z", &[], Some(f64t)));
@@ -4440,6 +4442,7 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         // Rich 3D physics.
         "phys3d_raycast_full" => (vec![F64, F64, F64, F64, F64, F64, F64], Some(I64)),
         "phys3d_raycast_ex" => (vec![I64, F64, F64, F64, F64, F64, F64, F64], Some(I64)),
+        "phys3d_raycast_world" => (vec![I64, F64, F64, F64, F64, F64, F64, F64], Some(I64)),
         "phys3d_hit_x" | "phys3d_hit_y" | "phys3d_hit_z" => (vec![], Some(F64)),
         "phys3d_hit_nx" | "phys3d_hit_ny" | "phys3d_hit_nz" => (vec![], Some(F64)),
         "phys3d_hit_body" => (vec![], Some(I64)),

@@ -410,6 +410,45 @@ pub extern "C" fn aurora_phys3d_raycast_ex(
     })
 }
 
+/// Like `raycast_ex`, but only hits the WORLD (static/dynamic level geometry, group 1) and
+/// IGNORES other character capsules (group 2). For MOVEMENT probes - ground checks, wall
+/// detection, mantle - where standing/sliding is resolved against the world only (matching
+/// `move_character`). Using the plain raycast there made a player read as "grounded" when
+/// another player's capsule happened to be below them, cancelling gravity (float + infinite
+/// jump). Records hit point + normal like `raycast_ex`. Shooting still uses the plain raycast
+/// (which DOES hit characters).
+#[no_mangle]
+pub extern "C" fn aurora_phys3d_raycast_world(
+    exclude: i64, x: f64, y: f64, z: f64, dx: f64, dy: f64, dz: f64, max: f64,
+) -> i64 {
+    PHYS3.with(|p| {
+        let mut p = p.borrow_mut();
+        let Some(p) = p.as_mut() else { return -1 };
+        // Collide with world (group 1) only - characters (group 2) are skipped. See the group
+        // reasoning in `move_character`.
+        let mut filter = QueryFilter::default()
+            .groups(InteractionGroups::new(Group::GROUP_1, Group::GROUP_1));
+        if let Some(&ch) = p.cols.get(exclude.max(0) as usize) {
+            filter = filter.exclude_collider(ch);
+        }
+        let ray = Ray::new(point![x as Real, y as Real, z as Real], vector![dx as Real, dy as Real, dz as Real]);
+        let hit = p.query.cast_ray_and_get_normal(&p.bodies, &p.colliders, &ray, max as Real, true, filter);
+        match hit {
+            Some((ch, inter)) => {
+                let pt = ray.point_at(inter.time_of_impact);
+                p.hit_point = [pt.x as f64, pt.y as f64, pt.z as f64];
+                p.hit_normal = [inter.normal.x as f64, inter.normal.y as f64, inter.normal.z as f64];
+                p.hit_body = col_index(p, ch);
+                p.hit_body
+            }
+            None => {
+                p.hit_body = -1;
+                -1
+            }
+        }
+    })
+}
+
 fn hit_pt(i: usize) -> f64 {
     PHYS3.with(|p| p.borrow().as_ref().map(|p| p.hit_point[i]).unwrap_or(0.0))
 }
