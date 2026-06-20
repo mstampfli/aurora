@@ -189,10 +189,10 @@ fn run_sim(sim_fn: usize, sim_env: usize, state: &mut [f32; STATE_MAX], input: &
 
 impl Session {
     pub fn host(port: u16) -> std::io::Result<Session> {
-        // Bind loopback: works for solo play and local multi-client testing, and
-        // does NOT trip the OS firewall prompt that binding all interfaces does.
-        // (Switch to 0.0.0.0 when real LAN/Internet play is actually wired up.)
-        let sock = UdpSocket::bind(("127.0.0.1", port))?;
+        // Bind ALL interfaces so real LAN / Internet clients can reach the host (not just
+        // loopback). Same-machine clients still connect via 127.0.0.1:port. NOTE: this trips the
+        // OS firewall prompt the first time you host - allow it (UDP) so joins get through.
+        let sock = UdpSocket::bind(("0.0.0.0", port))?;
         sock.set_nonblocking(true)?;
         Ok(Session::base(sock, true, None))
     }
@@ -246,7 +246,15 @@ impl Session {
     }
 
     pub fn local_addr(&self) -> SocketAddr {
-        self.sock.local_addr().unwrap()
+        let a = self.sock.local_addr().unwrap();
+        // The host binds the wildcard 0.0.0.0 (so LAN/Internet clients can reach it). Report a
+        // CONNECTABLE loopback address in that case so same-machine clients (and the tests) can
+        // actually send to it - you can't send a datagram to 0.0.0.0.
+        if a.ip().is_unspecified() {
+            SocketAddr::new(std::net::IpAddr::from([127, 0, 0, 1]), a.port())
+        } else {
+            a
+        }
     }
 
     /// Register the game's simulation step and the replicated/input float counts.
