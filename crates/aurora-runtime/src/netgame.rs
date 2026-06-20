@@ -74,6 +74,17 @@ struct Remote {
     last_seen: u32,
 }
 
+/// A client's hitscan shot the host has VALIDATED with lag compensation (rewound
+/// to the shooter's view tick). The host's game drains these each frame and applies
+/// the damage authoritatively - the client only predicted the hitmarker.
+#[derive(Clone, Copy)]
+struct ServerHit {
+    shooter: u32,
+    victim: i64,
+    point: [f32; 3],
+    weapon: u8,
+}
+
 /// One networking session (server or client).
 pub struct Session {
     sock: UdpSocket,
@@ -100,6 +111,8 @@ pub struct Session {
     next_id: u32,
     lag: LagComp,
     server_tick: u64,
+    /// Validated client shots awaiting the host game's authoritative damage (drained per frame).
+    server_hits: Vec<ServerHit>,
     // Client.
     pred: Player,
     pending: VecDeque<(u32, InputBlob)>,
@@ -167,6 +180,7 @@ impl Session {
             next_id: 1,
             lag: LagComp::new(64),
             server_tick: 0,
+            server_hits: Vec::new(),
             pred: Player::spawn(),
             pending: VecDeque::new(),
             next_seq: 1,
@@ -248,17 +262,19 @@ impl Session {
 
     /// Fire a hitscan ray. On the host it resolves now; on a client it sends the
     /// shot with the view tick so the server can lag-compensate.
-    pub fn fire(&mut self, ox: f32, oy: f32, oz: f32, dx: f32, dy: f32, dz: f32) {
+    pub fn fire(&mut self, ox: f32, oy: f32, oz: f32, dx: f32, dy: f32, dz: f32, weapon: u8) {
         let o = [ox, oy, oz];
         let d = [dx, dy, dz];
         if self.is_server {
+            // The host's own shot resolves immediately against the live world (it IS the
+            // authority); its game applies that damage locally, so we don't enqueue it.
             self.last_hit = match self.lag.raycast_at_tick(o, d, self.server_tick, 0) {
                 Some(h) => (h.entity as i64, [o[0] + d[0] * h.distance, o[1] + d[1] * h.distance, o[2] + d[2] * h.distance]),
                 None => (-1, [0.0; 3]),
             };
         } else if let Some(addr) = self.server_addr {
             let vt = self.last_server_tick.saturating_sub(2);
-            let _ = self.sock.send_to(&encode_fire(vt, o, d), addr);
+            let _ = self.sock.send_to(&encode_fire(vt, o, d, weapon), addr);
         }
     }
     pub fn hit_player(&self) -> i64 {
@@ -399,7 +415,7 @@ impl Session {
                 }
             }
             Some(TAG_FIRE) => {
-                let Some((vt, o, d)) = decode_fire(pkt) else { return };
+                let Some((vt, o, d, weapon)) = decode_fire(pkt) else { return };
                 let Some(shooter) = self.clients.iter().find(|c| c.addr == from).map(|c| c.id) else {
                     return;
                 };
@@ -408,7 +424,12 @@ impl Session {
                     Some(h) => (h.entity as i64, [o[0] + d[0] * h.distance, o[1] + d[1] * h.distance, o[2] + d[2] * h.distance]),
                     None => (-1, [0.0; 3]),
                 };
+                // Echo the hit back so the shooter confirms its predicted hitmarker, AND queue
+                // it for the host's game to apply authoritative damage to the victim.
                 let _ = self.sock.send_to(&encode_hit(id, point), from);
+                if id >= 0 {
+                    self.server_hits.push(ServerHit { shooter, victim: id, point, weapon });
+                }
             }
             _ => {}
         }
@@ -580,6 +601,33 @@ impl Session {
             b.name[..n].copy_from_slice(&bytes[..n]);
         }
     }
+
+    // --- host: validated client shots awaiting authoritative damage (drained per frame) ---
+    pub fn server_hit_count(&self) -> usize {
+        self.server_hits.len()
+    }
+    pub fn server_hit_shooter(&self, i: usize) -> i64 {
+        self.server_hits.get(i).map(|h| h.shooter as i64).unwrap_or(-1)
+    }
+    pub fn server_hit_victim(&self, i: usize) -> i64 {
+        self.server_hits.get(i).map(|h| h.victim).unwrap_or(-1)
+    }
+    pub fn server_hit_weapon(&self, i: usize) -> i64 {
+        self.server_hits.get(i).map(|h| h.weapon as i64).unwrap_or(0)
+    }
+    pub fn server_hit_x(&self, i: usize) -> f64 {
+        self.server_hits.get(i).map(|h| h.point[0] as f64).unwrap_or(0.0)
+    }
+    pub fn server_hit_y(&self, i: usize) -> f64 {
+        self.server_hits.get(i).map(|h| h.point[1] as f64).unwrap_or(0.0)
+    }
+    pub fn server_hit_z(&self, i: usize) -> f64 {
+        self.server_hits.get(i).map(|h| h.point[2] as f64).unwrap_or(0.0)
+    }
+    /// The host game calls this after draining the queue each frame.
+    pub fn clear_server_hits(&mut self) {
+        self.server_hits.clear();
+    }
 }
 
 // --- wire format (big-endian) ---
@@ -690,23 +738,25 @@ fn decode_snapshot(b: &[u8]) -> Option<(u32, u32, f32, u32, Vec<(u32, Player)>)>
     Some((your_id, acked, tick, stick, players))
 }
 
-fn encode_fire(view_tick: u32, o: [f32; 3], d: [f32; 3]) -> Vec<u8> {
-    let mut b = Vec::with_capacity(29);
+fn encode_fire(view_tick: u32, o: [f32; 3], d: [f32; 3], weapon: u8) -> Vec<u8> {
+    let mut b = Vec::with_capacity(30);
     b.push(TAG_FIRE);
     put_u32(&mut b, view_tick);
     for v in o.iter().chain(d.iter()) {
         put_f32(&mut b, *v);
     }
+    b.push(weapon); // the shooter's weapon, so the host computes damage game-side
     b
 }
-fn decode_fire(b: &[u8]) -> Option<(u32, [f32; 3], [f32; 3])> {
-    if b.len() < 29 || b[0] != TAG_FIRE {
+fn decode_fire(b: &[u8]) -> Option<(u32, [f32; 3], [f32; 3], u8)> {
+    if b.len() < 30 || b[0] != TAG_FIRE {
         return None;
     }
     let vt = rd_u32(b, 1);
     let o = [rd_f32(b, 5), rd_f32(b, 9), rd_f32(b, 13)];
     let d = [rd_f32(b, 17), rd_f32(b, 21), rd_f32(b, 25)];
-    Some((vt, o, d))
+    let weapon = b[29];
+    Some((vt, o, d, weapon))
 }
 fn encode_hit(id: i64, p: [f32; 3]) -> Vec<u8> {
     let mut b = Vec::with_capacity(17);
@@ -940,8 +990,41 @@ pub extern "C" fn aurora_net_local_state(i: i64) -> f64 {
 
 #[allow(clippy::too_many_arguments)]
 #[no_mangle]
-pub extern "C" fn aurora_net_fire(ox: f64, oy: f64, oz: f64, dx: f64, dy: f64, dz: f64) {
-    with((), |s| s.fire(ox as f32, oy as f32, oz as f32, dx as f32, dy as f32, dz as f32));
+pub extern "C" fn aurora_net_fire(ox: f64, oy: f64, oz: f64, dx: f64, dy: f64, dz: f64, weapon: i64) {
+    with((), |s| s.fire(ox as f32, oy as f32, oz as f32, dx as f32, dy as f32, dz as f32, weapon.max(0) as u8));
+}
+// --- host: drain the validated-shot queue and apply authoritative damage game-side ---
+#[no_mangle]
+pub extern "C" fn aurora_net_server_hit_count() -> i64 {
+    read(0, |s| s.server_hit_count() as i64)
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_server_hit_shooter(i: i64) -> i64 {
+    read(-1, |s| s.server_hit_shooter(i.max(0) as usize))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_server_hit_victim(i: i64) -> i64 {
+    read(-1, |s| s.server_hit_victim(i.max(0) as usize))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_server_hit_weapon(i: i64) -> i64 {
+    read(0, |s| s.server_hit_weapon(i.max(0) as usize))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_server_hit_x(i: i64) -> f64 {
+    read(0.0, |s| s.server_hit_x(i.max(0) as usize))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_server_hit_y(i: i64) -> f64 {
+    read(0.0, |s| s.server_hit_y(i.max(0) as usize))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_server_hit_z(i: i64) -> f64 {
+    read(0.0, |s| s.server_hit_z(i.max(0) as usize))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_server_hits_clear() {
+    with((), |s| s.clear_server_hits());
 }
 #[no_mangle]
 pub extern "C" fn aurora_net_hit_player() -> i64 {
@@ -1026,7 +1109,7 @@ mod tests {
             b.update(dt);
         }
         let bid = b.my_id();
-        a.fire(0.0, 0.0, 0.0, 1.0, 0.0, 0.0);
+        a.fire(0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0);
         for _ in 0..10 {
             a.update(dt);
             server.update(dt);
@@ -1170,5 +1253,45 @@ mod meta_replication_test {
         // And the client lists them among its players (self + host + 2 bots).
         let ids: Vec<i64> = (0..client.player_count()).map(|i| client.player_id_at(i)).collect();
         assert!(ids.contains(&(b0 as i64)) && ids.contains(&(b1 as i64)), "bots in player list: {ids:?}");
+    }
+
+    // A client's hitscan shot is VALIDATED by the host's lag-compensated raycast and queued
+    // for the host's game to apply authoritative damage - the client can only predict, not
+    // assert, a hit. Here the client fires straight at a host bot and the host queues that bot
+    // as the victim, with the shooter id and weapon intact.
+    #[test]
+    fn host_applies_validated_client_shot() {
+        let mut host = Session::host(0).expect("host bind");
+        let host_addr = host.local_addr();
+        let mut client = Session::join(host_addr).expect("client bind");
+        let input = [0.0f32; 4];
+        // Warm up: connect, and record the bot at (5,5,0) across many ticks so lag-comp has it.
+        for _ in 0..24 {
+            host.set_bot_count(1);
+            host.set_bot(0, 5.0, 5.0, 0.0, 0.0);
+            host.set_bot_meta(0, 0, 100.0);
+            client.send_input(&input);
+            host.send_input(&input);
+            client.update(0.016);
+            host.update(0.016);
+            client.update(0.016);
+        }
+        host.clear_server_hits();
+        // Client fires straight at the bot (weapon 2). Origin y=5 clears the host/client bodies.
+        client.fire(0.0, 5.0, 0.0, 1.0, 0.0, 0.0, 2);
+        for _ in 0..6 {
+            host.set_bot_count(1);
+            host.set_bot(0, 5.0, 5.0, 0.0, 0.0);
+            client.update(0.016);
+            host.update(0.016);
+            client.update(0.016);
+        }
+        assert!(host.server_hit_count() >= 1, "host queued no validated hit");
+        assert_eq!(host.server_hit_victim(0), BOT_ID_BASE as i64, "victim should be the bot");
+        let cid = client.my_id();
+        assert_eq!(host.server_hit_shooter(0), cid as i64, "shooter should be the client");
+        assert_eq!(host.server_hit_weapon(0), 2, "weapon should round-trip");
+        // The shooter also got its predicted hit echoed back (same bot).
+        assert_eq!(client.hit_player(), BOT_ID_BASE as i64, "client should confirm its hitmarker");
     }
 }
