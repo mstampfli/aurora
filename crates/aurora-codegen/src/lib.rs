@@ -385,6 +385,7 @@ const BUILTINS: &[&str] = &[
     "net_state", "net_local_state", "net_interest", "net_hit_radius", "net_max_clients", "net_rejected",
     "net_set_bot_count", "net_set_bot", "net_set_bot_meta", "net_set_bot_name", "net_bot_count",
     "net_set_object_count", "net_set_object", "net_object_count", "net_object_x", "net_object_y", "net_object_z",
+    "net_set_fx_count", "net_set_fx", "net_fx_count", "net_fx_x", "net_fx_y", "net_fx_z", "net_fx_kind",
     "net_spawn_at", "net_fire",
     "net_hit_player", "net_hit_x", "net_hit_y", "net_hit_z",
     "net_server_hit_count", "net_server_hit_shooter", "net_server_hit_victim", "net_server_hit_weapon",
@@ -741,6 +742,13 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_net_object_x", aurora_runtime::aurora_net_object_x as *const u8);
     builder.symbol("aurora_net_object_y", aurora_runtime::aurora_net_object_y as *const u8);
     builder.symbol("aurora_net_object_z", aurora_runtime::aurora_net_object_z as *const u8);
+    builder.symbol("aurora_net_set_fx_count", aurora_runtime::aurora_net_set_fx_count as *const u8);
+    builder.symbol("aurora_net_set_fx", aurora_runtime::aurora_net_set_fx as *const u8);
+    builder.symbol("aurora_net_fx_count", aurora_runtime::aurora_net_fx_count as *const u8);
+    builder.symbol("aurora_net_fx_x", aurora_runtime::aurora_net_fx_x as *const u8);
+    builder.symbol("aurora_net_fx_y", aurora_runtime::aurora_net_fx_y as *const u8);
+    builder.symbol("aurora_net_fx_z", aurora_runtime::aurora_net_fx_z as *const u8);
+    builder.symbol("aurora_net_fx_kind", aurora_runtime::aurora_net_fx_kind as *const u8);
     builder.symbol("aurora_net_hit_radius", aurora_runtime::aurora_net_hit_radius as *const u8);
     builder.symbol("aurora_net_spawn_at", aurora_runtime::aurora_net_spawn_at as *const u8);
     builder.symbol("aurora_net_fire", aurora_runtime::aurora_net_fire as *const u8);
@@ -1110,6 +1118,13 @@ fn lower(
     hosts.insert("net_object_x", import(jmod, "aurora_net_object_x", &[i], Some(f64t)));
     hosts.insert("net_object_y", import(jmod, "aurora_net_object_y", &[i], Some(f64t)));
     hosts.insert("net_object_z", import(jmod, "aurora_net_object_z", &[i], Some(f64t)));
+    hosts.insert("net_set_fx_count", import(jmod, "aurora_net_set_fx_count", &[i], None));
+    hosts.insert("net_set_fx", import(jmod, "aurora_net_set_fx", &[i, f64t, f64t, f64t, f64t], None));
+    hosts.insert("net_fx_count", import(jmod, "aurora_net_fx_count", &[], Some(i)));
+    hosts.insert("net_fx_x", import(jmod, "aurora_net_fx_x", &[i], Some(f64t)));
+    hosts.insert("net_fx_y", import(jmod, "aurora_net_fx_y", &[i], Some(f64t)));
+    hosts.insert("net_fx_z", import(jmod, "aurora_net_fx_z", &[i], Some(f64t)));
+    hosts.insert("net_fx_kind", import(jmod, "aurora_net_fx_kind", &[i], Some(f64t)));
     hosts.insert("net_hit_radius", import(jmod, "aurora_net_hit_radius", &[f64t], None));
     hosts.insert("net_spawn_at", import(jmod, "aurora_net_spawn_at", &[f64t, f64t, f64t], None));
     hosts.insert("net_fire", import(jmod, "aurora_net_fire", &[f64t, f64t, f64t, f64t, f64t, f64t, i], None));
@@ -4448,6 +4463,10 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "net_set_object_count" => (vec![I64], None),
         "net_set_object" => (vec![I64, F64, F64, F64], None),
         "net_object_x" | "net_object_y" | "net_object_z" => (vec![I64], Some(F64)),
+        "net_fx_count" => (vec![], Some(I64)),
+        "net_set_fx_count" => (vec![I64], None),
+        "net_set_fx" => (vec![I64, F64, F64, F64, F64], None),
+        "net_fx_x" | "net_fx_y" | "net_fx_z" | "net_fx_kind" => (vec![I64], Some(F64)),
         "net_set_bot_count" => (vec![I64], None),
         "net_set_bot" => (vec![I64, F64, F64, F64, F64], None),
         "net_set_bot_meta" => (vec![I64, I64, F64], None),

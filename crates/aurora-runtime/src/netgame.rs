@@ -26,6 +26,7 @@ const TAG_OBJECTS: u8 = 6; // host -> clients: authoritative world-object (crate
 const TAG_KILL: u8 = 7; // host -> clients: an authoritative kill event (killer, victim) net ids
 const TAG_PROJECTILE: u8 = 8; // client -> host: I LAUNCHED a rocket/grenade (intent only; the
                               // host simulates it and decides where + how hard it detonates)
+const TAG_FX: u8 = 9; // host -> clients: transient visuals (loot drops + in-flight projectiles)
 
 /// Reserved id range for host-controlled bots. They ride the SAME player
 /// replication channel as humans (state + meta + name), so a guest receives and
@@ -136,6 +137,11 @@ pub struct Session {
     objects: Vec<[f32; 3]>,
     /// Host change-detection: objects are static until shot, so we only resend when moved.
     last_sent_objects: Vec<[f32; 3]>,
+    /// Transient visuals (loot drops + in-flight projectiles): host fills + replicates each
+    /// frame; clients render. Each entry is [x, y, z, kind] (kind 0-2 drops, 3 rocket, 4 grenade).
+    fx: Vec<[f32; 4]>,
+    /// Was the last fx broadcast empty? (so we send exactly one empty list to clear, then stop).
+    last_fx_empty: bool,
     /// Kill events (killer, victim net ids). Host: pushed by its game when the death sweep
     /// credits a kill, broadcast to clients. Client: received kills, drained by the game to
     /// drive the red kill-marker/sound/feed (NOT the predicted per-hit hitmarker).
@@ -214,6 +220,8 @@ impl Session {
             bots: Vec::new(),
             objects: Vec::new(),
             last_sent_objects: Vec::new(),
+            fx: Vec::new(),
+            last_fx_empty: true,
             kill_out: Vec::new(),
             kill_in: Vec::new(),
             next_id: 1,
@@ -435,6 +443,15 @@ impl Session {
             }
             self.last_sent_objects = self.objects.clone();
         }
+        // Transient visuals (drops + in-flight projectiles) move every frame, so send them each
+        // frame when present (small) and an empty list once to clear, so they don't linger.
+        if !self.fx.is_empty() || !self.last_fx_empty {
+            let fpkt = encode_fx(&self.fx);
+            for c in &self.clients {
+                let _ = self.sock.send_to(&fpkt, c.addr);
+            }
+            self.last_fx_empty = self.fx.is_empty();
+        }
         // Broadcast authoritative kill events to every client (drives their kill feed + the
         // killer's red marker/sound). Sent once each; transient, so rare UDP loss is acceptable.
         if !self.kill_out.is_empty() {
@@ -537,6 +554,12 @@ impl Session {
         if pkt.first().copied() == Some(TAG_OBJECTS) {
             if let Some(objs) = decode_objects(pkt) {
                 self.objects = objs; // authoritative crate positions from the host
+            }
+            return;
+        }
+        if pkt.first().copied() == Some(TAG_FX) {
+            if let Some(fx) = decode_fx(pkt) {
+                self.fx = fx; // authoritative drops + in-flight projectiles from the host
             }
             return;
         }
@@ -736,6 +759,26 @@ impl Session {
         self.objects.get(i).map(|o| o[axis.min(2)] as f64).unwrap_or(0.0)
     }
 
+    // --- transient visuals (drops + projectiles): host writes + replicates; clients read ---
+    pub fn set_fx_count(&mut self, n: usize) {
+        if n > self.fx.len() {
+            self.fx.resize(n, [0.0; 4]);
+        } else {
+            self.fx.truncate(n);
+        }
+    }
+    pub fn set_fx(&mut self, i: usize, x: f64, y: f64, z: f64, kind: f64) {
+        if let Some(f) = self.fx.get_mut(i) {
+            *f = [x as f32, y as f32, z as f32, kind as f32];
+        }
+    }
+    pub fn fx_count(&self) -> usize {
+        self.fx.len()
+    }
+    pub fn fx_field(&self, i: usize, field: usize) -> f64 {
+        self.fx.get(i).map(|f| f[field.min(3)] as f64).unwrap_or(0.0)
+    }
+
     // --- host: validated client shots awaiting authoritative damage (drained per frame) ---
     pub fn server_hit_count(&self) -> usize {
         self.server_hits.len()
@@ -912,6 +955,33 @@ fn decode_snapshot(b: &[u8]) -> Option<(u32, u32, f32, u32, Vec<(u32, Player)>)>
     Some((your_id, acked, tick, stick, players))
 }
 
+fn encode_fx(fx: &[[f32; 4]]) -> Vec<u8> {
+    let mut b = Vec::with_capacity(3 + fx.len() * 16);
+    b.push(TAG_FX);
+    b.extend_from_slice(&(fx.len() as u16).to_be_bytes());
+    for f in fx {
+        for v in f {
+            put_f32(&mut b, *v);
+        }
+    }
+    b
+}
+fn decode_fx(b: &[u8]) -> Option<Vec<[f32; 4]>> {
+    if b.len() < 3 || b[0] != TAG_FX {
+        return None;
+    }
+    let count = u16::from_be_bytes([b[1], b[2]]) as usize;
+    let mut fx = Vec::with_capacity(count);
+    let mut o = 3;
+    for _ in 0..count {
+        if o + 16 > b.len() {
+            break;
+        }
+        fx.push([rd_f32(b, o), rd_f32(b, o + 4), rd_f32(b, o + 8), rd_f32(b, o + 12)]);
+        o += 16;
+    }
+    Some(fx)
+}
 fn encode_objects(objs: &[[f32; 3]]) -> Vec<u8> {
     let mut b = Vec::with_capacity(3 + objs.len() * 12);
     b.push(TAG_OBJECTS);
@@ -1231,6 +1301,35 @@ pub extern "C" fn aurora_net_object_y(i: i64) -> f64 {
 #[no_mangle]
 pub extern "C" fn aurora_net_object_z(i: i64) -> f64 {
     read(0.0, |s| s.object_pos(i.max(0) as usize, 2))
+}
+// --- transient visuals (host writes drops + projectiles; clients render) ---
+#[no_mangle]
+pub extern "C" fn aurora_net_set_fx_count(n: i64) {
+    with((), |s| s.set_fx_count(n.max(0) as usize))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_set_fx(i: i64, x: f64, y: f64, z: f64, kind: f64) {
+    with((), |s| s.set_fx(i.max(0) as usize, x, y, z, kind))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_fx_count() -> i64 {
+    read(0, |s| s.fx_count() as i64)
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_fx_x(i: i64) -> f64 {
+    read(0.0, |s| s.fx_field(i.max(0) as usize, 0))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_fx_y(i: i64) -> f64 {
+    read(0.0, |s| s.fx_field(i.max(0) as usize, 1))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_fx_z(i: i64) -> f64 {
+    read(0.0, |s| s.fx_field(i.max(0) as usize, 2))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_fx_kind(i: i64) -> f64 {
+    read(0.0, |s| s.fx_field(i.max(0) as usize, 3))
 }
 #[no_mangle]
 pub extern "C" fn aurora_net_local_x() -> f64 {
@@ -1747,5 +1846,30 @@ mod meta_replication_test {
         }
         // The client reads its OWN hp as the host's authoritative value, not its self-report.
         assert!((client.meta(client.my_id(), 0) - 37.0).abs() < 0.01, "client hp = {}", client.meta(client.my_id(), 0));
+    }
+
+    // Transient visuals (loot drops + in-flight projectiles) replicate host -> client so a guest
+    // sees others' rockets fly + the loot on the ground.
+    #[test]
+    fn fx_replicate_to_client() {
+        let mut host = Session::host(0).expect("host bind");
+        let host_addr = host.local_addr();
+        let mut client = Session::join(host_addr).expect("client bind");
+        let input = [0.0f32; 4];
+        for _ in 0..20 {
+            host.set_fx_count(2);
+            host.set_fx(0, 4.0, 0.6, -2.0, 1.0); // a shield-cell drop
+            host.set_fx(1, 9.0, 1.5, 0.0, 3.0); // a rocket in flight
+            client.send_input(&input);
+            host.send_input(&input);
+            client.update(0.016);
+            host.update(0.016);
+            client.update(0.016);
+        }
+        assert_eq!(client.fx_count(), 2, "client should see 2 fx");
+        assert!((client.fx_field(0, 0) - 4.0).abs() < 0.01, "drop x");
+        assert!((client.fx_field(0, 3) - 1.0).abs() < 0.01, "drop kind");
+        assert!((client.fx_field(1, 0) - 9.0).abs() < 0.01, "rocket x");
+        assert!((client.fx_field(1, 3) - 3.0).abs() < 0.01, "rocket kind");
     }
 }
