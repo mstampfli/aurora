@@ -2042,7 +2042,7 @@ pub extern "C" fn aurora_dbg_var_f64(name_ptr: *const u8, name_len: i64, value: 
 /// Touch every host symbol so the linker keeps this crate's object in an AOT
 /// link even when the Rust driver references nothing from it directly.
 pub fn force_link() -> usize {
-    let fns: [*const (); 285] = [
+    let fns: [*const (); 286] = [
         aurora_net_projectile_intent as *const (),
         aurora_net_server_projectile_count as *const (),
         aurora_net_server_projectile_shooter as *const (),
@@ -2117,6 +2117,7 @@ pub fn force_link() -> usize {
         aurora_net_sim as *const (),
         aurora_net_send_input as *const (),
         aurora_net_update as *const (),
+        aurora_net_leave as *const (),
         aurora_net_interest as *const (),
         aurora_net_hit_radius as *const (),
         aurora_net_spawn_at as *const (),

@@ -377,7 +377,7 @@ const BUILTINS: &[&str] = &[
     "phys3d_apply_torque", "phys3d_set_angvel", "phys3d_set_rot",
     "phys3d_rot_qx", "phys3d_rot_qy", "phys3d_rot_qz", "phys3d_rot_qw",
     // Multiplayer (generic framework: the game registers its Aurora sim).
-    "net_host", "net_join", "net_sim", "net_send_input", "net_update",
+    "net_host", "net_join", "net_sim", "net_send_input", "net_update", "net_leave",
     "net_my_id", "net_is_server", "net_player_count", "net_player_id_at",
     "net_player_x", "net_player_y", "net_player_z", "net_player_yaw", "net_player_state",
     "net_set_meta", "net_player_meta", "net_set_name", "net_player_name_len", "net_player_name_char",
@@ -710,6 +710,7 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_save_settings", aurora_runtime::aurora_save_settings as *const u8);
     builder.symbol("aurora_load_settings", aurora_runtime::aurora_load_settings as *const u8);
     builder.symbol("aurora_net_update", aurora_runtime::aurora_net_update as *const u8);
+    builder.symbol("aurora_net_leave", aurora_runtime::aurora_net_leave as *const u8);
     builder.symbol("aurora_net_my_id", aurora_runtime::aurora_net_my_id as *const u8);
     builder.symbol("aurora_net_is_server", aurora_runtime::aurora_net_is_server as *const u8);
     builder.symbol("aurora_net_player_count", aurora_runtime::aurora_net_player_count as *const u8);
@@ -1093,6 +1094,7 @@ fn lower(
     hosts.insert("save_settings", import(jmod, "aurora_save_settings", &[ptr_ty, i], Some(i)));
     hosts.insert("load_settings", import(jmod, "aurora_load_settings", &[ptr_ty, i], Some(i)));
     hosts.insert("net_update", import(jmod, "aurora_net_update", &[f64t], None));
+    hosts.insert("net_leave", import(jmod, "aurora_net_leave", &[], None));
     hosts.insert("net_my_id", import(jmod, "aurora_net_my_id", &[], Some(i)));
     hosts.insert("net_is_server", import(jmod, "aurora_net_is_server", &[], Some(i)));
     hosts.insert("net_player_count", import(jmod, "aurora_net_player_count", &[], Some(i)));
@@ -4472,6 +4474,7 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         // (array) are dispatched separately.
         "net_host" => (vec![I64], Some(I64)),
         "net_update" => (vec![F64], None),
+        "net_leave" => (vec![], None),
         "net_my_id" | "net_is_server" | "net_player_count" | "net_rejected" => (vec![], Some(I64)),
         "net_max_clients" => (vec![I64], None),
         "net_bot_count" => (vec![], Some(I64)),

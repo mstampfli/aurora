@@ -29,6 +29,7 @@ const TAG_PROJECTILE: u8 = 8; // client -> host: I LAUNCHED a rocket/grenade (in
 const TAG_FX: u8 = 9; // host -> clients: transient visuals (loot drops + in-flight projectiles)
 const TAG_SHOTFX: u8 = 10; // host -> clients: a shot was fired (shooter, origin, endpoint, weapon)
                            // so every machine can draw the tracer + play the fire sound.
+const TAG_LEAVE: u8 = 11;  // client -> host: I'm leaving the lobby (remove me now, don't wait for timeout)
 
 /// Reserved id range for host-controlled bots. They ride the SAME player
 /// replication channel as humans (state + meta + name), so a guest receives and
@@ -79,6 +80,9 @@ struct SClient {
     state: Player,
     inbox: VecDeque<(u32, InputBlob)>,
     acked_seq: u32,
+    /// server_tick when we last heard from this client - used to drop it gracefully when it
+    /// leaves/times out (so a flaky or reconnecting player doesn't leave a ghost that lingers).
+    last_seen: u64,
     last_sent: std::collections::HashMap<u32, Player>,
     /// Per-meta-slot: true once the host has taken authority over it (hp/shield), so the
     /// client's self-reported value is no longer relayed into it - the host's value wins.
@@ -363,6 +367,15 @@ impl Session {
             let _ = self.sock.send_to(&encode_fire(vt, o, d, weapon), addr);
         }
     }
+    /// Client: tell the host we're leaving the lobby so it drops us immediately (no ghost). Sent a
+    /// few times since UDP can lose a single packet; harmless on the host (no server_addr).
+    pub fn leave(&mut self) {
+        if let Some(addr) = self.server_addr {
+            for _ in 0..3 {
+                let _ = self.sock.send_to(&[TAG_LEAVE], addr);
+            }
+        }
+    }
     /// A client LAUNCHED a projectile (kind 0 rocket / 1 grenade) from `o` with velocity `v`.
     /// INTENT only - sent to the host, which simulates the flight and decides the detonation.
     /// The host's own projectiles run locally (it is the authority), so they aren't sent.
@@ -409,6 +422,11 @@ impl Session {
                 }
             }
             self.server_tick += 1;
+            // GRACEFUL LEAVE: drop clients we haven't heard from in ~3s (quit / timed out). Without
+            // this they linger forever as ghosts the host keeps re-simulating (they fall + respawn-
+            // loop = "remote players keep dying"), and their slot never frees for a bot to return.
+            let cutoff = self.server_tick.saturating_sub(180);
+            self.clients.retain(|c| c.last_seen >= cutoff);
             let st = self.server_tick;
             let r = self.hit_radius;
             self.lag.record(st, 0, [self.host.s[0], self.host.s[1], self.host.s[2]], r);
@@ -531,6 +549,7 @@ impl Session {
             acked_seq: 0,
             last_sent: std::collections::HashMap::new(),
             meta_owned: [false; META_LEN],
+            last_seen: self.server_tick,
         });
         Some(self.clients.len() - 1)
     }
@@ -545,6 +564,7 @@ impl Session {
                         let _ = self.sock.send_to(&[TAG_REJECT], from);
                         return;
                     };
+                    self.clients[idx].last_seen = self.server_tick; // alive: reset the leave timer
                     // HOST-AUTHORITATIVE movement: queue the input to be re-simulated on the host's
                     // own copy of this client's state (in update()). The client's reported movement
                     // state (_cstate) is NOT trusted - only its inputs are.
@@ -593,6 +613,11 @@ impl Session {
                     return;
                 };
                 self.server_projectiles.push(ServerProjectile { shooter, kind, origin, vel });
+            }
+            Some(TAG_LEAVE) => {
+                // The client quit: remove it immediately so its slot frees (a bot returns) and it
+                // doesn't linger until the timeout.
+                self.clients.retain(|c| c.addr != from);
             }
             _ => {}
         }
@@ -1330,6 +1355,10 @@ pub extern "C" fn aurora_net_send_input(input: *const f64, len: i64) -> i64 {
 #[no_mangle]
 pub extern "C" fn aurora_net_update(dt: f64) {
     with((), |s| s.update(dt as f32));
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_leave() {
+    with((), |s| s.leave());
 }
 #[no_mangle]
 pub extern "C" fn aurora_net_interest(radius: f64) {
