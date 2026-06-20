@@ -382,7 +382,7 @@ const BUILTINS: &[&str] = &[
     "net_player_x", "net_player_y", "net_player_z", "net_player_yaw", "net_player_state",
     "net_set_meta", "net_player_meta", "net_set_name", "net_player_name_len", "net_player_name_char",
     "net_local_x", "net_local_y", "net_local_z", "net_local_yaw",
-    "net_state", "net_local_state", "net_interest", "net_hit_radius",
+    "net_state", "net_local_state", "net_interest", "net_hit_radius", "net_max_clients", "net_rejected",
     "net_spawn_at", "net_fire",
     "net_hit_player", "net_hit_x", "net_hit_y", "net_hit_z",
     // Rebindable input-action layer + raw f32-blob accessors.
@@ -719,6 +719,8 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_net_state", aurora_runtime::aurora_net_state as *const u8);
     builder.symbol("aurora_net_local_state", aurora_runtime::aurora_net_local_state as *const u8);
     builder.symbol("aurora_net_interest", aurora_runtime::aurora_net_interest as *const u8);
+    builder.symbol("aurora_net_max_clients", aurora_runtime::aurora_net_max_clients as *const u8);
+    builder.symbol("aurora_net_rejected", aurora_runtime::aurora_net_rejected as *const u8);
     builder.symbol("aurora_net_hit_radius", aurora_runtime::aurora_net_hit_radius as *const u8);
     builder.symbol("aurora_net_spawn_at", aurora_runtime::aurora_net_spawn_at as *const u8);
     builder.symbol("aurora_net_fire", aurora_runtime::aurora_net_fire as *const u8);
@@ -1050,6 +1052,8 @@ fn lower(
     hosts.insert("net_state", import(jmod, "aurora_net_state", &[i, i], Some(f64t)));
     hosts.insert("net_local_state", import(jmod, "aurora_net_local_state", &[i], Some(f64t)));
     hosts.insert("net_interest", import(jmod, "aurora_net_interest", &[f64t], None));
+    hosts.insert("net_max_clients", import(jmod, "aurora_net_max_clients", &[i], None));
+    hosts.insert("net_rejected", import(jmod, "aurora_net_rejected", &[], Some(i)));
     hosts.insert("net_hit_radius", import(jmod, "aurora_net_hit_radius", &[f64t], None));
     hosts.insert("net_spawn_at", import(jmod, "aurora_net_spawn_at", &[f64t, f64t, f64t], None));
     hosts.insert("net_fire", import(jmod, "aurora_net_fire", &[f64t, f64t, f64t, f64t, f64t, f64t], None));
@@ -4346,7 +4350,8 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         // (array) are dispatched separately.
         "net_host" => (vec![I64], Some(I64)),
         "net_update" => (vec![F64], None),
-        "net_my_id" | "net_is_server" | "net_player_count" => (vec![], Some(I64)),
+        "net_my_id" | "net_is_server" | "net_player_count" | "net_rejected" => (vec![], Some(I64)),
+        "net_max_clients" => (vec![I64], None),
         "net_player_id_at" => (vec![I64], Some(I64)),
         "net_player_state" => (vec![I64, I64], Some(F64)),
         "net_set_meta" => (vec![I64, F64], None),

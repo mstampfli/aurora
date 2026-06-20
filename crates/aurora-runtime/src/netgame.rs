@@ -21,6 +21,7 @@ const TAG_INPUT: u8 = 1;
 const TAG_SNAPSHOT: u8 = 2;
 const TAG_FIRE: u8 = 3;
 const TAG_HIT: u8 = 4;
+const TAG_REJECT: u8 = 5; // host -> a joiner it can't fit: the lobby is full
 
 const STATE_MAX: usize = 32; // max floats in a player state blob
 const INPUT_MAX: usize = 24; // max floats in an input blob
@@ -104,6 +105,10 @@ pub struct Session {
     local_meta: [f32; META_LEN],
     /// The local player's outgoing display name (set via net_set_name).
     local_name: [u8; NAME_MAX],
+    /// Max simultaneously-connected clients the host accepts (set via net_max_clients).
+    max_clients: usize,
+    /// Client-side: the host rejected our join (lobby full).
+    rejected: bool,
 }
 
 /// Run the registered Aurora sim on `state` with `input` (mutating `state`).
@@ -161,6 +166,8 @@ impl Session {
             spawn: [0.0, 0.0, 0.0],
             local_meta: [0.0; META_LEN],
             local_name: [0u8; NAME_MAX],
+            max_clients: 8,
+            rejected: false,
         }
     }
 
@@ -180,6 +187,14 @@ impl Session {
     }
     pub fn set_hit_radius(&mut self, r: f32) {
         self.hit_radius = r.max(0.01);
+    }
+    /// Max connected clients the host will admit (joins past this get a clear rejection).
+    pub fn set_max_clients(&mut self, n: usize) {
+        self.max_clients = n.max(1);
+    }
+    /// Client-side: did the host reject our join because the lobby was full?
+    pub fn rejected(&self) -> bool {
+        self.rejected
     }
     pub fn set_spawn(&mut self, x: f32, y: f32, z: f32) {
         // Set the local player's starting position, and remember it as the spawn
@@ -323,35 +338,42 @@ impl Session {
         }
     }
 
-    fn ensure_client(&mut self, from: SocketAddr) -> usize {
-        match self.clients.iter().position(|c| c.addr == from) {
-            Some(i) => i,
-            None => {
-                let id = self.next_id;
-                self.next_id += 1;
-                let mut state = Player::spawn();
-                // Offset each client along x so players don't spawn stacked.
-                state.s[0] = self.spawn[0] + id as f32 * 2.0;
-                state.s[1] = self.spawn[1];
-                state.s[2] = self.spawn[2];
-                self.clients.push(SClient {
-                    addr: from,
-                    id,
-                    state,
-                    inbox: VecDeque::new(),
-                    acked_seq: 0,
-                    last_sent: std::collections::HashMap::new(),
-                });
-                self.clients.len() - 1
-            }
+    /// Find (or admit) a client by address. Returns None if it is NEW and the lobby is
+    /// already full (caller then rejects it) - so presized game arrays can never overflow.
+    fn ensure_client(&mut self, from: SocketAddr) -> Option<usize> {
+        if let Some(i) = self.clients.iter().position(|c| c.addr == from) {
+            return Some(i);
         }
+        if self.clients.len() >= self.max_clients {
+            return None;
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        let mut state = Player::spawn();
+        // Offset each client along x so players don't spawn stacked.
+        state.s[0] = self.spawn[0] + id as f32 * 2.0;
+        state.s[1] = self.spawn[1];
+        state.s[2] = self.spawn[2];
+        self.clients.push(SClient {
+            addr: from,
+            id,
+            state,
+            inbox: VecDeque::new(),
+            acked_seq: 0,
+            last_sent: std::collections::HashMap::new(),
+        });
+        Some(self.clients.len() - 1)
     }
 
     fn on_server_packet(&mut self, pkt: &[u8], from: SocketAddr) {
         match pkt.first().copied() {
             Some(TAG_INPUT) => {
                 if let Some((seq, blob, meta, name)) = decode_input(pkt, self.input_len) {
-                    let idx = self.ensure_client(from);
+                    let Some(idx) = self.ensure_client(from) else {
+                        // Lobby full: tell the joiner clearly instead of silently dropping it.
+                        let _ = self.sock.send_to(&[TAG_REJECT], from);
+                        return;
+                    };
                     self.clients[idx].inbox.push_back((seq, blob));
                     self.clients[idx].state.meta = meta; // relay this client's self-reported metadata
                     self.clients[idx].state.name = name;
@@ -374,6 +396,10 @@ impl Session {
     }
 
     fn on_client_packet(&mut self, pkt: &[u8]) {
+        if pkt.first().copied() == Some(TAG_REJECT) {
+            self.rejected = true; // the host's lobby is full
+            return;
+        }
         if pkt.first().copied() == Some(TAG_HIT) {
             if let Some((id, p)) = decode_hit(pkt) {
                 self.last_hit = (id, p);
@@ -723,6 +749,16 @@ pub extern "C" fn aurora_net_interest(radius: f64) {
 pub extern "C" fn aurora_net_hit_radius(r: f64) {
     with((), |s| s.set_hit_radius(r as f32));
 }
+/// Host: max clients to admit (joins past this are rejected with a clear signal).
+#[no_mangle]
+pub extern "C" fn aurora_net_max_clients(n: i64) {
+    with((), |s| s.set_max_clients(n.max(1) as usize));
+}
+/// Client: 1 if the host rejected our join (lobby full), else 0.
+#[no_mangle]
+pub extern "C" fn aurora_net_rejected() -> i64 {
+    read(0, |s| s.rejected() as i64)
+}
 #[no_mangle]
 pub extern "C" fn aurora_net_spawn_at(x: f64, y: f64, z: f64) {
     with((), |s| s.set_spawn(x as f32, y as f32, z as f32));
@@ -980,5 +1016,34 @@ mod meta_replication_test {
         };
         assert_eq!(read_name(&client, 0), "REAPER", "client should see the host's name");
         assert_eq!(read_name(&host, client_id), "NOVA", "host should see the client's name");
+    }
+
+    // A join past the host's cap is REJECTED with a clear signal (presized game arrays
+    // can never overflow), not silently dropped.
+    #[test]
+    fn lobby_full_rejects_extra_client() {
+        let mut host = Session::host(0).expect("host bind");
+        host.set_max_clients(1); // admit exactly ONE client
+        let addr = host.local_addr();
+        let mut c1 = Session::join(addr).expect("c1 bind");
+        let mut c2 = Session::join(addr).expect("c2 bind");
+        let input = [0.0f32; 4];
+        // Admit c1 first.
+        for _ in 0..8 {
+            c1.send_input(&input);
+            host.send_input(&input);
+            c1.update(0.016);
+            host.update(0.016);
+            c1.update(0.016);
+        }
+        // Now c2 tries to join - the lobby is full.
+        for _ in 0..12 {
+            c2.send_input(&input);
+            c2.update(0.016);
+            host.update(0.016);
+            c2.update(0.016);
+        }
+        assert!(!c1.rejected(), "the first client should be admitted");
+        assert!(c2.rejected(), "the second client should be rejected (lobby full)");
     }
 }
