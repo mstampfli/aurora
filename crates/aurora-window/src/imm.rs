@@ -602,6 +602,23 @@ pub fn r3d_draw_tint(
     });
 }
 
+/// Draw a model with an energy-shield Fresnel rim (cyan crackle): strength 0..1, animated by time.
+#[allow(clippy::too_many_arguments)]
+pub fn r3d_draw_shield(
+    handle: i64, px: f32, py: f32, pz: f32, yaw: f32, pitch: f32, roll: f32, scale: f32,
+    strength: f32, time: f32,
+) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        let m = Mat4::from_scale_rotation_translation(
+            Vec3::splat(scale),
+            Quat::from_euler(EulerRot::YXZ, yaw, pitch, roll),
+            Vec3::new(px, py, pz),
+        );
+        s.draw_shield(handle, m, strength, time);
+    });
+}
+
 /// Draw `weapon` attached to `joint` of `host` (posed at the h* transform), with the
 /// weapon's own o* offset relative to that bone. So a 3rd-person weapon rides the hand.
 #[allow(clippy::too_many_arguments)]

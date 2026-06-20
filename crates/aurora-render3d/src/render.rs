@@ -49,7 +49,8 @@ struct GlobalsU {
 struct ObjU {
     model: [[f32; 4]; 4],
     normal_mat: [[f32; 4]; 4],
-    params: [f32; 4], // x = skinned
+    params: [f32; 4],  // x = skinned, yzw = tint offset
+    params2: [f32; 4], // x = shield Fresnel strength, y = time
 }
 
 #[repr(C)]
@@ -100,6 +101,8 @@ struct DrawCmd {
     model: Mat4,
     joints: Option<Vec<Mat4>>,
     tint: [f32; 3],
+    /// Energy-shield Fresnel rim: [strength, time]. strength 0 = off.
+    shield: [f32; 2],
 }
 
 #[repr(C)]
@@ -1127,7 +1130,16 @@ impl Renderer3D {
     pub fn draw_tint(&mut self, mesh: usize, material: usize, model: Mat4, joints: Option<Vec<Mat4>>, tint: [f32; 3]) {
         if mesh < self.meshes.len() {
             let material = if material < self.materials.len() { material } else { 0 };
-            self.queue_cmds.push(DrawCmd { mesh, material, model, joints, tint });
+            self.queue_cmds.push(DrawCmd { mesh, material, model, joints, tint, shield: [0.0, 0.0] });
+        }
+    }
+
+    /// Like [`draw`] but adds an energy-shield Fresnel rim (cyan crackle, `strength` 0..1,
+    /// animated by `time`). Tint stays neutral.
+    pub fn draw_shield(&mut self, mesh: usize, material: usize, model: Mat4, joints: Option<Vec<Mat4>>, strength: f32, time: f32) {
+        if mesh < self.meshes.len() {
+            let material = if material < self.materials.len() { material } else { 0 };
+            self.queue_cmds.push(DrawCmd { mesh, material, model, joints, tint: [0.0, 0.0, 0.0], shield: [strength, time] });
         }
     }
 
@@ -1216,6 +1228,7 @@ impl Renderer3D {
                 model: cmd.model.to_cols_array_2d(),
                 normal_mat: normal_mat.to_cols_array_2d(),
                 params: [skinned_flag, cmd.tint[0], cmd.tint[1], cmd.tint[2]],
+                params2: [cmd.shield[0], cmd.shield[1], 0.0, 0.0],
             };
             let off = i as u64 * stride;
             obj_bytes[off as usize..off as usize + std::mem::size_of::<ObjU>()]
@@ -1784,7 +1797,7 @@ struct Globals {
 struct CascadeU { vp: mat4x4<f32> };
 @group(0) @binding(3) var<uniform> csm: CascadeU;
 
-struct ObjU { model: mat4x4<f32>, normal_mat: mat4x4<f32>, params: vec4<f32> };
+struct ObjU { model: mat4x4<f32>, normal_mat: mat4x4<f32>, params: vec4<f32>, params2: vec4<f32> };
 @group(1) @binding(0) var<uniform> obj: ObjU;
 struct Joints { m: array<mat4x4<f32>, 128> };
 @group(1) @binding(1) var<uniform> joints: Joints;
@@ -2054,6 +2067,18 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
     }
     var emissive = mat.emissive.rgb;
     if (mat.flags.w > 0.5) { emissive = emissive + textureSample(emissive_tex, samp, in.uv).rgb; }
+    // Energy-shield Fresnel rim: a cyan shell that lights the silhouette edges and crackles
+    // with scrolling noise. params2.x = strength (0 = off), params2.y = time.
+    let shield_str = obj.params2.x;
+    if (shield_str > 0.001) {
+        let vdir = normalize(g.cam_pos.xyz - in.world_pos);
+        let fres = pow(1.0 - max(dot(n, vdir), 0.0), 2.5);
+        let tm = obj.params2.y;
+        let crackle = 0.5 + 0.5 * sin(in.world_pos.y * 22.0 + tm * 9.0) * sin(in.world_pos.x * 17.0 - tm * 6.0);
+        let pulse = 0.7 + 0.3 * sin(tm * 4.0);
+        let rim = fres * shield_str * pulse * (0.5 + 0.5 * crackle);
+        emissive = emissive + vec3<f32>(0.25, 0.85, 1.0) * rim * 2.4;
+    }
     let ao = textureSample(ao_tex, ao_samp, in.clip.xy / g.screen.xy).r;
     return shade(in.world_pos, n, albedo.rgb, albedo.a, metallic, rough, emissive, ao);
 }

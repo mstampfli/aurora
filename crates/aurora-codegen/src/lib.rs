@@ -361,7 +361,7 @@ const BUILTINS: &[&str] = &[
     // 3D rendering.
     "r3d_load_model", "r3d_make_box", "r3d_make_box_sized", "r3d_make_box_emissive", "r3d_make_sphere", "r3d_make_plane",
     "r3d_camera", "r3d_camera_roll", "r3d_light", "r3d_clear", "r3d_begin", "r3d_draw", "r3d_draw_tint",
-    "r3d_draw_on_joint", "r3d_joint_dump",
+    "r3d_draw_on_joint", "r3d_joint_dump", "r3d_draw_shield",
     "r3d_anim_play", "r3d_anim_update", "r3d_anim_play_upper", "r3d_anim_stop_upper", "r3d_clip_count", "r3d_present",
     "r3d_fog", "r3d_speedlines", "r3d_damage", "r3d_blur", "r3d_sky", "r3d_shadows", "r3d_ssao", "r3d_point_shadows", "r3d_clear_lights", "r3d_point_light",
     "r3d_make_sprite", "r3d_draw_billboard", "r3d_debug_line", "r3d_frustum_cull",
@@ -639,6 +639,7 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_r3d_begin", aurora_runtime::aurora_r3d_begin as *const u8);
     builder.symbol("aurora_r3d_draw", aurora_runtime::aurora_r3d_draw as *const u8);
     builder.symbol("aurora_r3d_draw_tint", aurora_runtime::aurora_r3d_draw_tint as *const u8);
+    builder.symbol("aurora_r3d_draw_shield", aurora_runtime::aurora_r3d_draw_shield as *const u8);
     builder.symbol("aurora_r3d_draw_on_joint", aurora_runtime::aurora_r3d_draw_on_joint as *const u8);
     builder.symbol("aurora_r3d_joint_dump", aurora_runtime::aurora_r3d_joint_dump as *const u8);
     builder.symbol("aurora_r3d_anim_play", aurora_runtime::aurora_r3d_anim_play as *const u8);
@@ -964,6 +965,7 @@ fn lower(
     hosts.insert("r3d_begin", import(jmod, "aurora_r3d_begin", &[], None));
     hosts.insert("r3d_draw", import(jmod, "aurora_r3d_draw", &[i, f64t, f64t, f64t, f64t, f64t, f64t, f64t], None));
     hosts.insert("r3d_draw_tint", import(jmod, "aurora_r3d_draw_tint", &[i, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t], None));
+    hosts.insert("r3d_draw_shield", import(jmod, "aurora_r3d_draw_shield", &[i, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t], None));
     hosts.insert("r3d_draw_on_joint", import(jmod, "aurora_r3d_draw_on_joint", &[i, i, i, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t], None));
     hosts.insert("r3d_joint_dump", import(jmod, "aurora_r3d_joint_dump", &[i], None));
     hosts.insert("r3d_anim_play", import(jmod, "aurora_r3d_anim_play", &[i, i, i, f64t, f64t], None));
@@ -4275,6 +4277,7 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "r3d_begin" => (vec![], None),
         "r3d_draw" => (vec![I64, F64, F64, F64, F64, F64, F64, F64], None),
         "r3d_draw_tint" => (vec![I64, F64, F64, F64, F64, F64, F64, F64, F64, F64, F64], None),
+        "r3d_draw_shield" => (vec![I64, F64, F64, F64, F64, F64, F64, F64, F64, F64], None),
         "r3d_draw_on_joint" => (vec![I64, I64, I64, F64, F64, F64, F64, F64, F64, F64, F64, F64, F64, F64, F64, F64, F64], None),
         "r3d_joint_dump" => (vec![I64], None),
         "r3d_anim_play" => (vec![I64, I64, I64, F64, F64], None),

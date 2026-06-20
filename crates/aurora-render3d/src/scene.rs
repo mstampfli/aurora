@@ -402,6 +402,28 @@ impl Scene {
         }
     }
 
+    /// Like [`draw`] but with an energy-shield Fresnel rim (cyan, `strength` 0..1, animated
+    /// by `time`).
+    pub fn draw_shield(&mut self, handle: i64, transform: Mat4, strength: f32, time: f32) {
+        let idx = match self.resolve(handle) {
+            Some(i) => i,
+            None => return,
+        };
+        let joints = {
+            let r = &self.items[idx];
+            if r.skinned {
+                r.model.as_ref().map(|m| r.player.matrices(m))
+            } else {
+                None
+            }
+        };
+        let prims = self.items[idx].prims.clone();
+        for (mesh, mat) in prims {
+            let j = joints.clone().filter(|v| !v.is_empty());
+            self.renderer.draw_shield(mesh, mat, transform, j, strength, time);
+        }
+    }
+
     /// Draw `weapon` attached to `joint` of `host` (posed at `host_xform`), with the
     /// weapon's own `local` offset relative to that bone:
     ///   weapon_world = host_xform * joint_global(host pose) * local.
