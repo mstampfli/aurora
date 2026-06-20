@@ -379,7 +379,7 @@ const BUILTINS: &[&str] = &[
     // Multiplayer (generic framework: the game registers its Aurora sim).
     "net_host", "net_join", "net_sim", "net_send_input", "net_update",
     "net_my_id", "net_is_server", "net_player_count", "net_player_id_at",
-    "net_player_x", "net_player_y", "net_player_z", "net_player_yaw",
+    "net_player_x", "net_player_y", "net_player_z", "net_player_yaw", "net_player_state",
     "net_local_x", "net_local_y", "net_local_z", "net_local_yaw",
     "net_state", "net_local_state", "net_interest", "net_hit_radius",
     "net_spawn_at", "net_fire",
@@ -704,6 +704,7 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_net_player_y", aurora_runtime::aurora_net_player_y as *const u8);
     builder.symbol("aurora_net_player_z", aurora_runtime::aurora_net_player_z as *const u8);
     builder.symbol("aurora_net_player_yaw", aurora_runtime::aurora_net_player_yaw as *const u8);
+    builder.symbol("aurora_net_player_state", aurora_runtime::aurora_net_player_state as *const u8);
     builder.symbol("aurora_net_local_x", aurora_runtime::aurora_net_local_x as *const u8);
     builder.symbol("aurora_net_local_y", aurora_runtime::aurora_net_local_y as *const u8);
     builder.symbol("aurora_net_local_z", aurora_runtime::aurora_net_local_z as *const u8);
@@ -1028,6 +1029,7 @@ fn lower(
     hosts.insert("net_player_y", import(jmod, "aurora_net_player_y", &[i], Some(f64t)));
     hosts.insert("net_player_z", import(jmod, "aurora_net_player_z", &[i], Some(f64t)));
     hosts.insert("net_player_yaw", import(jmod, "aurora_net_player_yaw", &[i], Some(f64t)));
+    hosts.insert("net_player_state", import(jmod, "aurora_net_player_state", &[i, i], Some(f64t)));
     hosts.insert("net_local_x", import(jmod, "aurora_net_local_x", &[], Some(f64t)));
     hosts.insert("net_local_y", import(jmod, "aurora_net_local_y", &[], Some(f64t)));
     hosts.insert("net_local_z", import(jmod, "aurora_net_local_z", &[], Some(f64t)));
@@ -4323,6 +4325,7 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "net_update" => (vec![F64], None),
         "net_my_id" | "net_is_server" | "net_player_count" => (vec![], Some(I64)),
         "net_player_id_at" => (vec![I64], Some(I64)),
+        "net_player_state" => (vec![I64, I64], Some(F64)),
         "net_player_x" | "net_player_y" | "net_player_z" | "net_player_yaw" => {
             (vec![I64], Some(F64))
         }

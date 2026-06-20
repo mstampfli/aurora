@@ -682,6 +682,12 @@ pub extern "C" fn aurora_net_player_z(id: i64) -> f64 {
 pub extern "C" fn aurora_net_player_yaw(id: i64) -> f64 {
     read(0.0, |s| s.pyaw(id.max(0) as u32))
 }
+/// Read any replicated state float of a player (game-defined fields beyond the
+/// transform, e.g. hp/shield a client writes into free state slots). Safe + additive.
+#[no_mangle]
+pub extern "C" fn aurora_net_player_state(id: i64, slot: i64) -> f64 {
+    read(0.0, |s| s.state(id.max(0) as u32, slot.max(0) as usize))
+}
 #[no_mangle]
 pub extern "C" fn aurora_net_local_x() -> f64 {
     read(0.0, |s| s.px(s.my_id()))
