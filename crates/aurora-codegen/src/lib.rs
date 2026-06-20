@@ -3356,10 +3356,12 @@ fn tr_call(
         b.ins().call(f, &[fn_ptr, env_ptr, sl, il]);
         return Ok(Term::Val(b.ins().iconst(types::I64, 0), Cty::I64));
     }
-    // `text_width("...", px)` - measure a literal string's pixel width for centering.
+    // `text_width(text, px)` - pixel width for centering. Works for a string LITERAL
+    // or any runtime string value (str_arg handles both), so e.g. text_width(name, 18)
+    // on a dynamic label/username measures correctly instead of returning 0.
     if name == "text_width" {
-        if let Some(ExprKind::Str(s)) = args.first().map(|a| &a.value.kind) {
-            let (ptr, len) = emit_str_data(m, b, env, s)?;
+        if let Some(a) = args.first() {
+            let (ptr, len) = str_arg(m, b, l, env, &a.value)?;
             let px = if let Some(a) = args.get(1) {
                 let (v, t) = val(m, b, l, env, &a.value)?;
                 if t == Cty::F32 || t == Cty::F64 {
