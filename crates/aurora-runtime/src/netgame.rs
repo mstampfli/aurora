@@ -23,6 +23,7 @@ const TAG_FIRE: u8 = 3;
 const TAG_HIT: u8 = 4;
 const TAG_REJECT: u8 = 5; // host -> a joiner it can't fit: the lobby is full
 const TAG_OBJECTS: u8 = 6; // host -> clients: authoritative world-object (crate) positions
+const TAG_KILL: u8 = 7; // host -> clients: an authoritative kill event (killer, victim) net ids
 
 /// Reserved id range for host-controlled bots. They ride the SAME player
 /// replication channel as humans (state + meta + name), so a guest receives and
@@ -119,6 +120,11 @@ pub struct Session {
     objects: Vec<[f32; 3]>,
     /// Host change-detection: objects are static until shot, so we only resend when moved.
     last_sent_objects: Vec<[f32; 3]>,
+    /// Kill events (killer, victim net ids). Host: pushed by its game when the death sweep
+    /// credits a kill, broadcast to clients. Client: received kills, drained by the game to
+    /// drive the red kill-marker/sound/feed (NOT the predicted per-hit hitmarker).
+    kill_out: Vec<(u32, u32)>,
+    kill_in: Vec<(u32, u32)>,
     next_id: u32,
     lag: LagComp,
     server_tick: u64,
@@ -190,6 +196,8 @@ impl Session {
             bots: Vec::new(),
             objects: Vec::new(),
             last_sent_objects: Vec::new(),
+            kill_out: Vec::new(),
+            kill_in: Vec::new(),
             next_id: 1,
             lag: LagComp::new(64),
             server_tick: 0,
@@ -397,6 +405,16 @@ impl Session {
             }
             self.last_sent_objects = self.objects.clone();
         }
+        // Broadcast authoritative kill events to every client (drives their kill feed + the
+        // killer's red marker/sound). Sent once each; transient, so rare UDP loss is acceptable.
+        if !self.kill_out.is_empty() {
+            for (killer, victim) in self.kill_out.drain(..) {
+                let kpkt = encode_kill(killer, victim);
+                for c in &self.clients {
+                    let _ = self.sock.send_to(&kpkt, c.addr);
+                }
+            }
+        }
     }
 
     /// Find (or admit) a client by address. Returns None if it is NEW and the lobby is
@@ -475,6 +493,12 @@ impl Session {
         if pkt.first().copied() == Some(TAG_OBJECTS) {
             if let Some(objs) = decode_objects(pkt) {
                 self.objects = objs; // authoritative crate positions from the host
+            }
+            return;
+        }
+        if pkt.first().copied() == Some(TAG_KILL) {
+            if let Some((killer, victim)) = decode_kill(pkt) {
+                self.kill_in.push((killer, victim));
             }
             return;
         }
@@ -680,6 +704,26 @@ impl Session {
     pub fn clear_server_hits(&mut self) {
         self.server_hits.clear();
     }
+
+    // --- kill events: host announces, clients consume (kill confirm only, never hits) ---
+    /// Host: announce an authoritative kill (killer + victim net ids), broadcast next frame.
+    pub fn push_kill(&mut self, killer: u32, victim: u32) {
+        self.kill_out.push((killer, victim));
+    }
+    /// Client: how many kill events arrived since the last drain.
+    pub fn kill_count(&self) -> usize {
+        self.kill_in.len()
+    }
+    pub fn kill_killer(&self, i: usize) -> i64 {
+        self.kill_in.get(i).map(|k| k.0 as i64).unwrap_or(-1)
+    }
+    pub fn kill_victim(&self, i: usize) -> i64 {
+        self.kill_in.get(i).map(|k| k.1 as i64).unwrap_or(-1)
+    }
+    /// Client: the game calls this after rendering the kill events this frame.
+    pub fn clear_kills(&mut self) {
+        self.kill_in.clear();
+    }
 }
 
 // --- wire format (big-endian) ---
@@ -816,6 +860,19 @@ fn decode_objects(b: &[u8]) -> Option<Vec<[f32; 3]>> {
         o += 12;
     }
     Some(objs)
+}
+fn encode_kill(killer: u32, victim: u32) -> Vec<u8> {
+    let mut b = Vec::with_capacity(9);
+    b.push(TAG_KILL);
+    put_u32(&mut b, killer);
+    put_u32(&mut b, victim);
+    b
+}
+fn decode_kill(b: &[u8]) -> Option<(u32, u32)> {
+    if b.len() < 9 || b[0] != TAG_KILL {
+        return None;
+    }
+    Some((rd_u32(b, 1), rd_u32(b, 5)))
 }
 fn objects_differ(a: &[[f32; 3]], b: &[[f32; 3]]) -> bool {
     if a.len() != b.len() {
@@ -1137,6 +1194,27 @@ pub extern "C" fn aurora_net_server_hit_z(i: i64) -> f64 {
 pub extern "C" fn aurora_net_server_hits_clear() {
     with((), |s| s.clear_server_hits());
 }
+// --- kill events: host announces (push), clients consume (count/killer/victim/clear) ---
+#[no_mangle]
+pub extern "C" fn aurora_net_push_kill(killer: i64, victim: i64) {
+    with((), |s| s.push_kill(killer.max(0) as u32, victim.max(0) as u32));
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_kill_count() -> i64 {
+    read(0, |s| s.kill_count() as i64)
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_kill_killer(i: i64) -> i64 {
+    read(-1, |s| s.kill_killer(i.max(0) as usize))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_kill_victim(i: i64) -> i64 {
+    read(-1, |s| s.kill_victim(i.max(0) as usize))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_kills_clear() {
+    with((), |s| s.clear_kills());
+}
 #[no_mangle]
 pub extern "C" fn aurora_net_hit_player() -> i64 {
     read(-1, |s| s.hit_player())
@@ -1441,5 +1519,35 @@ mod meta_replication_test {
         }
         assert!((client.object_pos(2, 0) - 18.0).abs() < 0.01, "moved crate 2 x = {}", client.object_pos(2, 0));
         assert!((client.object_pos(2, 1) - 1.5).abs() < 0.01, "moved crate 2 y = {}", client.object_pos(2, 1));
+    }
+
+    // Kill events announced by the host reach the client (which drives its kill feed + the
+    // killer's red marker/sound) - distinct from the predicted per-hit hitmarker.
+    #[test]
+    fn kill_events_reach_client() {
+        let mut host = Session::host(0).expect("host bind");
+        let host_addr = host.local_addr();
+        let mut client = Session::join(host_addr).expect("client bind");
+        let input = [0.0f32; 4];
+        // Connect.
+        for _ in 0..10 {
+            client.send_input(&input);
+            host.send_input(&input);
+            client.update(0.016);
+            host.update(0.016);
+            client.update(0.016);
+        }
+        let cid = client.my_id();
+        // Host announces: this client killed bot 0 (net id BOT_ID_BASE).
+        host.push_kill(cid, BOT_ID_BASE);
+        let mut total = 0;
+        for _ in 0..6 {
+            host.send_input(&input);
+            host.update(0.016);
+            client.update(0.016);
+            total += client.kill_count();
+            client.clear_kills();
+        }
+        assert!(total >= 1, "client received no kill event");
     }
 }
