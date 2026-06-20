@@ -380,7 +380,7 @@ const BUILTINS: &[&str] = &[
     "net_host", "net_join", "net_sim", "net_send_input", "net_update",
     "net_my_id", "net_is_server", "net_player_count", "net_player_id_at",
     "net_player_x", "net_player_y", "net_player_z", "net_player_yaw", "net_player_state",
-    "net_set_meta", "net_player_meta",
+    "net_set_meta", "net_player_meta", "net_set_name", "net_player_name_len", "net_player_name_char",
     "net_local_x", "net_local_y", "net_local_z", "net_local_yaw",
     "net_state", "net_local_state", "net_interest", "net_hit_radius",
     "net_spawn_at", "net_fire",
@@ -709,6 +709,9 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_net_player_state", aurora_runtime::aurora_net_player_state as *const u8);
     builder.symbol("aurora_net_set_meta", aurora_runtime::aurora_net_set_meta as *const u8);
     builder.symbol("aurora_net_player_meta", aurora_runtime::aurora_net_player_meta as *const u8);
+    builder.symbol("aurora_net_set_name", aurora_runtime::aurora_net_set_name as *const u8);
+    builder.symbol("aurora_net_player_name_len", aurora_runtime::aurora_net_player_name_len as *const u8);
+    builder.symbol("aurora_net_player_name_char", aurora_runtime::aurora_net_player_name_char as *const u8);
     builder.symbol("aurora_net_local_x", aurora_runtime::aurora_net_local_x as *const u8);
     builder.symbol("aurora_net_local_y", aurora_runtime::aurora_net_local_y as *const u8);
     builder.symbol("aurora_net_local_z", aurora_runtime::aurora_net_local_z as *const u8);
@@ -1037,6 +1040,9 @@ fn lower(
     hosts.insert("net_player_state", import(jmod, "aurora_net_player_state", &[i, i], Some(f64t)));
     hosts.insert("net_set_meta", import(jmod, "aurora_net_set_meta", &[i, f64t], None));
     hosts.insert("net_player_meta", import(jmod, "aurora_net_player_meta", &[i, i], Some(f64t)));
+    hosts.insert("net_set_name", import(jmod, "aurora_net_set_name", &[ptr_ty, i], None));
+    hosts.insert("net_player_name_len", import(jmod, "aurora_net_player_name_len", &[i], Some(i)));
+    hosts.insert("net_player_name_char", import(jmod, "aurora_net_player_name_char", &[i, i], Some(i)));
     hosts.insert("net_local_x", import(jmod, "aurora_net_local_x", &[], Some(f64t)));
     hosts.insert("net_local_y", import(jmod, "aurora_net_local_y", &[], Some(f64t)));
     hosts.insert("net_local_z", import(jmod, "aurora_net_local_z", &[], Some(f64t)));
@@ -3211,6 +3217,15 @@ fn tr_call(
         }
         return Ok(Term::Val(b.ins().iconst(types::I64, 0), Cty::I64));
     }
+    // `net_set_name("...")` - set the local player's replicated display name from a string.
+    if name == "net_set_name" {
+        if let Some(a) = args.first() {
+            let (ptr, len) = str_arg(m, b, l, env, &a.value)?;
+            let f = m.declare_func_in_func(env.hosts["net_set_name"], b.func);
+            b.ins().call(f, &[ptr, len]);
+        }
+        return Ok(Term::Val(b.ins().iconst(types::I64, 0), Cty::I64));
+    }
 
     // Asset + scene builtins: take a path string, return an i64 status.
     if name == "draw_text" {
@@ -4336,6 +4351,8 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "net_player_state" => (vec![I64, I64], Some(F64)),
         "net_set_meta" => (vec![I64, F64], None),
         "net_player_meta" => (vec![I64, I64], Some(F64)),
+        "net_player_name_len" => (vec![I64], Some(I64)),
+        "net_player_name_char" => (vec![I64, I64], Some(I64)),
         "net_player_x" | "net_player_y" | "net_player_z" | "net_player_yaw" => {
             (vec![I64], Some(F64))
         }
