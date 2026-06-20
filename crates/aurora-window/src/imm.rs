@@ -34,6 +34,8 @@ struct ImmApp {
     mouse_down: bool,
     mouse_right: bool,
     mouse_middle: bool,
+    mouse_back: bool,
+    mouse_forward: bool,
     /// Raw mouse motion accumulated since the last present (for FPS look).
     mouse_dx: f64,
     mouse_dy: f64,
@@ -123,6 +125,8 @@ impl ApplicationHandler for ImmApp {
                     MouseButton::Left => self.mouse_down = down,
                     MouseButton::Right => self.mouse_right = down,
                     MouseButton::Middle => self.mouse_middle = down,
+                    MouseButton::Back => self.mouse_back = down,
+                    MouseButton::Forward => self.mouse_forward = down,
                     _ => {}
                 }
                 // Clicking back into the window re-captures the cursor after
@@ -225,6 +229,8 @@ pub fn open(width: u32, height: u32) {
         mouse_down: false,
         mouse_right: false,
         mouse_middle: false,
+        mouse_back: false,
+        mouse_forward: false,
         mouse_dx: 0.0,
         mouse_dy: 0.0,
         scroll: 0.0,
@@ -266,6 +272,8 @@ pub fn mouse_button(b: u32) -> bool {
             .map(|(_, app)| match b {
                 1 => app.mouse_right,
                 2 => app.mouse_middle,
+                3 => app.mouse_back,
+                4 => app.mouse_forward,
                 _ => app.mouse_down,
             })
             .unwrap_or(false)
