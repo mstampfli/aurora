@@ -24,7 +24,8 @@ const TAG_HIT: u8 = 4;
 const TAG_REJECT: u8 = 5; // host -> a joiner it can't fit: the lobby is full
 const TAG_OBJECTS: u8 = 6; // host -> clients: authoritative world-object (crate) positions
 const TAG_KILL: u8 = 7; // host -> clients: an authoritative kill event (killer, victim) net ids
-const TAG_EXPLODE: u8 = 8; // client -> host: my rocket/grenade exploded here (host applies the damage)
+const TAG_PROJECTILE: u8 = 8; // client -> host: I LAUNCHED a rocket/grenade (intent only; the
+                              // host simulates it and decides where + how hard it detonates)
 
 /// Reserved id range for host-controlled bots. They ride the SAME player
 /// replication channel as humans (state + meta + name), so a guest receives and
@@ -74,6 +75,9 @@ struct SClient {
     inbox: VecDeque<(u32, InputBlob)>,
     acked_seq: u32,
     last_sent: std::collections::HashMap<u32, Player>,
+    /// Per-meta-slot: true once the host has taken authority over it (hp/shield), so the
+    /// client's self-reported value is no longer relayed into it - the host's value wins.
+    meta_owned: [bool; META_LEN],
 }
 
 struct Remote {
@@ -93,13 +97,15 @@ struct ServerHit {
     weapon: u8,
 }
 
-/// A client's explosion (rocket/grenade) the host applies authoritative radial damage for.
-/// Not lag-compensated (an area effect, far more forgiving than a hitscan ray).
+/// A client's projectile LAUNCH (intent only). The host simulates the flight in its own
+/// world to decide where it detonates - the client never states the explosion result, so a
+/// cheat can't blow up arbitrary points. `kind`: 0 = rocket (straight), 1 = grenade (arc).
 #[derive(Clone, Copy)]
-struct ServerExplosion {
+struct ServerProjectile {
     shooter: u32,
-    center: [f32; 3],
-    intensity: f32,
+    kind: u8,
+    origin: [f32; 3],
+    vel: [f32; 3],
 }
 
 /// One networking session (server or client).
@@ -140,8 +146,8 @@ pub struct Session {
     server_tick: u64,
     /// Validated client shots awaiting the host game's authoritative damage (drained per frame).
     server_hits: Vec<ServerHit>,
-    /// Client explosions awaiting the host game's authoritative radial damage.
-    server_explosions: Vec<ServerExplosion>,
+    /// Client projectile launches awaiting the host game's simulation + authoritative damage.
+    server_projectiles: Vec<ServerProjectile>,
     // Client.
     pred: Player,
     pending: VecDeque<(u32, InputBlob)>,
@@ -214,7 +220,7 @@ impl Session {
             lag: LagComp::new(64),
             server_tick: 0,
             server_hits: Vec::new(),
-            server_explosions: Vec::new(),
+            server_projectiles: Vec::new(),
             pred: Player::spawn(),
             pending: VecDeque::new(),
             next_seq: 1,
@@ -311,14 +317,15 @@ impl Session {
             let _ = self.sock.send_to(&encode_fire(vt, o, d, weapon), addr);
         }
     }
-    /// A rocket/grenade exploded at `c` with `intensity`. The host applies its own explosions
-    /// locally (it is the authority); a client sends it so the host applies the radial damage.
-    pub fn explode_at(&mut self, cx: f32, cy: f32, cz: f32, intensity: f32) {
+    /// A client LAUNCHED a projectile (kind 0 rocket / 1 grenade) from `o` with velocity `v`.
+    /// INTENT only - sent to the host, which simulates the flight and decides the detonation.
+    /// The host's own projectiles run locally (it is the authority), so they aren't sent.
+    pub fn projectile_intent(&mut self, kind: u8, o: [f32; 3], v: [f32; 3]) {
         if self.is_server {
             return;
         }
         if let Some(addr) = self.server_addr {
-            let _ = self.sock.send_to(&encode_explode([cx, cy, cz], intensity), addr);
+            let _ = self.sock.send_to(&encode_projectile(kind, o, v), addr);
         }
     }
     pub fn hit_player(&self) -> i64 {
@@ -463,6 +470,7 @@ impl Session {
             inbox: VecDeque::new(),
             acked_seq: 0,
             last_sent: std::collections::HashMap::new(),
+            meta_owned: [false; META_LEN],
         });
         Some(self.clients.len() - 1)
     }
@@ -477,7 +485,13 @@ impl Session {
                         return;
                     };
                     self.clients[idx].inbox.push_back((seq, blob));
-                    self.clients[idx].state.meta = meta; // relay this client's self-reported metadata
+                    // Relay the client's self-reported metadata, EXCEPT slots the host has taken
+                    // authority over (hp/shield) - those keep the host's authoritative value.
+                    for s in 0..META_LEN {
+                        if !self.clients[idx].meta_owned[s] {
+                            self.clients[idx].state.meta[s] = meta[s];
+                        }
+                    }
                     self.clients[idx].state.name = name;
                 }
             }
@@ -498,12 +512,12 @@ impl Session {
                     self.server_hits.push(ServerHit { shooter, victim: id, point, weapon });
                 }
             }
-            Some(TAG_EXPLODE) => {
-                let Some((center, intensity)) = decode_explode(pkt) else { return };
+            Some(TAG_PROJECTILE) => {
+                let Some((kind, origin, vel)) = decode_projectile(pkt) else { return };
                 let Some(shooter) = self.clients.iter().find(|c| c.addr == from).map(|c| c.id) else {
                     return;
                 };
-                self.server_explosions.push(ServerExplosion { shooter, center, intensity });
+                self.server_projectiles.push(ServerProjectile { shooter, kind, origin, vel });
             }
             _ => {}
         }
@@ -628,6 +642,20 @@ impl Session {
         }
         self.player_blob(id).0.meta[slot] as f64
     }
+    /// HOST: override ANY player's replicated metadata slot (e.g. authoritative hp/shield the
+    /// host owns for a client). Re-applied each frame AFTER the client's self-report is relayed,
+    /// so the host's value wins. The client reads it back as its own meta on the next snapshot.
+    pub fn set_player_meta(&mut self, id: u32, slot: usize, v: f64) {
+        if slot >= META_LEN || !self.is_server {
+            return;
+        }
+        if id == 0 {
+            self.host.meta[slot] = v as f32;
+        } else if let Some(c) = self.clients.iter_mut().find(|c| c.id == id) {
+            c.state.meta[slot] = v as f32;
+            c.meta_owned[slot] = true; // from now on the host owns this slot for this client
+        }
+    }
     /// Set the LOCAL player's display name (UTF-8 bytes, truncated to NAME_MAX).
     pub fn set_name(&mut self, bytes: &[u8]) {
         self.local_name = [0u8; NAME_MAX];
@@ -735,21 +763,24 @@ impl Session {
         self.server_hits.clear();
     }
 
-    // --- host: client explosions awaiting authoritative radial damage ---
-    pub fn server_explosion_count(&self) -> usize {
-        self.server_explosions.len()
+    // --- host: client projectile launches awaiting simulation + authoritative damage ---
+    pub fn server_projectile_count(&self) -> usize {
+        self.server_projectiles.len()
     }
-    pub fn server_explosion_shooter(&self, i: usize) -> i64 {
-        self.server_explosions.get(i).map(|e| e.shooter as i64).unwrap_or(-1)
+    pub fn server_projectile_shooter(&self, i: usize) -> i64 {
+        self.server_projectiles.get(i).map(|p| p.shooter as i64).unwrap_or(-1)
     }
-    pub fn server_explosion_pos(&self, i: usize, axis: usize) -> f64 {
-        self.server_explosions.get(i).map(|e| e.center[axis.min(2)] as f64).unwrap_or(0.0)
+    pub fn server_projectile_kind(&self, i: usize) -> i64 {
+        self.server_projectiles.get(i).map(|p| p.kind as i64).unwrap_or(0)
     }
-    pub fn server_explosion_intensity(&self, i: usize) -> f64 {
-        self.server_explosions.get(i).map(|e| e.intensity as f64).unwrap_or(0.0)
+    pub fn server_projectile_origin(&self, i: usize, axis: usize) -> f64 {
+        self.server_projectiles.get(i).map(|p| p.origin[axis.min(2)] as f64).unwrap_or(0.0)
     }
-    pub fn clear_server_explosions(&mut self) {
-        self.server_explosions.clear();
+    pub fn server_projectile_vel(&self, i: usize, axis: usize) -> f64 {
+        self.server_projectiles.get(i).map(|p| p.vel[axis.min(2)] as f64).unwrap_or(0.0)
+    }
+    pub fn clear_server_projectiles(&mut self) {
+        self.server_projectiles.clear();
     }
 
     // --- kill events: host announces, clients consume (kill confirm only, never hits) ---
@@ -908,20 +939,23 @@ fn decode_objects(b: &[u8]) -> Option<Vec<[f32; 3]>> {
     }
     Some(objs)
 }
-fn encode_explode(c: [f32; 3], intensity: f32) -> Vec<u8> {
-    let mut b = Vec::with_capacity(17);
-    b.push(TAG_EXPLODE);
-    for v in c.iter() {
-        put_f32(&mut b, *v);
+fn encode_projectile(kind: u8, o: [f32; 3], v: [f32; 3]) -> Vec<u8> {
+    let mut b = Vec::with_capacity(26);
+    b.push(TAG_PROJECTILE);
+    b.push(kind);
+    for x in o.iter().chain(v.iter()) {
+        put_f32(&mut b, *x);
     }
-    put_f32(&mut b, intensity);
     b
 }
-fn decode_explode(b: &[u8]) -> Option<([f32; 3], f32)> {
-    if b.len() < 17 || b[0] != TAG_EXPLODE {
+fn decode_projectile(b: &[u8]) -> Option<(u8, [f32; 3], [f32; 3])> {
+    if b.len() < 26 || b[0] != TAG_PROJECTILE {
         return None;
     }
-    Some(([rd_f32(b, 1), rd_f32(b, 5), rd_f32(b, 9)], rd_f32(b, 13)))
+    let kind = b[1];
+    let o = [rd_f32(b, 2), rd_f32(b, 6), rd_f32(b, 10)];
+    let v = [rd_f32(b, 14), rd_f32(b, 18), rd_f32(b, 22)];
+    Some((kind, o, v))
 }
 fn encode_kill(killer: u32, victim: u32) -> Vec<u8> {
     let mut b = Vec::with_capacity(9);
@@ -1119,6 +1153,11 @@ pub extern "C" fn aurora_net_player_state(id: i64, slot: i64) -> f64 {
 pub extern "C" fn aurora_net_set_meta(slot: i64, v: f64) {
     with((), |s| s.set_meta(slot.max(0) as usize, v))
 }
+/// HOST: override a specific player's metadata slot (authoritative hp/shield the host owns).
+#[no_mangle]
+pub extern "C" fn aurora_net_set_player_meta(id: i64, slot: i64, v: f64) {
+    with((), |s| s.set_player_meta(id.max(0) as u32, slot.max(0) as usize, v))
+}
 /// Read a player's replicated metadata slot (works on host AND clients).
 #[no_mangle]
 pub extern "C" fn aurora_net_player_meta(id: i64, slot: i64) -> f64 {
@@ -1256,38 +1295,50 @@ pub extern "C" fn aurora_net_server_hit_z(i: i64) -> f64 {
 pub extern "C" fn aurora_net_server_hits_clear() {
     with((), |s| s.clear_server_hits());
 }
-// --- explosions: client announces its blast; host drains + applies radial damage game-side ---
+// --- projectiles: client announces a LAUNCH (intent); host drains, simulates, applies damage ---
 #[no_mangle]
-pub extern "C" fn aurora_net_explosion(cx: f64, cy: f64, cz: f64, intensity: f64) {
-    with((), |s| s.explode_at(cx as f32, cy as f32, cz as f32, intensity as f32));
+pub extern "C" fn aurora_net_projectile_intent(kind: i64, ox: f64, oy: f64, oz: f64, vx: f64, vy: f64, vz: f64) {
+    with((), |s| s.projectile_intent(kind.max(0) as u8, [ox as f32, oy as f32, oz as f32], [vx as f32, vy as f32, vz as f32]));
 }
 #[no_mangle]
-pub extern "C" fn aurora_net_server_explosion_count() -> i64 {
-    read(0, |s| s.server_explosion_count() as i64)
+pub extern "C" fn aurora_net_server_projectile_count() -> i64 {
+    read(0, |s| s.server_projectile_count() as i64)
 }
 #[no_mangle]
-pub extern "C" fn aurora_net_server_explosion_shooter(i: i64) -> i64 {
-    read(-1, |s| s.server_explosion_shooter(i.max(0) as usize))
+pub extern "C" fn aurora_net_server_projectile_shooter(i: i64) -> i64 {
+    read(-1, |s| s.server_projectile_shooter(i.max(0) as usize))
 }
 #[no_mangle]
-pub extern "C" fn aurora_net_server_explosion_x(i: i64) -> f64 {
-    read(0.0, |s| s.server_explosion_pos(i.max(0) as usize, 0))
+pub extern "C" fn aurora_net_server_projectile_kind(i: i64) -> i64 {
+    read(0, |s| s.server_projectile_kind(i.max(0) as usize))
 }
 #[no_mangle]
-pub extern "C" fn aurora_net_server_explosion_y(i: i64) -> f64 {
-    read(0.0, |s| s.server_explosion_pos(i.max(0) as usize, 1))
+pub extern "C" fn aurora_net_server_projectile_ox(i: i64) -> f64 {
+    read(0.0, |s| s.server_projectile_origin(i.max(0) as usize, 0))
 }
 #[no_mangle]
-pub extern "C" fn aurora_net_server_explosion_z(i: i64) -> f64 {
-    read(0.0, |s| s.server_explosion_pos(i.max(0) as usize, 2))
+pub extern "C" fn aurora_net_server_projectile_oy(i: i64) -> f64 {
+    read(0.0, |s| s.server_projectile_origin(i.max(0) as usize, 1))
 }
 #[no_mangle]
-pub extern "C" fn aurora_net_server_explosion_intensity(i: i64) -> f64 {
-    read(0.0, |s| s.server_explosion_intensity(i.max(0) as usize))
+pub extern "C" fn aurora_net_server_projectile_oz(i: i64) -> f64 {
+    read(0.0, |s| s.server_projectile_origin(i.max(0) as usize, 2))
 }
 #[no_mangle]
-pub extern "C" fn aurora_net_server_explosions_clear() {
-    with((), |s| s.clear_server_explosions());
+pub extern "C" fn aurora_net_server_projectile_vx(i: i64) -> f64 {
+    read(0.0, |s| s.server_projectile_vel(i.max(0) as usize, 0))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_server_projectile_vy(i: i64) -> f64 {
+    read(0.0, |s| s.server_projectile_vel(i.max(0) as usize, 1))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_server_projectile_vz(i: i64) -> f64 {
+    read(0.0, |s| s.server_projectile_vel(i.max(0) as usize, 2))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_server_projectiles_clear() {
+    with((), |s| s.clear_server_projectiles());
 }
 // --- kill events: host announces (push), clients consume (count/killer/victim/clear) ---
 #[no_mangle]
@@ -1646,10 +1697,10 @@ mod meta_replication_test {
         assert!(total >= 1, "client received no kill event");
     }
 
-    // A client's explosion is queued on the host for authoritative radial damage (shooter +
-    // center + intensity intact). Like the hit queue, but area-effect (not lag-compensated).
+    // A client's projectile LAUNCH (intent: kind + origin + velocity) is queued on the host,
+    // which will simulate it to decide the detonation. The client never states the result.
     #[test]
-    fn explosions_queue_on_host() {
+    fn projectile_intent_queues_on_host() {
         let mut host = Session::host(0).expect("host bind");
         let host_addr = host.local_addr();
         let mut client = Session::join(host_addr).expect("client bind");
@@ -1661,16 +1712,40 @@ mod meta_replication_test {
             host.update(0.016);
             client.update(0.016);
         }
-        host.clear_server_explosions();
-        client.explode_at(7.0, 1.5, -3.0, 1.1);
+        host.clear_server_projectiles();
+        client.projectile_intent(0, [2.0, 1.5, 0.0], [1.0, 0.0, 0.0]); // rocket east
         for _ in 0..6 {
             client.update(0.016);
             host.update(0.016);
         }
-        assert!(host.server_explosion_count() >= 1, "host queued no explosion");
+        assert!(host.server_projectile_count() >= 1, "host queued no projectile");
         let cid = client.my_id();
-        assert_eq!(host.server_explosion_shooter(0), cid as i64, "shooter id");
-        assert!((host.server_explosion_pos(0, 0) - 7.0).abs() < 0.01, "explosion x");
-        assert!((host.server_explosion_intensity(0) - 1.1).abs() < 0.01, "intensity");
+        assert_eq!(host.server_projectile_shooter(0), cid as i64, "shooter id");
+        assert_eq!(host.server_projectile_kind(0), 0, "kind = rocket");
+        assert!((host.server_projectile_origin(0, 0) - 2.0).abs() < 0.01, "origin x");
+        assert!((host.server_projectile_vel(0, 0) - 1.0).abs() < 0.01, "vel x");
+    }
+
+    // The host can OWN a client's hp: it overrides the client's replicated meta, and the
+    // client reads that authoritative value back as its own (host-authoritative health).
+    #[test]
+    fn host_owns_client_hp() {
+        let mut host = Session::host(0).expect("host bind");
+        let host_addr = host.local_addr();
+        let mut client = Session::join(host_addr).expect("client bind");
+        client.set_meta(0, 100.0); // the client THINKS it has 100
+        let input = [0.0f32; 4];
+        for _ in 0..30 {
+            client.send_input(&input);
+            host.send_input(&input);
+            client.update(0.016);
+            // Host overrides this client's hp to 37 AFTER the relay each frame (authoritative).
+            let cid = client.my_id();
+            host.set_player_meta(cid, 0, 37.0);
+            host.update(0.016);
+            client.update(0.016);
+        }
+        // The client reads its OWN hp as the host's authoritative value, not its self-report.
+        assert!((client.meta(client.my_id(), 0) - 37.0).abs() < 0.01, "client hp = {}", client.meta(client.my_id(), 0));
     }
 }

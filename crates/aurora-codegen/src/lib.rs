@@ -390,9 +390,10 @@ const BUILTINS: &[&str] = &[
     "net_server_hit_count", "net_server_hit_shooter", "net_server_hit_victim", "net_server_hit_weapon",
     "net_server_hit_x", "net_server_hit_y", "net_server_hit_z", "net_server_hits_clear",
     "net_push_kill", "net_kill_count", "net_kill_killer", "net_kill_victim", "net_kills_clear",
-    "net_explosion", "net_server_explosion_count", "net_server_explosion_shooter",
-    "net_server_explosion_x", "net_server_explosion_y", "net_server_explosion_z",
-    "net_server_explosion_intensity", "net_server_explosions_clear",
+    "net_projectile_intent", "net_server_projectile_count", "net_server_projectile_shooter",
+    "net_server_projectile_kind", "net_server_projectile_ox", "net_server_projectile_oy",
+    "net_server_projectile_oz", "net_server_projectile_vx", "net_server_projectile_vy",
+    "net_server_projectile_vz", "net_server_projectiles_clear", "net_set_player_meta",
     // Rebindable input-action layer + raw f32-blob accessors.
     "input_bind", "input_binding", "input_down", "input_axis", "input_suppress",
     "save_settings", "load_settings",
@@ -756,14 +757,18 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_net_kill_killer", aurora_runtime::aurora_net_kill_killer as *const u8);
     builder.symbol("aurora_net_kill_victim", aurora_runtime::aurora_net_kill_victim as *const u8);
     builder.symbol("aurora_net_kills_clear", aurora_runtime::aurora_net_kills_clear as *const u8);
-    builder.symbol("aurora_net_explosion", aurora_runtime::aurora_net_explosion as *const u8);
-    builder.symbol("aurora_net_server_explosion_count", aurora_runtime::aurora_net_server_explosion_count as *const u8);
-    builder.symbol("aurora_net_server_explosion_shooter", aurora_runtime::aurora_net_server_explosion_shooter as *const u8);
-    builder.symbol("aurora_net_server_explosion_x", aurora_runtime::aurora_net_server_explosion_x as *const u8);
-    builder.symbol("aurora_net_server_explosion_y", aurora_runtime::aurora_net_server_explosion_y as *const u8);
-    builder.symbol("aurora_net_server_explosion_z", aurora_runtime::aurora_net_server_explosion_z as *const u8);
-    builder.symbol("aurora_net_server_explosion_intensity", aurora_runtime::aurora_net_server_explosion_intensity as *const u8);
-    builder.symbol("aurora_net_server_explosions_clear", aurora_runtime::aurora_net_server_explosions_clear as *const u8);
+    builder.symbol("aurora_net_projectile_intent", aurora_runtime::aurora_net_projectile_intent as *const u8);
+    builder.symbol("aurora_net_server_projectile_count", aurora_runtime::aurora_net_server_projectile_count as *const u8);
+    builder.symbol("aurora_net_server_projectile_shooter", aurora_runtime::aurora_net_server_projectile_shooter as *const u8);
+    builder.symbol("aurora_net_server_projectile_kind", aurora_runtime::aurora_net_server_projectile_kind as *const u8);
+    builder.symbol("aurora_net_server_projectile_ox", aurora_runtime::aurora_net_server_projectile_ox as *const u8);
+    builder.symbol("aurora_net_server_projectile_oy", aurora_runtime::aurora_net_server_projectile_oy as *const u8);
+    builder.symbol("aurora_net_server_projectile_oz", aurora_runtime::aurora_net_server_projectile_oz as *const u8);
+    builder.symbol("aurora_net_server_projectile_vx", aurora_runtime::aurora_net_server_projectile_vx as *const u8);
+    builder.symbol("aurora_net_server_projectile_vy", aurora_runtime::aurora_net_server_projectile_vy as *const u8);
+    builder.symbol("aurora_net_server_projectile_vz", aurora_runtime::aurora_net_server_projectile_vz as *const u8);
+    builder.symbol("aurora_net_server_projectiles_clear", aurora_runtime::aurora_net_server_projectiles_clear as *const u8);
+    builder.symbol("aurora_net_set_player_meta", aurora_runtime::aurora_net_set_player_meta as *const u8);
     builder.symbol("aurora_net_hit_player", aurora_runtime::aurora_net_hit_player as *const u8);
     builder.symbol("aurora_net_hit_x", aurora_runtime::aurora_net_hit_x as *const u8);
     builder.symbol("aurora_net_hit_y", aurora_runtime::aurora_net_hit_y as *const u8);
@@ -1121,14 +1126,18 @@ fn lower(
     hosts.insert("net_kill_killer", import(jmod, "aurora_net_kill_killer", &[i], Some(i)));
     hosts.insert("net_kill_victim", import(jmod, "aurora_net_kill_victim", &[i], Some(i)));
     hosts.insert("net_kills_clear", import(jmod, "aurora_net_kills_clear", &[], None));
-    hosts.insert("net_explosion", import(jmod, "aurora_net_explosion", &[f64t, f64t, f64t, f64t], None));
-    hosts.insert("net_server_explosion_count", import(jmod, "aurora_net_server_explosion_count", &[], Some(i)));
-    hosts.insert("net_server_explosion_shooter", import(jmod, "aurora_net_server_explosion_shooter", &[i], Some(i)));
-    hosts.insert("net_server_explosion_x", import(jmod, "aurora_net_server_explosion_x", &[i], Some(f64t)));
-    hosts.insert("net_server_explosion_y", import(jmod, "aurora_net_server_explosion_y", &[i], Some(f64t)));
-    hosts.insert("net_server_explosion_z", import(jmod, "aurora_net_server_explosion_z", &[i], Some(f64t)));
-    hosts.insert("net_server_explosion_intensity", import(jmod, "aurora_net_server_explosion_intensity", &[i], Some(f64t)));
-    hosts.insert("net_server_explosions_clear", import(jmod, "aurora_net_server_explosions_clear", &[], None));
+    hosts.insert("net_projectile_intent", import(jmod, "aurora_net_projectile_intent", &[i, f64t, f64t, f64t, f64t, f64t, f64t], None));
+    hosts.insert("net_server_projectile_count", import(jmod, "aurora_net_server_projectile_count", &[], Some(i)));
+    hosts.insert("net_server_projectile_shooter", import(jmod, "aurora_net_server_projectile_shooter", &[i], Some(i)));
+    hosts.insert("net_server_projectile_kind", import(jmod, "aurora_net_server_projectile_kind", &[i], Some(i)));
+    hosts.insert("net_server_projectile_ox", import(jmod, "aurora_net_server_projectile_ox", &[i], Some(f64t)));
+    hosts.insert("net_server_projectile_oy", import(jmod, "aurora_net_server_projectile_oy", &[i], Some(f64t)));
+    hosts.insert("net_server_projectile_oz", import(jmod, "aurora_net_server_projectile_oz", &[i], Some(f64t)));
+    hosts.insert("net_server_projectile_vx", import(jmod, "aurora_net_server_projectile_vx", &[i], Some(f64t)));
+    hosts.insert("net_server_projectile_vy", import(jmod, "aurora_net_server_projectile_vy", &[i], Some(f64t)));
+    hosts.insert("net_server_projectile_vz", import(jmod, "aurora_net_server_projectile_vz", &[i], Some(f64t)));
+    hosts.insert("net_server_projectiles_clear", import(jmod, "aurora_net_server_projectiles_clear", &[], None));
+    hosts.insert("net_set_player_meta", import(jmod, "aurora_net_set_player_meta", &[i, i, f64t], None));
     hosts.insert("net_hit_player", import(jmod, "aurora_net_hit_player", &[], Some(i)));
     hosts.insert("net_hit_x", import(jmod, "aurora_net_hit_x", &[], Some(f64t)));
     hosts.insert("net_hit_y", import(jmod, "aurora_net_hit_y", &[], Some(f64t)));
@@ -4467,12 +4476,13 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "net_kill_count" => (vec![], Some(I64)),
         "net_kill_killer" | "net_kill_victim" => (vec![I64], Some(I64)),
         "net_kills_clear" => (vec![], None),
-        "net_explosion" => (vec![F64, F64, F64, F64], None),
-        "net_server_explosion_count" => (vec![], Some(I64)),
-        "net_server_explosion_shooter" => (vec![I64], Some(I64)),
-        "net_server_explosion_x" | "net_server_explosion_y" | "net_server_explosion_z" => (vec![I64], Some(F64)),
-        "net_server_explosion_intensity" => (vec![I64], Some(F64)),
-        "net_server_explosions_clear" => (vec![], None),
+        "net_projectile_intent" => (vec![I64, F64, F64, F64, F64, F64, F64], None),
+        "net_server_projectile_count" => (vec![], Some(I64)),
+        "net_server_projectile_shooter" | "net_server_projectile_kind" => (vec![I64], Some(I64)),
+        "net_server_projectile_ox" | "net_server_projectile_oy" | "net_server_projectile_oz" => (vec![I64], Some(F64)),
+        "net_server_projectile_vx" | "net_server_projectile_vy" | "net_server_projectile_vz" => (vec![I64], Some(F64)),
+        "net_server_projectiles_clear" => (vec![], None),
+        "net_set_player_meta" => (vec![I64, I64, F64], None),
         "net_hit_player" => (vec![], Some(I64)),
         "net_hit_x" | "net_hit_y" | "net_hit_z" => (vec![], Some(F64)),
         // Rebindable input-action layer + raw f32-blob accessors.
