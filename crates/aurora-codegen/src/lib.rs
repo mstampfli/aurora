@@ -1918,6 +1918,33 @@ fn tr_block(
     env: &Env,
     block: &Block,
 ) -> Result<Term, String> {
+    // The function scope is flat, so a `let` inside this block that SHADOWS an outer name
+    // with a DIFFERENT TYPE (e.g. a scalar `let pvx = ...` shadowing an outer `[f64; n]`
+    // array `pvx`) would clobber that name's type for the REST of the function - a later
+    // `pvx[i] = ...` then fails as "indexed assignment to a non-array". Snapshot the scope
+    // and, on exit, restore any pre-existing binding whose type was changed inside the
+    // block. Same-type shadows are left as-is so value flow through the flat scope is
+    // unchanged; only type-changing cross-block shadows are healed.
+    let saved: Vec<(String, (Variable, Cty))> =
+        l.scope.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let result = tr_block_inner(m, b, l, env, block);
+    for (name, binding) in saved {
+        if let Some((_, cur_cty)) = l.scope.get(&name) {
+            if *cur_cty != binding.1 {
+                l.scope.insert(name, binding);
+            }
+        }
+    }
+    result
+}
+
+fn tr_block_inner(
+    m: &mut dyn Module,
+    b: &mut FunctionBuilder,
+    l: &mut Locals,
+    env: &Env,
+    block: &Block,
+) -> Result<Term, String> {
     for stmt in &block.stmts {
         if env.debug {
             let span = match stmt {
