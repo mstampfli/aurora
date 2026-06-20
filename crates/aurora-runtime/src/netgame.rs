@@ -590,7 +590,7 @@ impl Session {
                 let slot = match self.remotes.iter_mut().find(|(rid, _)| *rid == id) {
                     Some((_, r)) => r,
                     None => {
-                        self.remotes.push((id, Remote { interp: InterpBuffer::new(0.06), last: st, last_seen: stick }));
+                        self.remotes.push((id, Remote { interp: InterpBuffer::new(0.1), last: st, last_seen: stick }));
                         &mut self.remotes.last_mut().unwrap().1
                     }
                 };
@@ -626,7 +626,11 @@ impl Session {
         } else if id == self.my_id {
             (self.pred, None)
         } else if let Some((_, r)) = self.remotes.iter().find(|(rid, _)| *rid == id) {
-            (r.last, r.interp.sample(self.last_server_tick as f32))
+            // Sample at the client's render clock `self.tick` - the SAME time base the samples
+            // were pushed with (the snapshot's `tick` seconds). Sampling at `last_server_tick`
+            // (a tick COUNT, different scale) put render time past every sample, so it clamped to
+            // the latest one => remotes teleported between snapshots + froze (slow fall) between.
+            (r.last, r.interp.sample(self.tick))
         } else {
             (Player::spawn(), None)
         }
