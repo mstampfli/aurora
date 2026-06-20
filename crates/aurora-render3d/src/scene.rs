@@ -381,6 +381,27 @@ impl Scene {
         }
     }
 
+    /// Like [`draw`] but tints the model's albedo by `tint` (RGB multiply).
+    pub fn draw_tint(&mut self, handle: i64, transform: Mat4, tint: [f32; 3]) {
+        let idx = match self.resolve(handle) {
+            Some(i) => i,
+            None => return,
+        };
+        let joints = {
+            let r = &self.items[idx];
+            if r.skinned {
+                r.model.as_ref().map(|m| r.player.matrices(m))
+            } else {
+                None
+            }
+        };
+        let prims = self.items[idx].prims.clone();
+        for (mesh, mat) in prims {
+            let j = joints.clone().filter(|v| !v.is_empty());
+            self.renderer.draw_tint(mesh, mat, transform, j, tint);
+        }
+    }
+
     pub fn render(
         &mut self,
         device: &wgpu::Device,

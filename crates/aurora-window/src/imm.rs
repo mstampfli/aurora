@@ -549,6 +549,30 @@ pub fn r3d_draw(
     });
 }
 
+pub fn r3d_draw_tint(
+    handle: i64,
+    px: f32,
+    py: f32,
+    pz: f32,
+    yaw: f32,
+    pitch: f32,
+    roll: f32,
+    scale: f32,
+    r: f32,
+    g: f32,
+    b: f32,
+) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        let m = Mat4::from_scale_rotation_translation(
+            Vec3::splat(scale),
+            Quat::from_euler(EulerRot::YXZ, yaw, pitch, roll),
+            Vec3::new(px, py, pz),
+        );
+        s.draw_tint(handle, m, [r, g, b]);
+    });
+}
+
 pub fn r3d_anim_play(handle: i64, clip: i64, looping: i64, speed: f32, fade: f32) {
     with_gfx((), |gf| {
         let (_, _, s) = gf.scene_mut();

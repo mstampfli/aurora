@@ -99,6 +99,7 @@ struct DrawCmd {
     material: usize,
     model: Mat4,
     joints: Option<Vec<Mat4>>,
+    tint: [f32; 3],
 }
 
 #[repr(C)]
@@ -1119,9 +1120,14 @@ impl Renderer3D {
     }
 
     pub fn draw(&mut self, mesh: usize, material: usize, model: Mat4, joints: Option<Vec<Mat4>>) {
+        self.draw_tint(mesh, material, model, joints, [1.0, 1.0, 1.0]);
+    }
+
+    /// Like [`draw`] but multiplies the albedo by a per-draw RGB `tint`.
+    pub fn draw_tint(&mut self, mesh: usize, material: usize, model: Mat4, joints: Option<Vec<Mat4>>, tint: [f32; 3]) {
         if mesh < self.meshes.len() {
             let material = if material < self.materials.len() { material } else { 0 };
-            self.queue_cmds.push(DrawCmd { mesh, material, model, joints });
+            self.queue_cmds.push(DrawCmd { mesh, material, model, joints, tint });
         }
     }
 
@@ -1209,7 +1215,7 @@ impl Renderer3D {
             let obj = ObjU {
                 model: cmd.model.to_cols_array_2d(),
                 normal_mat: normal_mat.to_cols_array_2d(),
-                params: [skinned_flag, 0.0, 0.0, 0.0],
+                params: [skinned_flag, cmd.tint[0], cmd.tint[1], cmd.tint[2]],
             };
             let off = i as u64 * stride;
             obj_bytes[off as usize..off as usize + std::mem::size_of::<ObjU>()]
@@ -2026,7 +2032,7 @@ fn shade(world_pos: vec3<f32>, n_in: vec3<f32>, albedo: vec3<f32>, alpha: f32, m
 
 @fragment
 fn fs(in: VsOut) -> @location(0) vec4<f32> {
-    var albedo = mat.base_color;
+    var albedo = mat.base_color * vec4<f32>(obj.params.y, obj.params.z, obj.params.w, 1.0);
     if (mat.flags.x > 0.5) { albedo = albedo * textureSample(base_tex, samp, in.uv); }
     var metallic = mat.mr.x;
     var rough = mat.mr.y;
