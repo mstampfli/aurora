@@ -23,6 +23,12 @@ const TAG_FIRE: u8 = 3;
 const TAG_HIT: u8 = 4;
 const TAG_REJECT: u8 = 5; // host -> a joiner it can't fit: the lobby is full
 
+/// Reserved id range for host-controlled bots. They ride the SAME player
+/// replication channel as humans (state + meta + name), so a guest receives and
+/// renders a bot exactly like a remote player - the guest never runs the AI and
+/// needs no "bot" concept. Ids `BOT_ID_BASE + i` stay clear of client ids (1..).
+const BOT_ID_BASE: u32 = 1000;
+
 const STATE_MAX: usize = 32; // max floats in a player state blob
 const INPUT_MAX: usize = 24; // max floats in an input blob
 const META_LEN: usize = 8; // per-player metadata floats (hp/shield/cells/oc) replicated
@@ -87,6 +93,10 @@ pub struct Session {
     // Server.
     clients: Vec<SClient>,
     host: Player,
+    /// Host-controlled bots, replicated to clients as ordinary players (ids
+    /// BOT_ID_BASE+i). The host's game writes these each frame from its local
+    /// AI; clients receive them as remotes and never run the AI themselves.
+    bots: Vec<Player>,
     next_id: u32,
     lag: LagComp,
     server_tick: u64,
@@ -153,6 +163,7 @@ impl Session {
             input_len: 8,
             clients: Vec::new(),
             host: Player::spawn(),
+            bots: Vec::new(),
             next_id: 1,
             lag: LagComp::new(64),
             server_tick: 0,
@@ -288,6 +299,10 @@ impl Session {
             for c in &self.clients {
                 self.lag.record(st, c.id as u64, [c.state.s[0], c.state.s[1], c.state.s[2]], r);
             }
+            // Record bots too so the host can lag-comp validate hits on them.
+            for (i, b) in self.bots.iter().enumerate() {
+                self.lag.record(st, (BOT_ID_BASE + i as u32) as u64, [b.s[0], b.s[1], b.s[2]], r);
+            }
             self.tick += dt;
             self.broadcast();
             self.ids = std::iter::once(0u32).chain(self.clients.iter().map(|c| c.id)).collect();
@@ -300,10 +315,14 @@ impl Session {
     }
 
     fn broadcast(&mut self) {
-        let mut all: Vec<(u32, Player)> = Vec::with_capacity(self.clients.len() + 1);
+        let mut all: Vec<(u32, Player)> = Vec::with_capacity(self.clients.len() + 1 + self.bots.len());
         all.push((0, self.host));
         for c in &self.clients {
             all.push((c.id, c.state));
+        }
+        // Bots ride the player channel: a guest receives them as ordinary remotes.
+        for (i, b) in self.bots.iter().enumerate() {
+            all.push((BOT_ID_BASE + i as u32, *b));
         }
         let interest2 = self.interest * self.interest;
         let keyframe = self.server_tick % 30 == 0;
@@ -522,6 +541,44 @@ impl Session {
     }
     pub fn local_state(&self, i: usize) -> f64 {
         self.state(self.my_id, i)
+    }
+
+    // --- host-controlled bots (replicated as players ids BOT_ID_BASE+i) ---
+    /// Declare how many bots the host owns this frame (grows/shrinks the set).
+    pub fn set_bot_count(&mut self, n: usize) {
+        if n > self.bots.len() {
+            self.bots.resize(n, Player::spawn());
+        } else {
+            self.bots.truncate(n);
+        }
+    }
+    pub fn bot_count(&self) -> usize {
+        self.bots.len()
+    }
+    /// Set bot `i`'s transform (position + yaw) - the renderable state a guest reads.
+    pub fn set_bot(&mut self, i: usize, x: f64, y: f64, z: f64, yaw: f64) {
+        if let Some(b) = self.bots.get_mut(i) {
+            b.s[0] = x as f32;
+            b.s[1] = y as f32;
+            b.s[2] = z as f32;
+            b.s[3] = yaw as f32;
+        }
+    }
+    /// Set bot `i`'s replicated metadata slot (hp/shield/oc), same channel as humans.
+    pub fn set_bot_meta(&mut self, i: usize, slot: usize, v: f64) {
+        if let Some(b) = self.bots.get_mut(i) {
+            if slot < META_LEN {
+                b.meta[slot] = v as f32;
+            }
+        }
+    }
+    /// Set bot `i`'s display name (UTF-8 bytes, truncated to NAME_MAX).
+    pub fn set_bot_name(&mut self, i: usize, bytes: &[u8]) {
+        if let Some(b) = self.bots.get_mut(i) {
+            b.name = [0u8; NAME_MAX];
+            let n = bytes.len().min(NAME_MAX);
+            b.name[..n].copy_from_slice(&bytes[..n]);
+        }
     }
 }
 
@@ -828,6 +885,34 @@ pub extern "C" fn aurora_net_player_name_len(id: i64) -> i64 {
 pub extern "C" fn aurora_net_player_name_char(id: i64, i: i64) -> i64 {
     read(0, |s| s.name_char(id.max(0) as u32, i.max(0) as usize))
 }
+// --- host-controlled bots: the host writes these each frame from its local AI;
+// they replicate to clients as ordinary players (the guest renders them as remotes). ---
+/// Host: declare how many bots exist this frame.
+#[no_mangle]
+pub extern "C" fn aurora_net_set_bot_count(n: i64) {
+    with((), |s| s.set_bot_count(n.max(0) as usize))
+}
+/// Host: set bot `i`'s transform (x,y,z,yaw) - what a guest renders.
+#[no_mangle]
+pub extern "C" fn aurora_net_set_bot(i: i64, x: f64, y: f64, z: f64, yaw: f64) {
+    with((), |s| s.set_bot(i.max(0) as usize, x, y, z, yaw))
+}
+/// Host: set bot `i`'s metadata slot (hp/shield/oc), same channel humans use.
+#[no_mangle]
+pub extern "C" fn aurora_net_set_bot_meta(i: i64, slot: i64, v: f64) {
+    with((), |s| s.set_bot_meta(i.max(0) as usize, slot.max(0) as usize, v))
+}
+/// Host: set bot `i`'s display name.
+#[no_mangle]
+pub extern "C" fn aurora_net_set_bot_name(i: i64, ptr: *const u8, len: i64) {
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
+    with((), |s| s.set_bot_name(i.max(0) as usize, bytes))
+}
+/// Number of bots the host currently owns (0 on a pure client).
+#[no_mangle]
+pub extern "C" fn aurora_net_bot_count() -> i64 {
+    read(0, |s| s.bot_count() as i64)
+}
 #[no_mangle]
 pub extern "C" fn aurora_net_local_x() -> f64 {
     read(0.0, |s| s.px(s.my_id()))
@@ -1045,5 +1130,45 @@ mod meta_replication_test {
         }
         assert!(!c1.rejected(), "the first client should be admitted");
         assert!(c2.rejected(), "the second client should be rejected (lobby full)");
+    }
+
+    // Host-controlled bots replicate to a client as ORDINARY players: the client reads
+    // their position / hp / name through the same net_player_* path it uses for humans,
+    // with no "bot" concept of its own. This is what lets the AI brain live only on the host.
+    #[test]
+    fn bots_replicate_as_players() {
+        let mut host = Session::host(0).expect("host bind");
+        let host_addr = host.local_addr();
+        let mut client = Session::join(host_addr).expect("client bind");
+        let input = [0.0f32; 4];
+        for _ in 0..40 {
+            // Host writes its bots each frame from its (here, fake) AI.
+            host.set_bot_count(2);
+            host.set_bot(0, 33.0, 1.0, 5.0, 0.5);
+            host.set_bot_meta(0, 0, 88.0); // bot 0 hp
+            host.set_bot_name(0, b"BOT-A");
+            host.set_bot(1, 44.0, 1.0, -5.0, 1.2);
+            host.set_bot_meta(1, 0, 70.0); // bot 1 hp
+            host.set_bot_name(1, b"BOT-B");
+            client.send_input(&input);
+            host.send_input(&input);
+            client.update(0.016);
+            host.update(0.016);
+            client.update(0.016);
+        }
+        // The client sees the two bots as remote players at ids BOT_ID_BASE + i.
+        let b0 = BOT_ID_BASE;
+        let b1 = BOT_ID_BASE + 1;
+        assert!((client.px(b0) - 33.0).abs() < 0.5, "client saw bot0 x = {}", client.px(b0));
+        assert!((client.px(b1) - 44.0).abs() < 0.5, "client saw bot1 x = {}", client.px(b1));
+        assert!((client.meta(b0, 0) - 88.0).abs() < 0.01, "client saw bot0 hp = {}", client.meta(b0, 0));
+        assert!((client.meta(b1, 0) - 70.0).abs() < 0.01, "client saw bot1 hp = {}", client.meta(b1, 0));
+        let read_name = |s: &Session, id: u32| -> String {
+            (0..s.name_len(id)).map(|i| s.name_char(id, i as usize) as u8 as char).collect()
+        };
+        assert_eq!(read_name(&client, b0), "BOT-A", "client should read bot0's name");
+        // And the client lists them among its players (self + host + 2 bots).
+        let ids: Vec<i64> = (0..client.player_count()).map(|i| client.player_id_at(i)).collect();
+        assert!(ids.contains(&(b0 as i64)) && ids.contains(&(b1 as i64)), "bots in player list: {ids:?}");
     }
 }

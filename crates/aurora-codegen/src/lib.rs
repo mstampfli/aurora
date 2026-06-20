@@ -383,6 +383,7 @@ const BUILTINS: &[&str] = &[
     "net_set_meta", "net_player_meta", "net_set_name", "net_player_name_len", "net_player_name_char",
     "net_local_x", "net_local_y", "net_local_z", "net_local_yaw",
     "net_state", "net_local_state", "net_interest", "net_hit_radius", "net_max_clients", "net_rejected",
+    "net_set_bot_count", "net_set_bot", "net_set_bot_meta", "net_set_bot_name", "net_bot_count",
     "net_spawn_at", "net_fire",
     "net_hit_player", "net_hit_x", "net_hit_y", "net_hit_z",
     // Rebindable input-action layer + raw f32-blob accessors.
@@ -721,6 +722,11 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_net_interest", aurora_runtime::aurora_net_interest as *const u8);
     builder.symbol("aurora_net_max_clients", aurora_runtime::aurora_net_max_clients as *const u8);
     builder.symbol("aurora_net_rejected", aurora_runtime::aurora_net_rejected as *const u8);
+    builder.symbol("aurora_net_set_bot_count", aurora_runtime::aurora_net_set_bot_count as *const u8);
+    builder.symbol("aurora_net_set_bot", aurora_runtime::aurora_net_set_bot as *const u8);
+    builder.symbol("aurora_net_set_bot_meta", aurora_runtime::aurora_net_set_bot_meta as *const u8);
+    builder.symbol("aurora_net_set_bot_name", aurora_runtime::aurora_net_set_bot_name as *const u8);
+    builder.symbol("aurora_net_bot_count", aurora_runtime::aurora_net_bot_count as *const u8);
     builder.symbol("aurora_net_hit_radius", aurora_runtime::aurora_net_hit_radius as *const u8);
     builder.symbol("aurora_net_spawn_at", aurora_runtime::aurora_net_spawn_at as *const u8);
     builder.symbol("aurora_net_fire", aurora_runtime::aurora_net_fire as *const u8);
@@ -1054,6 +1060,11 @@ fn lower(
     hosts.insert("net_interest", import(jmod, "aurora_net_interest", &[f64t], None));
     hosts.insert("net_max_clients", import(jmod, "aurora_net_max_clients", &[i], None));
     hosts.insert("net_rejected", import(jmod, "aurora_net_rejected", &[], Some(i)));
+    hosts.insert("net_set_bot_count", import(jmod, "aurora_net_set_bot_count", &[i], None));
+    hosts.insert("net_set_bot", import(jmod, "aurora_net_set_bot", &[i, f64t, f64t, f64t, f64t], None));
+    hosts.insert("net_set_bot_meta", import(jmod, "aurora_net_set_bot_meta", &[i, i, f64t], None));
+    hosts.insert("net_set_bot_name", import(jmod, "aurora_net_set_bot_name", &[i, ptr_ty, i], None));
+    hosts.insert("net_bot_count", import(jmod, "aurora_net_bot_count", &[], Some(i)));
     hosts.insert("net_hit_radius", import(jmod, "aurora_net_hit_radius", &[f64t], None));
     hosts.insert("net_spawn_at", import(jmod, "aurora_net_spawn_at", &[f64t, f64t, f64t], None));
     hosts.insert("net_fire", import(jmod, "aurora_net_fire", &[f64t, f64t, f64t, f64t, f64t, f64t], None));
@@ -3230,6 +3241,16 @@ fn tr_call(
         }
         return Ok(Term::Val(b.ins().iconst(types::I64, 0), Cty::I64));
     }
+    // `net_set_bot_name(i, "...")` - host sets bot i's replicated display name.
+    if name == "net_set_bot_name" {
+        if args.len() == 2 {
+            let (idx, _) = val(m, b, l, env, &args[0].value)?;
+            let (ptr, len) = str_arg(m, b, l, env, &args[1].value)?;
+            let f = m.declare_func_in_func(env.hosts["net_set_bot_name"], b.func);
+            b.ins().call(f, &[idx, ptr, len]);
+        }
+        return Ok(Term::Val(b.ins().iconst(types::I64, 0), Cty::I64));
+    }
 
     // Asset + scene builtins: take a path string, return an i64 status.
     if name == "draw_text" {
@@ -4352,6 +4373,10 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "net_update" => (vec![F64], None),
         "net_my_id" | "net_is_server" | "net_player_count" | "net_rejected" => (vec![], Some(I64)),
         "net_max_clients" => (vec![I64], None),
+        "net_bot_count" => (vec![], Some(I64)),
+        "net_set_bot_count" => (vec![I64], None),
+        "net_set_bot" => (vec![I64, F64, F64, F64, F64], None),
+        "net_set_bot_meta" => (vec![I64, I64, F64], None),
         "net_player_id_at" => (vec![I64], Some(I64)),
         "net_player_state" => (vec![I64, I64], Some(F64)),
         "net_set_meta" => (vec![I64, F64], None),
