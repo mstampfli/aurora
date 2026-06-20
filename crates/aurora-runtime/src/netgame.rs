@@ -182,6 +182,11 @@ pub struct Session {
     pending: VecDeque<(u32, InputBlob)>,
     next_seq: u32,
     last_server_tick: u32,
+    /// Client: whether we've received any snapshot yet, and our local clock when the last one
+    /// arrived - for net_connected() (join handshake "spawn only once initialised" + clean
+    /// "host disconnected" detection).
+    got_snap: bool,
+    last_snap_tick: f32,
     last_snap_players: usize,
     remotes: Vec<(u32, Remote)>,
     last_hit: (i64, [f32; 3]),
@@ -262,6 +267,8 @@ impl Session {
             pending: VecDeque::new(),
             next_seq: 1,
             last_server_tick: 0,
+            got_snap: false,
+            last_snap_tick: 0.0,
             last_snap_players: 0,
             remotes: Vec::new(),
             last_hit: (-1, [0.0; 3]),
@@ -305,6 +312,13 @@ impl Session {
     /// Client-side: did the host reject our join because the lobby was full?
     pub fn rejected(&self) -> bool {
         self.rejected
+    }
+    /// Are we still in contact? The host is always connected; a client is connected once it has
+    /// received a snapshot AND heard from the host within the last 5s. The game uses this to (a)
+    /// hold a guest in "joining..." until its first snapshot, and (b) show "disconnected" + bail to
+    /// the menu if the host vanishes.
+    pub fn connected(&self) -> bool {
+        self.is_server || (self.got_snap && (self.tick - self.last_snap_tick) < 5.0)
     }
     pub fn set_spawn(&mut self, x: f32, y: f32, z: f32) {
         // Set the local player's starting position, and remember it as the spawn
@@ -659,6 +673,8 @@ impl Session {
             return;
         }
         let Some((your_id, acked, tick, stick, players)) = decode_snapshot(pkt) else { return };
+        self.got_snap = true;
+        self.last_snap_tick = self.tick; // freshness for net_connected()
         self.my_id = your_id;
         self.tick = tick;
         self.last_server_tick = stick;
@@ -1377,6 +1393,11 @@ pub extern "C" fn aurora_net_max_clients(n: i64) {
 #[no_mangle]
 pub extern "C" fn aurora_net_rejected() -> i64 {
     read(0, |s| s.rejected() as i64)
+}
+/// 1 if still in contact with the host (or we ARE the host), 0 if not yet joined / disconnected.
+#[no_mangle]
+pub extern "C" fn aurora_net_connected() -> i64 {
+    read(0, |s| s.connected() as i64)
 }
 #[no_mangle]
 pub extern "C" fn aurora_net_spawn_at(x: f64, y: f64, z: f64) {
