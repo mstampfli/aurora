@@ -1918,23 +1918,15 @@ fn tr_block(
     env: &Env,
     block: &Block,
 ) -> Result<Term, String> {
-    // The function scope is flat, so a `let` inside this block that SHADOWS an outer name
-    // with a DIFFERENT TYPE (e.g. a scalar `let pvx = ...` shadowing an outer `[f64; n]`
-    // array `pvx`) would clobber that name's type for the REST of the function - a later
-    // `pvx[i] = ...` then fails as "indexed assignment to a non-array". Snapshot the scope
-    // and, on exit, restore any pre-existing binding whose type was changed inside the
-    // block. Same-type shadows are left as-is so value flow through the flat scope is
-    // unchanged; only type-changing cross-block shadows are healed.
-    let saved: Vec<(String, (Variable, Cty))> =
-        l.scope.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    // Proper lexical BLOCK SCOPING: names bound with `let` inside this block live only
+    // for the block. Snapshot the scope on entry and restore it on exit, so block-local
+    // bindings are dropped and any outer names they shadowed come back. Reassignments to
+    // outer mutables (`x = ...`) go through the same Cranelift variable, so their values
+    // still persist - only NAME resolution is unwound. A name declared inside a block and
+    // referenced after it is now a compile error, as it should be.
+    let outer = l.scope.clone();
     let result = tr_block_inner(m, b, l, env, block);
-    for (name, binding) in saved {
-        if let Some((_, cur_cty)) = l.scope.get(&name) {
-            if *cur_cty != binding.1 {
-                l.scope.insert(name, binding);
-            }
-        }
-    }
+    l.scope = outer;
     result
 }
 
