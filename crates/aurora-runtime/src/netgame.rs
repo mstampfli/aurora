@@ -578,7 +578,18 @@ impl Session {
         let (sim_fn, sim_env) = (self.sim_fn, self.sim_env);
         for (id, st) in players {
             if id == your_id {
-                self.pred = st; // snap to authoritative, then replay unacked inputs
+                // Snap the REPLICATED movement slots (0..state_len) to authoritative, but PRESERVE
+                // the local-only working slots (state_len..STATE_MAX). Slot 21 there holds the
+                // client's OWN physics-body handle - a full `self.pred = st` zeroed it (the
+                // snapshot only carries state_len slots), so sim_step re-created the body every
+                // reconcile: a body LEAK (worsening lag) + a perpetually-fresh body (no gravity /
+                // infinite jump / wrong position so the host couldn't hit it). meta/name are
+                // authoritative, so copy those too.
+                for i in 0..self.state_len {
+                    self.pred.s[i] = st.s[i];
+                }
+                self.pred.meta = st.meta;
+                self.pred.name = st.name;
                 while self.pending.front().map(|(s, _)| *s <= acked).unwrap_or(false) {
                     self.pending.pop_front();
                 }
