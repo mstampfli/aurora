@@ -173,6 +173,11 @@ impl ApplicationHandler for ImmApp {
                             }
                         }
                     }
+                    // Bound the queue: it's only drained by text fields, so cap it so held keys
+                    // during normal gameplay can't grow it without limit.
+                    while self.typed.len() > 256 {
+                        self.typed.remove(0);
+                    }
                 }
             }
             _ => {}
