@@ -340,7 +340,7 @@ const BUILTINS: &[&str] = &[
     "abs", "min", "max", "clamp", "len", "str", "spawn", "despawn", "run_systems", "entity_count",
     "band", "bor", "bxor", "shl", "shr", "bnot",
     "framebuffer", "clear", "pixel", "triangle", "fb_get", "save_ppm",
-    "play_note", "play_sound", "play_noise", "audio_volume", "audio_stop", "window_open", "window_present",
+    "play_note", "play_sound", "play_noise", "audio_volume", "audio_stop", "window_fullscreen", "window_open", "window_present",
     "surface_w", "surface_h",
     "key_down", "input_char", "mouse_x", "mouse_y", "mouse_down", "gpu_render",
     "load_ppm", "load_image", "load_font", "draw_text", "draw_int", "text_width", "play_wav", "scene_save", "scene_load", "frame_reset",
@@ -744,6 +744,7 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_surface_w", aurora_runtime::aurora_surface_w as *const u8);
     builder.symbol("aurora_surface_h", aurora_runtime::aurora_surface_h as *const u8);
     builder.symbol("aurora_audio_volume", aurora_runtime::aurora_audio_volume as *const u8);
+    builder.symbol("aurora_window_fullscreen", aurora_runtime::aurora_window_fullscreen as *const u8);
     builder.symbol("aurora_audio_stop", aurora_runtime::aurora_audio_stop as *const u8);
     builder.symbol("aurora_gpu_render", aurora_runtime::aurora_gpu_render as *const u8);
     builder.symbol("aurora_window_open", aurora_runtime::aurora_window_open as *const u8);
@@ -1064,6 +1065,7 @@ fn lower(
     hosts.insert("play_sound", import(jmod, "aurora_play_sound", &[i, i, i], None));
     hosts.insert("play_noise", import(jmod, "aurora_play_noise", &[i, i], None));
     hosts.insert("audio_volume", import(jmod, "aurora_audio_volume", &[i], None));
+    hosts.insert("window_fullscreen", import(jmod, "aurora_window_fullscreen", &[i], None));
     hosts.insert("audio_stop", import(jmod, "aurora_audio_stop", &[], None));
     hosts.insert("gpu_render", import(jmod, "aurora_gpu_render", &[ptr_ty, i, i], None));
     hosts.insert("window_open", import(jmod, "aurora_window_open", &[i, i], None));
@@ -3434,6 +3436,7 @@ fn tr_call(
             | "play_noise"
             | "draw_int"
             | "audio_volume"
+            | "window_fullscreen"
             | "audio_stop"
             | "window_open"
             | "window_present"

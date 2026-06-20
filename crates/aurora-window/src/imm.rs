@@ -343,6 +343,27 @@ pub fn key_down(code: u32) -> bool {
     IMM.with(|s| s.borrow().as_ref().map(|(_, app)| app.keys.contains(&key)).unwrap_or(false))
 }
 
+/// Set the window's fullscreen mode: 0 = windowed, 1 = borderless (windowed) fullscreen,
+/// 2 = exclusive fullscreen (falls back to borderless if no exclusive mode is available).
+pub fn window_fullscreen(mode: i64) {
+    IMM.with(|s| {
+        if let Some((_, app)) = s.borrow().as_ref() {
+            if let Some(w) = &app.window {
+                let fs = match mode {
+                    1 => Some(winit::window::Fullscreen::Borderless(None)),
+                    2 => w
+                        .current_monitor()
+                        .and_then(|m| m.video_modes().next())
+                        .map(winit::window::Fullscreen::Exclusive)
+                        .or(Some(winit::window::Fullscreen::Borderless(None))),
+                    _ => None,
+                };
+                w.set_fullscreen(fs);
+            }
+        }
+    });
+}
+
 /// Pop the next typed character code from the queue (0 if none). Backspace = 8.
 pub fn input_char() -> i64 {
     IMM.with(|s| {
