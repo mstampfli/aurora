@@ -26,6 +26,8 @@ struct ImmApp {
     window: Option<Arc<Window>>,
     gfx: Option<Gfx>,
     keys: HashSet<KeyCode>,
+    /// Queue of typed character codes for text fields (Backspace pushes 8).
+    typed: Vec<u32>,
     open: bool,
     /// Mouse position in framebuffer pixels, and button states.
     mouse: (i64, i64),
@@ -151,8 +153,21 @@ impl ApplicationHandler for ImmApp {
                     }
                     if event.state == ElementState::Pressed {
                         self.keys.insert(code);
+                        if code == KeyCode::Backspace {
+                            self.typed.push(8);
+                        }
                     } else {
                         self.keys.remove(&code);
+                    }
+                }
+                if event.state == ElementState::Pressed {
+                    if let Some(t) = &event.text {
+                        for ch in t.chars() {
+                            let c = ch as u32;
+                            if (32..127).contains(&c) {
+                                self.typed.push(c);
+                            }
+                        }
                     }
                 }
             }
@@ -204,6 +219,7 @@ pub fn open(width: u32, height: u32) {
         window: None,
         gfx: None,
         keys: HashSet::new(),
+        typed: Vec::new(),
         open: true,
         mouse: (0, 0),
         mouse_down: false,
@@ -317,6 +333,16 @@ pub fn present(rgba: &[u8]) -> bool {
 pub fn key_down(code: u32) -> bool {
     let Some(key) = code_to_key(code) else { return false };
     IMM.with(|s| s.borrow().as_ref().map(|(_, app)| app.keys.contains(&key)).unwrap_or(false))
+}
+
+/// Pop the next typed character code from the queue (0 if none). Backspace = 8.
+pub fn input_char() -> i64 {
+    IMM.with(|s| {
+        s.borrow_mut()
+            .as_mut()
+            .map(|(_, app)| if app.typed.is_empty() { 0 } else { app.typed.remove(0) as i64 })
+            .unwrap_or(0)
+    })
 }
 
 /// Current mouse position in framebuffer pixels, and left-button state.

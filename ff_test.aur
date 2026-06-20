@@ -1,0 +1,8 @@
+struct A { mag: [i64; 2], wpn: i64, hp: f64 }
+fn main() {
+    let mut m = A { mag: [24, 1], wpn: 0, hp: 100.0 }
+    m.mag[m.wpn] = m.mag[m.wpn] - 1
+    if m.mag[m.wpn] <= 0 and m.hp > 0.0 { m.wpn = 1 }
+    println(str(m.mag[0]))
+    println(str(m.wpn))
+}

@@ -1257,6 +1257,12 @@ pub extern "C" fn aurora_key_down(code: i64) -> i64 {
     }
 }
 
+/// Pop the next typed character code (0 if none); Backspace = 8. For text fields.
+#[no_mangle]
+pub extern "C" fn aurora_input_char() -> i64 {
+    aurora_window::imm_input_char()
+}
+
 /// Mouse X in framebuffer pixels.
 #[no_mangle]
 pub extern "C" fn aurora_mouse_x() -> i64 {
@@ -1975,7 +1981,7 @@ pub extern "C" fn aurora_dbg_var_f64(name_ptr: *const u8, name_len: i64, value: 
 /// Touch every host symbol so the linker keeps this crate's object in an AOT
 /// link even when the Rust driver references nothing from it directly.
 pub fn force_link() -> usize {
-    let fns: [*const (); 219] = [
+    let fns: [*const (); 220] = [
         aurora_text_width as *const (),
         aurora_phys3d_add_box_rot as *const (),
         aurora_save_settings as *const (),
@@ -2178,6 +2184,7 @@ pub fn force_link() -> usize {
         aurora_window_open as *const (),
         aurora_window_present as *const (),
         aurora_key_down as *const (),
+        aurora_input_char as *const (),
         aurora_mouse_x as *const (),
         aurora_mouse_y as *const (),
         aurora_mouse_down as *const (),

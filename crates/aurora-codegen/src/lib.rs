@@ -342,7 +342,7 @@ const BUILTINS: &[&str] = &[
     "framebuffer", "clear", "pixel", "triangle", "fb_get", "save_ppm",
     "play_note", "play_sound", "play_noise", "audio_volume", "audio_stop", "window_open", "window_present",
     "surface_w", "surface_h",
-    "key_down", "mouse_x", "mouse_y", "mouse_down", "gpu_render",
+    "key_down", "input_char", "mouse_x", "mouse_y", "mouse_down", "gpu_render",
     "load_ppm", "load_image", "load_font", "draw_text", "draw_int", "text_width", "play_wav", "scene_save", "scene_load", "frame_reset",
     "phys_init", "phys_add", "phys_step", "phys_x", "phys_y", "phys_set_vel",
     "phys_vel_x", "phys_vel_y", "phys_apply_impulse", "phys_apply_force", "phys_set_pos", "phys_raycast",
@@ -748,6 +748,7 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_window_open", aurora_runtime::aurora_window_open as *const u8);
     builder.symbol("aurora_window_present", aurora_runtime::aurora_window_present as *const u8);
     builder.symbol("aurora_key_down", aurora_runtime::aurora_key_down as *const u8);
+    builder.symbol("aurora_input_char", aurora_runtime::aurora_input_char as *const u8);
     builder.symbol("aurora_mouse_x", aurora_runtime::aurora_mouse_x as *const u8);
     builder.symbol("aurora_mouse_y", aurora_runtime::aurora_mouse_y as *const u8);
     builder.symbol("aurora_mouse_down", aurora_runtime::aurora_mouse_down as *const u8);
@@ -1068,6 +1069,7 @@ fn lower(
     hosts.insert("surface_w", import(jmod, "aurora_surface_w", &[], Some(i)));
     hosts.insert("surface_h", import(jmod, "aurora_surface_h", &[], Some(i)));
     hosts.insert("key_down", import(jmod, "aurora_key_down", &[i], Some(i)));
+    hosts.insert("input_char", import(jmod, "aurora_input_char", &[], Some(i)));
     hosts.insert("mouse_x", import(jmod, "aurora_mouse_x", &[], Some(i)));
     hosts.insert("mouse_y", import(jmod, "aurora_mouse_y", &[], Some(i)));
     hosts.insert("mouse_down", import(jmod, "aurora_mouse_down", &[], Some(i)));
@@ -3436,6 +3438,7 @@ fn tr_call(
             | "surface_w"
             | "surface_h"
             | "key_down"
+            | "input_char"
             | "mouse_x"
             | "mouse_y"
             | "mouse_down"
@@ -3453,7 +3456,7 @@ fn tr_call(
         let call = b.ins().call(f, &argv);
         let returns_int = matches!(
             name.as_str(),
-            "window_present" | "surface_w" | "surface_h" | "key_down" | "mouse_x" | "mouse_y" | "mouse_down"
+            "window_present" | "surface_w" | "surface_h" | "key_down" | "input_char" | "mouse_x" | "mouse_y" | "mouse_down"
         );
         let result = if returns_int {
             b.inst_results(call)[0]

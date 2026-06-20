@@ -20,7 +20,7 @@ mod imm;
 mod input;
 pub use imm::{
     imm_leak,
-    grab_mouse as imm_grab_mouse, key_down as imm_key_down, mouse as imm_mouse,
+    grab_mouse as imm_grab_mouse, input_char as imm_input_char, key_down as imm_key_down, mouse as imm_mouse,
     mouse_button as imm_mouse_button, mouse_delta as imm_mouse_delta, open as imm_open,
     present as imm_present, scroll as imm_scroll,
     r3d_anim_play as imm_r3d_anim_play, r3d_anim_play_upper as imm_r3d_anim_play_upper,
