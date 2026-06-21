@@ -25,6 +25,11 @@ struct Snapshot {
     tick: u64,
     pos: V3,
     radius: f32,
+    /// Cylinder half-height of the collider's capsule (0 = a plain sphere, used
+    /// for crates). A character is a vertical capsule so its rewound hitbox
+    /// matches the capsule the client actually raycasts - no "server hit, client
+    /// missed" on a side graze that a fat sphere would have caught.
+    half_h: f32,
 }
 
 /// A hit produced by a rewound raycast.
@@ -48,11 +53,12 @@ impl LagComp {
         LagComp { window, latest_tick: 0, hist: HashMap::new() }
     }
 
-    /// Record an entity's collider position for `tick`.
-    pub fn record(&mut self, tick: u64, entity: u64, pos: V3, radius: f32) {
+    /// Record an entity's collider position for `tick`. `half_h` is the capsule
+    /// cylinder half-height (0 = sphere).
+    pub fn record(&mut self, tick: u64, entity: u64, pos: V3, radius: f32, half_h: f32) {
         self.latest_tick = self.latest_tick.max(tick);
         let ring = self.hist.entry(entity).or_default();
-        ring.push(Snapshot { tick, pos, radius });
+        ring.push(Snapshot { tick, pos, radius, half_h });
         // Evict snapshots older than the retention window.
         let cutoff = self.latest_tick.saturating_sub(self.window);
         ring.retain(|s| s.tick >= cutoff);
@@ -89,7 +95,7 @@ impl LagComp {
                     None => continue,
                 },
             };
-            if let Some(distance) = ray_sphere(origin, dir, snap.pos, snap.radius) {
+            if let Some(distance) = ray_capsule(origin, dir, snap.pos, snap.radius, snap.half_h) {
                 if best.is_none_or(|b| distance < b.distance) {
                     best = Some(Hit { entity, distance });
                 }
@@ -97,6 +103,46 @@ impl LagComp {
         }
         best
     }
+}
+
+/// Ray vs a vertical (Y-axis) capsule: a cylinder of `radius`/`half_h` capped by
+/// two hemispheres. `half_h == 0` degenerates to a sphere (crates). Returns the
+/// nearest non-negative entry distance. This is the shape a character collider
+/// actually is, so the rewound server test agrees with the client's own raycast.
+fn ray_capsule(origin: V3, dir: V3, center: V3, radius: f32, half_h: f32) -> Option<f32> {
+    if half_h <= 0.0 {
+        return ray_sphere(origin, dir, center, radius);
+    }
+    let mut best: Option<f32> = None;
+    // Infinite cylinder about the vertical axis through `center` (XZ-plane circle),
+    // accepting only the root whose hit height lands within the cylinder band.
+    let ox = origin[0] - center[0];
+    let oz = origin[2] - center[2];
+    let a = dir[0] * dir[0] + dir[2] * dir[2];
+    if a > 1e-12 {
+        let b = 2.0 * (ox * dir[0] + oz * dir[2]);
+        let c = ox * ox + oz * oz - radius * radius;
+        let disc = b * b - 4.0 * a * c;
+        if disc >= 0.0 {
+            let sd = disc.sqrt();
+            for t in [(-b - sd) / (2.0 * a), (-b + sd) / (2.0 * a)] {
+                if t >= 0.0 && (origin[1] + dir[1] * t - center[1]).abs() <= half_h {
+                    best = Some(t);
+                    break; // the first (nearest) valid root wins
+                }
+            }
+        }
+    }
+    // Hemisphere caps: full spheres at the band ends. Their inner halves lie
+    // inside the cylinder band, so the union is exactly the capsule.
+    for cap_y in [center[1] + half_h, center[1] - half_h] {
+        if let Some(t) = ray_sphere(origin, dir, [center[0], cap_y, center[2]], radius) {
+            if best.is_none_or(|b| t < b) {
+                best = Some(t);
+            }
+        }
+    }
+    best
 }
 
 /// Ray–sphere intersection; returns the nearest non-negative hit distance.
@@ -129,7 +175,7 @@ mod lag_tests {
     fn position_rewinds_to_the_requested_tick() {
         let mut lag = LagComp::new(64);
         for tick in 0..5 {
-            lag.record(tick, 1, [tick as f32, 0.0, 0.0], 0.5);
+            lag.record(tick, 1, [tick as f32, 0.0, 0.0], 0.5, 0.0);
         }
         assert_eq!(lag.position_at_tick(1, 2), Some([2.0, 0.0, 0.0]));
         // Between recorded ticks, uses the most recent at-or-before.
@@ -141,8 +187,8 @@ mod lag_tests {
     fn rewound_shot_hits_where_target_used_to_be() {
         // Target sits at x=0 on tick 0, then moves far away by tick 10.
         let mut lag = LagComp::new(64);
-        lag.record(0, 7, [0.0, 0.0, 10.0], 1.0);
-        lag.record(10, 7, [100.0, 0.0, 10.0], 1.0);
+        lag.record(0, 7, [0.0, 0.0, 10.0], 1.0, 0.0);
+        lag.record(10, 7, [100.0, 0.0, 10.0], 1.0, 0.0);
 
         // Shooter at origin fires straight down +Z, aiming where the target was
         // at tick 0.
@@ -163,8 +209,8 @@ mod lag_tests {
     #[test]
     fn nearest_target_is_returned() {
         let mut lag = LagComp::new(64);
-        lag.record(0, 1, [0.0, 0.0, 5.0], 1.0);
-        lag.record(0, 2, [0.0, 0.0, 20.0], 1.0);
+        lag.record(0, 1, [0.0, 0.0, 5.0], 1.0, 0.0);
+        lag.record(0, 2, [0.0, 0.0, 20.0], 1.0, 0.0);
         let hit = lag.raycast_at_tick([0.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0, 99).unwrap();
         assert_eq!(hit.entity, 1); // the closer one
     }
@@ -172,16 +218,42 @@ mod lag_tests {
     #[test]
     fn shooter_is_ignored() {
         let mut lag = LagComp::new(64);
-        lag.record(0, 1, [0.0, 0.0, 5.0], 1.0);
+        lag.record(0, 1, [0.0, 0.0, 5.0], 1.0, 0.0);
         let hit = lag.raycast_at_tick([0.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0, /*ignore*/ 1);
         assert!(hit.is_none(), "the shooter's own collider must be ignored");
+    }
+
+    #[test]
+    fn capsule_hitbox_matches_a_character_not_a_fat_sphere() {
+        // Character capsule: radius 0.6, cylinder half-height 0.3 (so it spans y +/-0.9),
+        // centred at (0, 0.9, 0). A shot grazing 0.8 m to the side would have hit the old
+        // 1.0-radius sphere but must MISS this capsule (that was the "server hit, client
+        // missed" desync). A centre-mass shot still hits, and a high shot hits the head cap.
+        let mut lag = LagComp::new(64);
+        lag.record(0, 1, [0.0, 0.9, 0.0], 0.6, 0.3);
+
+        // Side graze at x=0.8, flying +Z past the target: misses the 0.6-wide capsule.
+        let graze = lag.raycast_at_tick([0.8, 0.9, -5.0], [0.0, 0.0, 1.0], 0, 99);
+        assert!(graze.is_none(), "a 0.8 m side graze must miss the 0.6 capsule");
+
+        // Dead-centre torso shot: hits.
+        let torso = lag.raycast_at_tick([0.0, 0.9, -5.0], [0.0, 0.0, 1.0], 0, 99);
+        assert!(torso.is_some(), "centre-mass must hit");
+
+        // High shot through the head cap (y=1.7, within the +0.9 top hemisphere): hits.
+        let head = lag.raycast_at_tick([0.0, 1.7, -5.0], [0.0, 0.0, 1.0], 0, 99);
+        assert!(head.is_some(), "a head-height shot must hit the top cap");
+
+        // Way over the head (y=2.2, above cap top 1.8): misses.
+        let over = lag.raycast_at_tick([0.0, 2.2, -5.0], [0.0, 0.0, 1.0], 0, 99);
+        assert!(over.is_none(), "a shot above the capsule must miss");
     }
 
     #[test]
     fn old_snapshots_are_evicted() {
         let mut lag = LagComp::new(4);
         for tick in 0..10 {
-            lag.record(tick, 1, [tick as f32, 0.0, 0.0], 0.5);
+            lag.record(tick, 1, [tick as f32, 0.0, 0.0], 0.5, 0.0);
         }
         // Tick 0 is well outside the 4-tick window; only recent ticks remain.
         assert_eq!(lag.position_at_tick(1, 0), None);

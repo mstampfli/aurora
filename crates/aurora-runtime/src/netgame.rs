@@ -156,6 +156,9 @@ pub struct Session {
     ids: Vec<u32>,
     interest: f32,
     hit_radius: f32,
+    /// Capsule cylinder half-height for the lag-comp character hitbox (the
+    /// matching shape to `hit_radius`). Players/bots are vertical capsules.
+    hit_half: f32,
     // The game's simulation step (registered from Aurora).
     sim_fn: usize,
     sim_env: usize,
@@ -211,6 +214,11 @@ pub struct Session {
     last_snap_players: usize,
     remotes: Vec<(u32, Remote)>,
     last_hit: (i64, [f32; 3]),
+    /// Monotonic count of authoritative hit CONFIRMATIONS received from the host
+    /// (TAG_HIT with a real victim). The client watches this change to know a fresh
+    /// server-validated hit landed - hit feedback follows the authority, not the
+    /// client's own 1-frame-stale local raycast.
+    hit_seq: u64,
     /// Spawn point new players start at (set via net_spawn_at); used so the
     /// server places joining clients here instead of the origin.
     spawn: [f32; 3],
@@ -273,7 +281,11 @@ impl Session {
             buf: vec![0u8; 2048],
             ids: vec![0],
             interest: 80.0,
-            hit_radius: 1.0,
+            // Match the character capsule the game builds (phys3d_add_character r=0.6, half=0.3)
+            // so the rewound server hitbox is the SAME shape the client raycasts - a side graze
+            // that used to clip a fat 1.0 sphere on the server but miss on the client now agrees.
+            hit_radius: 0.6,
+            hit_half: 0.3,
             sim_fn: 0,
             sim_env: 0,
             state_len: 4,
@@ -305,6 +317,7 @@ impl Session {
             last_snap_players: 0,
             remotes: Vec::new(),
             last_hit: (-1, [0.0; 3]),
+            hit_seq: 0,
             spawn: [0.0, 0.0, 0.0],
             spawn_in: -1,
             local_meta: [0.0; META_LEN],
@@ -444,6 +457,9 @@ impl Session {
     pub fn hit_player(&self) -> i64 {
         self.last_hit.0
     }
+    pub fn hit_seq(&self) -> i64 {
+        self.hit_seq as i64
+    }
     pub fn hit_point(&self) -> [f32; 3] {
         self.last_hit.1
     }
@@ -495,19 +511,21 @@ impl Session {
             self.clients.retain(|c| c.last_seen >= cutoff);
             let st = self.server_tick;
             let r = self.hit_radius;
+            let hh = self.hit_half;
             if !self.dedicated {
-                self.lag.record(st, 0, [self.host.s[0], self.host.s[1], self.host.s[2]], r);
+                self.lag.record(st, 0, [self.host.s[0], self.host.s[1], self.host.s[2]], r, hh);
             }
             for c in &self.clients {
-                self.lag.record(st, c.id as u64, [c.state.s[0], c.state.s[1], c.state.s[2]], r);
+                self.lag.record(st, c.id as u64, [c.state.s[0], c.state.s[1], c.state.s[2]], r, hh);
             }
             // Record bots too so the host can lag-comp validate hits on them.
             for (i, b) in self.bots.iter().enumerate() {
-                self.lag.record(st, (BOT_ID_BASE + i as u32) as u64, [b.s[0], b.s[1], b.s[2]], r);
+                self.lag.record(st, (BOT_ID_BASE + i as u32) as u64, [b.s[0], b.s[1], b.s[2]], r, hh);
             }
             // Record world objects (crates) so a rewound shot is blocked by where a box WAS.
+            // A crate is a plain sphere (half_h 0), not a capsule.
             for (i, o) in self.objects.iter().enumerate() {
-                self.lag.record(st, OBJ_ID_BASE + i as u64, [o[0], o[1], o[2]], OBJ_RADIUS);
+                self.lag.record(st, OBJ_ID_BASE + i as u64, [o[0], o[1], o[2]], OBJ_RADIUS, 0.0);
             }
             self.tick += dt;
             self.broadcast();
@@ -706,6 +724,11 @@ impl Session {
         if pkt.first().copied() == Some(TAG_HIT) {
             if let Some((id, p)) = decode_hit(pkt) {
                 self.last_hit = (id, p);
+                // A real victim = a fresh authoritative confirmation; bump the seq the client
+                // watches. Misses (id < 0) update last_hit but don't count as a confirmation.
+                if id >= 0 {
+                    self.hit_seq = self.hit_seq.wrapping_add(1);
+                }
             }
             return;
         }
@@ -1998,6 +2021,10 @@ pub extern "C" fn aurora_net_booms_clear() {
 #[no_mangle]
 pub extern "C" fn aurora_net_hit_player() -> i64 {
     read(-1, |s| s.hit_player())
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_hit_seq() -> i64 {
+    read(0, |s| s.hit_seq())
 }
 #[no_mangle]
 pub extern "C" fn aurora_net_hit_x() -> f64 {

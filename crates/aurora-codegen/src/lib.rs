@@ -388,7 +388,7 @@ const BUILTINS: &[&str] = &[
     "net_set_object_rot", "net_object_qx", "net_object_qy", "net_object_qz", "net_object_qw",
     "net_set_fx_count", "net_set_fx", "net_fx_count", "net_fx_x", "net_fx_y", "net_fx_z", "net_fx_kind",
     "net_spawn_at", "net_spawn_input_slot", "net_respawn_client", "net_fire",
-    "net_hit_player", "net_hit_x", "net_hit_y", "net_hit_z",
+    "net_hit_player", "net_hit_seq", "net_hit_x", "net_hit_y", "net_hit_z",
     "net_server_hit_count", "net_server_hit_shooter", "net_server_hit_victim", "net_server_hit_weapon",
     "net_server_hit_x", "net_server_hit_y", "net_server_hit_z", "net_server_hits_clear",
     "net_push_kill", "net_kill_count", "net_kill_killer", "net_kill_victim", "net_kills_clear",
@@ -807,6 +807,7 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_net_server_projectiles_clear", aurora_runtime::aurora_net_server_projectiles_clear as *const u8);
     builder.symbol("aurora_net_set_player_meta", aurora_runtime::aurora_net_set_player_meta as *const u8);
     builder.symbol("aurora_net_hit_player", aurora_runtime::aurora_net_hit_player as *const u8);
+    builder.symbol("aurora_net_hit_seq", aurora_runtime::aurora_net_hit_seq as *const u8);
     builder.symbol("aurora_net_hit_x", aurora_runtime::aurora_net_hit_x as *const u8);
     builder.symbol("aurora_net_hit_y", aurora_runtime::aurora_net_hit_y as *const u8);
     builder.symbol("aurora_net_hit_z", aurora_runtime::aurora_net_hit_z as *const u8);
@@ -1209,6 +1210,7 @@ fn lower(
     hosts.insert("net_server_projectiles_clear", import(jmod, "aurora_net_server_projectiles_clear", &[], None));
     hosts.insert("net_set_player_meta", import(jmod, "aurora_net_set_player_meta", &[i, i, f64t], None));
     hosts.insert("net_hit_player", import(jmod, "aurora_net_hit_player", &[], Some(i)));
+    hosts.insert("net_hit_seq", import(jmod, "aurora_net_hit_seq", &[], Some(i)));
     hosts.insert("net_hit_x", import(jmod, "aurora_net_hit_x", &[], Some(f64t)));
     hosts.insert("net_hit_y", import(jmod, "aurora_net_hit_y", &[], Some(f64t)));
     hosts.insert("net_hit_z", import(jmod, "aurora_net_hit_z", &[], Some(f64t)));
@@ -4612,6 +4614,7 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "net_server_projectiles_clear" => (vec![], None),
         "net_set_player_meta" => (vec![I64, I64, F64], None),
         "net_hit_player" => (vec![], Some(I64)),
+        "net_hit_seq" => (vec![], Some(I64)),
         "net_hit_x" | "net_hit_y" | "net_hit_z" => (vec![], Some(F64)),
         // Rebindable input-action layer + raw f32-blob accessors.
         "input_bind" => (vec![I64, I64], None),
