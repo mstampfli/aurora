@@ -2505,7 +2505,15 @@ fn tr_struct(
         return Ok(Term::Val(ptr, Cty::Enum(enm)));
     }
 
-    let name = path.segments.last().map(|s| s.ident.name.clone()).unwrap_or_default();
+    // A module-qualified struct path (`world::World`) must join its segments with `::` to match
+    // the flattened, mangled layout key - exactly like a module-qualified call. Taking only the
+    // last segment dropped the module prefix, so a struct defined in one module could not be
+    // constructed from another ("unknown struct").
+    let name = if path.segments.len() > 1 {
+        path.segments.iter().map(|s| s.ident.name.as_str()).collect::<Vec<_>>().join("::")
+    } else {
+        path.segments.first().map(|s| s.ident.name.clone()).unwrap_or_default()
+    };
     let layout = env
         .structs
         .get(&name)
@@ -4362,7 +4370,17 @@ fn ty_to_cty(kind: &TypeKind) -> Cty {
             "f64" => Cty::F64,
             "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "bool" => Cty::I64,
             "str" | "String" => Cty::Str,
-            other => Cty::Struct(other.to_string()),
+            // A struct/enum type: use the FULL module-qualified path (joined with `::`) so it
+            // matches the flattened, mangled layout key (e.g. `world::World`). Primitives are
+            // always unqualified, so they're matched on the last segment above.
+            _ => {
+                let joined = if p.segments.len() > 1 {
+                    p.segments.iter().map(|s| s.ident.name.as_str()).collect::<Vec<_>>().join("::")
+                } else {
+                    p.segments.last().map(|s| s.ident.name.clone()).unwrap_or_default()
+                };
+                Cty::Struct(joined)
+            }
         },
         TypeKind::Dyn(p) => {
             Cty::Dyn(p.segments.last().map(|s| s.ident.name.clone()).unwrap_or_default())
