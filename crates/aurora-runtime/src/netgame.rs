@@ -47,13 +47,20 @@ const OBJ_RADIUS: f32 = 0.45;
 
 const STATE_MAX: usize = 32; // max floats in a player state blob
 const INPUT_MAX: usize = 24; // max floats in an input blob
-const META_LEN: usize = 18; // per-player metadata floats (hp/shield/oc/respawn/cells/heal/kills/
+const META_LEN: usize = 20; // per-player metadata floats (hp/shield/oc/respawn/cells/heal/kills/
                             // deaths in 0..7; 8 = melee-swing flag; 9 = respawn-ack; 10/11 = round
                             // timer/over; 12..14 = grapple anchor xyz; 15 = grapple active; 16 =
-                            // shield-up channel active (holding the blue cube); 17 = spare) -
+                            // shield-up channel active (holding the blue cube); 17 = melee-swing
+                            // counter (server applies katana dmg); 18 = ammo-pickup counter (server
+                            // confirms ammo collection); 19 = spare) -
                            // replicated SEPARATELY from the sim state, so never touch reconciliation.
 const NAME_MAX: usize = 20; // per-player display name: a fixed byte field (NOT chars packed into
                             // floats), re-sent on the input/snapshot stream so UDP loss self-heals.
+/// Remote interpolation delay (seconds) and the MATCHING lag-comp rewind in server ticks (~62.5 Hz,
+/// so 0.05 s ~= 3 ticks). These two MUST agree: the host rewinds a target to exactly the moment we
+/// rendered it, so a clean shot on a moving enemy registers where it looked like it should.
+const INTERP_DELAY: f32 = 0.05;
+const INTERP_TICKS: u32 = 3;
 
 /// The Aurora sim closure's native ABI: `(env, state_ptr_bits, input_ptr_bits)`,
 /// matching how compiled Aurora closures are called (see `aurora_par_for`).
@@ -203,6 +210,11 @@ pub struct Session {
     server_projectiles: Vec<ServerProjectile>,
     // Client.
     pred: Player,
+    /// Visual error easing for the local camera: when a reconcile shifts our predicted position,
+    /// we leave the physics body authoritative but carry the correction here and DECAY it, so the
+    /// camera glides to the corrected spot over a few frames instead of snapping. A big jump (teleport
+    /// / respawn) zeroes it so those still snap.
+    smooth_err: [f32; 3],
     pending: VecDeque<(u32, InputBlob)>,
     next_seq: u32,
     last_server_tick: u32,
@@ -309,6 +321,7 @@ impl Session {
             server_hits: Vec::new(),
             server_projectiles: Vec::new(),
             pred: Player::spawn(),
+            smooth_err: [0.0; 3],
             pending: VecDeque::new(),
             next_seq: 1,
             last_server_tick: 0,
@@ -430,7 +443,11 @@ impl Session {
                 None => (-1, [0.0; 3]),
             };
         } else if let Some(addr) = self.server_addr {
-            let vt = self.last_server_tick.saturating_sub(2);
+            // Rewind the host to the SAME moment we render remotes at: the interp buffer shows them
+            // INTERP_DELAY behind, which at ~62.5 Hz is INTERP_TICKS ticks. Sending a smaller offset
+            // (the old -2) rewound to a more-recent position than we aimed at, so a fast-moving target's
+            // hitbox sat ahead of where we saw it. Keep this in lockstep with InterpBuffer's delay.
+            let vt = self.last_server_tick.saturating_sub(INTERP_TICKS);
             let _ = self.sock.send_to(&encode_fire(vt, o, d, weapon), addr);
         }
     }
@@ -536,6 +553,13 @@ impl Session {
             };
         } else {
             self.tick += dt;
+            // Ease the reconcile error toward 0 (~0.82/frame ~= gone in ~80 ms). Below 1 mm just clear it.
+            for i in 0..3 {
+                self.smooth_err[i] *= 0.82;
+                if self.smooth_err[i].abs() < 0.001 {
+                    self.smooth_err[i] = 0.0;
+                }
+            }
             let now = self.last_server_tick;
             self.remotes.retain(|(_, r)| now.saturating_sub(r.last_seen) <= 90);
             self.ids = std::iter::once(self.my_id).chain(self.remotes.iter().map(|(id, _)| *id)).collect();
@@ -777,6 +801,12 @@ impl Session {
                 // and a full snap would zero it (the snapshot only carries state_len slots), forcing
                 // sim_step to re-create the body every reconcile (a body LEAK + perpetually-fresh
                 // body). meta/name are authoritative too.
+                // The position the camera is currently showing (physics + the error still easing out).
+                let shown = [
+                    self.pred.s[0] + self.smooth_err[0],
+                    self.pred.s[1] + self.smooth_err[1],
+                    self.pred.s[2] + self.smooth_err[2],
+                ];
                 for i in 0..self.state_len {
                     self.pred.s[i] = st.s[i];
                 }
@@ -791,11 +821,23 @@ impl Session {
                 for (_, inp) in pend {
                     run_sim(self.sim_fn, self.sim_env, &mut self.pred.s, &inp);
                 }
+                // Re-base the easing offset so the camera stays exactly where it was this frame, then
+                // glides to the freshly reconciled physics position (decayed in update()). A big
+                // correction (teleport / respawn) is too far to smooth - snap it.
+                for i in 0..3 {
+                    self.smooth_err[i] = shown[i] - self.pred.s[i];
+                }
+                let m2 = self.smooth_err[0] * self.smooth_err[0]
+                    + self.smooth_err[1] * self.smooth_err[1]
+                    + self.smooth_err[2] * self.smooth_err[2];
+                if m2 > 4.0 {
+                    self.smooth_err = [0.0; 3];
+                }
             } else {
                 let slot = match self.remotes.iter_mut().find(|(rid, _)| *rid == id) {
                     Some((_, r)) => r,
                     None => {
-                        self.remotes.push((id, Remote { interp: InterpBuffer::new(0.1), last: st, last_seen: stick }));
+                        self.remotes.push((id, Remote { interp: InterpBuffer::new(INTERP_DELAY), last: st, last_seen: stick }));
                         &mut self.remotes.last_mut().unwrap().1
                     }
                 };
@@ -1873,15 +1915,15 @@ pub extern "C" fn aurora_net_fx_kind(i: i64) -> f64 {
 }
 #[no_mangle]
 pub extern "C" fn aurora_net_local_x() -> f64 {
-    read(0.0, |s| s.px(s.my_id()))
+    read(0.0, |s| s.px(s.my_id()) + s.smooth_err[0] as f64)
 }
 #[no_mangle]
 pub extern "C" fn aurora_net_local_y() -> f64 {
-    read(0.0, |s| s.py(s.my_id()))
+    read(0.0, |s| s.py(s.my_id()) + s.smooth_err[1] as f64)
 }
 #[no_mangle]
 pub extern "C" fn aurora_net_local_z() -> f64 {
-    read(0.0, |s| s.pz(s.my_id()))
+    read(0.0, |s| s.pz(s.my_id()) + s.smooth_err[2] as f64)
 }
 #[no_mangle]
 pub extern "C" fn aurora_net_local_yaw() -> f64 {
