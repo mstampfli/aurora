@@ -382,7 +382,7 @@ const BUILTINS: &[&str] = &[
     "net_player_x", "net_player_y", "net_player_z", "net_player_yaw", "net_player_state",
     "net_set_meta", "net_player_meta", "net_set_name", "net_player_name_len", "net_player_name_char",
     "net_local_x", "net_local_y", "net_local_z", "net_local_yaw",
-    "net_state", "net_local_state", "net_interest", "net_hit_radius", "net_max_clients", "net_rejected", "net_connected",
+    "net_state", "net_local_state", "net_interest", "net_hit_radius", "net_max_clients", "net_rejected", "net_connected", "net_dedicated",
     "net_set_bot_count", "net_set_bot", "net_set_bot_meta", "net_set_bot_name", "net_bot_count",
     "net_set_object_count", "net_set_object", "net_object_count", "net_object_x", "net_object_y", "net_object_z",
     "net_set_fx_count", "net_set_fx", "net_fx_count", "net_fx_x", "net_fx_y", "net_fx_z", "net_fx_kind",
@@ -736,6 +736,7 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_net_max_clients", aurora_runtime::aurora_net_max_clients as *const u8);
     builder.symbol("aurora_net_rejected", aurora_runtime::aurora_net_rejected as *const u8);
     builder.symbol("aurora_net_connected", aurora_runtime::aurora_net_connected as *const u8);
+    builder.symbol("aurora_net_dedicated", aurora_runtime::aurora_net_dedicated as *const u8);
     builder.symbol("aurora_net_set_bot_count", aurora_runtime::aurora_net_set_bot_count as *const u8);
     builder.symbol("aurora_net_set_bot", aurora_runtime::aurora_net_set_bot as *const u8);
     builder.symbol("aurora_net_set_bot_meta", aurora_runtime::aurora_net_set_bot_meta as *const u8);
@@ -1122,6 +1123,7 @@ fn lower(
     hosts.insert("net_max_clients", import(jmod, "aurora_net_max_clients", &[i], None));
     hosts.insert("net_rejected", import(jmod, "aurora_net_rejected", &[], Some(i)));
     hosts.insert("net_connected", import(jmod, "aurora_net_connected", &[], Some(i)));
+    hosts.insert("net_dedicated", import(jmod, "aurora_net_dedicated", &[], None));
     hosts.insert("net_set_bot_count", import(jmod, "aurora_net_set_bot_count", &[i], None));
     hosts.insert("net_set_bot", import(jmod, "aurora_net_set_bot", &[i, f64t, f64t, f64t, f64t], None));
     hosts.insert("net_set_bot_meta", import(jmod, "aurora_net_set_bot_meta", &[i, i, f64t], None));
@@ -4489,6 +4491,7 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "net_host" => (vec![I64], Some(I64)),
         "net_update" => (vec![F64], None),
         "net_leave" => (vec![], None),
+        "net_dedicated" => (vec![], None),
         "net_my_id" | "net_is_server" | "net_player_count" | "net_rejected" | "net_connected" => (vec![], Some(I64)),
         "net_max_clients" => (vec![I64], None),
         "net_bot_count" => (vec![], Some(I64)),

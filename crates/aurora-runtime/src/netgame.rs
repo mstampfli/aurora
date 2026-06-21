@@ -201,6 +201,11 @@ pub struct Session {
     max_clients: usize,
     /// Client-side: the host rejected our join (lobby full).
     rejected: bool,
+    /// Dedicated server: there is no local "host player" - the machine running this Session does
+    /// not play, it only simulates + broadcasts. When set, the phantom id-0 host slot is omitted
+    /// from the player list, lag-comp and the id set, so every participant (including whoever runs
+    /// the host) is a plain client. This is the foundation of the host-as-pure-client architecture.
+    dedicated: bool,
 }
 
 /// Run the registered Aurora sim on `state` with `input` (mutating `state`).
@@ -277,6 +282,7 @@ impl Session {
             local_name: [0u8; NAME_MAX],
             max_clients: 8,
             rejected: false,
+            dedicated: false,
         }
     }
 
@@ -308,6 +314,11 @@ impl Session {
     /// Max connected clients the host will admit (joins past this get a clear rejection).
     pub fn set_max_clients(&mut self, n: usize) {
         self.max_clients = n.max(1);
+    }
+    /// Mark this server as dedicated: no local host player. Call right after net_host on a server
+    /// thread so the machine that hosts joins back as an ordinary client (host == remote).
+    pub fn set_dedicated(&mut self) {
+        self.dedicated = true;
     }
     /// Client-side: did the host reject our join because the lobby was full?
     pub fn rejected(&self) -> bool {
@@ -443,7 +454,9 @@ impl Session {
             self.clients.retain(|c| c.last_seen >= cutoff);
             let st = self.server_tick;
             let r = self.hit_radius;
-            self.lag.record(st, 0, [self.host.s[0], self.host.s[1], self.host.s[2]], r);
+            if !self.dedicated {
+                self.lag.record(st, 0, [self.host.s[0], self.host.s[1], self.host.s[2]], r);
+            }
             for c in &self.clients {
                 self.lag.record(st, c.id as u64, [c.state.s[0], c.state.s[1], c.state.s[2]], r);
             }
@@ -457,7 +470,11 @@ impl Session {
             }
             self.tick += dt;
             self.broadcast();
-            self.ids = std::iter::once(0u32).chain(self.clients.iter().map(|c| c.id)).collect();
+            self.ids = if self.dedicated {
+                self.clients.iter().map(|c| c.id).collect()
+            } else {
+                std::iter::once(0u32).chain(self.clients.iter().map(|c| c.id)).collect()
+            };
         } else {
             self.tick += dt;
             let now = self.last_server_tick;
@@ -468,7 +485,9 @@ impl Session {
 
     fn broadcast(&mut self) {
         let mut all: Vec<(u32, Player)> = Vec::with_capacity(self.clients.len() + 1 + self.bots.len());
-        all.push((0, self.host));
+        if !self.dedicated {
+            all.push((0, self.host));
+        }
         for c in &self.clients {
             all.push((c.id, c.state));
         }
@@ -1411,6 +1430,11 @@ pub extern "C" fn aurora_net_hit_radius(r: f64) {
 #[no_mangle]
 pub extern "C" fn aurora_net_max_clients(n: i64) {
     with((), |s| s.set_max_clients(n.max(1) as usize));
+}
+/// Server thread: mark this server dedicated (no local host player; host joins back as a client).
+#[no_mangle]
+pub extern "C" fn aurora_net_dedicated() {
+    with((), |s| s.set_dedicated());
 }
 /// Client: 1 if the host rejected our join (lobby full), else 0.
 #[no_mangle]
