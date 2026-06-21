@@ -295,7 +295,7 @@ pub extern "C" fn aurora_phys3d_move_character(h: i64, dx: f64, dy: f64, dz: f64
         // the collider is still stale. The body translation reflects `set_pos`
         // immediately, so the slide starts from the right place.
         let body_t = p.bodies.get(body_h).map(|b| *b.translation()).unwrap_or(desired);
-        let (new_t, grounded) = {
+        let (new_t, grounded, hit_cols) = {
             let Some(collider) = p.colliders.get(col_h) else { return };
             let shape = collider.shape();
             let mut pos = *collider.position();
@@ -306,14 +306,35 @@ pub extern "C" fn aurora_phys3d_move_character(h: i64, dx: f64, dy: f64, dz: f64
             let filter = QueryFilter::default()
                 .exclude_collider(col_h)
                 .groups(InteractionGroups::new(Group::GROUP_2, Group::GROUP_1));
+            // Collect the colliders we ran into so we can SHOVE the dynamic ones (crates) afterwards -
+            // a kinematic controller otherwise just slides off them and they never move.
+            let mut hits = Vec::new();
             let mvt = p.controller.move_shape(
-                dt as Real, &p.bodies, &p.colliders, &p.query, shape, &pos, desired, filter, |_| {},
+                dt as Real, &p.bodies, &p.colliders, &p.query, shape, &pos, desired, filter,
+                |coll| hits.push(coll.handle),
             );
-            (pos.translation.vector + mvt.translation, mvt.grounded)
+            (pos.translation.vector + mvt.translation, mvt.grounded, hits)
         };
         p.grounded[idx] = grounded;
         if let Some(b) = p.bodies.get_mut(body_h) {
             b.set_next_kinematic_translation(new_t.into());
+        }
+        // PUSH the dynamic bodies (crates) the character walked/slid into, along its move direction,
+        // so the box gets shoved instead of being an immovable wall. Resolve collider -> body first to
+        // avoid borrowing colliders + bodies at once; the impulse is small so it's a nudge, not a launch.
+        let hdir = vector![dx as Real, 0.0, dz as Real];
+        let hl = hdir.norm();
+        if hl > 0.001 {
+            let imp = hdir / hl * 0.25 as Real;
+            let bodies_hit: Vec<_> =
+                hit_cols.into_iter().filter_map(|ch| p.colliders.get(ch).and_then(|c| c.parent())).collect();
+            for bh in bodies_hit {
+                if let Some(b) = p.bodies.get_mut(bh) {
+                    if b.is_dynamic() {
+                        b.apply_impulse(imp, true);
+                    }
+                }
+            }
         }
     });
 }
