@@ -1365,6 +1365,15 @@ pub extern "C" fn aurora_r3d_draw(
     );
 }
 #[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn aurora_r3d_draw_quat(
+    h: i64, px: f64, py: f64, pz: f64, qx: f64, qy: f64, qz: f64, qw: f64, scale: f64,
+) {
+    aurora_window::imm_r3d_draw_quat(
+        h, px as f32, py as f32, pz as f32, qx as f32, qy as f32, qz as f32, qw as f32, scale as f32,
+    );
+}
+#[no_mangle]
 pub extern "C" fn aurora_r3d_draw_tint(
     h: i64, px: f64, py: f64, pz: f64, yaw: f64, pitch: f64, roll: f64, scale: f64, r: f64, g: f64, b: f64,
 ) {
@@ -2044,7 +2053,7 @@ pub extern "C" fn aurora_dbg_var_f64(name_ptr: *const u8, name_len: i64, value: 
 /// Touch every host symbol so the linker keeps this crate's object in an AOT
 /// link even when the Rust driver references nothing from it directly.
 pub fn force_link() -> usize {
-    let fns: [*const (); 296] = [
+    let fns: [*const (); 302] = [
         aurora_net_projectile_intent as *const (),
         aurora_net_server_projectile_count as *const (),
         aurora_net_server_projectile_shooter as *const (),
@@ -2090,6 +2099,12 @@ pub fn force_link() -> usize {
         aurora_net_object_x as *const (),
         aurora_net_object_y as *const (),
         aurora_net_object_z as *const (),
+        aurora_net_set_object_rot as *const (),
+        aurora_net_object_qx as *const (),
+        aurora_net_object_qy as *const (),
+        aurora_net_object_qz as *const (),
+        aurora_net_object_qw as *const (),
+        aurora_r3d_draw_quat as *const (),
         aurora_net_set_fx_count as *const (),
         aurora_net_set_fx as *const (),
         aurora_net_fx_count as *const (),

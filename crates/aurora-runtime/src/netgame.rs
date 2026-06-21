@@ -164,11 +164,11 @@ pub struct Session {
     /// BOT_ID_BASE+i). The host's game writes these each frame from its local
     /// AI; clients receive them as remotes and never run the AI themselves.
     bots: Vec<Player>,
-    /// World objects (crate positions). Host: authoritative, written each frame +
-    /// replicated + recorded in lag-comp. Client: the last received host positions.
-    objects: Vec<[f32; 3]>,
-    /// Host change-detection: objects are static until shot, so we only resend when moved.
-    last_sent_objects: Vec<[f32; 3]>,
+    /// World objects (crate position + orientation: x,y,z, qx,qy,qz,qw). Host: authoritative,
+    /// written each frame + replicated + recorded in lag-comp. Client: last received host pose.
+    objects: Vec<[f32; 7]>,
+    /// Host change-detection: objects are static until shot/bumped, so we only resend when moved.
+    last_sent_objects: Vec<[f32; 7]>,
     /// Transient visuals (loot drops + in-flight projectiles): host fills + replicates each
     /// frame; clients render. Each entry is [x, y, z, kind] (kind 0-2 drops, 3 rocket, 4 grenade).
     fx: Vec<[f32; 4]>,
@@ -485,7 +485,7 @@ impl Session {
             }
             // Record world objects (crates) so a rewound shot is blocked by where a box WAS.
             for (i, o) in self.objects.iter().enumerate() {
-                self.lag.record(st, OBJ_ID_BASE + i as u64, *o, OBJ_RADIUS);
+                self.lag.record(st, OBJ_ID_BASE + i as u64, [o[0], o[1], o[2]], OBJ_RADIUS);
             }
             self.tick += dt;
             self.broadcast();
@@ -906,14 +906,27 @@ impl Session {
     // --- world objects (crates): host writes + replicates; clients read ---
     pub fn set_object_count(&mut self, n: usize) {
         if n > self.objects.len() {
-            self.objects.resize(n, [0.0; 3]);
+            // default pose: identity quaternion (qw = 1) so an object that never sets a rotation
+            // still renders upright rather than collapsed to a zero quaternion.
+            self.objects.resize(n, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
         } else {
             self.objects.truncate(n);
         }
     }
     pub fn set_object(&mut self, i: usize, x: f64, y: f64, z: f64) {
+        // position only - leaves the orientation (set separately via set_object_rot) intact
         if let Some(o) = self.objects.get_mut(i) {
-            *o = [x as f32, y as f32, z as f32];
+            o[0] = x as f32;
+            o[1] = y as f32;
+            o[2] = z as f32;
+        }
+    }
+    pub fn set_object_rot(&mut self, i: usize, qx: f64, qy: f64, qz: f64, qw: f64) {
+        if let Some(o) = self.objects.get_mut(i) {
+            o[3] = qx as f32;
+            o[4] = qy as f32;
+            o[5] = qz as f32;
+            o[6] = qw as f32;
         }
     }
     pub fn object_count(&self) -> usize {
@@ -921,6 +934,14 @@ impl Session {
     }
     pub fn object_pos(&self, i: usize, axis: usize) -> f64 {
         self.objects.get(i).map(|o| o[axis.min(2)] as f64).unwrap_or(0.0)
+    }
+    /// Orientation component: comp 0..3 = qx,qy,qz,qw. Defaults to identity (qw = 1) if absent.
+    pub fn object_rot(&self, i: usize, comp: usize) -> f64 {
+        let c = comp.min(3);
+        self.objects
+            .get(i)
+            .map(|o| o[3 + c] as f64)
+            .unwrap_or(if c == 3 { 1.0 } else { 0.0 })
     }
 
     // --- transient visuals (drops + projectiles): host writes + replicates; clients read ---
@@ -1246,8 +1267,8 @@ fn decode_fx(b: &[u8]) -> Option<Vec<[f32; 4]>> {
     }
     Some(fx)
 }
-fn encode_objects(objs: &[[f32; 3]]) -> Vec<u8> {
-    let mut b = Vec::with_capacity(3 + objs.len() * 12);
+fn encode_objects(objs: &[[f32; 7]]) -> Vec<u8> {
+    let mut b = Vec::with_capacity(3 + objs.len() * 28);
     b.push(TAG_OBJECTS);
     b.extend_from_slice(&(objs.len() as u16).to_be_bytes());
     for o in objs {
@@ -1257,7 +1278,7 @@ fn encode_objects(objs: &[[f32; 3]]) -> Vec<u8> {
     }
     b
 }
-fn decode_objects(b: &[u8]) -> Option<Vec<[f32; 3]>> {
+fn decode_objects(b: &[u8]) -> Option<Vec<[f32; 7]>> {
     if b.len() < 3 || b[0] != TAG_OBJECTS {
         return None;
     }
@@ -1265,11 +1286,19 @@ fn decode_objects(b: &[u8]) -> Option<Vec<[f32; 3]>> {
     let mut objs = Vec::with_capacity(count);
     let mut o = 3;
     for _ in 0..count {
-        if o + 12 > b.len() {
+        if o + 28 > b.len() {
             break;
         }
-        objs.push([rd_f32(b, o), rd_f32(b, o + 4), rd_f32(b, o + 8)]);
-        o += 12;
+        objs.push([
+            rd_f32(b, o),
+            rd_f32(b, o + 4),
+            rd_f32(b, o + 8),
+            rd_f32(b, o + 12),
+            rd_f32(b, o + 16),
+            rd_f32(b, o + 20),
+            rd_f32(b, o + 24),
+        ]);
+        o += 28;
     }
     Some(objs)
 }
@@ -1373,11 +1402,12 @@ fn decode_booms(b: &[u8]) -> Option<Vec<Boom>> {
     }
     Some(booms)
 }
-fn objects_differ(a: &[[f32; 3]], b: &[[f32; 3]]) -> bool {
+fn objects_differ(a: &[[f32; 7]], b: &[[f32; 7]]) -> bool {
     if a.len() != b.len() {
         return true;
     }
-    a.iter().zip(b.iter()).any(|(x, y)| (0..3).any(|i| (x[i] - y[i]).abs() > 1e-3))
+    // compare orientation too (a tumbling crate rotates even when its position barely moves)
+    a.iter().zip(b.iter()).any(|(x, y)| (0..7).any(|i| (x[i] - y[i]).abs() > 1e-3))
 }
 
 fn encode_fire(view_tick: u32, o: [f32; 3], d: [f32; 3], weapon: u8) -> Vec<u8> {
@@ -1688,6 +1718,10 @@ pub extern "C" fn aurora_net_set_object(i: i64, x: f64, y: f64, z: f64) {
     with((), |s| s.set_object(i.max(0) as usize, x, y, z))
 }
 #[no_mangle]
+pub extern "C" fn aurora_net_set_object_rot(i: i64, qx: f64, qy: f64, qz: f64, qw: f64) {
+    with((), |s| s.set_object_rot(i.max(0) as usize, qx, qy, qz, qw))
+}
+#[no_mangle]
 pub extern "C" fn aurora_net_object_count() -> i64 {
     read(0, |s| s.object_count() as i64)
 }
@@ -1702,6 +1736,22 @@ pub extern "C" fn aurora_net_object_y(i: i64) -> f64 {
 #[no_mangle]
 pub extern "C" fn aurora_net_object_z(i: i64) -> f64 {
     read(0.0, |s| s.object_pos(i.max(0) as usize, 2))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_object_qx(i: i64) -> f64 {
+    read(0.0, |s| s.object_rot(i.max(0) as usize, 0))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_object_qy(i: i64) -> f64 {
+    read(0.0, |s| s.object_rot(i.max(0) as usize, 1))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_object_qz(i: i64) -> f64 {
+    read(0.0, |s| s.object_rot(i.max(0) as usize, 2))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_object_qw(i: i64) -> f64 {
+    read(1.0, |s| s.object_rot(i.max(0) as usize, 3))
 }
 // --- transient visuals (host writes drops + projectiles; clients render) ---
 #[no_mangle]
@@ -2298,12 +2348,15 @@ mod meta_replication_test {
         }
         assert_eq!(client.object_count(), 3, "client should see 3 crates");
         assert!((client.object_pos(1, 0) - 11.0).abs() < 0.01, "crate 1 x = {}", client.object_pos(1, 0));
-        // Move crate 2 (as if shot) and confirm the change replicates.
+        // an unrotated crate reports identity (qw = 1) so it renders upright by default
+        assert!((client.object_rot(1, 3) - 1.0).abs() < 0.01, "default crate qw = {}", client.object_rot(1, 3));
+        // Move + TUMBLE crate 2 (as if shot) and confirm both position and orientation replicate.
         for _ in 0..20 {
             host.set_object_count(3);
             host.set_object(0, 10.0, 0.5, -4.0);
             host.set_object(1, 11.0, 0.5, -4.0);
             host.set_object(2, 18.0, 1.5, -2.0);
+            host.set_object_rot(2, 0.0, 0.70710677, 0.0, 0.70710677); // 90deg about Y
             client.send_input(&input);
             host.send_input(&input);
             client.update(0.016);
@@ -2312,6 +2365,8 @@ mod meta_replication_test {
         }
         assert!((client.object_pos(2, 0) - 18.0).abs() < 0.01, "moved crate 2 x = {}", client.object_pos(2, 0));
         assert!((client.object_pos(2, 1) - 1.5).abs() < 0.01, "moved crate 2 y = {}", client.object_pos(2, 1));
+        assert!((client.object_rot(2, 1) - 0.70710677).abs() < 0.01, "tumbled crate 2 qy = {}", client.object_rot(2, 1));
+        assert!((client.object_rot(2, 3) - 0.70710677).abs() < 0.01, "tumbled crate 2 qw = {}", client.object_rot(2, 3));
     }
 
     // Kill events announced by the host reach the client (which drives its kill feed + the

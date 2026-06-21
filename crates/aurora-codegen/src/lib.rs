@@ -360,7 +360,7 @@ const BUILTINS: &[&str] = &[
     "navmesh_build", "navmesh_find", "navmesh_x", "navmesh_y", "navmesh_z",
     // 3D rendering.
     "r3d_load_model", "r3d_make_box", "r3d_make_box_sized", "r3d_make_box_emissive", "r3d_make_sphere", "r3d_make_plane",
-    "r3d_camera", "r3d_camera_roll", "r3d_light", "r3d_clear", "r3d_begin", "r3d_draw", "r3d_draw_tint",
+    "r3d_camera", "r3d_camera_roll", "r3d_light", "r3d_clear", "r3d_begin", "r3d_draw", "r3d_draw_quat", "r3d_draw_tint",
     "r3d_draw_on_joint", "r3d_joint_dump", "r3d_draw_shield",
     "r3d_anim_play", "r3d_anim_update", "r3d_anim_play_upper", "r3d_anim_stop_upper", "r3d_clip_count", "r3d_present",
     "r3d_fog", "r3d_speedlines", "r3d_damage", "r3d_blur", "r3d_sky", "r3d_shadows", "r3d_ssao", "r3d_point_shadows", "r3d_clear_lights", "r3d_point_light",
@@ -385,6 +385,7 @@ const BUILTINS: &[&str] = &[
     "net_state", "net_local_state", "net_interest", "net_hit_radius", "net_max_clients", "net_rejected", "net_connected", "net_dedicated", "net_cfg_set", "net_cfg_get",
     "net_set_bot_count", "net_set_bot", "net_set_bot_meta", "net_set_bot_name", "net_bot_count",
     "net_set_object_count", "net_set_object", "net_object_count", "net_object_x", "net_object_y", "net_object_z",
+    "net_set_object_rot", "net_object_qx", "net_object_qy", "net_object_qz", "net_object_qw",
     "net_set_fx_count", "net_set_fx", "net_fx_count", "net_fx_x", "net_fx_y", "net_fx_z", "net_fx_kind",
     "net_spawn_at", "net_fire",
     "net_hit_player", "net_hit_x", "net_hit_y", "net_hit_z",
@@ -751,6 +752,12 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_net_object_x", aurora_runtime::aurora_net_object_x as *const u8);
     builder.symbol("aurora_net_object_y", aurora_runtime::aurora_net_object_y as *const u8);
     builder.symbol("aurora_net_object_z", aurora_runtime::aurora_net_object_z as *const u8);
+    builder.symbol("aurora_net_set_object_rot", aurora_runtime::aurora_net_set_object_rot as *const u8);
+    builder.symbol("aurora_net_object_qx", aurora_runtime::aurora_net_object_qx as *const u8);
+    builder.symbol("aurora_net_object_qy", aurora_runtime::aurora_net_object_qy as *const u8);
+    builder.symbol("aurora_net_object_qz", aurora_runtime::aurora_net_object_qz as *const u8);
+    builder.symbol("aurora_net_object_qw", aurora_runtime::aurora_net_object_qw as *const u8);
+    builder.symbol("aurora_r3d_draw_quat", aurora_runtime::aurora_r3d_draw_quat as *const u8);
     builder.symbol("aurora_net_set_fx_count", aurora_runtime::aurora_net_set_fx_count as *const u8);
     builder.symbol("aurora_net_set_fx", aurora_runtime::aurora_net_set_fx as *const u8);
     builder.symbol("aurora_net_fx_count", aurora_runtime::aurora_net_fx_count as *const u8);
@@ -1045,6 +1052,7 @@ fn lower(
     hosts.insert("r3d_clear", import(jmod, "aurora_r3d_clear", &[f64t, f64t, f64t], None));
     hosts.insert("r3d_begin", import(jmod, "aurora_r3d_begin", &[], None));
     hosts.insert("r3d_draw", import(jmod, "aurora_r3d_draw", &[i, f64t, f64t, f64t, f64t, f64t, f64t, f64t], None));
+    hosts.insert("r3d_draw_quat", import(jmod, "aurora_r3d_draw_quat", &[i, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t], None));
     hosts.insert("r3d_draw_tint", import(jmod, "aurora_r3d_draw_tint", &[i, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t], None));
     hosts.insert("r3d_draw_shield", import(jmod, "aurora_r3d_draw_shield", &[i, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t], None));
     hosts.insert("r3d_draw_on_joint", import(jmod, "aurora_r3d_draw_on_joint", &[i, i, i, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t], None));
@@ -1145,6 +1153,11 @@ fn lower(
     hosts.insert("net_object_x", import(jmod, "aurora_net_object_x", &[i], Some(f64t)));
     hosts.insert("net_object_y", import(jmod, "aurora_net_object_y", &[i], Some(f64t)));
     hosts.insert("net_object_z", import(jmod, "aurora_net_object_z", &[i], Some(f64t)));
+    hosts.insert("net_set_object_rot", import(jmod, "aurora_net_set_object_rot", &[i, f64t, f64t, f64t, f64t], None));
+    hosts.insert("net_object_qx", import(jmod, "aurora_net_object_qx", &[i], Some(f64t)));
+    hosts.insert("net_object_qy", import(jmod, "aurora_net_object_qy", &[i], Some(f64t)));
+    hosts.insert("net_object_qz", import(jmod, "aurora_net_object_qz", &[i], Some(f64t)));
+    hosts.insert("net_object_qw", import(jmod, "aurora_net_object_qw", &[i], Some(f64t)));
     hosts.insert("net_set_fx_count", import(jmod, "aurora_net_set_fx_count", &[i], None));
     hosts.insert("net_set_fx", import(jmod, "aurora_net_set_fx", &[i, f64t, f64t, f64t, f64t], None));
     hosts.insert("net_fx_count", import(jmod, "aurora_net_fx_count", &[], Some(i)));
@@ -4478,6 +4491,7 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "r3d_clear" => (vec![F64, F64, F64], None),
         "r3d_begin" => (vec![], None),
         "r3d_draw" => (vec![I64, F64, F64, F64, F64, F64, F64, F64], None),
+        "r3d_draw_quat" => (vec![I64, F64, F64, F64, F64, F64, F64, F64, F64], None),
         "r3d_draw_tint" => (vec![I64, F64, F64, F64, F64, F64, F64, F64, F64, F64, F64], None),
         "r3d_draw_shield" => (vec![I64, F64, F64, F64, F64, F64, F64, F64, F64, F64], None),
         "r3d_draw_on_joint" => (vec![I64, I64, I64, F64, F64, F64, F64, F64, F64, F64, F64, F64, F64, F64, F64, F64, F64], None),
@@ -4540,6 +4554,8 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "net_set_object_count" => (vec![I64], None),
         "net_set_object" => (vec![I64, F64, F64, F64], None),
         "net_object_x" | "net_object_y" | "net_object_z" => (vec![I64], Some(F64)),
+        "net_set_object_rot" => (vec![I64, F64, F64, F64, F64], None),
+        "net_object_qx" | "net_object_qy" | "net_object_qz" | "net_object_qw" => (vec![I64], Some(F64)),
         "net_fx_count" => (vec![], Some(I64)),
         "net_set_fx_count" => (vec![I64], None),
         "net_set_fx" => (vec![I64, F64, F64, F64, F64], None),

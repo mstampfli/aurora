@@ -578,6 +578,31 @@ pub fn r3d_draw(
     });
 }
 
+/// Queue a model at position (px,py,pz) with an explicit unit quaternion (qx,qy,qz,qw) and uniform
+/// `scale`. Used for free-tumbling rigid bodies (crates) where a euler triple would be lossy/ambiguous.
+#[allow(clippy::too_many_arguments)]
+pub fn r3d_draw_quat(
+    handle: i64,
+    px: f32,
+    py: f32,
+    pz: f32,
+    qx: f32,
+    qy: f32,
+    qz: f32,
+    qw: f32,
+    scale: f32,
+) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        let m = Mat4::from_scale_rotation_translation(
+            Vec3::splat(scale),
+            Quat::from_xyzw(qx, qy, qz, qw).normalize(),
+            Vec3::new(px, py, pz),
+        );
+        s.draw(handle, m);
+    });
+}
+
 pub fn r3d_draw_tint(
     handle: i64,
     px: f32,
