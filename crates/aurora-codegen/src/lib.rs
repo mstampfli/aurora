@@ -377,7 +377,7 @@ const BUILTINS: &[&str] = &[
     "phys3d_apply_torque", "phys3d_set_angvel", "phys3d_set_rot",
     "phys3d_rot_qx", "phys3d_rot_qy", "phys3d_rot_qz", "phys3d_rot_qw",
     // Multiplayer (generic framework: the game registers its Aurora sim).
-    "net_host", "net_join", "net_sim", "net_send_input", "net_update", "net_leave",
+    "net_host", "net_join", "net_sim", "net_serve", "net_send_input", "net_update", "net_leave",
     "net_my_id", "net_is_server", "net_player_count", "net_player_id_at",
     "net_player_x", "net_player_y", "net_player_z", "net_player_yaw", "net_player_state",
     "net_set_meta", "net_player_meta", "net_set_name", "net_player_name_len", "net_player_name_char",
@@ -706,6 +706,7 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_net_host", aurora_runtime::aurora_net_host as *const u8);
     builder.symbol("aurora_net_join", aurora_runtime::aurora_net_join as *const u8);
     builder.symbol("aurora_net_sim", aurora_runtime::aurora_net_sim as *const u8);
+    builder.symbol("aurora_net_serve", aurora_runtime::aurora_net_serve as *const u8);
     builder.symbol("aurora_net_send_input", aurora_runtime::aurora_net_send_input as *const u8);
     builder.symbol("aurora_save_settings", aurora_runtime::aurora_save_settings as *const u8);
     builder.symbol("aurora_load_settings", aurora_runtime::aurora_load_settings as *const u8);
@@ -1091,6 +1092,7 @@ fn lower(
     hosts.insert("net_host", import(jmod, "aurora_net_host", &[i], Some(i)));
     hosts.insert("net_join", import(jmod, "aurora_net_join", &[ptr_ty, i, i], Some(i)));
     hosts.insert("net_sim", import(jmod, "aurora_net_sim", &[ptr_ty, ptr_ty, i, i], None));
+    hosts.insert("net_serve", import(jmod, "aurora_net_serve", &[ptr_ty, ptr_ty], None));
     hosts.insert("net_send_input", import(jmod, "aurora_net_send_input", &[ptr_ty, i], Some(i)));
     hosts.insert("save_settings", import(jmod, "aurora_save_settings", &[ptr_ty, i], Some(i)));
     hosts.insert("load_settings", import(jmod, "aurora_load_settings", &[ptr_ty, i], Some(i)));
@@ -3531,6 +3533,16 @@ fn tr_call(
         let il = to_i(b, il, &ilt);
         let f = m.declare_func_in_func(env.hosts["net_sim"], b.func);
         b.ins().call(f, &[fn_ptr, env_ptr, sl, il]);
+        return Ok(Term::Val(b.ins().iconst(types::I64, 0), Cty::I64));
+    }
+    // `net_serve(server_closure)` - run the authoritative server loop on its own thread. Like
+    // net_sim it takes a `[fn_ptr, env_ptr]` closure pair; the engine spawns a thread that calls it.
+    if name == "net_serve" {
+        let (cl, _) = val(m, b, l, env, &args[0].value)?;
+        let fn_ptr = load_at(b, cl, 0, env.ptr_ty);
+        let env_ptr = load_at(b, cl, 1, env.ptr_ty);
+        let f = m.declare_func_in_func(env.hosts["net_serve"], b.func);
+        b.ins().call(f, &[fn_ptr, env_ptr]);
         return Ok(Term::Val(b.ins().iconst(types::I64, 0), Cty::I64));
     }
     // `text_width(text, px)` - pixel width for centering. Works for a string LITERAL

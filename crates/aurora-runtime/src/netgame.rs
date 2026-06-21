@@ -1352,6 +1352,29 @@ pub extern "C" fn aurora_net_sim(sim_fn: *const u8, sim_env: *const u8, state_le
     with((), |s| s.set_sim(sim_fn as usize, sim_env as usize, state_len.max(4) as usize, input_len.max(1) as usize));
 }
 
+/// Run the authoritative SERVER loop on a dedicated thread. The thread gets its OWN thread-local
+/// physics world + netcode (so it's a real, isolated server), and the closure runs the headless
+/// server forever. The main thread then runs the rendered CLIENT (which joins 127.0.0.1), so the
+/// host receives the exact same stream as any remote.
+///
+/// SAFETY/CONTRACT for the closure (`server_main`): it must (1) capture nothing - it runs on
+/// another thread, so it takes only by-value args, never closed-over stack state; (2) never call
+/// render/window builtins (the GFX context lives on the main thread); (3) set up its own world via
+/// phys3d_init + net_host inside itself. The fn-pointer + env are just an immutable code address.
+#[no_mangle]
+pub extern "C" fn aurora_net_serve(fn_ptr: *const u8, env_ptr: *const u8) {
+    let f = fn_ptr as usize;
+    let e = env_ptr as usize;
+    let _ = std::thread::Builder::new()
+        .name("aurora-server".into())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(move || {
+            // The closure ABI is f(env_ptr) -> i64 for a zero-parameter Aurora closure.
+            let server_fn: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(f) };
+            server_fn(e as i64);
+        });
+}
+
 /// Submit this frame's input blob from an Aurora `[f64; len]` array; returns the
 /// input seq. Floats are narrowed to `f32` for the wire / sim blob.
 #[no_mangle]
