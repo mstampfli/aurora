@@ -30,6 +30,9 @@ const TAG_FX: u8 = 9; // host -> clients: transient visuals (loot drops + in-fli
 const TAG_SHOTFX: u8 = 10; // host -> clients: a shot was fired (shooter, origin, endpoint, weapon)
                            // so every machine can draw the tracer + play the fire sound.
 const TAG_LEAVE: u8 = 11;  // client -> host: I'm leaving the lobby (remove me now, don't wait for timeout)
+const TAG_BOOM: u8 = 12;   // host -> clients: an explosion detonated (source, point, intensity) so every
+                           // machine renders the blast flash + sparks + boom sound. The machine that
+                           // CAUSED it (source == my id) skips its own (it predicted the blast locally).
 
 /// Reserved id range for host-controlled bots. They ride the SAME player
 /// replication channel as humans (state + meta + name), so a guest receives and
@@ -128,6 +131,16 @@ struct ShotFx {
     weapon: u8,
 }
 
+/// An EXPLOSION event: the host announces every detonation (its own + each client's re-simulated
+/// rocket/grenade) so all machines render the blast + play the boom sound. `source` is the net id
+/// that caused it, so the machine that fired skips its own (it already predicted the blast).
+#[derive(Clone, Copy)]
+struct Boom {
+    source: u32,
+    p: [f32; 3],
+    intensity: f32,
+}
+
 /// One networking session (server or client).
 pub struct Session {
     sock: UdpSocket,
@@ -170,6 +183,10 @@ pub struct Session {
     /// cleared. Client: received shots, drained by the game each frame to spawn tracers + sounds.
     shots_out: Vec<ShotFx>,
     shots_in: Vec<ShotFx>,
+    /// Explosion events. Host: pushed each frame (own + each client's re-simmed detonation),
+    /// broadcast, then cleared. Client: received booms, drained by the game to render others' blasts.
+    booms_out: Vec<Boom>,
+    booms_in: Vec<Boom>,
     next_id: u32,
     lag: LagComp,
     server_tick: u64,
@@ -263,6 +280,8 @@ impl Session {
             kill_in: Vec::new(),
             shots_out: Vec::new(),
             shots_in: Vec::new(),
+            booms_out: Vec::new(),
+            booms_in: Vec::new(),
             next_id: 1,
             lag: LagComp::new(64),
             server_tick: 0,
@@ -691,6 +710,12 @@ impl Session {
             }
             return;
         }
+        if pkt.first().copied() == Some(TAG_BOOM) {
+            if let Some(booms) = decode_booms(pkt) {
+                self.booms_in.extend(booms); // accumulated; the game drains them each frame
+            }
+            return;
+        }
         let Some((your_id, acked, tick, stick, players)) = decode_snapshot(pkt) else { return };
         self.got_snap = true;
         self.last_snap_tick = self.tick; // freshness for net_connected()
@@ -1033,6 +1058,46 @@ impl Session {
             self.shots_in.clear();
         }
     }
+
+    // --- explosion events: host announces every detonation; all machines render others' blasts ---
+    /// Host: announce an explosion (the net id that caused it, world point, intensity).
+    pub fn push_boom(&mut self, source: u32, x: f64, y: f64, z: f64, intensity: f64) {
+        self.booms_out.push(Boom {
+            source,
+            p: [x as f32, y as f32, z as f32],
+            intensity: intensity as f32,
+        });
+    }
+    fn booms_view(&self) -> &[Boom] {
+        if self.is_server { &self.booms_out } else { &self.booms_in }
+    }
+    pub fn boom_count(&self) -> usize {
+        self.booms_view().len()
+    }
+    pub fn boom_source(&self, i: usize) -> i64 {
+        self.booms_view().get(i).map(|b| b.source as i64).unwrap_or(-1)
+    }
+    /// field 0-2 = point x/y/z, 3 = intensity.
+    pub fn boom_field(&self, i: usize, field: usize) -> f64 {
+        self.booms_view()
+            .get(i)
+            .map(|b| if field < 3 { b.p[field] } else { b.intensity } as f64)
+            .unwrap_or(0.0)
+    }
+    /// End of frame: the HOST broadcasts this frame's booms then clears; a CLIENT clears its batch.
+    pub fn flush_booms(&mut self) {
+        if self.is_server {
+            if !self.booms_out.is_empty() {
+                let bpkt = encode_booms(&self.booms_out);
+                for c in &self.clients {
+                    let _ = self.sock.send_to(&bpkt, c.addr);
+                }
+                self.booms_out.clear();
+            }
+        } else {
+            self.booms_in.clear();
+        }
+    }
 }
 
 // --- wire format (big-endian) ---
@@ -1273,6 +1338,40 @@ fn decode_shots(b: &[u8]) -> Option<Vec<ShotFx>> {
         o += 29;
     }
     Some(shots)
+}
+fn encode_booms(booms: &[Boom]) -> Vec<u8> {
+    // tag + u16 count, then per boom: u32 source, 4*f32 (point xyz + intensity) = 20 bytes.
+    let mut b = Vec::with_capacity(3 + booms.len() * 20);
+    b.push(TAG_BOOM);
+    b.extend_from_slice(&(booms.len() as u16).to_be_bytes());
+    for bm in booms {
+        put_u32(&mut b, bm.source);
+        for v in bm.p.iter() {
+            put_f32(&mut b, *v);
+        }
+        put_f32(&mut b, bm.intensity);
+    }
+    b
+}
+fn decode_booms(b: &[u8]) -> Option<Vec<Boom>> {
+    if b.len() < 3 || b[0] != TAG_BOOM {
+        return None;
+    }
+    let count = u16::from_be_bytes([b[1], b[2]]) as usize;
+    let mut booms = Vec::with_capacity(count);
+    let mut o = 3;
+    for _ in 0..count {
+        if o + 20 > b.len() {
+            break;
+        }
+        booms.push(Boom {
+            source: rd_u32(b, o),
+            p: [rd_f32(b, o + 4), rd_f32(b, o + 8), rd_f32(b, o + 12)],
+            intensity: rd_f32(b, o + 16),
+        });
+        o += 20;
+    }
+    Some(booms)
 }
 fn objects_differ(a: &[[f32; 3]], b: &[[f32; 3]]) -> bool {
     if a.len() != b.len() {
@@ -1757,6 +1856,28 @@ pub extern "C" fn aurora_net_shot_weapon(i: i64) -> i64 {
 pub extern "C" fn aurora_net_shots_clear() {
     // End-of-frame: host broadcasts this frame's shots then clears; client clears the rendered batch.
     with((), |s| s.flush_shots());
+}
+// --- explosion events: host announces every detonation; all machines render others' blasts ---
+#[no_mangle]
+pub extern "C" fn aurora_net_push_boom(source: i64, x: f64, y: f64, z: f64, intensity: f64) {
+    with((), |s| s.push_boom(source.max(0) as u32, x, y, z, intensity));
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_boom_count() -> i64 {
+    read(0, |s| s.boom_count() as i64)
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_boom_source(i: i64) -> i64 {
+    read(-1, |s| s.boom_source(i.max(0) as usize))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_boom_field(i: i64, field: i64) -> f64 {
+    read(0.0, |s| s.boom_field(i.max(0) as usize, field.max(0) as usize))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_booms_clear() {
+    // End-of-frame: host broadcasts this frame's booms then clears; client clears the rendered batch.
+    with((), |s| s.flush_booms());
 }
 #[no_mangle]
 pub extern "C" fn aurora_net_hit_player() -> i64 {
