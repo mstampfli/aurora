@@ -1535,6 +1535,37 @@ pub extern "C" fn aurora_net_max_clients(n: i64) {
 pub extern "C" fn aurora_net_dedicated() {
     with((), |s| s.set_dedicated());
 }
+
+/// Cross-thread server config (the host -> server control channel). The host (main thread) writes
+/// lobby settings here BEFORE launching the server thread via net_serve, and may keep updating them;
+/// server_main reads them. A plain global (NOT thread_local), so it crosses the thread boundary that
+/// net_serve creates. Slot meaning is game-defined (e.g. 0 bot_count, 1 kill_target, 2 round_len).
+static SERVER_CFG: std::sync::Mutex<[f64; 16]> = std::sync::Mutex::new([0.0; 16]);
+/// Host: set a server-config slot (read by the dedicated server thread).
+#[no_mangle]
+pub extern "C" fn aurora_net_cfg_set(i: i64, v: f64) {
+    if let Ok(mut c) = SERVER_CFG.lock() {
+        let idx = i.max(0) as usize;
+        if idx < 16 {
+            c[idx] = v;
+        }
+    }
+}
+/// Read a server-config slot (the server thread, or anyone).
+#[no_mangle]
+pub extern "C" fn aurora_net_cfg_get(i: i64) -> f64 {
+    SERVER_CFG
+        .lock()
+        .map(|c| {
+            let idx = i.max(0) as usize;
+            if idx < 16 {
+                c[idx]
+            } else {
+                0.0
+            }
+        })
+        .unwrap_or(0.0)
+}
 /// Client: 1 if the host rejected our join (lobby full), else 0.
 #[no_mangle]
 pub extern "C" fn aurora_net_rejected() -> i64 {
