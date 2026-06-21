@@ -211,6 +211,11 @@ pub struct Session {
     /// Spawn point new players start at (set via net_spawn_at); used so the
     /// server places joining clients here instead of the origin.
     spawn: [f32; 3],
+    /// Base index of the 3 input slots (x,y,z) the game uses as its respawn point (set via
+    /// net_spawn_input_slot). -1 = unset. When set, the SERVER overwrites those slots in every
+    /// client's input before re-simulating, so the respawn POSITION is server-authoritative (a
+    /// client can't choose where it teleports to on respawn) and matches the host's spawn config.
+    spawn_in: i32,
     /// The local player's outgoing metadata (set via net_set_meta), broadcast each frame.
     local_meta: [f32; META_LEN],
     /// The local player's outgoing display name (set via net_set_name).
@@ -298,6 +303,7 @@ impl Session {
             remotes: Vec::new(),
             last_hit: (-1, [0.0; 3]),
             spawn: [0.0, 0.0, 0.0],
+            spawn_in: -1,
             local_meta: [0.0; META_LEN],
             local_name: [0u8; NAME_MAX],
             max_clients: 8,
@@ -460,8 +466,21 @@ impl Session {
             // host's own state (c.state.s), so the host - not the client - decides where everyone is.
             // Clients still predict locally and reconcile against this.
             let (sim_fn, sim_env) = (self.sim_fn, self.sim_env);
+            let sp = self.spawn;
+            let sp_in = self.spawn_in;
             for c in &mut self.clients {
-                while let Some((seq, inp)) = c.inbox.pop_front() {
+                while let Some((seq, mut inp)) = c.inbox.pop_front() {
+                    // SERVER-AUTHORITATIVE SPAWN: overwrite the game's respawn-point input slots with
+                    // the host's own spawn (id-offset so players don't stack). The client only PREDICTS
+                    // its respawn position; the host decides it, so a forged input can't teleport anyone.
+                    if sp_in >= 0 {
+                        let b = sp_in as usize;
+                        if b + 2 < INPUT_MAX {
+                            inp[b] = sp[0] + c.id as f32 * 2.0;
+                            inp[b + 1] = sp[1];
+                            inp[b + 2] = sp[2];
+                        }
+                    }
                     run_sim(sim_fn, sim_env, &mut c.state.s, &inp);
                     c.acked_seq = seq;
                 }
@@ -1610,6 +1629,10 @@ pub extern "C" fn aurora_net_connected() -> i64 {
 #[no_mangle]
 pub extern "C" fn aurora_net_spawn_at(x: f64, y: f64, z: f64) {
     with((), |s| s.set_spawn(x as f32, y as f32, z as f32));
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_spawn_input_slot(base: i64) {
+    with((), |s| s.spawn_in = base as i32);
 }
 
 #[no_mangle]
