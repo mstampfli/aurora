@@ -91,6 +91,9 @@ struct SClient {
     /// Per-meta-slot: true once the host has taken authority over it (hp/shield), so the
     /// client's self-reported value is no longer relayed into it - the host's value wins.
     meta_owned: [bool; META_LEN],
+    /// Server-chosen respawn position for THIS client. The re-sim overwrites the game's spawn input
+    /// slots with this, so the host decides where each client (re)spawns (set via net_respawn_client).
+    respawn_pos: [f32; 3],
 }
 
 struct Remote {
@@ -466,19 +469,18 @@ impl Session {
             // host's own state (c.state.s), so the host - not the client - decides where everyone is.
             // Clients still predict locally and reconcile against this.
             let (sim_fn, sim_env) = (self.sim_fn, self.sim_env);
-            let sp = self.spawn;
             let sp_in = self.spawn_in;
             for c in &mut self.clients {
                 while let Some((seq, mut inp)) = c.inbox.pop_front() {
                     // SERVER-AUTHORITATIVE SPAWN: overwrite the game's respawn-point input slots with
-                    // the host's own spawn (id-offset so players don't stack). The client only PREDICTS
-                    // its respawn position; the host decides it, so a forged input can't teleport anyone.
+                    // the host-chosen respawn_pos for THIS client. The client only PREDICTS its respawn
+                    // position; the host decides WHERE it lands (and a forged input can't teleport it).
                     if sp_in >= 0 {
                         let b = sp_in as usize;
                         if b + 2 < INPUT_MAX {
-                            inp[b] = sp[0] + c.id as f32 * 2.0;
-                            inp[b + 1] = sp[1];
-                            inp[b + 2] = sp[2];
+                            inp[b] = c.respawn_pos[0];
+                            inp[b + 1] = c.respawn_pos[1];
+                            inp[b + 2] = c.respawn_pos[2];
                         }
                     }
                     run_sim(sim_fn, sim_env, &mut c.state.s, &inp);
@@ -622,6 +624,7 @@ impl Session {
             last_sent: std::collections::HashMap::new(),
             meta_owned: [false; META_LEN],
             last_seen: self.server_tick,
+            respawn_pos: [self.spawn[0] + id as f32 * 2.0, self.spawn[1], self.spawn[2]],
         });
         Some(self.clients.len() - 1)
     }
@@ -1633,6 +1636,14 @@ pub extern "C" fn aurora_net_spawn_at(x: f64, y: f64, z: f64) {
 #[no_mangle]
 pub extern "C" fn aurora_net_spawn_input_slot(base: i64) {
     with((), |s| s.spawn_in = base as i32);
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_respawn_client(id: i64, x: f64, y: f64, z: f64) {
+    with((), |s| {
+        if let Some(c) = s.clients.iter_mut().find(|c| c.id as i64 == id) {
+            c.respawn_pos = [x as f32, y as f32, z as f32];
+        }
+    })
 }
 
 #[no_mangle]
