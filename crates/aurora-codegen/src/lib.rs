@@ -1252,7 +1252,13 @@ fn lower(
         })
         .collect();
 
-    // Struct layouts (scalar fields only; nested aggregates are unsupported).
+    // Struct layouts: fields are laid out inline by byte_size, so NESTED AGGREGATES (array and
+    // struct fields) ARE supported - stored inline as VALUE fields. Construction copies the field
+    // in (see copy_agg in tr_struct); a struct passed to a fn is by-ref, so its inline arrays/
+    // structs mutate in place. The copy-on-construct (rather than aliasing the source array's
+    // pointer) is deliberate: a struct is returned BY VALUE (sret copy), so an aliased pointer
+    // field would dangle once the constructing frame returns. (Surprise vs `let q = p` aliasing:
+    // that aliases only within a frame and is likewise copied across the sret return boundary.)
     let mut structs = HashMap::new();
     for item in &module.items {
         if let ItemKind::Struct(s) | ItemKind::Component(s) = &item.kind {
