@@ -1745,9 +1745,11 @@ fn spatialize(pos: [f64; 3]) -> (f32, f32) {
         let max_dist = 35.0;
         let g = (1.0 - dist / max_dist).clamp(0.0, 1.0);
         let gain = (g * g) as f32;
-        // Pan by the listener's right vector (forward x up).
+        // Pan by the listener's right vector = cross(forward, up=+Y), flattened to the XZ plane:
+        // cross((Fx,Fy,Fz),(0,1,0)) = (-Fz, 0, Fx). The earlier form ([Fz,0,-Fx]) was this NEGATED,
+        // which mirrored the stereo image (sounds on your right played on the left).
         let f = norm3(fwd);
-        let right = norm3([f[2], 0.0, -f[0]]); // cross(forward, up=+Y), flattened
+        let right = norm3([-f[2], 0.0, f[0]]);
         let dir = if dist > 1e-4 { [to[0] / dist, to[1] / dist, to[2] / dist] } else { [0.0; 3] };
         let pan = (right[0] * dir[0] + right[1] * dir[1] + right[2] * dir[2]).clamp(-1.0, 1.0) as f32;
         (gain, pan)
@@ -2355,6 +2357,18 @@ pub fn force_link() -> usize {
 #[cfg(test)]
 mod arena_tests {
     use super::*;
+
+    #[test]
+    fn spatial_pan_is_not_mirrored() {
+        // Listener at the origin looking down -Z (yaw 0 in-game: forward = (sin0, 0, -cos0)).
+        aurora_audio_listener(0.0, 0.0, 0.0, 0.0, 0.0, -1.0);
+        // A sound to the player's RIGHT (+X when looking -Z) must pan RIGHT (pan > 0), not left.
+        let (_, pan_right) = spatialize([10.0, 0.0, 0.0]);
+        assert!(pan_right > 0.9, "sound on the right should pan right, got {pan_right}");
+        // ...and a sound to the LEFT (-X) must pan LEFT.
+        let (_, pan_left) = spatialize([-10.0, 0.0, 0.0]);
+        assert!(pan_left < -0.9, "sound on the left should pan left, got {pan_left}");
+    }
 
     #[test]
     fn floats_display_with_trailing_decimal() {
