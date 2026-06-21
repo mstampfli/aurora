@@ -132,13 +132,34 @@ fn rewrite_item(item: &mut Item, cx: &Cx) {
 }
 
 fn rewrite_type(ty: &mut Type, cx: &Cx) {
-    if let TypeKind::Path(p) = &mut ty.kind {
-        rewrite_path(p, cx);
-        for seg in &mut p.segments {
-            for a in &mut seg.args {
-                rewrite_type(a, cx);
+    // Rewrite module-local type names to their mangled form in EVERY nested type position, not just
+    // a bare path: an array element (`[Actor; 9]`), tuple member, fn param/return, dyn trait, or
+    // region inner type can all name a sibling struct. Missing these left a module struct field
+    // like `[Actor; 9]` with an unmangled element, so field access on it failed ("no field ...").
+    match &mut ty.kind {
+        TypeKind::Path(p) => {
+            rewrite_path(p, cx);
+            for seg in &mut p.segments {
+                for a in &mut seg.args {
+                    rewrite_type(a, cx);
+                }
             }
         }
+        TypeKind::Dyn(p) => rewrite_path(p, cx),
+        TypeKind::Array { elem, .. } => rewrite_type(elem, cx),
+        TypeKind::Tuple(ts) => {
+            for t in ts {
+                rewrite_type(t, cx);
+            }
+        }
+        TypeKind::Fn { params, ret } => {
+            for t in params {
+                rewrite_type(t, cx);
+            }
+            rewrite_type(ret, cx);
+        }
+        TypeKind::Region(_, inner) => rewrite_type(inner, cx),
+        _ => {}
     }
 }
 
