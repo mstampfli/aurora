@@ -47,9 +47,10 @@ const OBJ_RADIUS: f32 = 0.45;
 
 const STATE_MAX: usize = 32; // max floats in a player state blob
 const INPUT_MAX: usize = 24; // max floats in an input blob
-const META_LEN: usize = 16; // per-player metadata floats (hp/shield/oc/respawn/cells/heal/kills/
+const META_LEN: usize = 18; // per-player metadata floats (hp/shield/oc/respawn/cells/heal/kills/
                             // deaths in 0..7; 8 = melee-swing flag; 9 = respawn-ack; 10/11 = round
-                            // timer/over; 12..14 = grapple anchor xyz; 15 = grapple active) -
+                            // timer/over; 12..14 = grapple anchor xyz; 15 = grapple active; 16 =
+                            // shield-up channel active (holding the blue cube); 17 = spare) -
                            // replicated SEPARATELY from the sim state, so never touch reconciliation.
 const NAME_MAX: usize = 20; // per-player display name: a fixed byte field (NOT chars packed into
                             // floats), re-sent on the input/snapshot stream so UDP loss self-heals.
@@ -2091,6 +2092,7 @@ mod meta_replication_test {
         let mut client = Session::join(host_addr).expect("client bind");
         host.set_meta(0, 75.0); // host hp = 75
         client.set_meta(0, 42.0); // client hp = 42
+        client.set_meta(16, 1.0); // client raises its shield-up flag (new slot 16, needs META_LEN >= 17)
         host.set_name(b"REAPER");
         client.set_name(b"NOVA");
         let input = [0.0f32; 4];
@@ -2111,6 +2113,12 @@ mod meta_replication_test {
         assert!(
             (client_hp_seen_by_host - 42.0).abs() < 0.01,
             "host saw client hp = {client_hp_seen_by_host}, expected 42"
+        );
+        // the new shield-up flag (slot 16) replicates client -> host like any other meta
+        let shield_seen_by_host = host.meta(client_id, 16);
+        assert!(
+            (shield_seen_by_host - 1.0).abs() < 0.01,
+            "host saw client shield-up flag = {shield_seen_by_host}, expected 1"
         );
         // NAMES replicate both ways too (read char-by-char from the replicated byte field).
         let read_name = |s: &Session, id: u32| -> String {
