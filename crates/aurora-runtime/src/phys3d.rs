@@ -316,23 +316,42 @@ pub extern "C" fn aurora_phys3d_move_character(h: i64, dx: f64, dy: f64, dz: f64
             (pos.translation.vector + mvt.translation, mvt.grounded, hits)
         };
         p.grounded[idx] = grounded;
-        if let Some(b) = p.bodies.get_mut(body_h) {
-            b.set_next_kinematic_translation(new_t.into());
+        // Resolve the dynamic bodies (crates) we ran into + read their velocities, so we can do BOTH
+        // directions: the character shoves the box, AND a fast-moving box shoves the character a bit
+        // (a flying crate "kinda blocks you but not like a hard wall" - it carries you along).
+        let mut dyn_hits = Vec::new();
+        for ch in hit_cols {
+            if let Some(bh) = p.colliders.get(ch).and_then(|c| c.parent()) {
+                if let Some(b) = p.bodies.get(bh) {
+                    if b.is_dynamic() {
+                        let v = *b.linvel();
+                        dyn_hits.push((bh, v));
+                    }
+                }
+            }
         }
-        // PUSH the dynamic bodies (crates) the character walked/slid into, along its move direction,
-        // so the box gets shoved instead of being an immovable wall. Resolve collider -> body first to
-        // avoid borrowing colliders + bodies at once; the impulse is small so it's a nudge, not a launch.
+        // BOX -> CHARACTER: a fast crate carries the character a fraction of its horizontal speed
+        // (capped, soft) rather than being a perfect wall.
+        let mut carry = vector![0.0 as Real, 0.0, 0.0];
+        for (_, v) in &dyn_hits {
+            let vh = vector![v.x, 0.0 as Real, v.z];
+            let vl = vh.norm();
+            if vl > 2.0 {
+                let s = vl.min(8.0); // cap how hard a flung box can shove you
+                carry += vh / vl * (s * 0.5 * dt as Real);
+            }
+        }
+        if let Some(b) = p.bodies.get_mut(body_h) {
+            b.set_next_kinematic_translation((new_t + carry).into());
+        }
+        // CHARACTER -> BOX: shove the dynamic ones along the move direction (a firm nudge, not a launch).
         let hdir = vector![dx as Real, 0.0, dz as Real];
         let hl = hdir.norm();
         if hl > 0.001 {
-            let imp = hdir / hl * 0.25 as Real;
-            let bodies_hit: Vec<_> =
-                hit_cols.into_iter().filter_map(|ch| p.colliders.get(ch).and_then(|c| c.parent())).collect();
-            for bh in bodies_hit {
+            let imp = hdir / hl * 0.5 as Real;
+            for (bh, _) in dyn_hits {
                 if let Some(b) = p.bodies.get_mut(bh) {
-                    if b.is_dynamic() {
-                        b.apply_impulse(imp, true);
-                    }
+                    b.apply_impulse(imp, true);
                 }
             }
         }
