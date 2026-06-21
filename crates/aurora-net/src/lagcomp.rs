@@ -73,11 +73,22 @@ impl LagComp {
     /// to `tick`. Returns the nearest hit, if any. `ignore` skips the shooter.
     pub fn raycast_at_tick(&self, origin: V3, dir: V3, tick: u64, ignore: u64) -> Option<Hit> {
         let mut best: Option<Hit> = None;
-        for (&entity, _) in &self.hist {
+        for (&entity, ring) in &self.hist {
             if entity == ignore {
                 continue;
             }
-            let Some(snap) = self.snapshot_at(entity, tick) else { continue };
+            // Newest snapshot at or before the firer's (rewound) view tick. If the view PREDATES this
+            // entity's whole history - it just spawned and the firer's view is RTT-old, or its oldest
+            // snapshots were evicted - clamp to the EARLIEST known position (where it was when it
+            // appeared = what the firer is seeing) instead of missing. Fixes "first hits don't go
+            // through" on a fresh spawn. (position_at_tick stays strict; only the shot ray clamps.)
+            let snap = match self.snapshot_at(entity, tick) {
+                Some(s) => s,
+                None => match ring.iter().min_by_key(|s| s.tick) {
+                    Some(s) => *s,
+                    None => continue,
+                },
+            };
             if let Some(distance) = ray_sphere(origin, dir, snap.pos, snap.radius) {
                 if best.is_none_or(|b| distance < b.distance) {
                     best = Some(Hit { entity, distance });
