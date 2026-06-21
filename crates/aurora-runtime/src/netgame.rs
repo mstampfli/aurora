@@ -173,9 +173,9 @@ pub struct Session {
     bots: Vec<Player>,
     /// World objects (crate position + orientation: x,y,z, qx,qy,qz,qw). Host: authoritative,
     /// written each frame + replicated + recorded in lag-comp. Client: last received host pose.
-    objects: Vec<[f32; 7]>,
+    objects: Vec<[f32; 10]>,
     /// Host change-detection: objects are static until shot/bumped, so we only resend when moved.
-    last_sent_objects: Vec<[f32; 7]>,
+    last_sent_objects: Vec<[f32; 10]>,
     /// Transient visuals (loot drops + in-flight projectiles): host fills + replicates each
     /// frame; clients render. Each entry is [x, y, z, kind] (kind 0-2 drops, 3 rocket, 4 grenade).
     fx: Vec<[f32; 4]>,
@@ -954,7 +954,7 @@ impl Session {
         if n > self.objects.len() {
             // default pose: identity quaternion (qw = 1) so an object that never sets a rotation
             // still renders upright rather than collapsed to a zero quaternion.
-            self.objects.resize(n, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+            self.objects.resize(n, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]);
         } else {
             self.objects.truncate(n);
         }
@@ -974,6 +974,18 @@ impl Session {
             o[5] = qz as f32;
             o[6] = qw as f32;
         }
+    }
+    pub fn set_object_vel(&mut self, i: usize, vx: f64, vy: f64, vz: f64) {
+        // Linear velocity (slots 7..10) - replicated so the client drives its crate at the SAME
+        // velocity the host's body has, so it tracks a flung box exactly instead of lerp-trailing it.
+        if let Some(o) = self.objects.get_mut(i) {
+            o[7] = vx as f32;
+            o[8] = vy as f32;
+            o[9] = vz as f32;
+        }
+    }
+    pub fn object_vel(&self, i: usize, axis: usize) -> f64 {
+        self.objects.get(i).map(|o| o[7 + axis.min(2)] as f64).unwrap_or(0.0)
     }
     pub fn object_count(&self) -> usize {
         self.objects.len()
@@ -1313,8 +1325,8 @@ fn decode_fx(b: &[u8]) -> Option<Vec<[f32; 4]>> {
     }
     Some(fx)
 }
-fn encode_objects(objs: &[[f32; 7]]) -> Vec<u8> {
-    let mut b = Vec::with_capacity(3 + objs.len() * 28);
+fn encode_objects(objs: &[[f32; 10]]) -> Vec<u8> {
+    let mut b = Vec::with_capacity(3 + objs.len() * 40);
     b.push(TAG_OBJECTS);
     b.extend_from_slice(&(objs.len() as u16).to_be_bytes());
     for o in objs {
@@ -1324,7 +1336,7 @@ fn encode_objects(objs: &[[f32; 7]]) -> Vec<u8> {
     }
     b
 }
-fn decode_objects(b: &[u8]) -> Option<Vec<[f32; 7]>> {
+fn decode_objects(b: &[u8]) -> Option<Vec<[f32; 10]>> {
     if b.len() < 3 || b[0] != TAG_OBJECTS {
         return None;
     }
@@ -1332,7 +1344,7 @@ fn decode_objects(b: &[u8]) -> Option<Vec<[f32; 7]>> {
     let mut objs = Vec::with_capacity(count);
     let mut o = 3;
     for _ in 0..count {
-        if o + 28 > b.len() {
+        if o + 40 > b.len() {
             break;
         }
         objs.push([
@@ -1343,8 +1355,11 @@ fn decode_objects(b: &[u8]) -> Option<Vec<[f32; 7]>> {
             rd_f32(b, o + 16),
             rd_f32(b, o + 20),
             rd_f32(b, o + 24),
+            rd_f32(b, o + 28),
+            rd_f32(b, o + 32),
+            rd_f32(b, o + 36),
         ]);
-        o += 28;
+        o += 40;
     }
     Some(objs)
 }
@@ -1448,7 +1463,7 @@ fn decode_booms(b: &[u8]) -> Option<Vec<Boom>> {
     }
     Some(booms)
 }
-fn objects_differ(a: &[[f32; 7]], b: &[[f32; 7]]) -> bool {
+fn objects_differ(a: &[[f32; 10]], b: &[[f32; 10]]) -> bool {
     if a.len() != b.len() {
         return true;
     }
@@ -1810,6 +1825,22 @@ pub extern "C" fn aurora_net_object_qz(i: i64) -> f64 {
 #[no_mangle]
 pub extern "C" fn aurora_net_object_qw(i: i64) -> f64 {
     read(1.0, |s| s.object_rot(i.max(0) as usize, 3))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_set_object_vel(i: i64, vx: f64, vy: f64, vz: f64) {
+    with((), |s| s.set_object_vel(i.max(0) as usize, vx, vy, vz))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_object_vx(i: i64) -> f64 {
+    read(0.0, |s| s.object_vel(i.max(0) as usize, 0))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_object_vy(i: i64) -> f64 {
+    read(0.0, |s| s.object_vel(i.max(0) as usize, 1))
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_object_vz(i: i64) -> f64 {
+    read(0.0, |s| s.object_vel(i.max(0) as usize, 2))
 }
 // --- transient visuals (host writes drops + projectiles; clients render) ---
 #[no_mangle]
@@ -2426,6 +2457,7 @@ mod meta_replication_test {
             host.set_object(1, 11.0, 0.5, -4.0);
             host.set_object(2, 18.0, 1.5, -2.0);
             host.set_object_rot(2, 0.0, 0.70710677, 0.0, 0.70710677); // 90deg about Y
+            host.set_object_vel(2, 4.0, -2.0, 1.5); // a flung crate's authoritative linear velocity
             client.send_input(&input);
             host.send_input(&input);
             client.update(0.016);
@@ -2436,6 +2468,10 @@ mod meta_replication_test {
         assert!((client.object_pos(2, 1) - 1.5).abs() < 0.01, "moved crate 2 y = {}", client.object_pos(2, 1));
         assert!((client.object_rot(2, 1) - 0.70710677).abs() < 0.01, "tumbled crate 2 qy = {}", client.object_rot(2, 1));
         assert!((client.object_rot(2, 3) - 0.70710677).abs() < 0.01, "tumbled crate 2 qw = {}", client.object_rot(2, 3));
+        // The flung crate's VELOCITY replicates too, so the client drives its body at the host's speed.
+        assert!((client.object_vel(2, 0) - 4.0).abs() < 0.01, "crate 2 vx = {}", client.object_vel(2, 0));
+        assert!((client.object_vel(2, 1) - (-2.0)).abs() < 0.01, "crate 2 vy = {}", client.object_vel(2, 1));
+        assert!((client.object_vel(2, 2) - 1.5).abs() < 0.01, "crate 2 vz = {}", client.object_vel(2, 2));
     }
 
     // Kill events announced by the host reach the client (which drives its kill feed + the
