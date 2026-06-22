@@ -58,6 +58,28 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
+/// Build a winit event loop. On the free-unix backends (X11/Wayland) winit
+/// panics if the event loop is created off the main thread. The Aurora runtime
+/// runs the JIT'd program on the main thread and opens the window from a worker
+/// thread, so opt into `any_thread` there (the flag is a single field shared by
+/// both the X11 and Wayland backends). Windows and macOS have no such guard.
+pub(crate) fn new_event_loop() -> Result<EventLoop<()>, winit::error::EventLoopError> {
+    #[allow(unused_mut)]
+    let mut builder = EventLoop::builder();
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "freebsd",
+        target_os = "dragonfly",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    ))]
+    {
+        use winit::platform::wayland::EventLoopBuilderExtWayland;
+        builder.with_any_thread(true);
+    }
+    builder.build()
+}
+
 /// Open a window of `width`×`height` (the framebuffer resolution) titled `title`
 /// and run the frame loop until the user closes it (or presses Escape). `frame`
 /// is called once per presented frame with input, delta-seconds, and the
@@ -68,7 +90,7 @@ pub fn run(
     height: u32,
     frame: impl FnMut(&Input, f32, &mut Framebuffer) + 'static,
 ) -> Result<(), String> {
-    let event_loop = EventLoop::new().map_err(|e| format!("event loop: {e}"))?;
+    let event_loop = new_event_loop().map_err(|e| format!("event loop: {e}"))?;
     let mut app = App {
         title: title.to_string(),
         width,
