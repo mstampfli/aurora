@@ -101,6 +101,10 @@ struct SClient {
     /// Server-chosen respawn position for THIS client. The re-sim overwrites the game's spawn input
     /// slots with this, so the host decides where each client (re)spawns (set via net_respawn_client).
     respawn_pos: [f32; 3],
+    /// Pending server-authoritative blast impulse for THIS client (set via net_push_impulse). The
+    /// re-sim overwrites the game's impulse input slots with this for ONE tick, then it clears - so
+    /// the SERVER decides knockback (a client can't withhold its own to ignore a blast). [0;3] = none.
+    impulse: [f32; 3],
 }
 
 struct Remote {
@@ -239,6 +243,11 @@ pub struct Session {
     /// client's input before re-simulating, so the respawn POSITION is server-authoritative (a
     /// client can't choose where it teleports to on respawn) and matches the host's spawn config.
     spawn_in: i32,
+    /// Base index of the 3 input slots the game uses for blast knockback (set via
+    /// net_impulse_input_slot). -1 = unset. When set, the SERVER overwrites those slots in each
+    /// client's input with its authoritative per-client impulse before re-simulating, so blast
+    /// knockback is server-originated (a client can't withhold its own to dodge a blast).
+    impulse_in: i32,
     /// The local player's outgoing metadata (set via net_set_meta), broadcast each frame.
     local_meta: [f32; META_LEN],
     /// The local player's outgoing display name (set via net_set_name).
@@ -333,6 +342,7 @@ impl Session {
             hit_seq: 0,
             spawn: [0.0, 0.0, 0.0],
             spawn_in: -1,
+            impulse_in: -1,
             local_meta: [0.0; META_LEN],
             local_name: [0u8; NAME_MAX],
             max_clients: 8,
@@ -503,7 +513,13 @@ impl Session {
             // Clients still predict locally and reconcile against this.
             let (sim_fn, sim_env) = (self.sim_fn, self.sim_env);
             let sp_in = self.spawn_in;
+            let imp_in = self.impulse_in;
             for c in &mut self.clients {
+                // SERVER-AUTHORITATIVE BLAST IMPULSE: the host decides this client's knockback (set
+                // via net_push_impulse). Consumed here, applied to the FIRST re-sim this update and
+                // zeroed for the rest - so a blast shoves the player exactly once, server-originated.
+                let mut imp = c.impulse;
+                c.impulse = [0.0; 3];
                 while let Some((seq, mut inp)) = c.inbox.pop_front() {
                     // SERVER-AUTHORITATIVE SPAWN: overwrite the game's respawn-point input slots with
                     // the host-chosen respawn_pos for THIS client. The client only PREDICTS its respawn
@@ -516,6 +532,18 @@ impl Session {
                             inp[b + 2] = c.respawn_pos[2];
                         }
                     }
+                    // Overwrite the impulse slots with the host's authoritative value (the client's
+                    // own predicted blast_i is replaced, so it can't withhold its knockback). Zeroed
+                    // after the first input so only one tick gets the shove.
+                    if imp_in >= 0 {
+                        let b = imp_in as usize;
+                        if b + 2 < INPUT_MAX {
+                            inp[b] = imp[0];
+                            inp[b + 1] = imp[1];
+                            inp[b + 2] = imp[2];
+                        }
+                    }
+                    imp = [0.0; 3];
                     run_sim(sim_fn, sim_env, &mut c.state.s, &inp);
                     c.acked_seq = seq;
                 }
@@ -667,6 +695,7 @@ impl Session {
             meta_owned: [false; META_LEN],
             last_seen: self.server_tick,
             respawn_pos: [self.spawn[0] + id as f32 * 2.0, self.spawn[1], self.spawn[2]],
+            impulse: [0.0; 3],
         });
         Some(self.clients.len() - 1)
     }
@@ -1722,6 +1751,18 @@ pub extern "C" fn aurora_net_respawn_client(id: i64, x: f64, y: f64, z: f64) {
     with((), |s| {
         if let Some(c) = s.clients.iter_mut().find(|c| c.id as i64 == id) {
             c.respawn_pos = [x as f32, y as f32, z as f32];
+        }
+    })
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_impulse_input_slot(base: i64) {
+    with((), |s| s.impulse_in = base as i32);
+}
+#[no_mangle]
+pub extern "C" fn aurora_net_push_impulse(id: i64, ix: f64, iy: f64, iz: f64) {
+    with((), |s| {
+        if let Some(c) = s.clients.iter_mut().find(|c| c.id as i64 == id) {
+            c.impulse = [ix as f32, iy as f32, iz as f32];
         }
     })
 }
