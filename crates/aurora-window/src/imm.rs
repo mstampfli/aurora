@@ -217,7 +217,7 @@ pub fn imm_leak() {
 
 /// Open a window backing a `width`×`height` framebuffer. Replaces any prior one.
 pub fn open(width: u32, height: u32) {
-    let event_loop = match EventLoop::new() {
+    let event_loop = match crate::new_event_loop() {
         Ok(e) => e,
         Err(e) => {
             eprintln!("aurora-window: event loop creation failed: {e}");
