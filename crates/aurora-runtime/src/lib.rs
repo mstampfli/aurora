@@ -1646,6 +1646,19 @@ pub extern "C" fn aurora_f32_store(ptr: i64, i: i64, v: f64) {
     unsafe { *(ptr as *mut f32).add(i as usize) = v as f32 };
 }
 
+/// Allocate a zeroed, LEAKED `f32` blob of `len` floats and return its raw pointer (as i64),
+/// usable with `f32_load`/`f32_store` and as a `sim_step` state/input blob. The allocation lives
+/// for the whole program on purpose - it's how a game gives a non-networked actor (e.g. a bot) its
+/// own persistent sim state, so the SAME sim_step that moves players can move it too.
+#[no_mangle]
+pub extern "C" fn aurora_f32_blob(len: i64) -> i64 {
+    let n = if len < 0 { 0 } else { len as usize };
+    let mut v = vec![0.0f32; n];
+    let ptr = v.as_mut_ptr() as i64;
+    std::mem::forget(v);
+    ptr
+}
+
 // Transcendental math builtins. Cranelift has no native instruction for these,
 // so they are host calls into Rust's libm (a correct, ABI-safe path, unlike a
 // raw libcall import). `sqrt`/`floor`/`abs`/`min`/`max`/`clamp` stay native in
@@ -2053,7 +2066,7 @@ pub extern "C" fn aurora_dbg_var_f64(name_ptr: *const u8, name_len: i64, value: 
 /// Touch every host symbol so the linker keeps this crate's object in an AOT
 /// link even when the Rust driver references nothing from it directly.
 pub fn force_link() -> usize {
-    let fns: [*const (); 311] = [
+    let fns: [*const (); 312] = [
         aurora_net_projectile_intent as *const (),
         aurora_net_server_projectile_count as *const (),
         aurora_net_server_projectile_shooter as *const (),
@@ -2184,6 +2197,7 @@ pub fn force_link() -> usize {
         // Raw f32-blob accessors (for the Aurora net sim).
         aurora_f32_load as *const (),
         aurora_f32_store as *const (),
+        aurora_f32_blob as *const (),
         // Transcendental math builtins.
         aurora_sin as *const (),
         aurora_cos as *const (),

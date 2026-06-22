@@ -402,7 +402,7 @@ const BUILTINS: &[&str] = &[
     // Rebindable input-action layer + raw f32-blob accessors.
     "input_bind", "input_binding", "input_down", "input_axis", "input_suppress",
     "save_settings", "load_settings",
-    "f32_load", "f32_store",
+    "f32_load", "f32_store", "f32_blob",
 ];
 
 /// Byte size of a type (always a multiple of 8). Aggregates lay out their
@@ -825,6 +825,7 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_input_axis", aurora_runtime::aurora_input_axis as *const u8);
     builder.symbol("aurora_f32_load", aurora_runtime::aurora_f32_load as *const u8);
     builder.symbol("aurora_f32_store", aurora_runtime::aurora_f32_store as *const u8);
+    builder.symbol("aurora_f32_blob", aurora_runtime::aurora_f32_blob as *const u8);
     builder.symbol("aurora_sin", aurora_runtime::aurora_sin as *const u8);
     builder.symbol("aurora_cos", aurora_runtime::aurora_cos as *const u8);
     builder.symbol("aurora_tan", aurora_runtime::aurora_tan as *const u8);
@@ -1238,6 +1239,7 @@ fn lower(
     hosts.insert("input_suppress", import(jmod, "aurora_input_suppress", &[i], None));
     hosts.insert("f32_load", import(jmod, "aurora_f32_load", &[i, i], Some(f64t)));
     hosts.insert("f32_store", import(jmod, "aurora_f32_store", &[i, i, f64t], None));
+    hosts.insert("f32_blob", import(jmod, "aurora_f32_blob", &[i], Some(i)));
     hosts.insert("sin", import(jmod, "aurora_sin", &[f64t], Some(f64t)));
     hosts.insert("cos", import(jmod, "aurora_cos", &[f64t], Some(f64t)));
     hosts.insert("tan", import(jmod, "aurora_tan", &[f64t], Some(f64t)));
@@ -4644,6 +4646,7 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "input_axis" => (vec![I64, I64], Some(F64)),
         "f32_load" => (vec![I64, I64], Some(F64)),
         "f32_store" => (vec![I64, I64, F64], None),
+        "f32_blob" => (vec![I64], Some(I64)),
         _ => return None,
     };
     Some(sig)
