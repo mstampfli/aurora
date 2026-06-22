@@ -926,8 +926,12 @@ fn register_ffi_symbols(builder: &mut JITBuilder) {
 /// the wrong thing for those functions, so callers must surface it.
 pub fn build_object(module: &AstModule) -> Result<(Vec<u8>, HashMap<String, String>), String> {
     let mut flags = codegen::settings::builder();
-    // Statically linked into an executable, not a shared object.
-    let _ = flags.set("is_pic", "false");
+    // Statically linked into an executable, not a shared object. On Windows the
+    // PE links non-PIC absolute relocations fine. On Linux/macOS the system
+    // linker produces a position-independent executable (PIE) by default and
+    // rejects absolute R_X86_64_64 relocations against symbols, so emit
+    // position-independent code there (GOT/PLT-relative), which links into a PIE.
+    let _ = flags.set("is_pic", if cfg!(windows) { "false" } else { "true" });
     // AOT is the release path (`aurorac build`): optimize for speed. The JIT
     // keeps Cranelift's default (fast compile) for quick `aurorac run` turnaround.
     let _ = flags.set("opt_level", "speed");
