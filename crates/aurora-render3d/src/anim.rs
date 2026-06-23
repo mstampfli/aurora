@@ -43,6 +43,13 @@ pub struct AnimPlayer {
     uclip2: usize,
     ublend: f32,
     ublend_on: bool,
+    // Upper-overlay CROSSFADE: when the overlay clip changes (e.g. aim -> katana swing -> aim), the
+    // old overlay pose (uprev_clip @ uprev_time) is crossfaded into the new one over `ufade` 0->1, so
+    // overlay-to-overlay transitions blend instead of popping. Separate from `uweight` (overlay-vs-base).
+    uprev_clip: usize,
+    uprev_time: f32,
+    ufade: f32,
+    ufade_rate: f32,
     // Per-bone POSE overrides: an extra local rotation pre-multiplied onto a joint after the clip
     // pose is sampled (and after the upper overlay). Lets game code author a pose the clips don't
     // have - e.g. bend the thighs forward into a slide while the spine keeps its upright clip pose.
@@ -78,6 +85,10 @@ impl Default for AnimPlayer {
             uclip2: 0,
             ublend: 0.0,
             ublend_on: false,
+            uprev_clip: 0,
+            uprev_time: 0.0,
+            ufade: 1.0,
+            ufade_rate: 0.0,
             pose: [(0u32, Quat::IDENTITY); 8],
             pose_n: 0,
         }
@@ -135,8 +146,16 @@ impl AnimPlayer {
     /// Start (or swap) an upper-body overlay clip, masked to `mask_root` + its descendants,
     /// fading the overlay weight in over `fade` seconds. The lower body keeps the base clip.
     pub fn play_upper(&mut self, clip: usize, looping: bool, speed: f32, fade: f32, mask_root: usize) {
-        if !self.upper {
+        if self.upper {
+            // Already overlaying: crossfade FROM the current overlay pose into the new clip.
+            let (dc, dtime) = self.upper_dominant();
+            self.uprev_clip = dc;
+            self.uprev_time = dtime;
+            self.ufade = 0.0;
+            self.ufade_rate = if fade > 0.0001 { 1.0 / fade } else { 1_000_000.0 };
+        } else {
             self.uweight = 0.0;
+            self.ufade = 1.0;   // coming from the base; the uweight fade-in covers it, no clip crossfade
         }
         self.upper = true;
         self.ublend_on = false;   // a plain single-clip overlay (reload/recoil/swing), not an aim blend
@@ -154,11 +173,18 @@ impl AnimPlayer {
     /// continuous value (e.g. aim pitch): only the first call that enters blend mode fades the
     /// overlay in, so updating the weight/clips per frame stays smooth and never re-pops.
     pub fn aim_upper(&mut self, clip_a: usize, clip_b: usize, weight: f32, speed: f32, fade: f32, mask_root: usize) {
+        let was_blend = self.ublend_on;
         if !self.upper {
             self.uweight = 0.0;
             self.utime = 0.0;
+            self.ufade = 1.0;
+        } else if !was_blend {
+            // Transitioning INTO the aim blend from a single-clip overlay (katana/reload/recoil): crossfade.
+            self.uprev_clip = self.uclip;
+            self.uprev_time = self.utime;
+            self.ufade = 0.0;
+            self.ufade_rate = if fade > 0.0001 { 1.0 / fade } else { 1_000_000.0 };
         }
-        let was_blend = self.ublend_on;
         self.upper = true;
         self.ublend_on = true;
         self.uclip = clip_a;
@@ -177,6 +203,21 @@ impl AnimPlayer {
     pub fn stop_upper(&mut self, fade: f32) {
         self.uweight_target = 0.0;
         self.uweight_rate = if fade > 0.0001 { 1.0 / fade } else { 1_000_000.0 };
+    }
+
+    /// The single clip + time currently dominating the upper overlay (the crossfade source): the
+    /// higher-weighted clip of an aim blend, else the single overlay clip.
+    fn upper_dominant(&self) -> (usize, f32) {
+        if self.ublend_on && self.ublend >= 0.5 {
+            (self.uclip2, self.utime)
+        } else {
+            (self.uclip, self.utime)
+        }
+    }
+
+    /// Jump the upper-overlay playback to `t` seconds (e.g. skip a clip's wind-up). Clamped >= 0.
+    pub fn seek_upper(&mut self, t: f32) {
+        self.utime = t.max(0.0);
     }
 
     /// Advance playback (and any crossfade) by `dt` seconds.
@@ -217,6 +258,11 @@ impl AnimPlayer {
         }
         if self.upper {
             advance_time(&mut self.utime, model.clips.get(self.uclip), dt * self.uspeed, self.ulooping);
+            if self.ufade < 1.0 {
+                // Keep the outgoing overlay clip moving while it crossfades out.
+                advance_time(&mut self.uprev_time, model.clips.get(self.uprev_clip), dt * self.uspeed, true);
+                self.ufade = (self.ufade + self.ufade_rate * dt).min(1.0);
+            }
             if self.uweight < self.uweight_target {
                 self.uweight = (self.uweight + self.uweight_rate * dt).min(self.uweight_target);
             } else if self.uweight > self.uweight_target {
@@ -288,6 +334,16 @@ impl AnimPlayer {
                     us[i] = us[i].lerp(us2[i], b);
                 }
             }
+            if self.ufade < 1.0 {
+                // Crossfade FROM the previous overlay clip into this one (smooth katana<->aim<->reload).
+                let (pt, pr, ps) = sample_locals(skel, model.clips.get(self.uprev_clip), self.uprev_time);
+                let f = self.ufade.clamp(0.0, 1.0);
+                for i in 0..ur.len() {
+                    ut[i] = pt[i].lerp(ut[i], f);
+                    ur[i] = pr[i].slerp(ur[i], f);
+                    us[i] = ps[i].lerp(us[i], f);
+                }
+            }
             let mask = upper_mask(skel, self.umask_root);
             let w = self.uweight.clamp(0.0, 1.0);
             for i in 0..skel.joints.len() {
@@ -340,6 +396,16 @@ impl AnimPlayer {
                     ut[i] = ut[i].lerp(ut2[i], b);
                     ur[i] = ur[i].slerp(ur2[i], b);
                     us[i] = us[i].lerp(us2[i], b);
+                }
+            }
+            if self.ufade < 1.0 {
+                // Crossfade FROM the previous overlay clip into this one (smooth katana<->aim<->reload).
+                let (pt, pr, ps) = sample_locals(skel, model.clips.get(self.uprev_clip), self.uprev_time);
+                let f = self.ufade.clamp(0.0, 1.0);
+                for i in 0..ur.len() {
+                    ut[i] = pt[i].lerp(ut[i], f);
+                    ur[i] = pr[i].slerp(ur[i], f);
+                    us[i] = ps[i].lerp(us[i], f);
                 }
             }
             let mask = upper_mask(skel, self.umask_root);

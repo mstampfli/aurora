@@ -389,6 +389,13 @@ impl Scene {
         }
     }
 
+    /// Jump a model's upper-body overlay playback to `t` seconds (skip a clip wind-up).
+    pub fn anim_seek_upper(&mut self, handle: i64, t: f32) {
+        if let Some(r) = self.item_mut(handle) {
+            r.player.seek_upper(t);
+        }
+    }
+
     pub fn begin(&mut self) {
         self.renderer.begin();
     }

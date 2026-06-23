@@ -26,6 +26,7 @@ pub use imm::{
     present as imm_present, scroll as imm_scroll,
     r3d_anim_play as imm_r3d_anim_play, r3d_anim_play_upper as imm_r3d_anim_play_upper,
     r3d_anim_aim_upper as imm_r3d_anim_aim_upper, r3d_anim_blend as imm_r3d_anim_blend,
+    r3d_anim_seek_upper as imm_r3d_anim_seek_upper,
     r3d_pose_bone as imm_r3d_pose_bone, r3d_clear_pose as imm_r3d_clear_pose,
     r3d_anim_stop_upper as imm_r3d_anim_stop_upper, r3d_anim_update as imm_r3d_anim_update,
     r3d_begin as imm_r3d_begin, r3d_camera as imm_r3d_camera,
