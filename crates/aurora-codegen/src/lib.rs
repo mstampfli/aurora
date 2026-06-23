@@ -362,7 +362,7 @@ const BUILTINS: &[&str] = &[
     "r3d_load_model", "r3d_make_box", "r3d_make_box_sized", "r3d_make_box_emissive", "r3d_make_sphere", "r3d_make_plane",
     "r3d_camera", "r3d_camera_roll", "r3d_light", "r3d_clear", "r3d_begin", "r3d_draw", "r3d_draw_quat", "r3d_draw_tint",
     "r3d_draw_on_joint", "r3d_joint_dump", "r3d_draw_shield",
-    "r3d_anim_play", "r3d_anim_update", "r3d_anim_play_upper", "r3d_anim_stop_upper", "r3d_clip_count", "r3d_present",
+    "r3d_anim_play", "r3d_anim_update", "r3d_anim_play_upper", "r3d_pose_bone", "r3d_clear_pose", "r3d_anim_stop_upper", "r3d_clip_count", "r3d_present",
     "r3d_fog", "r3d_speedlines", "r3d_damage", "r3d_blur", "r3d_sky", "r3d_shadows", "r3d_ssao", "r3d_point_shadows", "r3d_clear_lights", "r3d_point_light",
     "r3d_make_sprite", "r3d_draw_billboard", "r3d_debug_line", "r3d_frustum_cull",
     "r3d_screen_x", "r3d_screen_y",
@@ -660,6 +660,8 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_r3d_anim_play", aurora_runtime::aurora_r3d_anim_play as *const u8);
     builder.symbol("aurora_r3d_anim_update", aurora_runtime::aurora_r3d_anim_update as *const u8);
     builder.symbol("aurora_r3d_anim_play_upper", aurora_runtime::aurora_r3d_anim_play_upper as *const u8);
+    builder.symbol("aurora_r3d_pose_bone", aurora_runtime::aurora_r3d_pose_bone as *const u8);
+    builder.symbol("aurora_r3d_clear_pose", aurora_runtime::aurora_r3d_clear_pose as *const u8);
     builder.symbol("aurora_r3d_anim_stop_upper", aurora_runtime::aurora_r3d_anim_stop_upper as *const u8);
     builder.symbol("aurora_r3d_clip_count", aurora_runtime::aurora_r3d_clip_count as *const u8);
     builder.symbol("aurora_r3d_present", aurora_runtime::aurora_r3d_present as *const u8);
@@ -1075,6 +1077,8 @@ fn lower(
     hosts.insert("r3d_anim_play", import(jmod, "aurora_r3d_anim_play", &[i, i, i, f64t, f64t], None));
     hosts.insert("r3d_anim_update", import(jmod, "aurora_r3d_anim_update", &[i, f64t], None));
     hosts.insert("r3d_anim_play_upper", import(jmod, "aurora_r3d_anim_play_upper", &[i, i, i, f64t, f64t, i], None));
+    hosts.insert("r3d_pose_bone", import(jmod, "aurora_r3d_pose_bone", &[i, i, f64t, f64t, f64t], None));
+    hosts.insert("r3d_clear_pose", import(jmod, "aurora_r3d_clear_pose", &[i], None));
     hosts.insert("r3d_anim_stop_upper", import(jmod, "aurora_r3d_anim_stop_upper", &[i, f64t], None));
     hosts.insert("r3d_clip_count", import(jmod, "aurora_r3d_clip_count", &[i], Some(i)));
     hosts.insert("r3d_present", import(jmod, "aurora_r3d_present", &[], Some(i)));
@@ -4562,6 +4566,8 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "r3d_anim_play" => (vec![I64, I64, I64, F64, F64], None),
         "r3d_anim_update" => (vec![I64, F64], None),
         "r3d_anim_play_upper" => (vec![I64, I64, I64, F64, F64, I64], None),
+        "r3d_pose_bone" => (vec![I64, I64, F64, F64, F64], None),
+        "r3d_clear_pose" => (vec![I64], None),
         "r3d_anim_stop_upper" => (vec![I64, F64], None),
         "r3d_clip_count" => (vec![I64], Some(I64)),
         "r3d_present" => (vec![], Some(I64)),

@@ -1422,6 +1422,14 @@ pub extern "C" fn aurora_r3d_anim_play_upper(h: i64, clip: i64, looping: i64, sp
     aurora_window::imm_r3d_anim_play_upper(h, clip, looping, speed as f32, fade as f32, mask_root);
 }
 #[no_mangle]
+pub extern "C" fn aurora_r3d_pose_bone(h: i64, joint: i64, rx: f64, ry: f64, rz: f64) {
+    aurora_window::imm_r3d_pose_bone(h, joint, rx as f32, ry as f32, rz as f32);
+}
+#[no_mangle]
+pub extern "C" fn aurora_r3d_clear_pose(h: i64) {
+    aurora_window::imm_r3d_clear_pose(h);
+}
+#[no_mangle]
 pub extern "C" fn aurora_r3d_anim_stop_upper(h: i64, fade: f64) {
     aurora_window::imm_r3d_anim_stop_upper(h, fade as f32);
 }
@@ -2066,7 +2074,7 @@ pub extern "C" fn aurora_dbg_var_f64(name_ptr: *const u8, name_len: i64, value: 
 /// Touch every host symbol so the linker keeps this crate's object in an AOT
 /// link even when the Rust driver references nothing from it directly.
 pub fn force_link() -> usize {
-    let fns: [*const (); 312] = [
+    let fns: [*const (); 314] = [
         aurora_net_projectile_intent as *const (),
         aurora_net_server_projectile_count as *const (),
         aurora_net_server_projectile_shooter as *const (),
@@ -2297,6 +2305,8 @@ pub fn force_link() -> usize {
         aurora_r3d_anim_play as *const (),
         aurora_r3d_anim_update as *const (),
         aurora_r3d_anim_play_upper as *const (),
+        aurora_r3d_pose_bone as *const (),
+        aurora_r3d_clear_pose as *const (),
         aurora_r3d_anim_stop_upper as *const (),
         aurora_r3d_clip_count as *const (),
         aurora_r3d_present as *const (),

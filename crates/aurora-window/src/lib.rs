@@ -25,6 +25,7 @@ pub use imm::{
     mouse_button as imm_mouse_button, mouse_delta as imm_mouse_delta, open as imm_open,
     present as imm_present, scroll as imm_scroll,
     r3d_anim_play as imm_r3d_anim_play, r3d_anim_play_upper as imm_r3d_anim_play_upper,
+    r3d_pose_bone as imm_r3d_pose_bone, r3d_clear_pose as imm_r3d_clear_pose,
     r3d_anim_stop_upper as imm_r3d_anim_stop_upper, r3d_anim_update as imm_r3d_anim_update,
     r3d_begin as imm_r3d_begin, r3d_camera as imm_r3d_camera,
     r3d_camera_roll as imm_r3d_camera_roll, r3d_clear as imm_r3d_clear,
