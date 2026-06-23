@@ -9,8 +9,9 @@
 mod engine;
 mod synth;
 pub use engine::{
-    active_voices, leak as leak_audio, play as play_mixed, play_spatial as play_mixed_spatial,
-    set_volume, start as start_engine, stop_all,
+    active_voices, device_rate, leak as leak_audio, play as play_mixed,
+    play_spatial as play_mixed_spatial, play_spatial_arc as play_mixed_arc, set_volume,
+    start as start_engine, stop_all,
 };
 pub use synth::{mix, pitch, render_sequence, Adsr, Note, Wave};
 

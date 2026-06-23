@@ -47,13 +47,24 @@ impl Mixer {
             v.pos += 1;
             true
         });
-        ((l * self.volume).clamp(-1.0, 1.0), (r * self.volume).clamp(-1.0, 1.0))
+        (soft_limit(l * self.volume), soft_limit(r * self.volume))
     }
 
     /// Mono mix (sum of both channels), for single-channel devices and tests.
     fn next_sample(&mut self) -> f32 {
         let (l, r) = self.next_frame();
-        (l + r).clamp(-1.0, 1.0)
+        soft_limit(l + r)
+    }
+}
+
+/// Soft limiter: transparent below ~0.7, then smoothly saturates toward +-1 instead of HARD
+/// clipping. Stacked SFX (e.g. rapid overlapping gunfire) summing past 1.0 no longer buzz/cut.
+fn soft_limit(x: f32) -> f32 {
+    let a = x.abs();
+    if a <= 0.7 {
+        x
+    } else {
+        x.signum() * (1.0 - 0.3 * (-(a - 0.7) / 0.3).exp())
     }
 }
 
@@ -167,6 +178,29 @@ pub fn play_spatial(samples: &[f32], src_rate: u32, looped: bool, gain: f32, pan
     });
 }
 
+/// Like [`play_spatial`] but takes an already-decoded buffer AT THE DEVICE RATE, sharing it by
+/// `Arc` so repeated plays (e.g. a gun firing fast) never re-copy or re-decode the samples - which
+/// is what caused the periodic hitch on sustained fire.
+pub fn play_spatial_arc(samples: Arc<Vec<f32>>, looped: bool, gain: f32, pan: f32) {
+    if start().is_err() || samples.is_empty() {
+        return;
+    }
+    mixer().lock().unwrap().voices.push(Voice {
+        samples,
+        pos: 0,
+        looped,
+        gain: gain.max(0.0),
+        pan: pan.clamp(-1.0, 1.0),
+    });
+}
+
+/// The audio device's sample rate (starting the device if needed). Lets a caller pre-resample a
+/// cached sound ONCE to match the device and then replay it via [`play_spatial_arc`] with no copy.
+pub fn device_rate() -> u32 {
+    let _ = start();
+    mixer().lock().unwrap().device_rate
+}
+
 /// Set the master volume (0.0..=~1.0+).
 pub fn set_volume(v: f32) {
     mixer().lock().unwrap().volume = v.max(0.0);
@@ -189,11 +223,12 @@ mod tests {
     #[test]
     fn mixer_sums_and_advances_voices() {
         // Drive the mixer directly (no device): two constant "voices" sum and
-        // clamp, and finish after their samples are consumed.
+        // soft-limit, and finish after their samples are consumed.
         let mut m = Mixer { voices: Vec::new(), volume: 1.0, device_rate: 44_100 };
         m.voices.push(Voice { samples: Arc::new(vec![0.6, 0.6]), pos: 0, looped: false, gain: 1.0, pan: 0.0 });
         m.voices.push(Voice { samples: Arc::new(vec![0.6, 0.6]), pos: 0, looped: false, gain: 1.0, pan: 0.0 });
-        assert!((m.next_sample() - 1.0).abs() < 1e-6, "0.6+0.6 clamps to 1.0");
+        let s = m.next_sample();
+        assert!(s > 0.85 && s < 1.0, "0.6+0.6 (sum 1.2) soft-limits just below 1.0, got {s}");
         assert_eq!(m.voices.len(), 2, "still playing after one sample");
         let _ = m.next_sample(); // consume the 2nd sample of each
         let _ = m.next_sample(); // now exhausted
@@ -212,7 +247,7 @@ mod tests {
         let mut m = Mixer { voices: Vec::new(), volume: 1.0, device_rate: 44_100 };
         m.voices.push(Voice { samples: Arc::new(vec![1.0]), pos: 0, looped: false, gain: 1.0, pan: -1.0 });
         let (l, r) = m.next_frame();
-        assert!(l > 0.9 && r < 0.1, "pan -1 should be full-left, got l={l} r={r}");
+        assert!(l > 0.85 && r < 0.1, "pan -1 should be full-left, got l={l} r={r}");
     }
 
     #[test]

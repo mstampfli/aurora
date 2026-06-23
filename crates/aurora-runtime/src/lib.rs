@@ -1899,8 +1899,28 @@ pub extern "C" fn aurora_play_wav(ptr: *const u8, len: i64) -> i64 {
 }
 
 thread_local! {
-    // Decoded sound cache for the load-once API: (mono f32 samples, sample rate), indexed by handle.
-    static SOUNDS: RefCell<Vec<(Vec<f32>, u32)>> = const { RefCell::new(Vec::new()) };
+    // Decoded sound cache: mono f32 samples RESAMPLED to the device rate, shared by Arc so every
+    // later play is copy-free (no per-shot resample/alloc). Indexed by handle.
+    static SOUNDS: RefCell<Vec<std::sync::Arc<Vec<f32>>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Linear-resample a mono buffer to a new rate, done ONCE at load so playback never re-resamples.
+fn resample_mono(src: &[f32], src_rate: u32, dst_rate: u32) -> Vec<f32> {
+    if src_rate == dst_rate || src.is_empty() {
+        return src.to_vec();
+    }
+    let ratio = src_rate as f64 / dst_rate as f64;
+    let n = (src.len() as f64 / ratio) as usize;
+    (0..n)
+        .map(|i| {
+            let pos = i as f64 * ratio;
+            let i0 = pos as usize;
+            let frac = (pos - i0 as f64) as f32;
+            let s0 = src.get(i0).copied().unwrap_or(0.0);
+            let s1 = src.get(i0 + 1).copied().unwrap_or(s0);
+            s0 + (s1 - s0) * frac
+        })
+        .collect()
 }
 
 /// Decode a WAV file ONCE (mono, normalized f32) and cache it, returning a handle for
@@ -1930,9 +1950,14 @@ pub extern "C" fn aurora_load_sound(ptr: *const u8, len: i64) -> i64 {
     if mono.is_empty() {
         return -1;
     }
+    // Match the device rate ONCE so every play is a copy-free Arc share (fixes the sustained-fire hitch).
+    let buf = resample_mono(&mono, spec.sample_rate, aurora_audio::device_rate());
+    if buf.is_empty() {
+        return -1;
+    }
     SOUNDS.with(|s| {
         let mut v = s.borrow_mut();
-        v.push((mono, spec.sample_rate));
+        v.push(std::sync::Arc::new(buf));
         (v.len() - 1) as i64
     })
 }
@@ -1944,13 +1969,11 @@ pub extern "C" fn aurora_play_sound_handle(handle: i64, gain_pct: i64) {
     if handle < 0 {
         return;
     }
-    SOUNDS.with(|s| {
-        let v = s.borrow();
-        if let Some((samples, sr)) = v.get(handle as usize) {
-            let g = 0.7 * (gain_pct.max(0) as f32) / 100.0;
-            aurora_audio::play_mixed_spatial(samples, *sr, false, g, 0.0);
-        }
-    });
+    let arc = SOUNDS.with(|s| s.borrow().get(handle as usize).cloned());
+    if let Some(a) = arc {
+        let g = 0.7 * (gain_pct.max(0) as f32) / 100.0;
+        aurora_audio::play_mixed_arc(a, false, g, 0.0);
+    }
 }
 
 /// Play a cached sound (a load_sound handle) SPATIALIZED at a world position: distance attenuation
@@ -1965,13 +1988,11 @@ pub extern "C" fn aurora_play_sound_handle_at(handle: i64, gain_pct: i64, x: f64
     if sgain <= 0.001 {
         return;
     }
-    SOUNDS.with(|s| {
-        let v = s.borrow();
-        if let Some((samples, sr)) = v.get(handle as usize) {
-            let g = sgain * (gain_pct.max(0) as f32) / 100.0;
-            aurora_audio::play_mixed_spatial(samples, *sr, false, g, pan);
-        }
-    });
+    let arc = SOUNDS.with(|s| s.borrow().get(handle as usize).cloned());
+    if let Some(a) = arc {
+        let g = sgain * (gain_pct.max(0) as f32) / 100.0;
+        aurora_audio::play_mixed_arc(a, false, g, pan);
+    }
 }
 
 /// Set the master audio volume from a 0..=100 percentage.
