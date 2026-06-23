@@ -202,14 +202,17 @@ impl AnimPlayer {
     }
 
     pub fn advance(&mut self, model: &Model, dt: f32) {
-        advance_time(&mut self.time, model.clips.get(self.clip), dt * self.speed, self.looping);
+        // In a sustained base blend, clip A (e.g. idle) keeps its natural cadence while clip B (e.g.
+        // run) is SPEED-WARPED by `speed`, so its footfalls track ground speed and don't slide. Plain
+        // single-clip playback uses `speed` directly.
+        let base_spd = if self.bblend_on { 1.0 } else { self.speed };
+        advance_time(&mut self.time, model.clips.get(self.clip), dt * base_spd, self.looping);
         if self.blend < 1.0 {
             // Keep the outgoing clip moving for a smooth blend.
-            advance_time(&mut self.prev_time, model.clips.get(self.prev_clip), dt * self.speed, true);
+            advance_time(&mut self.prev_time, model.clips.get(self.prev_clip), dt * base_spd, true);
             self.blend = (self.blend + self.blend_rate * dt).min(1.0);
         }
         if self.bblend_on {
-            // The second base clip in a sustained idle<->run style blend advances on its own loop.
             advance_time(&mut self.btime2, model.clips.get(self.bclip2), dt * self.speed, true);
         }
         if self.upper {
