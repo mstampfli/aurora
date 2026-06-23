@@ -1365,6 +1365,15 @@ pub extern "C" fn aurora_r3d_draw(
     );
 }
 #[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn aurora_r3d_draw_quat(
+    h: i64, px: f64, py: f64, pz: f64, qx: f64, qy: f64, qz: f64, qw: f64, scale: f64,
+) {
+    aurora_window::imm_r3d_draw_quat(
+        h, px as f32, py as f32, pz as f32, qx as f32, qy as f32, qz as f32, qw as f32, scale as f32,
+    );
+}
+#[no_mangle]
 pub extern "C" fn aurora_r3d_draw_tint(
     h: i64, px: f64, py: f64, pz: f64, yaw: f64, pitch: f64, roll: f64, scale: f64, r: f64, g: f64, b: f64,
 ) {
@@ -1411,6 +1420,14 @@ pub extern "C" fn aurora_r3d_anim_update(h: i64, dt: f64) {
 #[no_mangle]
 pub extern "C" fn aurora_r3d_anim_play_upper(h: i64, clip: i64, looping: i64, speed: f64, fade: f64, mask_root: i64) {
     aurora_window::imm_r3d_anim_play_upper(h, clip, looping, speed as f32, fade as f32, mask_root);
+}
+#[no_mangle]
+pub extern "C" fn aurora_r3d_pose_bone(h: i64, joint: i64, rx: f64, ry: f64, rz: f64) {
+    aurora_window::imm_r3d_pose_bone(h, joint, rx as f32, ry as f32, rz as f32);
+}
+#[no_mangle]
+pub extern "C" fn aurora_r3d_clear_pose(h: i64) {
+    aurora_window::imm_r3d_clear_pose(h);
 }
 #[no_mangle]
 pub extern "C" fn aurora_r3d_anim_stop_upper(h: i64, fade: f64) {
@@ -1637,6 +1654,19 @@ pub extern "C" fn aurora_f32_store(ptr: i64, i: i64, v: f64) {
     unsafe { *(ptr as *mut f32).add(i as usize) = v as f32 };
 }
 
+/// Allocate a zeroed, LEAKED `f32` blob of `len` floats and return its raw pointer (as i64),
+/// usable with `f32_load`/`f32_store` and as a `sim_step` state/input blob. The allocation lives
+/// for the whole program on purpose - it's how a game gives a non-networked actor (e.g. a bot) its
+/// own persistent sim state, so the SAME sim_step that moves players can move it too.
+#[no_mangle]
+pub extern "C" fn aurora_f32_blob(len: i64) -> i64 {
+    let n = if len < 0 { 0 } else { len as usize };
+    let mut v = vec![0.0f32; n];
+    let ptr = v.as_mut_ptr() as i64;
+    std::mem::forget(v);
+    ptr
+}
+
 // Transcendental math builtins. Cranelift has no native instruction for these,
 // so they are host calls into Rust's libm (a correct, ABI-safe path, unlike a
 // raw libcall import). `sqrt`/`floor`/`abs`/`min`/`max`/`clamp` stay native in
@@ -1745,9 +1775,11 @@ fn spatialize(pos: [f64; 3]) -> (f32, f32) {
         let max_dist = 35.0;
         let g = (1.0 - dist / max_dist).clamp(0.0, 1.0);
         let gain = (g * g) as f32;
-        // Pan by the listener's right vector (forward x up).
+        // Pan by the listener's right vector = cross(forward, up=+Y), flattened to the XZ plane:
+        // cross((Fx,Fy,Fz),(0,1,0)) = (-Fz, 0, Fx). The earlier form ([Fz,0,-Fx]) was this NEGATED,
+        // which mirrored the stereo image (sounds on your right played on the left).
         let f = norm3(fwd);
-        let right = norm3([f[2], 0.0, -f[0]]); // cross(forward, up=+Y), flattened
+        let right = norm3([-f[2], 0.0, f[0]]);
         let dir = if dist > 1e-4 { [to[0] / dist, to[1] / dist, to[2] / dist] } else { [0.0; 3] };
         let pan = (right[0] * dir[0] + right[1] * dir[1] + right[2] * dir[2]).clamp(-1.0, 1.0) as f32;
         (gain, pan)
@@ -2042,7 +2074,7 @@ pub extern "C" fn aurora_dbg_var_f64(name_ptr: *const u8, name_len: i64, value: 
 /// Touch every host symbol so the linker keeps this crate's object in an AOT
 /// link even when the Rust driver references nothing from it directly.
 pub fn force_link() -> usize {
-    let fns: [*const (); 287] = [
+    let fns: [*const (); 314] = [
         aurora_net_projectile_intent as *const (),
         aurora_net_server_projectile_count as *const (),
         aurora_net_server_projectile_shooter as *const (),
@@ -2066,9 +2098,17 @@ pub fn force_link() -> usize {
         aurora_net_shot_field as *const (),
         aurora_net_shot_weapon as *const (),
         aurora_net_shots_clear as *const (),
+        aurora_net_push_boom as *const (),
+        aurora_net_boom_count as *const (),
+        aurora_net_boom_source as *const (),
+        aurora_net_boom_field as *const (),
+        aurora_net_booms_clear as *const (),
         aurora_net_max_clients as *const (),
         aurora_net_rejected as *const (),
         aurora_net_connected as *const (),
+        aurora_net_dedicated as *const (),
+        aurora_net_cfg_set as *const (),
+        aurora_net_cfg_get as *const (),
         aurora_net_set_bot_count as *const (),
         aurora_net_set_bot as *const (),
         aurora_net_set_bot_meta as *const (),
@@ -2080,6 +2120,16 @@ pub fn force_link() -> usize {
         aurora_net_object_x as *const (),
         aurora_net_object_y as *const (),
         aurora_net_object_z as *const (),
+        aurora_net_set_object_rot as *const (),
+        aurora_net_object_qx as *const (),
+        aurora_net_object_qy as *const (),
+        aurora_net_object_qz as *const (),
+        aurora_net_object_qw as *const (),
+        aurora_net_set_object_vel as *const (),
+        aurora_net_object_vx as *const (),
+        aurora_net_object_vy as *const (),
+        aurora_net_object_vz as *const (),
+        aurora_r3d_draw_quat as *const (),
         aurora_net_set_fx_count as *const (),
         aurora_net_set_fx as *const (),
         aurora_net_fx_count as *const (),
@@ -2116,12 +2166,17 @@ pub fn force_link() -> usize {
         aurora_net_host as *const (),
         aurora_net_join as *const (),
         aurora_net_sim as *const (),
+        aurora_net_serve as *const (),
         aurora_net_send_input as *const (),
         aurora_net_update as *const (),
         aurora_net_leave as *const (),
         aurora_net_interest as *const (),
         aurora_net_hit_radius as *const (),
         aurora_net_spawn_at as *const (),
+        aurora_net_spawn_input_slot as *const (),
+        aurora_net_respawn_client as *const (),
+        aurora_net_impulse_input_slot as *const (),
+        aurora_net_push_impulse as *const (),
         aurora_net_my_id as *const (),
         aurora_net_is_server as *const (),
         aurora_net_player_count as *const (),
@@ -2138,6 +2193,7 @@ pub fn force_link() -> usize {
         aurora_net_local_state as *const (),
         aurora_net_fire as *const (),
         aurora_net_hit_player as *const (),
+        aurora_net_hit_seq as *const (),
         aurora_net_hit_x as *const (),
         aurora_net_hit_y as *const (),
         aurora_net_hit_z as *const (),
@@ -2149,6 +2205,7 @@ pub fn force_link() -> usize {
         // Raw f32-blob accessors (for the Aurora net sim).
         aurora_f32_load as *const (),
         aurora_f32_store as *const (),
+        aurora_f32_blob as *const (),
         // Transcendental math builtins.
         aurora_sin as *const (),
         aurora_cos as *const (),
@@ -2248,6 +2305,8 @@ pub fn force_link() -> usize {
         aurora_r3d_anim_play as *const (),
         aurora_r3d_anim_update as *const (),
         aurora_r3d_anim_play_upper as *const (),
+        aurora_r3d_pose_bone as *const (),
+        aurora_r3d_clear_pose as *const (),
         aurora_r3d_anim_stop_upper as *const (),
         aurora_r3d_clip_count as *const (),
         aurora_r3d_present as *const (),
@@ -2348,6 +2407,18 @@ pub fn force_link() -> usize {
 #[cfg(test)]
 mod arena_tests {
     use super::*;
+
+    #[test]
+    fn spatial_pan_is_not_mirrored() {
+        // Listener at the origin looking down -Z (yaw 0 in-game: forward = (sin0, 0, -cos0)).
+        aurora_audio_listener(0.0, 0.0, 0.0, 0.0, 0.0, -1.0);
+        // A sound to the player's RIGHT (+X when looking -Z) must pan RIGHT (pan > 0), not left.
+        let (_, pan_right) = spatialize([10.0, 0.0, 0.0]);
+        assert!(pan_right > 0.9, "sound on the right should pan right, got {pan_right}");
+        // ...and a sound to the LEFT (-X) must pan LEFT.
+        let (_, pan_left) = spatialize([-10.0, 0.0, 0.0]);
+        assert!(pan_left < -0.9, "sound on the left should pan left, got {pan_left}");
+    }
 
     #[test]
     fn floats_display_with_trailing_decimal() {

@@ -348,6 +348,22 @@ impl Scene {
         }
     }
 
+    /// Set a per-bone pose override (extra local XYZ-Euler rotation on `joint`), e.g. to author a
+    /// slide the clips don't have. Set each frame; clear_pose() resets a model to its pure clip pose.
+    pub fn pose_bone(&mut self, handle: i64, joint: i64, rx: f32, ry: f32, rz: f32) {
+        if let Some(r) = self.item_mut(handle) {
+            let q = glam::Quat::from_euler(glam::EulerRot::XYZ, rx, ry, rz);
+            r.player.set_pose(joint.max(0) as usize, q);
+        }
+    }
+
+    /// Drop all per-bone pose overrides on a model.
+    pub fn clear_pose(&mut self, handle: i64) {
+        if let Some(r) = self.item_mut(handle) {
+            r.player.clear_pose();
+        }
+    }
+
     /// Fade out a model's upper-body overlay over `fade` seconds.
     pub fn anim_stop_upper(&mut self, handle: i64, fade: f32) {
         if let Some(r) = self.item_mut(handle) {

@@ -578,6 +578,31 @@ pub fn r3d_draw(
     });
 }
 
+/// Queue a model at position (px,py,pz) with an explicit unit quaternion (qx,qy,qz,qw) and uniform
+/// `scale`. Used for free-tumbling rigid bodies (crates) where a euler triple would be lossy/ambiguous.
+#[allow(clippy::too_many_arguments)]
+pub fn r3d_draw_quat(
+    handle: i64,
+    px: f32,
+    py: f32,
+    pz: f32,
+    qx: f32,
+    qy: f32,
+    qz: f32,
+    qw: f32,
+    scale: f32,
+) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        let m = Mat4::from_scale_rotation_translation(
+            Vec3::splat(scale),
+            Quat::from_xyzw(qx, qy, qz, qw).normalize(),
+            Vec3::new(px, py, pz),
+        );
+        s.draw(handle, m);
+    });
+}
+
 pub fn r3d_draw_tint(
     handle: i64,
     px: f32,
@@ -667,6 +692,18 @@ pub fn r3d_anim_play_upper(handle: i64, clip: i64, looping: i64, speed: f32, fad
     with_gfx((), |gf| {
         let (_, _, s) = gf.scene_mut();
         s.anim_play_upper(handle, clip, looping != 0, speed, fade, mask_root);
+    });
+}
+pub fn r3d_pose_bone(handle: i64, joint: i64, rx: f32, ry: f32, rz: f32) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.pose_bone(handle, joint, rx, ry, rz);
+    });
+}
+pub fn r3d_clear_pose(handle: i64) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.clear_pose(handle);
     });
 }
 pub fn r3d_anim_stop_upper(handle: i64, fade: f32) {

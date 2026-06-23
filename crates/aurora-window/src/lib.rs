@@ -25,11 +25,13 @@ pub use imm::{
     mouse_button as imm_mouse_button, mouse_delta as imm_mouse_delta, open as imm_open,
     present as imm_present, scroll as imm_scroll,
     r3d_anim_play as imm_r3d_anim_play, r3d_anim_play_upper as imm_r3d_anim_play_upper,
+    r3d_pose_bone as imm_r3d_pose_bone, r3d_clear_pose as imm_r3d_clear_pose,
     r3d_anim_stop_upper as imm_r3d_anim_stop_upper, r3d_anim_update as imm_r3d_anim_update,
     r3d_begin as imm_r3d_begin, r3d_camera as imm_r3d_camera,
     r3d_camera_roll as imm_r3d_camera_roll, r3d_clear as imm_r3d_clear,
     r3d_clear_lights as imm_r3d_clear_lights, r3d_clip_count as imm_r3d_clip_count,
-    r3d_debug_line as imm_r3d_debug_line, r3d_draw as imm_r3d_draw, r3d_draw_tint as imm_r3d_draw_tint,
+    r3d_debug_line as imm_r3d_debug_line, r3d_draw as imm_r3d_draw, r3d_draw_quat as imm_r3d_draw_quat,
+    r3d_draw_tint as imm_r3d_draw_tint,
     r3d_draw_on_joint as imm_r3d_draw_on_joint, r3d_joint_dump as imm_r3d_joint_dump,
     r3d_draw_shield as imm_r3d_draw_shield,
     r3d_draw_billboard as imm_r3d_draw_billboard, r3d_fog as imm_r3d_fog,
@@ -57,11 +59,11 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
-/// Build a winit event loop. On the free-unix backends (X11/Wayland) winit
-/// panics if the event loop is created off the main thread. The Aurora runtime
-/// runs the JIT'd program on the main thread and opens the window from a worker
-/// thread, so opt into `any_thread` there (the flag is a single field shared by
-/// both the X11 and Wayland backends). Windows and macOS have no such guard.
+/// Build a winit event loop. On the free-unix backends (X11/Wayland) winit panics if the event loop
+/// is created off the main thread, but the flag is just advisory there, so the Aurora runtime runs
+/// the JIT'd program on a worker thread and opts into `any_thread`. macOS is the OPPOSITE: the event
+/// loop MUST own the OS main thread and there is no opt-out, so on macOS aurorac runs the program on
+/// the main thread (see aurorac/src/main.rs) and we build the loop plainly here. Windows is relaxed.
 pub(crate) fn new_event_loop() -> Result<EventLoop<()>, winit::error::EventLoopError> {
     #[allow(unused_mut)]
     let mut builder = EventLoop::builder();

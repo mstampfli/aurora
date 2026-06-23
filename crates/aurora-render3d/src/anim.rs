@@ -30,6 +30,12 @@ pub struct AnimPlayer {
     uweight: f32,
     uweight_target: f32,
     uweight_rate: f32,
+    // Per-bone POSE overrides: an extra local rotation pre-multiplied onto a joint after the clip
+    // pose is sampled (and after the upper overlay). Lets game code author a pose the clips don't
+    // have - e.g. bend the thighs forward into a slide while the spine keeps its upright clip pose.
+    // Set each frame by the caller; cleared with clear_pose(). Fixed array so AnimPlayer stays Copy.
+    pose: [(u32, Quat); 8],
+    pose_n: usize,
 }
 
 impl Default for AnimPlayer {
@@ -52,6 +58,8 @@ impl Default for AnimPlayer {
             uweight: 0.0,
             uweight_target: 0.0,
             uweight_rate: 0.0,
+            pose: [(0u32, Quat::IDENTITY); 8],
+            pose_n: 0,
         }
     }
 }
@@ -102,6 +110,27 @@ impl AnimPlayer {
     }
 
     /// Advance playback (and any crossfade) by `dt` seconds.
+    /// Set a per-bone pose override: an extra local rotation pre-multiplied onto `joint` after the
+    /// clip pose. Replaces any existing override for that joint. Call each frame; clear_pose() resets.
+    pub fn set_pose(&mut self, joint: usize, q: Quat) {
+        let j = joint as u32;
+        for k in 0..self.pose_n {
+            if self.pose[k].0 == j {
+                self.pose[k].1 = q;
+                return;
+            }
+        }
+        if self.pose_n < self.pose.len() {
+            self.pose[self.pose_n] = (j, q);
+            self.pose_n += 1;
+        }
+    }
+
+    /// Drop all per-bone pose overrides (back to the pure clip pose).
+    pub fn clear_pose(&mut self) {
+        self.pose_n = 0;
+    }
+
     pub fn advance(&mut self, model: &Model, dt: f32) {
         advance_time(&mut self.time, model.clips.get(self.clip), dt * self.speed, self.looping);
         if self.blend < 1.0 {
@@ -153,6 +182,14 @@ impl AnimPlayer {
                 }
             }
         }
+        // Per-bone pose overrides (e.g. a slide): rotate each named joint further in its parent frame.
+        for k in 0..self.pose_n {
+            let (j, q) = self.pose[k];
+            let j = j as usize;
+            if j < r.len() {
+                r[j] = q * r[j];
+            }
+        }
         locals_to_skin(skel, &t, &r, &s)
     }
 
@@ -185,6 +222,13 @@ impl AnimPlayer {
                     r[i] = r[i].slerp(ur[i], w);
                     s[i] = s[i].lerp(us[i], w);
                 }
+            }
+        }
+        for k in 0..self.pose_n {
+            let (j, q) = self.pose[k];
+            let j = j as usize;
+            if j < r.len() {
+                r[j] = q * r[j];
             }
         }
         let n = skel.joints.len();

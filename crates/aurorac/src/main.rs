@@ -13,12 +13,23 @@ fn main() -> ExitCode {
     // Run the whole compiler on a large stack so deeply-nested source (handled by
     // the recursive parser and every later recursive pass: typeck, checks,
     // codegen) yields a diagnostic instead of an uncatchable stack-overflow abort.
-    std::thread::Builder::new()
-        .stack_size(256 * 1024 * 1024)
-        .spawn(run_cli)
-        .expect("spawn compiler thread")
-        .join()
-        .unwrap_or(ExitCode::FAILURE)
+    // macOS requires the window event loop (NSApplication) to own the OS MAIN thread - it panics if
+    // created off it, and there is no `any_thread` escape hatch. So on macOS we run the program (and
+    // the compiler that JIT-executes it) ON the main thread, giving that thread the big stack via a
+    // linker flag (see build.rs) instead of a worker. Other platforms keep the worker thread.
+    #[cfg(target_os = "macos")]
+    {
+        return run_cli();
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        std::thread::Builder::new()
+            .stack_size(256 * 1024 * 1024)
+            .spawn(run_cli)
+            .expect("spawn compiler thread")
+            .join()
+            .unwrap_or(ExitCode::FAILURE)
+    }
 }
 
 fn run_cli() -> ExitCode {

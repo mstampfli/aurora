@@ -360,9 +360,9 @@ const BUILTINS: &[&str] = &[
     "navmesh_build", "navmesh_find", "navmesh_x", "navmesh_y", "navmesh_z",
     // 3D rendering.
     "r3d_load_model", "r3d_make_box", "r3d_make_box_sized", "r3d_make_box_emissive", "r3d_make_sphere", "r3d_make_plane",
-    "r3d_camera", "r3d_camera_roll", "r3d_light", "r3d_clear", "r3d_begin", "r3d_draw", "r3d_draw_tint",
+    "r3d_camera", "r3d_camera_roll", "r3d_light", "r3d_clear", "r3d_begin", "r3d_draw", "r3d_draw_quat", "r3d_draw_tint",
     "r3d_draw_on_joint", "r3d_joint_dump", "r3d_draw_shield",
-    "r3d_anim_play", "r3d_anim_update", "r3d_anim_play_upper", "r3d_anim_stop_upper", "r3d_clip_count", "r3d_present",
+    "r3d_anim_play", "r3d_anim_update", "r3d_anim_play_upper", "r3d_pose_bone", "r3d_clear_pose", "r3d_anim_stop_upper", "r3d_clip_count", "r3d_present",
     "r3d_fog", "r3d_speedlines", "r3d_damage", "r3d_blur", "r3d_sky", "r3d_shadows", "r3d_ssao", "r3d_point_shadows", "r3d_clear_lights", "r3d_point_light",
     "r3d_make_sprite", "r3d_draw_billboard", "r3d_debug_line", "r3d_frustum_cull",
     "r3d_screen_x", "r3d_screen_y",
@@ -377,21 +377,24 @@ const BUILTINS: &[&str] = &[
     "phys3d_apply_torque", "phys3d_set_angvel", "phys3d_set_rot",
     "phys3d_rot_qx", "phys3d_rot_qy", "phys3d_rot_qz", "phys3d_rot_qw",
     // Multiplayer (generic framework: the game registers its Aurora sim).
-    "net_host", "net_join", "net_sim", "net_send_input", "net_update", "net_leave",
+    "net_host", "net_join", "net_sim", "net_serve", "net_send_input", "net_update", "net_leave",
     "net_my_id", "net_is_server", "net_player_count", "net_player_id_at",
     "net_player_x", "net_player_y", "net_player_z", "net_player_yaw", "net_player_state",
     "net_set_meta", "net_player_meta", "net_set_name", "net_player_name_len", "net_player_name_char",
     "net_local_x", "net_local_y", "net_local_z", "net_local_yaw",
-    "net_state", "net_local_state", "net_interest", "net_hit_radius", "net_max_clients", "net_rejected", "net_connected",
+    "net_state", "net_local_state", "net_interest", "net_hit_radius", "net_max_clients", "net_rejected", "net_connected", "net_dedicated", "net_cfg_set", "net_cfg_get",
     "net_set_bot_count", "net_set_bot", "net_set_bot_meta", "net_set_bot_name", "net_bot_count",
     "net_set_object_count", "net_set_object", "net_object_count", "net_object_x", "net_object_y", "net_object_z",
+    "net_set_object_rot", "net_object_qx", "net_object_qy", "net_object_qz", "net_object_qw",
+    "net_set_object_vel", "net_object_vx", "net_object_vy", "net_object_vz",
     "net_set_fx_count", "net_set_fx", "net_fx_count", "net_fx_x", "net_fx_y", "net_fx_z", "net_fx_kind",
-    "net_spawn_at", "net_fire",
-    "net_hit_player", "net_hit_x", "net_hit_y", "net_hit_z",
+    "net_spawn_at", "net_spawn_input_slot", "net_respawn_client", "net_impulse_input_slot", "net_push_impulse", "net_fire",
+    "net_hit_player", "net_hit_seq", "net_hit_x", "net_hit_y", "net_hit_z",
     "net_server_hit_count", "net_server_hit_shooter", "net_server_hit_victim", "net_server_hit_weapon",
     "net_server_hit_x", "net_server_hit_y", "net_server_hit_z", "net_server_hits_clear",
     "net_push_kill", "net_kill_count", "net_kill_killer", "net_kill_victim", "net_kills_clear",
     "net_push_shot", "net_shot_count", "net_shot_shooter", "net_shot_field", "net_shot_weapon", "net_shots_clear",
+    "net_push_boom", "net_boom_count", "net_boom_source", "net_boom_field", "net_booms_clear",
     "net_projectile_intent", "net_server_projectile_count", "net_server_projectile_shooter",
     "net_server_projectile_kind", "net_server_projectile_ox", "net_server_projectile_oy",
     "net_server_projectile_oz", "net_server_projectile_vx", "net_server_projectile_vy",
@@ -399,7 +402,7 @@ const BUILTINS: &[&str] = &[
     // Rebindable input-action layer + raw f32-blob accessors.
     "input_bind", "input_binding", "input_down", "input_axis", "input_suppress",
     "save_settings", "load_settings",
-    "f32_load", "f32_store",
+    "f32_load", "f32_store", "f32_blob",
 ];
 
 /// Byte size of a type (always a multiple of 8). Aggregates lay out their
@@ -657,6 +660,8 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_r3d_anim_play", aurora_runtime::aurora_r3d_anim_play as *const u8);
     builder.symbol("aurora_r3d_anim_update", aurora_runtime::aurora_r3d_anim_update as *const u8);
     builder.symbol("aurora_r3d_anim_play_upper", aurora_runtime::aurora_r3d_anim_play_upper as *const u8);
+    builder.symbol("aurora_r3d_pose_bone", aurora_runtime::aurora_r3d_pose_bone as *const u8);
+    builder.symbol("aurora_r3d_clear_pose", aurora_runtime::aurora_r3d_clear_pose as *const u8);
     builder.symbol("aurora_r3d_anim_stop_upper", aurora_runtime::aurora_r3d_anim_stop_upper as *const u8);
     builder.symbol("aurora_r3d_clip_count", aurora_runtime::aurora_r3d_clip_count as *const u8);
     builder.symbol("aurora_r3d_present", aurora_runtime::aurora_r3d_present as *const u8);
@@ -706,6 +711,7 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_net_host", aurora_runtime::aurora_net_host as *const u8);
     builder.symbol("aurora_net_join", aurora_runtime::aurora_net_join as *const u8);
     builder.symbol("aurora_net_sim", aurora_runtime::aurora_net_sim as *const u8);
+    builder.symbol("aurora_net_serve", aurora_runtime::aurora_net_serve as *const u8);
     builder.symbol("aurora_net_send_input", aurora_runtime::aurora_net_send_input as *const u8);
     builder.symbol("aurora_save_settings", aurora_runtime::aurora_save_settings as *const u8);
     builder.symbol("aurora_load_settings", aurora_runtime::aurora_load_settings as *const u8);
@@ -735,6 +741,9 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_net_max_clients", aurora_runtime::aurora_net_max_clients as *const u8);
     builder.symbol("aurora_net_rejected", aurora_runtime::aurora_net_rejected as *const u8);
     builder.symbol("aurora_net_connected", aurora_runtime::aurora_net_connected as *const u8);
+    builder.symbol("aurora_net_dedicated", aurora_runtime::aurora_net_dedicated as *const u8);
+    builder.symbol("aurora_net_cfg_set", aurora_runtime::aurora_net_cfg_set as *const u8);
+    builder.symbol("aurora_net_cfg_get", aurora_runtime::aurora_net_cfg_get as *const u8);
     builder.symbol("aurora_net_set_bot_count", aurora_runtime::aurora_net_set_bot_count as *const u8);
     builder.symbol("aurora_net_set_bot", aurora_runtime::aurora_net_set_bot as *const u8);
     builder.symbol("aurora_net_set_bot_meta", aurora_runtime::aurora_net_set_bot_meta as *const u8);
@@ -746,6 +755,16 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_net_object_x", aurora_runtime::aurora_net_object_x as *const u8);
     builder.symbol("aurora_net_object_y", aurora_runtime::aurora_net_object_y as *const u8);
     builder.symbol("aurora_net_object_z", aurora_runtime::aurora_net_object_z as *const u8);
+    builder.symbol("aurora_net_set_object_rot", aurora_runtime::aurora_net_set_object_rot as *const u8);
+    builder.symbol("aurora_net_object_qx", aurora_runtime::aurora_net_object_qx as *const u8);
+    builder.symbol("aurora_net_object_qy", aurora_runtime::aurora_net_object_qy as *const u8);
+    builder.symbol("aurora_net_object_qz", aurora_runtime::aurora_net_object_qz as *const u8);
+    builder.symbol("aurora_net_object_qw", aurora_runtime::aurora_net_object_qw as *const u8);
+    builder.symbol("aurora_net_set_object_vel", aurora_runtime::aurora_net_set_object_vel as *const u8);
+    builder.symbol("aurora_net_object_vx", aurora_runtime::aurora_net_object_vx as *const u8);
+    builder.symbol("aurora_net_object_vy", aurora_runtime::aurora_net_object_vy as *const u8);
+    builder.symbol("aurora_net_object_vz", aurora_runtime::aurora_net_object_vz as *const u8);
+    builder.symbol("aurora_r3d_draw_quat", aurora_runtime::aurora_r3d_draw_quat as *const u8);
     builder.symbol("aurora_net_set_fx_count", aurora_runtime::aurora_net_set_fx_count as *const u8);
     builder.symbol("aurora_net_set_fx", aurora_runtime::aurora_net_set_fx as *const u8);
     builder.symbol("aurora_net_fx_count", aurora_runtime::aurora_net_fx_count as *const u8);
@@ -755,6 +774,10 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_net_fx_kind", aurora_runtime::aurora_net_fx_kind as *const u8);
     builder.symbol("aurora_net_hit_radius", aurora_runtime::aurora_net_hit_radius as *const u8);
     builder.symbol("aurora_net_spawn_at", aurora_runtime::aurora_net_spawn_at as *const u8);
+    builder.symbol("aurora_net_spawn_input_slot", aurora_runtime::aurora_net_spawn_input_slot as *const u8);
+    builder.symbol("aurora_net_respawn_client", aurora_runtime::aurora_net_respawn_client as *const u8);
+    builder.symbol("aurora_net_impulse_input_slot", aurora_runtime::aurora_net_impulse_input_slot as *const u8);
+    builder.symbol("aurora_net_push_impulse", aurora_runtime::aurora_net_push_impulse as *const u8);
     builder.symbol("aurora_net_fire", aurora_runtime::aurora_net_fire as *const u8);
     builder.symbol("aurora_net_server_hit_count", aurora_runtime::aurora_net_server_hit_count as *const u8);
     builder.symbol("aurora_net_server_hit_shooter", aurora_runtime::aurora_net_server_hit_shooter as *const u8);
@@ -775,6 +798,11 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_net_shot_field", aurora_runtime::aurora_net_shot_field as *const u8);
     builder.symbol("aurora_net_shot_weapon", aurora_runtime::aurora_net_shot_weapon as *const u8);
     builder.symbol("aurora_net_shots_clear", aurora_runtime::aurora_net_shots_clear as *const u8);
+    builder.symbol("aurora_net_push_boom", aurora_runtime::aurora_net_push_boom as *const u8);
+    builder.symbol("aurora_net_boom_count", aurora_runtime::aurora_net_boom_count as *const u8);
+    builder.symbol("aurora_net_boom_source", aurora_runtime::aurora_net_boom_source as *const u8);
+    builder.symbol("aurora_net_boom_field", aurora_runtime::aurora_net_boom_field as *const u8);
+    builder.symbol("aurora_net_booms_clear", aurora_runtime::aurora_net_booms_clear as *const u8);
     builder.symbol("aurora_net_projectile_intent", aurora_runtime::aurora_net_projectile_intent as *const u8);
     builder.symbol("aurora_net_server_projectile_count", aurora_runtime::aurora_net_server_projectile_count as *const u8);
     builder.symbol("aurora_net_server_projectile_shooter", aurora_runtime::aurora_net_server_projectile_shooter as *const u8);
@@ -788,6 +816,7 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_net_server_projectiles_clear", aurora_runtime::aurora_net_server_projectiles_clear as *const u8);
     builder.symbol("aurora_net_set_player_meta", aurora_runtime::aurora_net_set_player_meta as *const u8);
     builder.symbol("aurora_net_hit_player", aurora_runtime::aurora_net_hit_player as *const u8);
+    builder.symbol("aurora_net_hit_seq", aurora_runtime::aurora_net_hit_seq as *const u8);
     builder.symbol("aurora_net_hit_x", aurora_runtime::aurora_net_hit_x as *const u8);
     builder.symbol("aurora_net_hit_y", aurora_runtime::aurora_net_hit_y as *const u8);
     builder.symbol("aurora_net_hit_z", aurora_runtime::aurora_net_hit_z as *const u8);
@@ -798,6 +827,7 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_input_axis", aurora_runtime::aurora_input_axis as *const u8);
     builder.symbol("aurora_f32_load", aurora_runtime::aurora_f32_load as *const u8);
     builder.symbol("aurora_f32_store", aurora_runtime::aurora_f32_store as *const u8);
+    builder.symbol("aurora_f32_blob", aurora_runtime::aurora_f32_blob as *const u8);
     builder.symbol("aurora_sin", aurora_runtime::aurora_sin as *const u8);
     builder.symbol("aurora_cos", aurora_runtime::aurora_cos as *const u8);
     builder.symbol("aurora_tan", aurora_runtime::aurora_tan as *const u8);
@@ -1039,6 +1069,7 @@ fn lower(
     hosts.insert("r3d_clear", import(jmod, "aurora_r3d_clear", &[f64t, f64t, f64t], None));
     hosts.insert("r3d_begin", import(jmod, "aurora_r3d_begin", &[], None));
     hosts.insert("r3d_draw", import(jmod, "aurora_r3d_draw", &[i, f64t, f64t, f64t, f64t, f64t, f64t, f64t], None));
+    hosts.insert("r3d_draw_quat", import(jmod, "aurora_r3d_draw_quat", &[i, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t], None));
     hosts.insert("r3d_draw_tint", import(jmod, "aurora_r3d_draw_tint", &[i, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t], None));
     hosts.insert("r3d_draw_shield", import(jmod, "aurora_r3d_draw_shield", &[i, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t], None));
     hosts.insert("r3d_draw_on_joint", import(jmod, "aurora_r3d_draw_on_joint", &[i, i, i, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t], None));
@@ -1046,6 +1077,8 @@ fn lower(
     hosts.insert("r3d_anim_play", import(jmod, "aurora_r3d_anim_play", &[i, i, i, f64t, f64t], None));
     hosts.insert("r3d_anim_update", import(jmod, "aurora_r3d_anim_update", &[i, f64t], None));
     hosts.insert("r3d_anim_play_upper", import(jmod, "aurora_r3d_anim_play_upper", &[i, i, i, f64t, f64t, i], None));
+    hosts.insert("r3d_pose_bone", import(jmod, "aurora_r3d_pose_bone", &[i, i, f64t, f64t, f64t], None));
+    hosts.insert("r3d_clear_pose", import(jmod, "aurora_r3d_clear_pose", &[i], None));
     hosts.insert("r3d_anim_stop_upper", import(jmod, "aurora_r3d_anim_stop_upper", &[i, f64t], None));
     hosts.insert("r3d_clip_count", import(jmod, "aurora_r3d_clip_count", &[i], Some(i)));
     hosts.insert("r3d_present", import(jmod, "aurora_r3d_present", &[], Some(i)));
@@ -1095,6 +1128,7 @@ fn lower(
     hosts.insert("net_host", import(jmod, "aurora_net_host", &[i], Some(i)));
     hosts.insert("net_join", import(jmod, "aurora_net_join", &[ptr_ty, i, i], Some(i)));
     hosts.insert("net_sim", import(jmod, "aurora_net_sim", &[ptr_ty, ptr_ty, i, i], None));
+    hosts.insert("net_serve", import(jmod, "aurora_net_serve", &[ptr_ty, ptr_ty], None));
     hosts.insert("net_send_input", import(jmod, "aurora_net_send_input", &[ptr_ty, i], Some(i)));
     hosts.insert("save_settings", import(jmod, "aurora_save_settings", &[ptr_ty, i], Some(i)));
     hosts.insert("load_settings", import(jmod, "aurora_load_settings", &[ptr_ty, i], Some(i)));
@@ -1124,6 +1158,9 @@ fn lower(
     hosts.insert("net_max_clients", import(jmod, "aurora_net_max_clients", &[i], None));
     hosts.insert("net_rejected", import(jmod, "aurora_net_rejected", &[], Some(i)));
     hosts.insert("net_connected", import(jmod, "aurora_net_connected", &[], Some(i)));
+    hosts.insert("net_dedicated", import(jmod, "aurora_net_dedicated", &[], None));
+    hosts.insert("net_cfg_set", import(jmod, "aurora_net_cfg_set", &[i, f64t], None));
+    hosts.insert("net_cfg_get", import(jmod, "aurora_net_cfg_get", &[i], Some(f64t)));
     hosts.insert("net_set_bot_count", import(jmod, "aurora_net_set_bot_count", &[i], None));
     hosts.insert("net_set_bot", import(jmod, "aurora_net_set_bot", &[i, f64t, f64t, f64t, f64t], None));
     hosts.insert("net_set_bot_meta", import(jmod, "aurora_net_set_bot_meta", &[i, i, f64t], None));
@@ -1135,6 +1172,15 @@ fn lower(
     hosts.insert("net_object_x", import(jmod, "aurora_net_object_x", &[i], Some(f64t)));
     hosts.insert("net_object_y", import(jmod, "aurora_net_object_y", &[i], Some(f64t)));
     hosts.insert("net_object_z", import(jmod, "aurora_net_object_z", &[i], Some(f64t)));
+    hosts.insert("net_set_object_rot", import(jmod, "aurora_net_set_object_rot", &[i, f64t, f64t, f64t, f64t], None));
+    hosts.insert("net_object_qx", import(jmod, "aurora_net_object_qx", &[i], Some(f64t)));
+    hosts.insert("net_object_qy", import(jmod, "aurora_net_object_qy", &[i], Some(f64t)));
+    hosts.insert("net_object_qz", import(jmod, "aurora_net_object_qz", &[i], Some(f64t)));
+    hosts.insert("net_object_qw", import(jmod, "aurora_net_object_qw", &[i], Some(f64t)));
+    hosts.insert("net_set_object_vel", import(jmod, "aurora_net_set_object_vel", &[i, f64t, f64t, f64t], None));
+    hosts.insert("net_object_vx", import(jmod, "aurora_net_object_vx", &[i], Some(f64t)));
+    hosts.insert("net_object_vy", import(jmod, "aurora_net_object_vy", &[i], Some(f64t)));
+    hosts.insert("net_object_vz", import(jmod, "aurora_net_object_vz", &[i], Some(f64t)));
     hosts.insert("net_set_fx_count", import(jmod, "aurora_net_set_fx_count", &[i], None));
     hosts.insert("net_set_fx", import(jmod, "aurora_net_set_fx", &[i, f64t, f64t, f64t, f64t], None));
     hosts.insert("net_fx_count", import(jmod, "aurora_net_fx_count", &[], Some(i)));
@@ -1144,6 +1190,10 @@ fn lower(
     hosts.insert("net_fx_kind", import(jmod, "aurora_net_fx_kind", &[i], Some(f64t)));
     hosts.insert("net_hit_radius", import(jmod, "aurora_net_hit_radius", &[f64t], None));
     hosts.insert("net_spawn_at", import(jmod, "aurora_net_spawn_at", &[f64t, f64t, f64t], None));
+    hosts.insert("net_spawn_input_slot", import(jmod, "aurora_net_spawn_input_slot", &[i], None));
+    hosts.insert("net_respawn_client", import(jmod, "aurora_net_respawn_client", &[i, f64t, f64t, f64t], None));
+    hosts.insert("net_impulse_input_slot", import(jmod, "aurora_net_impulse_input_slot", &[i], None));
+    hosts.insert("net_push_impulse", import(jmod, "aurora_net_push_impulse", &[i, f64t, f64t, f64t], None));
     hosts.insert("net_fire", import(jmod, "aurora_net_fire", &[f64t, f64t, f64t, f64t, f64t, f64t, i], None));
     hosts.insert("net_server_hit_count", import(jmod, "aurora_net_server_hit_count", &[], Some(i)));
     hosts.insert("net_server_hit_shooter", import(jmod, "aurora_net_server_hit_shooter", &[i], Some(i)));
@@ -1164,6 +1214,11 @@ fn lower(
     hosts.insert("net_shot_field", import(jmod, "aurora_net_shot_field", &[i, i], Some(f64t)));
     hosts.insert("net_shot_weapon", import(jmod, "aurora_net_shot_weapon", &[i], Some(i)));
     hosts.insert("net_shots_clear", import(jmod, "aurora_net_shots_clear", &[], None));
+    hosts.insert("net_push_boom", import(jmod, "aurora_net_push_boom", &[i, f64t, f64t, f64t, f64t], None));
+    hosts.insert("net_boom_count", import(jmod, "aurora_net_boom_count", &[], Some(i)));
+    hosts.insert("net_boom_source", import(jmod, "aurora_net_boom_source", &[i], Some(i)));
+    hosts.insert("net_boom_field", import(jmod, "aurora_net_boom_field", &[i, i], Some(f64t)));
+    hosts.insert("net_booms_clear", import(jmod, "aurora_net_booms_clear", &[], None));
     hosts.insert("net_projectile_intent", import(jmod, "aurora_net_projectile_intent", &[i, f64t, f64t, f64t, f64t, f64t, f64t], None));
     hosts.insert("net_server_projectile_count", import(jmod, "aurora_net_server_projectile_count", &[], Some(i)));
     hosts.insert("net_server_projectile_shooter", import(jmod, "aurora_net_server_projectile_shooter", &[i], Some(i)));
@@ -1177,6 +1232,7 @@ fn lower(
     hosts.insert("net_server_projectiles_clear", import(jmod, "aurora_net_server_projectiles_clear", &[], None));
     hosts.insert("net_set_player_meta", import(jmod, "aurora_net_set_player_meta", &[i, i, f64t], None));
     hosts.insert("net_hit_player", import(jmod, "aurora_net_hit_player", &[], Some(i)));
+    hosts.insert("net_hit_seq", import(jmod, "aurora_net_hit_seq", &[], Some(i)));
     hosts.insert("net_hit_x", import(jmod, "aurora_net_hit_x", &[], Some(f64t)));
     hosts.insert("net_hit_y", import(jmod, "aurora_net_hit_y", &[], Some(f64t)));
     hosts.insert("net_hit_z", import(jmod, "aurora_net_hit_z", &[], Some(f64t)));
@@ -1187,6 +1243,7 @@ fn lower(
     hosts.insert("input_suppress", import(jmod, "aurora_input_suppress", &[i], None));
     hosts.insert("f32_load", import(jmod, "aurora_f32_load", &[i, i], Some(f64t)));
     hosts.insert("f32_store", import(jmod, "aurora_f32_store", &[i, i, f64t], None));
+    hosts.insert("f32_blob", import(jmod, "aurora_f32_blob", &[i], Some(i)));
     hosts.insert("sin", import(jmod, "aurora_sin", &[f64t], Some(f64t)));
     hosts.insert("cos", import(jmod, "aurora_cos", &[f64t], Some(f64t)));
     hosts.insert("tan", import(jmod, "aurora_tan", &[f64t], Some(f64t)));
@@ -1241,7 +1298,13 @@ fn lower(
         })
         .collect();
 
-    // Struct layouts (scalar fields only; nested aggregates are unsupported).
+    // Struct layouts: fields are laid out inline by byte_size, so NESTED AGGREGATES (array and
+    // struct fields) ARE supported - stored inline as VALUE fields. Construction copies the field
+    // in (see copy_agg in tr_struct); a struct passed to a fn is by-ref, so its inline arrays/
+    // structs mutate in place. The copy-on-construct (rather than aliasing the source array's
+    // pointer) is deliberate: a struct is returned BY VALUE (sret copy), so an aliased pointer
+    // field would dangle once the constructing frame returns. (Surprise vs `let q = p` aliasing:
+    // that aliases only within a frame and is likewise copied across the sret return boundary.)
     let mut structs = HashMap::new();
     for item in &module.items {
         if let ItemKind::Struct(s) | ItemKind::Component(s) = &item.kind {
@@ -2488,7 +2551,15 @@ fn tr_struct(
         return Ok(Term::Val(ptr, Cty::Enum(enm)));
     }
 
-    let name = path.segments.last().map(|s| s.ident.name.clone()).unwrap_or_default();
+    // A module-qualified struct path (`world::World`) must join its segments with `::` to match
+    // the flattened, mangled layout key - exactly like a module-qualified call. Taking only the
+    // last segment dropped the module prefix, so a struct defined in one module could not be
+    // constructed from another ("unknown struct").
+    let name = if path.segments.len() > 1 {
+        path.segments.iter().map(|s| s.ident.name.as_str()).collect::<Vec<_>>().join("::")
+    } else {
+        path.segments.first().map(|s| s.ident.name.clone()).unwrap_or_default()
+    };
     let layout = env
         .structs
         .get(&name)
@@ -3519,6 +3590,26 @@ fn tr_call(
     // simulation step. The closure is a `[fn_ptr, env_ptr]` pair (called natively
     // by the netcode each tick over a raw state/input blob, just like par_for).
     if name == "net_sim" {
+        // SAFETY GUARD: the netcode STORES this closure and calls it every tick, long after
+        // the current function returns. Aurora allocates a closure's captured environment on
+        // the creating function's stack frame (see `alloc`), so any capture becomes a dangling
+        // pointer once we return -> use-after-free (a segfault that typically strikes the first
+        // time the stored callback runs). Reject captures up front with an actionable message.
+        if let Some(a0) = args.first() {
+            if let Some(lam) = env.closures.get(&a0.value.span) {
+                if let Some(caps) = env.lambda_captures.get(lam) {
+                    if !caps.is_empty() {
+                        return Err(format!(
+                            "closure passed to `net_sim` captures outer variable(s) [{}]; the netcode \
+                             stores it and runs it on later ticks, after this function returns, so the \
+                             captured value (held on this stack frame) dangles. Capture nothing: pass \
+                             data through the state/input blob, or recompute it inside the closure.",
+                            caps.join(", ")
+                        ));
+                    }
+                }
+            }
+        }
         let (cl, _) = val(m, b, l, env, &args[0].value)?;
         let fn_ptr = load_at(b, cl, 0, env.ptr_ty);
         let env_ptr = load_at(b, cl, 1, env.ptr_ty);
@@ -3535,6 +3626,34 @@ fn tr_call(
         let il = to_i(b, il, &ilt);
         let f = m.declare_func_in_func(env.hosts["net_sim"], b.func);
         b.ins().call(f, &[fn_ptr, env_ptr, sl, il]);
+        return Ok(Term::Val(b.ins().iconst(types::I64, 0), Cty::I64));
+    }
+    // `net_serve(server_closure)` - run the authoritative server loop on its own thread. Like
+    // net_sim it takes a `[fn_ptr, env_ptr]` closure pair; the engine spawns a thread that calls it.
+    if name == "net_serve" {
+        // SAFETY GUARD: the server closure runs on ITS OWN thread and must capture nothing (it
+        // cannot reference the spawning thread's stack, which may vanish under it). Same dangling
+        // stack-env problem as net_sim - reject captures with a clear message.
+        if let Some(a0) = args.first() {
+            if let Some(lam) = env.closures.get(&a0.value.span) {
+                if let Some(caps) = env.lambda_captures.get(lam) {
+                    if !caps.is_empty() {
+                        return Err(format!(
+                            "closure passed to `net_serve` captures outer variable(s) [{}]; it runs on \
+                             a separate thread after this function returns, so the captured value (held \
+                             on this stack frame) dangles. Capture nothing: the server closure must set \
+                             up its own state inside itself.",
+                            caps.join(", ")
+                        ));
+                    }
+                }
+            }
+        }
+        let (cl, _) = val(m, b, l, env, &args[0].value)?;
+        let fn_ptr = load_at(b, cl, 0, env.ptr_ty);
+        let env_ptr = load_at(b, cl, 1, env.ptr_ty);
+        let f = m.declare_func_in_func(env.hosts["net_serve"], b.func);
+        b.ins().call(f, &[fn_ptr, env_ptr]);
         return Ok(Term::Val(b.ins().iconst(types::I64, 0), Cty::I64));
     }
     // `text_width(text, px)` - pixel width for centering. Works for a string LITERAL
@@ -4335,7 +4454,17 @@ fn ty_to_cty(kind: &TypeKind) -> Cty {
             "f64" => Cty::F64,
             "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "bool" => Cty::I64,
             "str" | "String" => Cty::Str,
-            other => Cty::Struct(other.to_string()),
+            // A struct/enum type: use the FULL module-qualified path (joined with `::`) so it
+            // matches the flattened, mangled layout key (e.g. `world::World`). Primitives are
+            // always unqualified, so they're matched on the last segment above.
+            _ => {
+                let joined = if p.segments.len() > 1 {
+                    p.segments.iter().map(|s| s.ident.name.as_str()).collect::<Vec<_>>().join("::")
+                } else {
+                    p.segments.last().map(|s| s.ident.name.clone()).unwrap_or_default()
+                };
+                Cty::Struct(joined)
+            }
         },
         TypeKind::Dyn(p) => {
             Cty::Dyn(p.segments.last().map(|s| s.ident.name.clone()).unwrap_or_default())
@@ -4429,6 +4558,7 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "r3d_clear" => (vec![F64, F64, F64], None),
         "r3d_begin" => (vec![], None),
         "r3d_draw" => (vec![I64, F64, F64, F64, F64, F64, F64, F64], None),
+        "r3d_draw_quat" => (vec![I64, F64, F64, F64, F64, F64, F64, F64, F64], None),
         "r3d_draw_tint" => (vec![I64, F64, F64, F64, F64, F64, F64, F64, F64, F64, F64], None),
         "r3d_draw_shield" => (vec![I64, F64, F64, F64, F64, F64, F64, F64, F64, F64], None),
         "r3d_draw_on_joint" => (vec![I64, I64, I64, F64, F64, F64, F64, F64, F64, F64, F64, F64, F64, F64, F64, F64, F64], None),
@@ -4436,6 +4566,8 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "r3d_anim_play" => (vec![I64, I64, I64, F64, F64], None),
         "r3d_anim_update" => (vec![I64, F64], None),
         "r3d_anim_play_upper" => (vec![I64, I64, I64, F64, F64, I64], None),
+        "r3d_pose_bone" => (vec![I64, I64, F64, F64, F64], None),
+        "r3d_clear_pose" => (vec![I64], None),
         "r3d_anim_stop_upper" => (vec![I64, F64], None),
         "r3d_clip_count" => (vec![I64], Some(I64)),
         "r3d_present" => (vec![], Some(I64)),
@@ -4481,6 +4613,9 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "net_host" => (vec![I64], Some(I64)),
         "net_update" => (vec![F64], None),
         "net_leave" => (vec![], None),
+        "net_dedicated" => (vec![], None),
+        "net_cfg_set" => (vec![I64, F64], None),
+        "net_cfg_get" => (vec![I64], Some(F64)),
         "net_my_id" | "net_is_server" | "net_player_count" | "net_rejected" | "net_connected" => (vec![], Some(I64)),
         "net_max_clients" => (vec![I64], None),
         "net_bot_count" => (vec![], Some(I64)),
@@ -4488,6 +4623,10 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "net_set_object_count" => (vec![I64], None),
         "net_set_object" => (vec![I64, F64, F64, F64], None),
         "net_object_x" | "net_object_y" | "net_object_z" => (vec![I64], Some(F64)),
+        "net_set_object_rot" => (vec![I64, F64, F64, F64, F64], None),
+        "net_object_qx" | "net_object_qy" | "net_object_qz" | "net_object_qw" => (vec![I64], Some(F64)),
+        "net_set_object_vel" => (vec![I64, F64, F64, F64], None),
+        "net_object_vx" | "net_object_vy" | "net_object_vz" => (vec![I64], Some(F64)),
         "net_fx_count" => (vec![], Some(I64)),
         "net_set_fx_count" => (vec![I64], None),
         "net_set_fx" => (vec![I64, F64, F64, F64, F64], None),
@@ -4510,6 +4649,10 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "net_interest" => (vec![F64], None),
         "net_hit_radius" => (vec![F64], None),
         "net_spawn_at" => (vec![F64, F64, F64], None),
+        "net_spawn_input_slot" => (vec![I64], None),
+        "net_respawn_client" => (vec![I64, F64, F64, F64], None),
+        "net_impulse_input_slot" => (vec![I64], None),
+        "net_push_impulse" => (vec![I64, F64, F64, F64], None),
         "net_fire" => (vec![F64, F64, F64, F64, F64, F64, I64], None),
         "net_server_hit_count" | "net_server_hits_clear" => {
             if name == "net_server_hit_count" { (vec![], Some(I64)) } else { (vec![], None) }
@@ -4525,6 +4668,11 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "net_shot_shooter" | "net_shot_weapon" => (vec![I64], Some(I64)),
         "net_shot_field" => (vec![I64, I64], Some(F64)),
         "net_shots_clear" => (vec![], None),
+        "net_push_boom" => (vec![I64, F64, F64, F64, F64], None),
+        "net_boom_count" => (vec![], Some(I64)),
+        "net_boom_source" => (vec![I64], Some(I64)),
+        "net_boom_field" => (vec![I64, I64], Some(F64)),
+        "net_booms_clear" => (vec![], None),
         "net_projectile_intent" => (vec![I64, F64, F64, F64, F64, F64, F64], None),
         "net_server_projectile_count" => (vec![], Some(I64)),
         "net_server_projectile_shooter" | "net_server_projectile_kind" => (vec![I64], Some(I64)),
@@ -4533,6 +4681,7 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "net_server_projectiles_clear" => (vec![], None),
         "net_set_player_meta" => (vec![I64, I64, F64], None),
         "net_hit_player" => (vec![], Some(I64)),
+        "net_hit_seq" => (vec![], Some(I64)),
         "net_hit_x" | "net_hit_y" | "net_hit_z" => (vec![], Some(F64)),
         // Rebindable input-action layer + raw f32-blob accessors.
         "input_bind" => (vec![I64, I64], None),
@@ -4541,6 +4690,7 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "input_axis" => (vec![I64, I64], Some(F64)),
         "f32_load" => (vec![I64, I64], Some(F64)),
         "f32_store" => (vec![I64, I64, F64], None),
+        "f32_blob" => (vec![I64], Some(I64)),
         _ => return None,
     };
     Some(sig)

@@ -295,7 +295,7 @@ pub extern "C" fn aurora_phys3d_move_character(h: i64, dx: f64, dy: f64, dz: f64
         // the collider is still stale. The body translation reflects `set_pos`
         // immediately, so the slide starts from the right place.
         let body_t = p.bodies.get(body_h).map(|b| *b.translation()).unwrap_or(desired);
-        let (new_t, grounded) = {
+        let (new_t, grounded, hit_cols) = {
             let Some(collider) = p.colliders.get(col_h) else { return };
             let shape = collider.shape();
             let mut pos = *collider.position();
@@ -306,14 +306,61 @@ pub extern "C" fn aurora_phys3d_move_character(h: i64, dx: f64, dy: f64, dz: f64
             let filter = QueryFilter::default()
                 .exclude_collider(col_h)
                 .groups(InteractionGroups::new(Group::GROUP_2, Group::GROUP_1));
+            // Collect the colliders we ran into so we can SHOVE the dynamic ones (crates) afterwards -
+            // a kinematic controller otherwise just slides off them and they never move.
+            let mut hits = Vec::new();
             let mvt = p.controller.move_shape(
-                dt as Real, &p.bodies, &p.colliders, &p.query, shape, &pos, desired, filter, |_| {},
+                dt as Real, &p.bodies, &p.colliders, &p.query, shape, &pos, desired, filter,
+                |coll| hits.push(coll.handle),
             );
-            (pos.translation.vector + mvt.translation, mvt.grounded)
+            (pos.translation.vector + mvt.translation, mvt.grounded, hits)
         };
         p.grounded[idx] = grounded;
+        // Resolve the dynamic bodies (crates) we ran into + read their velocities, so we can do BOTH
+        // directions: the character shoves the box, AND a fast-moving box shoves the character a bit
+        // (a flying crate "kinda blocks you but not like a hard wall" - it carries you along).
+        let mut dyn_hits = Vec::new();
+        for ch in hit_cols {
+            if let Some(bh) = p.colliders.get(ch).and_then(|c| c.parent()) {
+                if let Some(b) = p.bodies.get(bh) {
+                    if b.is_dynamic() {
+                        let v = *b.linvel();
+                        dyn_hits.push((bh, v));
+                    }
+                }
+            }
+        }
+        // BOX -> CHARACTER: a fast crate carries the character a fraction of its horizontal speed
+        // (capped, soft) rather than being a perfect wall.
+        let mut carry = vector![0.0 as Real, 0.0, 0.0];
+        for (_, v) in &dyn_hits {
+            let vh = vector![v.x, 0.0 as Real, v.z];
+            let vl = vh.norm();
+            if vl > 2.0 {
+                let s = vl.min(8.0); // cap how hard a flung box can shove you
+                carry += vh / vl * (s * 0.5 * dt as Real);
+            }
+        }
         if let Some(b) = p.bodies.get_mut(body_h) {
-            b.set_next_kinematic_translation(new_t.into());
+            let target = new_t + carry;
+            b.set_next_kinematic_translation(target);
+            // Apply the resolved move IMMEDIATELY too, so reading the body's position right after
+            // move_character (with NO phys3d_step in between) reflects it. This lets sim_step move the
+            // character without stepping the whole world per-actor - the world (crates) is now advanced
+            // by exactly ONE phys3d_step per tick by the caller, so dynamic bodies no longer fly N-times
+            // too fast. The controller already resolved collisions into `new_t`, so a direct set is safe.
+            b.set_translation(target, false);
+        }
+        // CHARACTER -> BOX: shove the dynamic ones along the move direction (a firm nudge, not a launch).
+        let hdir = vector![dx as Real, 0.0, dz as Real];
+        let hl = hdir.norm();
+        if hl > 0.001 {
+            let imp = hdir / hl * 0.5 as Real;
+            for (bh, _) in dyn_hits {
+                if let Some(b) = p.bodies.get_mut(bh) {
+                    b.apply_impulse(imp, true);
+                }
+            }
         }
     });
 }
