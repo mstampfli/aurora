@@ -342,7 +342,14 @@ pub extern "C" fn aurora_phys3d_move_character(h: i64, dx: f64, dy: f64, dz: f64
             }
         }
         if let Some(b) = p.bodies.get_mut(body_h) {
-            b.set_next_kinematic_translation((new_t + carry).into());
+            let target = new_t + carry;
+            b.set_next_kinematic_translation(target);
+            // Apply the resolved move IMMEDIATELY too, so reading the body's position right after
+            // move_character (with NO phys3d_step in between) reflects it. This lets sim_step move the
+            // character without stepping the whole world per-actor - the world (crates) is now advanced
+            // by exactly ONE phys3d_step per tick by the caller, so dynamic bodies no longer fly N-times
+            // too fast. The controller already resolved collisions into `new_t`, so a direct set is safe.
+            b.set_translation(target, false);
         }
         // CHARACTER -> BOX: shove the dynamic ones along the move direction (a firm nudge, not a launch).
         let hdir = vector![dx as Real, 0.0, dz as Real];
