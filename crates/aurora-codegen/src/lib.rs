@@ -343,7 +343,7 @@ const BUILTINS: &[&str] = &[
     "play_note", "play_sound", "play_noise", "audio_volume", "audio_stop", "window_fullscreen", "window_open", "window_present",
     "surface_w", "surface_h",
     "key_down", "input_char", "mouse_x", "mouse_y", "mouse_down", "gpu_render",
-    "load_ppm", "load_image", "load_font", "draw_text", "draw_int", "text_width", "play_wav", "scene_save", "scene_load", "frame_reset",
+    "load_ppm", "load_image", "load_font", "draw_text", "draw_int", "text_width", "play_wav", "load_sound", "scene_save", "scene_load", "frame_reset",
     "phys_init", "phys_add", "phys_step", "phys_x", "phys_y", "phys_set_vel",
     "phys_vel_x", "phys_vel_y", "phys_apply_impulse", "phys_apply_force", "phys_set_pos", "phys_raycast",
     "nav_init", "nav_wall", "nav_find", "nav_x", "nav_y",
@@ -369,7 +369,7 @@ const BUILTINS: &[&str] = &[
     // FPS input.
     "mouse_dx", "mouse_dy", "mouse_scroll", "mouse_button", "grab_mouse", "frame_dt", "sleep_ms",
     // 3D positional audio.
-    "audio_listener", "play_sound_at",
+    "audio_listener", "play_sound_at", "play_sound_handle", "play_sound_handle_at",
     // Rich 3D physics queries.
     "phys3d_raycast_full", "phys3d_raycast_ex", "phys3d_raycast_world", "phys3d_hit_x", "phys3d_hit_y", "phys3d_hit_z",
     "phys3d_hit_nx", "phys3d_hit_ny", "phys3d_hit_nz", "phys3d_hit_body",
@@ -690,6 +690,9 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_grab_mouse", aurora_runtime::aurora_grab_mouse as *const u8);
     builder.symbol("aurora_audio_listener", aurora_runtime::aurora_audio_listener as *const u8);
     builder.symbol("aurora_play_sound_at", aurora_runtime::aurora_play_sound_at as *const u8);
+    builder.symbol("aurora_load_sound", aurora_runtime::aurora_load_sound as *const u8);
+    builder.symbol("aurora_play_sound_handle", aurora_runtime::aurora_play_sound_handle as *const u8);
+    builder.symbol("aurora_play_sound_handle_at", aurora_runtime::aurora_play_sound_handle_at as *const u8);
     builder.symbol("aurora_phys3d_raycast_full", aurora_runtime::aurora_phys3d_raycast_full as *const u8);
     builder.symbol("aurora_phys3d_raycast_ex", aurora_runtime::aurora_phys3d_raycast_ex as *const u8);
     builder.symbol("aurora_phys3d_raycast_world", aurora_runtime::aurora_phys3d_raycast_world as *const u8);
@@ -1007,6 +1010,7 @@ fn lower(
     hosts.insert("load_image", import(jmod, "aurora_load_image", &[ptr_ty, i], Some(i)));
     hosts.insert("load_font", import(jmod, "aurora_load_font", &[ptr_ty, i], Some(i)));
     hosts.insert("play_wav", import(jmod, "aurora_play_wav", &[ptr_ty, i], Some(i)));
+    hosts.insert("load_sound", import(jmod, "aurora_load_sound", &[ptr_ty, i], Some(i)));
     let f64t = types::F64;
     hosts.insert("phys_init", import(jmod, "aurora_phys_init", &[f64t, f64t], None));
     hosts.insert("phys_add", import(jmod, "aurora_phys_add", &[f64t, f64t, f64t, f64t, i], Some(i)));
@@ -1109,6 +1113,8 @@ fn lower(
     hosts.insert("grab_mouse", import(jmod, "aurora_grab_mouse", &[i], None));
     hosts.insert("audio_listener", import(jmod, "aurora_audio_listener", &[f64t, f64t, f64t, f64t, f64t, f64t], None));
     hosts.insert("play_sound_at", import(jmod, "aurora_play_sound_at", &[i, i, i, f64t, f64t, f64t], None));
+    hosts.insert("play_sound_handle", import(jmod, "aurora_play_sound_handle", &[i, i], None));
+    hosts.insert("play_sound_handle_at", import(jmod, "aurora_play_sound_handle_at", &[i, i, f64t, f64t, f64t], None));
     hosts.insert("phys3d_raycast_full", import(jmod, "aurora_phys3d_raycast_full", &[f64t, f64t, f64t, f64t, f64t, f64t, f64t], Some(i)));
     hosts.insert("phys3d_raycast_ex", import(jmod, "aurora_phys3d_raycast_ex", &[i, f64t, f64t, f64t, f64t, f64t, f64t, f64t], Some(i)));
     hosts.insert("phys3d_raycast_world", import(jmod, "aurora_phys3d_raycast_world", &[i, f64t, f64t, f64t, f64t, f64t, f64t, f64t], Some(i)));
@@ -3449,7 +3455,7 @@ fn tr_call(
         }
         return Ok(Term::Val(b.ins().iconst(types::I64, 0), Cty::I64));
     }
-    if matches!(name.as_str(), "load_ppm" | "load_image" | "load_font" | "play_wav" | "scene_save" | "scene_load" | "r3d_load_model") {
+    if matches!(name.as_str(), "load_ppm" | "load_image" | "load_font" | "play_wav" | "load_sound" | "scene_save" | "scene_load" | "r3d_load_model") {
         let result = if let Some(a) = args.first() {
             let (ptr, len) = str_arg(m, b, l, env, &a.value)?;
             let f = m.declare_func_in_func(env.hosts[name.as_str()], b.func);
@@ -4598,6 +4604,8 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         // 3D positional audio.
         "audio_listener" => (vec![F64, F64, F64, F64, F64, F64], None),
         "play_sound_at" => (vec![I64, I64, I64, F64, F64, F64], None),
+        "play_sound_handle" => (vec![I64, I64], None),
+        "play_sound_handle_at" => (vec![I64, I64, F64, F64, F64], None),
         // Rich 3D physics.
         "phys3d_raycast_full" => (vec![F64, F64, F64, F64, F64, F64, F64], Some(I64)),
         "phys3d_raycast_ex" => (vec![I64, F64, F64, F64, F64, F64, F64, F64], Some(I64)),

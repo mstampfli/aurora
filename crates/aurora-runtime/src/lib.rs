@@ -1894,6 +1894,82 @@ pub extern "C" fn aurora_play_wav(ptr: *const u8, len: i64) -> i64 {
     1
 }
 
+thread_local! {
+    // Decoded sound cache for the load-once API: (mono f32 samples, sample rate), indexed by handle.
+    static SOUNDS: RefCell<Vec<(Vec<f32>, u32)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Decode a WAV file ONCE (mono, normalized f32) and cache it, returning a handle for
+/// play_sound_handle / play_sound_handle_at. Returns -1 on failure. Backs `load_sound` - this is
+/// how a game loads real SFX at startup without re-opening/decoding the file on every play.
+#[no_mangle]
+pub extern "C" fn aurora_load_sound(ptr: *const u8, len: i64) -> i64 {
+    let path = {
+        let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
+        String::from_utf8_lossy(s).into_owned()
+    };
+    let Ok(mut reader) = hound::WavReader::open(&path) else { return -1 };
+    let spec = reader.spec();
+    let ch = spec.channels.max(1) as usize;
+    let raw: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Float => reader.samples::<f32>().filter_map(|s| s.ok()).collect(),
+        hound::SampleFormat::Int => {
+            let max = (1i64 << (spec.bits_per_sample - 1).max(1)) as f32;
+            reader.samples::<i32>().filter_map(|s| s.ok()).map(|s| s as f32 / max).collect()
+        }
+    };
+    let mono: Vec<f32> = if ch <= 1 {
+        raw
+    } else {
+        raw.chunks(ch).map(|c| c.iter().sum::<f32>() / ch as f32).collect()
+    };
+    if mono.is_empty() {
+        return -1;
+    }
+    SOUNDS.with(|s| {
+        let mut v = s.borrow_mut();
+        v.push((mono, spec.sample_rate));
+        (v.len() - 1) as i64
+    })
+}
+
+/// Play a cached sound (a load_sound handle) NON-positionally at `gain_pct` (0..200, 100 = unity).
+/// Backs `play_sound_handle` - no re-decode, so it is safe on the hot path (every shot/footstep).
+#[no_mangle]
+pub extern "C" fn aurora_play_sound_handle(handle: i64, gain_pct: i64) {
+    if handle < 0 {
+        return;
+    }
+    SOUNDS.with(|s| {
+        let v = s.borrow();
+        if let Some((samples, sr)) = v.get(handle as usize) {
+            let g = 0.7 * (gain_pct.max(0) as f32) / 100.0;
+            aurora_audio::play_mixed_spatial(samples, *sr, false, g, 0.0);
+        }
+    });
+}
+
+/// Play a cached sound (a load_sound handle) SPATIALIZED at a world position: distance attenuation
+/// + stereo pan from the listener pose, like play_sound_at but for a real WAV. Backs
+/// `play_sound_handle_at`.
+#[no_mangle]
+pub extern "C" fn aurora_play_sound_handle_at(handle: i64, gain_pct: i64, x: f64, y: f64, z: f64) {
+    if handle < 0 {
+        return;
+    }
+    let (sgain, pan) = spatialize([x, y, z]);
+    if sgain <= 0.001 {
+        return;
+    }
+    SOUNDS.with(|s| {
+        let v = s.borrow();
+        if let Some((samples, sr)) = v.get(handle as usize) {
+            let g = sgain * (gain_pct.max(0) as f32) / 100.0;
+            aurora_audio::play_mixed_spatial(samples, *sr, false, g, pan);
+        }
+    });
+}
+
 /// Set the master audio volume from a 0..=100 percentage.
 #[no_mangle]
 pub extern "C" fn aurora_audio_volume(percent: i64) {
@@ -2082,7 +2158,7 @@ pub extern "C" fn aurora_dbg_var_f64(name_ptr: *const u8, name_len: i64, value: 
 /// Touch every host symbol so the linker keeps this crate's object in an AOT
 /// link even when the Rust driver references nothing from it directly.
 pub fn force_link() -> usize {
-    let fns: [*const (); 316] = [
+    let fns: [*const (); 319] = [
         aurora_net_projectile_intent as *const (),
         aurora_net_server_projectile_count as *const (),
         aurora_net_server_projectile_shooter as *const (),
@@ -2335,6 +2411,9 @@ pub fn force_link() -> usize {
         aurora_load_font as *const (),
         aurora_draw_text as *const (),
         aurora_play_wav as *const (),
+        aurora_load_sound as *const (),
+        aurora_play_sound_handle as *const (),
+        aurora_play_sound_handle_at as *const (),
         aurora_phys_init as *const (),
         aurora_phys_add as *const (),
         aurora_phys_step as *const (),
