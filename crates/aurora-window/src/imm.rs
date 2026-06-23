@@ -694,6 +694,18 @@ pub fn r3d_anim_play_upper(handle: i64, clip: i64, looping: i64, speed: f32, fad
         s.anim_play_upper(handle, clip, looping != 0, speed, fade, mask_root);
     });
 }
+pub fn r3d_anim_aim_upper(handle: i64, clip_a: i64, clip_b: i64, weight: f32, speed: f32, fade: f32, mask_root: i64) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.anim_aim_upper(handle, clip_a, clip_b, weight, speed, fade, mask_root);
+    });
+}
+pub fn r3d_anim_blend(handle: i64, clip_a: i64, clip_b: i64, weight: f32, speed: f32, fade: f32) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.anim_blend(handle, clip_a, clip_b, weight, speed, fade);
+    });
+}
 pub fn r3d_pose_bone(handle: i64, joint: i64, rx: f32, ry: f32, rz: f32) {
     with_gfx((), |gf| {
         let (_, _, s) = gf.scene_mut();

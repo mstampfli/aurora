@@ -348,6 +348,24 @@ impl Scene {
         }
     }
 
+    /// Drive the FULL-BODY base as a sustained weighted blend of two clips (`clip_a` at weight 0,
+    /// `clip_b` at weight 1) - e.g. idle <-> run by speed. Call every frame to update the weight; the
+    /// first call crossfades in over `fade` so jump->land and similar transitions stay smooth.
+    pub fn anim_blend(&mut self, handle: i64, clip_a: i64, clip_b: i64, weight: f32, speed: f32, fade: f32) {
+        if let Some(r) = self.item_mut(handle) {
+            r.player.blend(clip_a.max(0) as usize, clip_b.max(0) as usize, weight, speed, fade);
+        }
+    }
+
+    /// Drive the upper-body overlay as a weighted BLEND of two clips (`clip_a` at weight 0, `clip_b`
+    /// at weight 1), masked to `mask_root`. Call every frame to track a continuous value such as aim
+    /// pitch (look down -> up); only the first call fades in, so per-frame weight updates stay smooth.
+    pub fn anim_aim_upper(&mut self, handle: i64, clip_a: i64, clip_b: i64, weight: f32, speed: f32, fade: f32, mask_root: i64) {
+        if let Some(r) = self.item_mut(handle) {
+            r.player.aim_upper(clip_a.max(0) as usize, clip_b.max(0) as usize, weight, speed, fade, mask_root.max(0) as usize);
+        }
+    }
+
     /// Set a per-bone pose override (extra local XYZ-Euler rotation on `joint`), e.g. to author a
     /// slide the clips don't have. Set each frame; clear_pose() resets a model to its pure clip pose.
     pub fn pose_bone(&mut self, handle: i64, joint: i64, rx: f32, ry: f32, rz: f32) {

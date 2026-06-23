@@ -47,7 +47,7 @@ const OBJ_RADIUS: f32 = 0.45;
 
 const STATE_MAX: usize = 32; // max floats in a player state blob
 const INPUT_MAX: usize = 24; // max floats in an input blob
-const META_LEN: usize = 20; // per-player metadata floats (hp/shield/oc/respawn/cells/heal/kills/
+const META_LEN: usize = 24; // per-player metadata floats (hp/shield/oc/respawn/cells/heal/kills/
                             // deaths in 0..7; 8 = melee-swing flag; 9 = respawn-ack; 10/11 = round
                             // timer/over; 12..14 = grapple anchor xyz; 15 = grapple active; 16 =
                             // shield-up channel active (holding the blue cube); 17 = melee-swing
