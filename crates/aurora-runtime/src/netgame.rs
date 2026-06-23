@@ -1627,6 +1627,10 @@ pub extern "C" fn aurora_net_join(ptr: *const u8, len: i64, port: i64) -> i64 {
 
 /// Register the game's Aurora simulation step (a closure `|state, input|`) plus
 /// how many state floats to replicate and how many input floats per blob.
+/// Register the Aurora simulation step. The `[sim_fn, sim_env]` pair is STORED and invoked on
+/// every later tick - long after the Aurora call site returns. The closure must therefore capture
+/// nothing on the caller's stack (Aurora stack-allocates closure envs, so a capture would dangle);
+/// codegen enforces this for `net_sim`. Pass per-tick data through the state/input blob instead.
 #[no_mangle]
 pub extern "C" fn aurora_net_sim(sim_fn: *const u8, sim_env: *const u8, state_len: i64, input_len: i64) {
     with((), |s| s.set_sim(sim_fn as usize, sim_env as usize, state_len.max(4) as usize, input_len.max(1) as usize));

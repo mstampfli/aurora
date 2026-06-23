@@ -3586,6 +3586,26 @@ fn tr_call(
     // simulation step. The closure is a `[fn_ptr, env_ptr]` pair (called natively
     // by the netcode each tick over a raw state/input blob, just like par_for).
     if name == "net_sim" {
+        // SAFETY GUARD: the netcode STORES this closure and calls it every tick, long after
+        // the current function returns. Aurora allocates a closure's captured environment on
+        // the creating function's stack frame (see `alloc`), so any capture becomes a dangling
+        // pointer once we return -> use-after-free (a segfault that typically strikes the first
+        // time the stored callback runs). Reject captures up front with an actionable message.
+        if let Some(a0) = args.first() {
+            if let Some(lam) = env.closures.get(&a0.value.span) {
+                if let Some(caps) = env.lambda_captures.get(lam) {
+                    if !caps.is_empty() {
+                        return Err(format!(
+                            "closure passed to `net_sim` captures outer variable(s) [{}]; the netcode \
+                             stores it and runs it on later ticks, after this function returns, so the \
+                             captured value (held on this stack frame) dangles. Capture nothing: pass \
+                             data through the state/input blob, or recompute it inside the closure.",
+                            caps.join(", ")
+                        ));
+                    }
+                }
+            }
+        }
         let (cl, _) = val(m, b, l, env, &args[0].value)?;
         let fn_ptr = load_at(b, cl, 0, env.ptr_ty);
         let env_ptr = load_at(b, cl, 1, env.ptr_ty);
@@ -3607,6 +3627,24 @@ fn tr_call(
     // `net_serve(server_closure)` - run the authoritative server loop on its own thread. Like
     // net_sim it takes a `[fn_ptr, env_ptr]` closure pair; the engine spawns a thread that calls it.
     if name == "net_serve" {
+        // SAFETY GUARD: the server closure runs on ITS OWN thread and must capture nothing (it
+        // cannot reference the spawning thread's stack, which may vanish under it). Same dangling
+        // stack-env problem as net_sim - reject captures with a clear message.
+        if let Some(a0) = args.first() {
+            if let Some(lam) = env.closures.get(&a0.value.span) {
+                if let Some(caps) = env.lambda_captures.get(lam) {
+                    if !caps.is_empty() {
+                        return Err(format!(
+                            "closure passed to `net_serve` captures outer variable(s) [{}]; it runs on \
+                             a separate thread after this function returns, so the captured value (held \
+                             on this stack frame) dangles. Capture nothing: the server closure must set \
+                             up its own state inside itself.",
+                            caps.join(", ")
+                        ));
+                    }
+                }
+            }
+        }
         let (cl, _) = val(m, b, l, env, &args[0].value)?;
         let fn_ptr = load_at(b, cl, 0, env.ptr_ty);
         let env_ptr = load_at(b, cl, 1, env.ptr_ty);
