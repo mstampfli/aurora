@@ -724,6 +724,12 @@ pub fn r3d_clear_pose(handle: i64) {
         s.clear_pose(handle);
     });
 }
+pub fn r3d_hide_joint(handle: i64, joint: i64) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.hide_joint(handle, joint);
+    });
+}
 pub fn r3d_anim_stop_upper(handle: i64, fade: f32) {
     with_gfx((), |gf| {
         let (_, _, s) = gf.scene_mut();

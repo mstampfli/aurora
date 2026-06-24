@@ -17,6 +17,10 @@ struct Renderable {
     model: Option<Model>,
     player: AnimPlayer,
     skinned: bool,
+    /// Bitmask of skin joints to HIDE: their skinning matrix is zeroed before drawing, so
+    /// geometry weighted to them collapses to the model origin (used for first-person arms -
+    /// hide the torso/head/legs so only the arms render). Bit i = joint i. 0 = show all.
+    hidden_joints: u64,
 }
 
 struct Camera {
@@ -160,7 +164,7 @@ impl Scene {
             prims.push((mesh, mat));
             skinned |= p.skinned;
         }
-        self.items.push(Renderable { prims, model: Some(model), player: AnimPlayer::new(), skinned });
+        self.items.push(Renderable { prims, model: Some(model), player: AnimPlayer::new(), skinned, hidden_joints: 0 });
         (self.items.len() - 1) as i64
     }
 
@@ -179,6 +183,7 @@ impl Scene {
             model: None,
             player: AnimPlayer::new(),
             skinned: false,
+            hidden_joints: 0,
         });
         (self.items.len() - 1) as i64
     }
@@ -224,6 +229,7 @@ impl Scene {
             model: None,
             player: AnimPlayer::new(),
             skinned: false,
+            hidden_joints: 0,
         });
         (self.items.len() - 1) as i64
     }
@@ -280,6 +286,7 @@ impl Scene {
             model: None,
             player: AnimPlayer::new(),
             skinned: false,
+            hidden_joints: 0,
         });
         (self.items.len() - 1) as i64
     }
@@ -401,13 +408,47 @@ impl Scene {
     }
 
     /// Queue a model for drawing at `transform`.
+    /// Hide one skin joint's geometry on a model (its skinning matrix is zeroed, collapsing that
+    /// geometry to the model origin). Accumulates; clear with [`show_joints`]. Used by first-person
+    /// arms to drop the torso/head/legs so only the arms render.
+    pub fn hide_joint(&mut self, handle: i64, joint: i64) {
+        if let Some(idx) = self.resolve(handle) {
+            if joint >= 0 && joint < 64 {
+                self.items[idx].hidden_joints |= 1u64 << joint;
+            }
+        }
+    }
+
+    /// Show all joints again (clear the hidden mask).
+    pub fn show_joints(&mut self, handle: i64) {
+        if let Some(idx) = self.resolve(handle) {
+            self.items[idx].hidden_joints = 0;
+        }
+    }
+
+    /// Zero the skinning matrices of any hidden joints (in place), so their geometry collapses.
+    fn mask_hidden(joints: &mut Option<Vec<Mat4>>, mask: u64) {
+        if mask == 0 {
+            return;
+        }
+        if let Some(v) = joints.as_mut() {
+            let n = v.len().min(64);
+            for i in 0..n {
+                if (mask >> i) & 1 == 1 {
+                    v[i] = Mat4::ZERO;
+                }
+            }
+        }
+    }
+
     pub fn draw(&mut self, handle: i64, transform: Mat4) {
         let idx = match self.resolve(handle) {
             Some(i) => i,
             None => return,
         };
         // Compute skinning matrices once if needed.
-        let joints = {
+        let mask = self.items[idx].hidden_joints;
+        let mut joints = {
             let r = &self.items[idx];
             if r.skinned {
                 r.model.as_ref().map(|m| r.player.matrices(m))
@@ -415,6 +456,7 @@ impl Scene {
                 None
             }
         };
+        Self::mask_hidden(&mut joints, mask);
         let prims = self.items[idx].prims.clone();
         for (mesh, mat) in prims {
             let j = joints.clone().filter(|v| !v.is_empty());
@@ -428,7 +470,8 @@ impl Scene {
             Some(i) => i,
             None => return,
         };
-        let joints = {
+        let mask = self.items[idx].hidden_joints;
+        let mut joints = {
             let r = &self.items[idx];
             if r.skinned {
                 r.model.as_ref().map(|m| r.player.matrices(m))
@@ -436,6 +479,7 @@ impl Scene {
                 None
             }
         };
+        Self::mask_hidden(&mut joints, mask);
         let prims = self.items[idx].prims.clone();
         for (mesh, mat) in prims {
             let j = joints.clone().filter(|v| !v.is_empty());

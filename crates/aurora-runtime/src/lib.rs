@@ -1441,6 +1441,11 @@ pub extern "C" fn aurora_r3d_pose_bone(h: i64, joint: i64, rx: f64, ry: f64, rz:
 pub extern "C" fn aurora_r3d_clear_pose(h: i64) {
     aurora_window::imm_r3d_clear_pose(h);
 }
+/// Hide one skin joint's geometry on a model (first-person arms drop the body this way).
+#[no_mangle]
+pub extern "C" fn aurora_r3d_hide_joint(h: i64, joint: i64) {
+    aurora_window::imm_r3d_hide_joint(h, joint);
+}
 #[no_mangle]
 pub extern "C" fn aurora_r3d_anim_stop_upper(h: i64, fade: f64) {
     aurora_window::imm_r3d_anim_stop_upper(h, fade as f32);
