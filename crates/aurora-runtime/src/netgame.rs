@@ -187,6 +187,9 @@ pub struct Session {
     /// client - so a "local" bot is stepped identically to a "network" player, just with its input
     /// sourced locally instead of from the wire. sim_step lazily creates the bot's body on first run.
     bot_inputs: Vec<InputBlob>,
+    /// Per-bot alive flag: the sim SKIPS a dead bot so its corpse stays frozen where the game
+    /// parked it (no movement/gravity on a body the game is treating as a lying corpse).
+    bot_alive: Vec<bool>,
     /// True once the game has opted bots into the local-input sim path (first net_set_bot_input).
     /// Until then bots keep the legacy position-written behaviour, so nothing changes for a game
     /// that doesn't use the new API.
@@ -324,6 +327,7 @@ impl Session {
             host: Player::spawn(),
             bots: Vec::new(),
             bot_inputs: Vec::new(),
+            bot_alive: Vec::new(),
             bots_sim: false,
             objects: Vec::new(),
             last_sent_objects: Vec::new(),
@@ -565,6 +569,9 @@ impl Session {
             // its sim'd position rides the normal player snapshot channel. No bot-specific logic.
             if self.bots_sim {
                 for i in 0..self.bots.len() {
+                    if !self.bot_alive.get(i).copied().unwrap_or(true) {
+                        continue; // dead bot: leave its corpse frozen where the game parked it
+                    }
                     let inp = self.bot_inputs.get(i).copied().unwrap_or([0.0; INPUT_MAX]);
                     run_sim(sim_fn, sim_env, &mut self.bots[i].s, &inp);
                 }
@@ -1012,6 +1019,22 @@ impl Session {
             self.bots.truncate(n);
         }
         self.bot_inputs.resize(n, [0.0; INPUT_MAX]);
+        self.bot_alive.resize(n, true);
+    }
+    /// Seed bot `i`'s full sim STATE from the game's blob (incl. the phys3d body handle in slot 21),
+    /// so the netcode steps the SAME body the game created - one shared body, not a duplicate. Called
+    /// once at spawn and again on respawn (to reset position/velocity to the fresh state).
+    pub fn set_bot_state(&mut self, i: usize, state: &[f32]) {
+        if let Some(b) = self.bots.get_mut(i) {
+            let n = state.len().min(STATE_MAX);
+            b.s[..n].copy_from_slice(&state[..n]);
+        }
+    }
+    /// Mark bot `i` alive/dead: a dead bot is NOT sim-stepped (its corpse stays where the game parked it).
+    pub fn set_bot_alive(&mut self, i: usize, alive: bool) {
+        if let Some(a) = self.bot_alive.get_mut(i) {
+            *a = alive;
+        }
     }
     /// Set bot `i`'s INPUT for this frame (the AI's decision, same layout a client sends). Opts the
     /// session into the local-input sim path: from now on update() steps each bot with the SAME sim
@@ -1895,6 +1918,21 @@ pub extern "C" fn aurora_net_set_bot_input(i: i64, input: i64) {
     }
     let slice = unsafe { std::slice::from_raw_parts(input as *const f32, INPUT_MAX) };
     with((), |s| s.set_bot_input(i.max(0) as usize, slice))
+}
+/// Host: seed bot `i`'s sim state from the game's state blob (shares the body handle so the netcode
+/// steps the SAME body the game created). Call at spawn + respawn.
+#[no_mangle]
+pub extern "C" fn aurora_net_set_bot_state(i: i64, state: i64) {
+    if state == 0 {
+        return;
+    }
+    let slice = unsafe { std::slice::from_raw_parts(state as *const f32, STATE_MAX) };
+    with((), |s| s.set_bot_state(i.max(0) as usize, slice))
+}
+/// Host: mark bot `i` alive (1) or dead (0). A dead bot is not sim-stepped.
+#[no_mangle]
+pub extern "C" fn aurora_net_set_bot_alive(i: i64, alive: i64) {
+    with((), |s| s.set_bot_alive(i.max(0) as usize, alive != 0))
 }
 /// Host: set bot `i`'s metadata slot (hp/shield/oc), same channel humans use.
 #[no_mangle]

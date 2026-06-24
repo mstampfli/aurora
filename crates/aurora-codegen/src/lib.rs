@@ -386,7 +386,7 @@ const BUILTINS: &[&str] = &[
     "net_set_meta", "net_player_meta", "net_set_name", "net_player_name_len", "net_player_name_char",
     "net_local_x", "net_local_y", "net_local_z", "net_local_yaw",
     "net_state", "net_local_state", "net_interest", "net_hit_radius", "net_max_clients", "net_rejected", "net_connected", "net_dedicated", "net_cfg_set", "net_cfg_get",
-    "net_set_bot_count", "net_set_bot", "net_set_bot_input", "net_set_bot_meta", "net_set_bot_name", "net_bot_count",
+    "net_set_bot_count", "net_set_bot", "net_set_bot_input", "net_set_bot_state", "net_set_bot_alive", "net_set_bot_meta", "net_set_bot_name", "net_bot_count",
     "net_set_object_count", "net_set_object", "net_object_count", "net_object_x", "net_object_y", "net_object_z",
     "net_set_object_rot", "net_object_qx", "net_object_qy", "net_object_qz", "net_object_qw",
     "net_set_object_vel", "net_object_vx", "net_object_vy", "net_object_vz",
@@ -765,6 +765,8 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_net_set_bot_count", aurora_runtime::aurora_net_set_bot_count as *const u8);
     builder.symbol("aurora_net_set_bot", aurora_runtime::aurora_net_set_bot as *const u8);
     builder.symbol("aurora_net_set_bot_input", aurora_runtime::aurora_net_set_bot_input as *const u8);
+    builder.symbol("aurora_net_set_bot_state", aurora_runtime::aurora_net_set_bot_state as *const u8);
+    builder.symbol("aurora_net_set_bot_alive", aurora_runtime::aurora_net_set_bot_alive as *const u8);
     builder.symbol("aurora_net_set_bot_meta", aurora_runtime::aurora_net_set_bot_meta as *const u8);
     builder.symbol("aurora_net_set_bot_name", aurora_runtime::aurora_net_set_bot_name as *const u8);
     builder.symbol("aurora_net_bot_count", aurora_runtime::aurora_net_bot_count as *const u8);
@@ -1198,6 +1200,8 @@ fn lower(
     hosts.insert("net_set_bot_count", import(jmod, "aurora_net_set_bot_count", &[i], None));
     hosts.insert("net_set_bot", import(jmod, "aurora_net_set_bot", &[i, f64t, f64t, f64t, f64t], None));
     hosts.insert("net_set_bot_input", import(jmod, "aurora_net_set_bot_input", &[i, i], None));
+    hosts.insert("net_set_bot_state", import(jmod, "aurora_net_set_bot_state", &[i, i], None));
+    hosts.insert("net_set_bot_alive", import(jmod, "aurora_net_set_bot_alive", &[i, i], None));
     hosts.insert("net_set_bot_meta", import(jmod, "aurora_net_set_bot_meta", &[i, i, f64t], None));
     hosts.insert("net_set_bot_name", import(jmod, "aurora_net_set_bot_name", &[i, ptr_ty, i], None));
     hosts.insert("net_bot_count", import(jmod, "aurora_net_bot_count", &[], Some(i)));
@@ -4682,6 +4686,8 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "net_set_bot_count" => (vec![I64], None),
         "net_set_bot" => (vec![I64, F64, F64, F64, F64], None),
         "net_set_bot_input" => (vec![I64, I64], None),
+        "net_set_bot_state" => (vec![I64, I64], None),
+        "net_set_bot_alive" => (vec![I64, I64], None),
         "net_set_bot_meta" => (vec![I64, I64, F64], None),
         "net_player_id_at" => (vec![I64], Some(I64)),
         "net_player_state" => (vec![I64, I64], Some(F64)),
