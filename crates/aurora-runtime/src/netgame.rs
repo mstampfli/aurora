@@ -86,7 +86,15 @@ impl Player {
 type InputBlob = [f32; INPUT_MAX];
 
 struct SClient {
+    /// Network address, or 0.0.0.0:0 for a LOCAL actor (a bot): a bot is just a client whose input
+    /// is produced by the host's AI brain and pushed into `inbox`, instead of arriving over `addr`.
+    /// Everything else - state, the sim step, spawn/impulse overrides, broadcast, lag-comp - is
+    /// identical. There is ONE actor array; "bot" is only an input source, not a separate type.
     addr: SocketAddr,
+    local: bool,
+    /// Local actors only: false = dead, skip the sim step so the corpse stays frozen where the game
+    /// parked it. Network clients are always alive here (their own client predicts their death).
+    alive: bool,
     id: u32,
     state: Player,
     inbox: VecDeque<(u32, InputBlob)>,
@@ -175,25 +183,12 @@ pub struct Session {
     sim_env: usize,
     state_len: usize, // floats replicated per player
     input_len: usize, // floats per input blob
-    // Server.
+    // Server. ONE actor array: networked players AND local bots both live here as SClient. A bot is
+    // just an SClient with local=true whose input the host's brain pushes into its inbox.
     clients: Vec<SClient>,
     host: Player,
-    /// Host-controlled bots, replicated to clients as ordinary players (ids
-    /// BOT_ID_BASE+i). The host's game writes these each frame from its local
-    /// AI; clients receive them as remotes and never run the AI themselves.
-    bots: Vec<Player>,
-    /// Per-bot input blob (the AI's decision, set via net_set_bot_input). When `bots_sim` is on,
-    /// update() runs the SAME sim on each bot's state with this input as it does for a networked
-    /// client - so a "local" bot is stepped identically to a "network" player, just with its input
-    /// sourced locally instead of from the wire. sim_step lazily creates the bot's body on first run.
-    bot_inputs: Vec<InputBlob>,
-    /// Per-bot alive flag: the sim SKIPS a dead bot so its corpse stays frozen where the game
-    /// parked it (no movement/gravity on a body the game is treating as a lying corpse).
-    bot_alive: Vec<bool>,
-    /// True once the game has opted bots into the local-input sim path (first net_set_bot_input).
-    /// Until then bots keep the legacy position-written behaviour, so nothing changes for a game
-    /// that doesn't use the new API.
-    bots_sim: bool,
+    /// How many leading `clients` ids in the BOT_ID_BASE range the host wants (set via set_bot_count).
+    bot_count: usize,
     /// World objects (crate position + orientation: x,y,z, qx,qy,qz,qw). Host: authoritative,
     /// written each frame + replicated + recorded in lag-comp. Client: last received host pose.
     objects: Vec<[f32; 10]>,
@@ -325,10 +320,7 @@ impl Session {
             input_len: 8,
             clients: Vec::new(),
             host: Player::spawn(),
-            bots: Vec::new(),
-            bot_inputs: Vec::new(),
-            bot_alive: Vec::new(),
-            bots_sim: false,
+            bot_count: 0,
             objects: Vec::new(),
             last_sent_objects: Vec::new(),
             fx: Vec::new(),
@@ -530,9 +522,14 @@ impl Session {
             let sp_in = self.spawn_in;
             let imp_in = self.impulse_in;
             for c in &mut self.clients {
-                // SERVER-AUTHORITATIVE BLAST IMPULSE: the host decides this client's knockback (set
-                // via net_push_impulse). Consumed here, applied to the FIRST re-sim this update and
-                // zeroed for the rest - so a blast shoves the player exactly once, server-originated.
+                // Dead LOCAL actor (a bot corpse): skip the step so it stays frozen where the game
+                // parked it. A networked client is always alive here (its own client predicts death).
+                if c.local && !c.alive {
+                    continue;
+                }
+                // SERVER-AUTHORITATIVE BLAST IMPULSE: the host decides this actor's knockback (set
+                // via net_push_impulse - bots included, by id). Consumed here, applied to the FIRST
+                // re-sim this update and zeroed for the rest - one shove, server-originated.
                 let mut imp = c.impulse;
                 c.impulse = [0.0; 3];
                 while let Some((seq, mut inp)) = c.inbox.pop_front() {
@@ -563,37 +560,21 @@ impl Session {
                     c.acked_seq = seq;
                 }
             }
-            // LOCAL bots: step each one with the SAME sim as a networked client, from its
-            // host-set input (the AI's decision). A bot is just a player whose input is sourced
-            // locally instead of from the wire - sim_step lazily creates its body on first run, and
-            // its sim'd position rides the normal player snapshot channel. No bot-specific logic.
-            if self.bots_sim {
-                for i in 0..self.bots.len() {
-                    if !self.bot_alive.get(i).copied().unwrap_or(true) {
-                        continue; // dead bot: leave its corpse frozen where the game parked it
-                    }
-                    let inp = self.bot_inputs.get(i).copied().unwrap_or([0.0; INPUT_MAX]);
-                    run_sim(sim_fn, sim_env, &mut self.bots[i].s, &inp);
-                }
-            }
             self.server_tick += 1;
             // GRACEFUL LEAVE: drop clients we haven't heard from in ~3s (quit / timed out). Without
             // this they linger forever as ghosts the host keeps re-simulating (they fall + respawn-
             // loop = "remote players keep dying"), and their slot never frees for a bot to return.
             let cutoff = self.server_tick.saturating_sub(180);
-            self.clients.retain(|c| c.last_seen >= cutoff);
+            self.clients.retain(|c| c.local || c.last_seen >= cutoff); // never time out a local bot
             let st = self.server_tick;
             let r = self.hit_radius;
             let hh = self.hit_half;
             if !self.dedicated {
                 self.lag.record(st, 0, [self.host.s[0], self.host.s[1], self.host.s[2]], r, hh);
             }
+            // Lag-comp record EVERY actor (networked players + local bots - they're all in `clients`).
             for c in &self.clients {
                 self.lag.record(st, c.id as u64, [c.state.s[0], c.state.s[1], c.state.s[2]], r, hh);
-            }
-            // Record bots too so the host can lag-comp validate hits on them.
-            for (i, b) in self.bots.iter().enumerate() {
-                self.lag.record(st, (BOT_ID_BASE + i as u32) as u64, [b.s[0], b.s[1], b.s[2]], r, hh);
             }
             // Record world objects (crates) so a rewound shot is blocked by where a box WAS.
             // A crate is a plain sphere (half_h 0), not a capsule.
@@ -602,10 +583,12 @@ impl Session {
             }
             self.tick += dt;
             self.broadcast();
+            // player_count / player_id_at expose only the NETWORKED players (the game uses them to
+            // count humans). Local bots are in `clients` too but are NOT players in this sense.
             self.ids = if self.dedicated {
-                self.clients.iter().map(|c| c.id).collect()
+                self.clients.iter().filter(|c| !c.local).map(|c| c.id).collect()
             } else {
-                std::iter::once(0u32).chain(self.clients.iter().map(|c| c.id)).collect()
+                std::iter::once(0u32).chain(self.clients.iter().filter(|c| !c.local).map(|c| c.id)).collect()
             };
         } else {
             self.tick += dt;
@@ -623,16 +606,14 @@ impl Session {
     }
 
     fn broadcast(&mut self) {
-        let mut all: Vec<(u32, Player)> = Vec::with_capacity(self.clients.len() + 1 + self.bots.len());
+        let mut all: Vec<(u32, Player)> = Vec::with_capacity(self.clients.len() + 1);
         if !self.dedicated {
             all.push((0, self.host));
         }
+        // EVERY actor on one channel - networked players AND local bots are all in `clients` (a bot
+        // is an SClient with local=true, id BOT_ID_BASE+i), so a guest receives them identically.
         for c in &self.clients {
             all.push((c.id, c.state));
-        }
-        // Bots ride the player channel: a guest receives them as ordinary remotes.
-        for (i, b) in self.bots.iter().enumerate() {
-            all.push((BOT_ID_BASE + i as u32, *b));
         }
         let interest2 = self.interest * self.interest;
         let keyframe = self.server_tick % 30 == 0;
@@ -715,6 +696,8 @@ impl Session {
         state.s[2] = self.spawn[2];
         self.clients.push(SClient {
             addr: from,
+            local: false,
+            alive: true,
             id,
             state,
             inbox: VecDeque::new(),
@@ -1010,69 +993,91 @@ impl Session {
         self.state(self.my_id, i)
     }
 
-    // --- host-controlled bots (replicated as players ids BOT_ID_BASE+i) ---
-    /// Declare how many bots the host owns this frame (grows/shrinks the set).
+    // --- LOCAL actors (bots): they live in the SAME `clients` array as networked players (local=true,
+    // ids BOT_ID_BASE+i). The host's brain produces their input; everything downstream - the sim step,
+    // the spawn/impulse overrides, broadcast, lag-comp - is the shared client path. No separate type. ---
+    /// Find local actor `i` (id BOT_ID_BASE+i) in the unified clients array.
+    fn local_mut(&mut self, i: usize) -> Option<&mut SClient> {
+        let id = BOT_ID_BASE + i as u32;
+        self.clients.iter_mut().find(|c| c.local && c.id == id)
+    }
+    /// Declare how many local actors the host owns: add/remove local SClients so there are exactly
+    /// `n` (ids BOT_ID_BASE+0..n) alongside the networked clients in the one array.
     pub fn set_bot_count(&mut self, n: usize) {
-        if n > self.bots.len() {
-            self.bots.resize(n, Player::spawn());
-        } else {
-            self.bots.truncate(n);
-        }
-        self.bot_inputs.resize(n, [0.0; INPUT_MAX]);
-        self.bot_alive.resize(n, true);
-    }
-    /// Seed bot `i`'s full sim STATE from the game's blob (incl. the phys3d body handle in slot 21),
-    /// so the netcode steps the SAME body the game created - one shared body, not a duplicate. Called
-    /// once at spawn and again on respawn (to reset position/velocity to the fresh state).
-    pub fn set_bot_state(&mut self, i: usize, state: &[f32]) {
-        if let Some(b) = self.bots.get_mut(i) {
-            let n = state.len().min(STATE_MAX);
-            b.s[..n].copy_from_slice(&state[..n]);
-        }
-    }
-    /// Mark bot `i` alive/dead: a dead bot is NOT sim-stepped (its corpse stays where the game parked it).
-    pub fn set_bot_alive(&mut self, i: usize, alive: bool) {
-        if let Some(a) = self.bot_alive.get_mut(i) {
-            *a = alive;
-        }
-    }
-    /// Set bot `i`'s INPUT for this frame (the AI's decision, same layout a client sends). Opts the
-    /// session into the local-input sim path: from now on update() steps each bot with the SAME sim
-    /// it runs for networked clients, instead of using the host-written position. The first
-    /// net_set_bot (position) still seeds where the bot starts; thereafter its input drives it.
-    pub fn set_bot_input(&mut self, i: usize, inp: &[f32]) {
-        self.bots_sim = true;
-        if let Some(slot) = self.bot_inputs.get_mut(i) {
-            let n = inp.len().min(INPUT_MAX);
-            slot[..n].copy_from_slice(&inp[..n]);
-        }
-    }
-    pub fn bot_count(&self) -> usize {
-        self.bots.len()
-    }
-    /// Set bot `i`'s transform (position + yaw) - the renderable state a guest reads.
-    pub fn set_bot(&mut self, i: usize, x: f64, y: f64, z: f64, yaw: f64) {
-        if let Some(b) = self.bots.get_mut(i) {
-            b.s[0] = x as f32;
-            b.s[1] = y as f32;
-            b.s[2] = z as f32;
-            b.s[3] = yaw as f32;
-        }
-    }
-    /// Set bot `i`'s replicated metadata slot (hp/shield/oc), same channel as humans.
-    pub fn set_bot_meta(&mut self, i: usize, slot: usize, v: f64) {
-        if let Some(b) = self.bots.get_mut(i) {
-            if slot < META_LEN {
-                b.meta[slot] = v as f32;
+        self.bot_count = n;
+        self.clients.retain(|c| !c.local || ((c.id - BOT_ID_BASE) as usize) < n);
+        for i in 0..n {
+            let id = BOT_ID_BASE + i as u32;
+            if !self.clients.iter().any(|c| c.local && c.id == id) {
+                self.clients.push(SClient {
+                    addr: std::net::SocketAddr::from(([0, 0, 0, 0], 0)),
+                    local: true,
+                    alive: true,
+                    id,
+                    state: Player::spawn(),
+                    inbox: VecDeque::new(),
+                    acked_seq: 0,
+                    last_sent: std::collections::HashMap::new(),
+                    meta_owned: [false; META_LEN],
+                    last_seen: self.server_tick,
+                    respawn_pos: [0.0; 3],
+                    impulse: [0.0; 3],
+                });
             }
         }
     }
-    /// Set bot `i`'s display name (UTF-8 bytes, truncated to NAME_MAX).
+    pub fn bot_count(&self) -> usize {
+        self.bot_count
+    }
+    /// Seed local actor `i`'s full sim STATE from the game's blob (incl. the phys3d body handle in
+    /// slot 21), so the netcode steps the SAME body the game made. Called at spawn + respawn.
+    pub fn set_bot_state(&mut self, i: usize, state: &[f32]) {
+        let n = state.len().min(STATE_MAX);
+        if let Some(c) = self.local_mut(i) {
+            c.state.s[..n].copy_from_slice(&state[..n]);
+        }
+    }
+    /// Mark local actor `i` alive/dead: a dead one is not sim-stepped (corpse stays put).
+    pub fn set_bot_alive(&mut self, i: usize, alive: bool) {
+        if let Some(c) = self.local_mut(i) {
+            c.alive = alive;
+        }
+    }
+    /// Push local actor `i`'s INPUT into its inbox - the SAME queue a networked client's inputs land
+    /// in, drained by the SAME update loop. One per frame (clear any stale one so a hitch can't pile).
+    pub fn set_bot_input(&mut self, i: usize, inp: &[f32]) {
+        let mut blob = [0.0f32; INPUT_MAX];
+        let n = inp.len().min(INPUT_MAX);
+        blob[..n].copy_from_slice(&inp[..n]);
+        if let Some(c) = self.local_mut(i) {
+            c.inbox.clear();
+            let seq = c.acked_seq.wrapping_add(1);
+            c.inbox.push_back((seq, blob));
+        }
+    }
+    /// Set local actor `i`'s transform - seeds where it starts before its first sim.
+    pub fn set_bot(&mut self, i: usize, x: f64, y: f64, z: f64, yaw: f64) {
+        if let Some(c) = self.local_mut(i) {
+            c.state.s[0] = x as f32;
+            c.state.s[1] = y as f32;
+            c.state.s[2] = z as f32;
+            c.state.s[3] = yaw as f32;
+        }
+    }
+    /// Set local actor `i`'s replicated metadata slot (hp/shield/oc), same channel as humans.
+    pub fn set_bot_meta(&mut self, i: usize, slot: usize, v: f64) {
+        if let Some(c) = self.local_mut(i) {
+            if slot < META_LEN {
+                c.state.meta[slot] = v as f32;
+            }
+        }
+    }
+    /// Set local actor `i`'s display name (UTF-8 bytes, truncated to NAME_MAX).
     pub fn set_bot_name(&mut self, i: usize, bytes: &[u8]) {
-        if let Some(b) = self.bots.get_mut(i) {
-            b.name = [0u8; NAME_MAX];
-            let n = bytes.len().min(NAME_MAX);
-            b.name[..n].copy_from_slice(&bytes[..n]);
+        let n = bytes.len().min(NAME_MAX);
+        if let Some(c) = self.local_mut(i) {
+            c.state.name = [0u8; NAME_MAX];
+            c.state.name[..n].copy_from_slice(&bytes[..n]);
         }
     }
 
