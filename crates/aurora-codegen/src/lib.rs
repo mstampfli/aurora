@@ -391,7 +391,7 @@ const BUILTINS: &[&str] = &[
     "net_set_object_rot", "net_object_qx", "net_object_qy", "net_object_qz", "net_object_qw",
     "net_set_object_vel", "net_object_vx", "net_object_vy", "net_object_vz",
     "net_set_fx_count", "net_set_fx", "net_fx_count", "net_fx_x", "net_fx_y", "net_fx_z", "net_fx_kind",
-    "net_spawn_at", "net_spawn_input_slot", "net_respawn_client", "net_impulse_input_slot", "net_push_impulse", "net_fire",
+    "net_spawn_at", "net_spawn_input_slot", "net_respawn_client", "net_impulse_input_slot", "net_push_impulse", "net_respawn_trigger_slot", "net_force_respawn", "net_fire",
     "net_hit_player", "net_hit_seq", "net_hit_x", "net_hit_y", "net_hit_z",
     "net_server_hit_count", "net_server_hit_shooter", "net_server_hit_victim", "net_server_hit_weapon",
     "net_server_hit_x", "net_server_hit_y", "net_server_hit_z", "net_server_hits_clear",
@@ -799,6 +799,8 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_net_respawn_client", aurora_runtime::aurora_net_respawn_client as *const u8);
     builder.symbol("aurora_net_impulse_input_slot", aurora_runtime::aurora_net_impulse_input_slot as *const u8);
     builder.symbol("aurora_net_push_impulse", aurora_runtime::aurora_net_push_impulse as *const u8);
+    builder.symbol("aurora_net_respawn_trigger_slot", aurora_runtime::aurora_net_respawn_trigger_slot as *const u8);
+    builder.symbol("aurora_net_force_respawn", aurora_runtime::aurora_net_force_respawn as *const u8);
     builder.symbol("aurora_net_fire", aurora_runtime::aurora_net_fire as *const u8);
     builder.symbol("aurora_net_server_hit_count", aurora_runtime::aurora_net_server_hit_count as *const u8);
     builder.symbol("aurora_net_server_hit_shooter", aurora_runtime::aurora_net_server_hit_shooter as *const u8);
@@ -1233,6 +1235,8 @@ fn lower(
     hosts.insert("net_respawn_client", import(jmod, "aurora_net_respawn_client", &[i, f64t, f64t, f64t], None));
     hosts.insert("net_impulse_input_slot", import(jmod, "aurora_net_impulse_input_slot", &[i], None));
     hosts.insert("net_push_impulse", import(jmod, "aurora_net_push_impulse", &[i, f64t, f64t, f64t], None));
+    hosts.insert("net_respawn_trigger_slot", import(jmod, "aurora_net_respawn_trigger_slot", &[i], None));
+    hosts.insert("net_force_respawn", import(jmod, "aurora_net_force_respawn", &[i], None));
     hosts.insert("net_fire", import(jmod, "aurora_net_fire", &[f64t, f64t, f64t, f64t, f64t, f64t, i], None));
     hosts.insert("net_server_hit_count", import(jmod, "aurora_net_server_hit_count", &[], Some(i)));
     hosts.insert("net_server_hit_shooter", import(jmod, "aurora_net_server_hit_shooter", &[i], Some(i)));
@@ -4708,6 +4712,8 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "net_respawn_client" => (vec![I64, F64, F64, F64], None),
         "net_impulse_input_slot" => (vec![I64], None),
         "net_push_impulse" => (vec![I64, F64, F64, F64], None),
+        "net_respawn_trigger_slot" => (vec![I64], None),
+        "net_force_respawn" => (vec![I64], None),
         "net_fire" => (vec![F64, F64, F64, F64, F64, F64, I64], None),
         "net_server_hit_count" | "net_server_hits_clear" => {
             if name == "net_server_hit_count" { (vec![], Some(I64)) } else { (vec![], None) }

@@ -113,6 +113,11 @@ struct SClient {
     /// re-sim overwrites the game's impulse input slots with this for ONE tick, then it clears - so
     /// the SERVER decides knockback (a client can't withhold its own to ignore a blast). [0;3] = none.
     impulse: [f32; 3],
+    /// Server-forced respawn TRIGGER for THIS actor (set via net_force_respawn). When true, the re-sim
+    /// forces the game's respawn-request slot high for ONE tick, then it clears - so the SERVER decides
+    /// WHEN every actor (player + bot, identically) teleports back, not the client/brain. The client
+    /// still predicts its own respawn for feel; this is the authority that actually lands it.
+    respawn_pending: bool,
 }
 
 struct Remote {
@@ -255,6 +260,11 @@ pub struct Session {
     /// client's input with its authoritative per-client impulse before re-simulating, so blast
     /// knockback is server-originated (a client can't withhold its own to dodge a blast).
     impulse_in: i32,
+    /// Index of the single input slot the game reads as its respawn REQUEST/trigger (set via
+    /// net_respawn_trigger_slot). -1 = unset. When an actor's respawn_pending is set (net_force_respawn),
+    /// the SERVER forces this slot high for ONE re-sim tick, so WHEN an actor respawns is server-owned
+    /// and identical for players and bots (the sim teleports it to the server-chosen respawn_pos).
+    respreq_in: i32,
     /// The local player's outgoing metadata (set via net_set_meta), broadcast each frame.
     local_meta: [f32; META_LEN],
     /// The local player's outgoing display name (set via net_set_name).
@@ -350,6 +360,7 @@ impl Session {
             spawn: [0.0, 0.0, 0.0],
             spawn_in: -1,
             impulse_in: -1,
+            respreq_in: -1,
             local_meta: [0.0; META_LEN],
             local_name: [0u8; NAME_MAX],
             max_clients: 8,
@@ -521,6 +532,7 @@ impl Session {
             let (sim_fn, sim_env) = (self.sim_fn, self.sim_env);
             let sp_in = self.spawn_in;
             let imp_in = self.impulse_in;
+            let rr_in = self.respreq_in;
             for c in &mut self.clients {
                 // Dead LOCAL actor (a bot corpse): skip the step so it stays frozen where the game
                 // parked it. A networked client is always alive here (its own client predicts death).
@@ -532,6 +544,11 @@ impl Session {
                 // re-sim this update and zeroed for the rest - one shove, server-originated.
                 let mut imp = c.impulse;
                 c.impulse = [0.0; 3];
+                // SERVER-FORCED RESPAWN: the host owns WHEN every actor comes back (net_force_respawn).
+                // Forced into the FIRST re-sim this update and cleared - one teleport, server-decided,
+                // identical for a player and a bot.
+                let mut do_resp = c.respawn_pending;
+                c.respawn_pending = false;
                 while let Some((seq, mut inp)) = c.inbox.pop_front() {
                     // SERVER-AUTHORITATIVE SPAWN: overwrite the game's respawn-point input slots with
                     // the host-chosen respawn_pos for THIS client. The client only PREDICTS its respawn
@@ -556,6 +573,11 @@ impl Session {
                         }
                     }
                     imp = [0.0; 3];
+                    // Force the respawn-request slot high for this one tick (server-owned WHEN).
+                    if do_resp && rr_in >= 0 && (rr_in as usize) < INPUT_MAX {
+                        inp[rr_in as usize] = 1.0;
+                    }
+                    do_resp = false;
                     run_sim(sim_fn, sim_env, &mut c.state.s, &inp);
                     c.acked_seq = seq;
                 }
@@ -711,6 +733,7 @@ impl Session {
             last_seen: self.server_tick,
             respawn_pos: [self.spawn[0] + id as f32 * 2.0, self.spawn[1], self.spawn[2]],
             impulse: [0.0; 3],
+            respawn_pending: false,
         });
         Some(self.clients.len() - 1)
     }
@@ -1026,6 +1049,7 @@ impl Session {
                     last_seen: self.server_tick,
                     respawn_pos: [0.0; 3],
                     impulse: [0.0; 3],
+                    respawn_pending: false,
                 });
             }
         }
@@ -1832,6 +1856,22 @@ pub extern "C" fn aurora_net_push_impulse(id: i64, ix: f64, iy: f64, iz: f64) {
     with((), |s| {
         if let Some(c) = s.clients.iter_mut().find(|c| c.id as i64 == id) {
             c.impulse = [ix as f32, iy as f32, iz as f32];
+        }
+    })
+}
+/// Configure which single input slot the game reads as its respawn request/trigger (so the server
+/// can force WHEN any actor respawns - see net_force_respawn). Pairs with net_spawn_input_slot (WHERE).
+#[no_mangle]
+pub extern "C" fn aurora_net_respawn_trigger_slot(base: i64) {
+    with((), |s| s.respreq_in = base as i32);
+}
+/// Server: force actor `id` (player or bot, identically) to respawn NOW - the next re-sim forces the
+/// respawn-request slot high for one tick, teleporting it to its server-chosen respawn_pos.
+#[no_mangle]
+pub extern "C" fn aurora_net_force_respawn(id: i64) {
+    with((), |s| {
+        if let Some(c) = s.clients.iter_mut().find(|c| c.id as i64 == id) {
+            c.respawn_pending = true;
         }
     })
 }
