@@ -1294,10 +1294,15 @@ impl Renderer3D {
         let cam_planes = frustum_planes(Mat4::from_cols_array_2d(&self.globals.view_proj));
 
         // Shadow pass: render scene depth into each cascade layer from its light
-        // matrix (selected by dynamic offset into the per-cascade buffer).
+        // matrix (selected by dynamic offset into the per-cascade buffer). Each object is drawn
+        // ONLY into the cascades its bounding sphere actually reaches (per-cascade cull below), so
+        // near objects no longer get rasterized into all three concentric cascades.
+        let shadow_light = Vec3::new(self.globals.dir_dir[0], self.globals.dir_dir[1], self.globals.dir_dir[2]).normalize_or_zero();
+        let shadow_cam = Vec3::new(self.globals.cam_pos[0], self.globals.cam_pos[1], self.globals.cam_pos[2]);
         if self.shadows_on {
             for cascade in 0..NUM_CASCADES {
                 let off = (cascade * 256) as u32;
+                let e = self.globals.csm_splits[cascade];
                 let mut sp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("shadow"),
                     color_attachments: &[],
@@ -1316,6 +1321,14 @@ impl Renderer3D {
                 sp.set_bind_group(0, &self.shadow_globals_bg, &[off]);
                 for (ci, &(obj_off, joint_off)) in offsets.iter().enumerate() {
                     let cmd = &self.queue_cmds[ci];
+                    // Skip objects whose shadow can't land in this cascade's footprint (kept for
+                    // every cascade they DO reach, so no shadow is lost - see caster_in_cascade).
+                    if self.frustum_cull {
+                        let (center, radius) = cull_bounds(&cmd.model, self.mesh_radius[cmd.mesh]);
+                        if !caster_in_cascade(center, radius, shadow_cam, shadow_light, e) {
+                            continue;
+                        }
+                    }
                     let m = &self.meshes[cmd.mesh];
                     sp.set_bind_group(1, &self.obj_bg, &[obj_off, joint_off]);
                     sp.set_vertex_buffer(0, m.vbuf.slice(..));
@@ -1569,6 +1582,19 @@ impl Renderer3D {
 }
 
 /// The six frustum planes (a,b,c,d) from a view-projection matrix.
+/// Whether a caster (bounding sphere `center`/`radius`) can cast into a camera-centred cascade of
+/// footprint half-width `e`. The cascades are concentric squares centred on the camera, and the
+/// shader selects a fragment's cascade by its distance from the camera - so a caster only matters
+/// to cascade i if its distance PERPENDICULAR to the light is within that footprint. That
+/// perpendicular distance is invariant along the light direction, so a caster occluding any
+/// in-cascade fragment is always kept (no shadow is ever dropped); only genuinely out-of-footprint
+/// casters are skipped. `light` must be normalized. Square footprint -> circumscribed radius e*sqrt2.
+fn caster_in_cascade(center: Vec3, radius: f32, cam: Vec3, light: Vec3, e: f32) -> bool {
+    let off = center - cam;
+    let perp = off - light * off.dot(light);
+    perp.length() <= e * std::f32::consts::SQRT_2 + radius
+}
+
 /// Bounding-sphere center + world-space radius for a draw command's model, used by every pass's
 /// frustum cull (single source of truth so the camera and main passes test identical bounds).
 fn cull_bounds(model: &Mat4, mesh_radius: f32) -> (Vec3, f32) {
