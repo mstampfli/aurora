@@ -488,12 +488,30 @@ impl Gfx {
         let surface = instance
             .create_surface(window.clone())
             .map_err(|e| format!("create surface: {e}"))?;
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: Some(&surface),
-            force_fallback_adapter: false,
-        }))
-        .ok_or("no GPU adapter")?;
+        // Hybrid-laptop GPU selection: HighPerformance can still hand back the integrated GPU, so
+        // EXPLICITLY enumerate every adapter and prefer a surface-compatible DISCRETE one. Logs all
+        // candidates so it's visible which GPUs exist and which we picked. Falls back to the normal
+        // request if enumeration finds no discrete GPU (e.g. the dGPU isn't exposed to Vulkan - then
+        // the user must launch with __NV_PRIME_RENDER_OFFLOAD=1 __VK_LAYER_NV_optimus=NVIDIA_only).
+        let mut all = instance.enumerate_adapters(wgpu::Backends::all());
+        let mut pick: Option<usize> = None;
+        for (i, a) in all.iter().enumerate() {
+            let info = a.get_info();
+            let compat = a.is_surface_supported(&surface);
+            eprintln!("[aurora] candidate GPU: {} ({:?}, {:?}, surface_ok={})", info.name, info.device_type, info.backend, compat);
+            if pick.is_none() && compat && info.device_type == wgpu::DeviceType::DiscreteGpu {
+                pick = Some(i);
+            }
+        }
+        let adapter = match pick {
+            Some(i) => all.swap_remove(i),
+            None => pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: Some(&surface),
+                force_fallback_adapter: false,
+            }))
+            .ok_or("no GPU adapter")?,
+        };
         {
             // Print the GPU we actually got. On a hybrid laptop this reveals if we're (wrongly)
             // on the integrated GPU instead of the discrete one - the #1 cause of "laggy on a
