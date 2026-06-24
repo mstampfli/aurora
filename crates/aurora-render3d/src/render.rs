@@ -1277,13 +1277,16 @@ impl Renderer3D {
             if ta != tb {
                 return ta.cmp(&tb); // opaque (false) first
             }
+            let da = (cam - self.queue_cmds[a].model.w_axis.truncate()).length_squared();
+            let db = (cam - self.queue_cmds[b].model.w_axis.truncate()).length_squared();
             if ta {
-                // back-to-front for transparent
-                let da = (cam - self.queue_cmds[a].model.w_axis.truncate()).length_squared();
-                let db = (cam - self.queue_cmds[b].model.w_axis.truncate()).length_squared();
+                // Transparent: back-to-front so alpha blending composites correctly.
                 db.partial_cmp(&da).unwrap_or(std::cmp::Ordering::Equal)
             } else {
-                std::cmp::Ordering::Equal
+                // Opaque: front-to-back so the GPU's early-z rejects covered fragments BEFORE the
+                // PBR shader runs - kills overdraw shading (same goal as a depth pre-pass, but free
+                // and with no MSAA/transparency/precision pitfalls). Final image is identical.
+                da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
             }
         });
 
