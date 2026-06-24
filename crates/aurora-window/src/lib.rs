@@ -494,6 +494,14 @@ impl Gfx {
             force_fallback_adapter: false,
         }))
         .ok_or("no GPU adapter")?;
+        {
+            // Print the GPU we actually got. On a hybrid laptop this reveals if we're (wrongly)
+            // on the integrated GPU instead of the discrete one - the #1 cause of "laggy on a
+            // strong GPU". If it's the iGPU, relaunch with PRIME offload:
+            //   __NV_PRIME_RENDER_OFFLOAD=1 __VK_LAYER_NV_optimus=NVIDIA_only <game>
+            let info = adapter.get_info();
+            eprintln!("[aurora] GPU: {} ({:?}, backend {:?})", info.name, info.device_type, info.backend);
+        }
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("aurora-window"),
@@ -1144,6 +1152,26 @@ impl Gfx {
         }
         self.queue.submit(Some(enc.finish()));
         surface_tex.present();
+        // Once-per-second FPS / frame-time readout to stderr, so lag is a number, not a feeling.
+        {
+            use std::cell::Cell;
+            use std::time::Instant;
+            thread_local! {
+                static FRAMES: Cell<u32> = const { Cell::new(0) };
+                static T0: Cell<Option<Instant>> = const { Cell::new(None) };
+            }
+            let now = Instant::now();
+            T0.with(|t0| {
+                if t0.get().is_none() { t0.set(Some(now)); }
+                let n = FRAMES.with(|f| { let n = f.get() + 1; f.set(n); n });
+                let el = now.duration_since(t0.get().unwrap()).as_secs_f64();
+                if el >= 1.0 {
+                    eprintln!("[aurora] {:.0} fps ({:.1} ms/frame)", n as f64 / el, el * 1000.0 / n as f64);
+                    FRAMES.with(|f| f.set(0));
+                    t0.set(Some(now));
+                }
+            });
+        }
     }
 
     pub(crate) fn resize(&mut self, w: u32, h: u32) {
