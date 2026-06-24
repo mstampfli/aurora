@@ -565,7 +565,10 @@ impl Gfx {
             width: size.width.max(1),
             height: size.height.max(1),
             present_mode,
-            desired_maximum_frame_latency: 2,
+            // 1 (not 2) frame of queued latency: lowest input lag, which matters for a shooter and
+            // is a common cause of "feels laggy" even at a fine framerate. The scene is tiny so the
+            // reduced CPU/GPU overlap costs nothing here.
+            desired_maximum_frame_latency: 1,
             alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],
         };
