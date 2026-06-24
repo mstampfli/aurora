@@ -15,7 +15,7 @@ pub const MAX_JOINTS: usize = 128;
 pub const MAX_LIGHTS: usize = 16;
 const OBJ_ALIGN: u64 = 256;
 const JOINT_BYTES: u64 = (MAX_JOINTS * 64) as u64;
-const SHADOW_SIZE: u32 = 2048;
+const SHADOW_SIZE: u32 = 1024;
 const NUM_CASCADES: usize = 3;
 const PCUBE_SIZE: u32 = 1024;
 
@@ -770,7 +770,9 @@ impl Renderer3D {
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
             ],
         });
-        let ssao = build_ssao(device, &ssao_layout, &blur_layout, &ao_layout, &globals_buf, &sampler, w.max(1), h.max(1));
+        // SSAO runs at HALF resolution (AO is low-frequency; fs_ssao samples by UV with a world-space
+        // radius, so it's resolution-independent). Quarters the SSAO prepass+occlusion+blur fillrate.
+        let ssao = build_ssao(device, &ssao_layout, &blur_layout, &ao_layout, &globals_buf, &sampler, (w / 2).max(1), (h / 2).max(1));
 
         // Point-light shadow cube: 6 faces of distance-to-light (R16Float).
         let pcube_tex = device.create_texture(&wgpu::TextureDescriptor {
@@ -950,7 +952,7 @@ impl Renderer3D {
             }
             self.ssao = build_ssao(
                 device, &self.ssao_layout, &self.blur_layout, &self.ao_layout, &self.globals_buf,
-                &self.sampler, w, h,
+                &self.sampler, (w / 2).max(1), (h / 2).max(1),
             );
             self.depth_size = (w, h);
         }
@@ -1373,7 +1375,13 @@ impl Renderer3D {
                 pp.set_pipeline(&self.prepass_pipeline);
                 pp.set_bind_group(0, &self.globals_bg, &[]);
                 for (ci, &(obj_off, joint_off)) in offsets.iter().enumerate() {
-                    let m = &self.meshes[self.queue_cmds[ci].mesh];
+                    let cmd = &self.queue_cmds[ci];
+                    // SSAO only affects on-screen pixels - cull to the camera frustum like the main pass.
+                    if self.frustum_cull {
+                        let (center, radius) = cull_bounds(&cmd.model, self.mesh_radius[cmd.mesh]);
+                        if !sphere_in_frustum(&cam_planes, center, radius) { continue; }
+                    }
+                    let m = &self.meshes[cmd.mesh];
                     pp.set_bind_group(1, &self.obj_bg, &[obj_off, joint_off]);
                     pp.set_vertex_buffer(0, m.vbuf.slice(..));
                     pp.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
