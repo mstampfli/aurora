@@ -684,7 +684,11 @@ impl Session {
         if let Some(i) = self.clients.iter().position(|c| c.addr == from) {
             return Some(i);
         }
-        if self.clients.len() >= self.max_clients {
+        // The lobby cap counts only NETWORKED players - local bots share the clients array now but
+        // don't take a human slot. (Before the merge this counted clients.len(), which is just humans;
+        // with bots in the array that wrongly read "full" at the bot count - even the host's own
+        // loopback join. The game frees a bot slot per human via set_bot_count = lobby_bots - humans.)
+        if self.clients.iter().filter(|c| !c.local).count() >= self.max_clients {
             return None;
         }
         let id = self.next_id;
