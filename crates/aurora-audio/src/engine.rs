@@ -19,12 +19,15 @@ struct Voice {
     pan: f32,
 }
 
+/// Number of independent looping background channels (music = 0, ambience = 1, spare = 2/3).
+const LOOP_CHANNELS: usize = 4;
+
 struct Mixer {
     voices: Vec<Voice>,
-    /// A single looping background-music voice, mixed separately so its level can be
-    /// set live (a music-volume slider) independently of the master volume and SFX.
-    music: Option<Voice>,
-    music_gain: f32,
+    /// Independent looping beds (music, ambience, ...), each mixed at its own live gain so
+    /// their levels can be set separately (e.g. a music slider) from the master volume and SFX.
+    loops: [Option<Voice>; LOOP_CHANNELS],
+    loop_gains: [f32; LOOP_CHANNELS],
     volume: f32,
     device_rate: u32,
 }
@@ -51,16 +54,18 @@ impl Mixer {
             v.pos += 1;
             true
         });
-        // Background music: always loops, scaled by the live music_gain (centered).
-        if let Some(v) = self.music.as_mut() {
-            if !v.samples.is_empty() {
-                if v.pos >= v.samples.len() {
-                    v.pos = 0;
+        // Looping beds (music, ambience, ...): each always loops, centered, at its own gain.
+        for i in 0..LOOP_CHANNELS {
+            if let Some(v) = self.loops[i].as_mut() {
+                if !v.samples.is_empty() {
+                    if v.pos >= v.samples.len() {
+                        v.pos = 0;
+                    }
+                    let s = v.samples[v.pos] * self.loop_gains[i];
+                    l += s * 0.5;
+                    r += s * 0.5;
+                    v.pos += 1;
                 }
-                let s = v.samples[v.pos] * self.music_gain;
-                l += s * 0.5;
-                r += s * 0.5;
-                v.pos += 1;
             }
         }
         (soft_limit(l * self.volume), soft_limit(r * self.volume))
@@ -103,7 +108,7 @@ pub fn leak() {
 }
 
 fn mixer() -> &'static Arc<Mutex<Mixer>> {
-    MIXER.get_or_init(|| Arc::new(Mutex::new(Mixer { voices: Vec::new(), music: None, music_gain: 1.0, volume: 1.0, device_rate: 44_100 })))
+    MIXER.get_or_init(|| Arc::new(Mutex::new(Mixer { voices: Vec::new(), loops: [None, None, None, None], loop_gains: [1.0; LOOP_CHANNELS], volume: 1.0, device_rate: 44_100 })))
 }
 
 /// Start the audio engine's output stream if it isn't running. Idempotent.
@@ -222,26 +227,44 @@ pub fn set_volume(v: f32) {
     mixer().lock().unwrap().volume = v.max(0.0);
 }
 
-/// Start (or replace) the looping background-music voice from an already-decoded buffer AT THE
-/// DEVICE RATE (shared by Arc, no copy), at the given gain. Loops forever until [`stop_music`].
-pub fn play_music(samples: Arc<Vec<f32>>, gain: f32) {
+/// Start (or replace) a looping bed on `channel` from an already-decoded buffer AT THE DEVICE
+/// RATE (shared by Arc, no copy), at the given gain. Loops forever until [`stop_loop`]. Out-of-range
+/// channels are ignored.
+pub fn play_loop(channel: usize, samples: Arc<Vec<f32>>, gain: f32) {
     if start().is_err() || samples.is_empty() {
         return;
     }
     let mut m = mixer().lock().unwrap();
-    m.music_gain = gain.max(0.0);
-    m.music = Some(Voice { samples, pos: 0, looped: true, gain: 1.0, pan: 0.0 });
+    if channel >= m.loops.len() {
+        return;
+    }
+    m.loop_gains[channel] = gain.max(0.0);
+    m.loops[channel] = Some(Voice { samples, pos: 0, looped: true, gain: 1.0, pan: 0.0 });
 }
 
-/// Set the background-music gain live (a music-volume slider), without restarting the track.
-pub fn set_music_gain(gain: f32) {
-    mixer().lock().unwrap().music_gain = gain.max(0.0);
+/// Set a loop channel's gain live (e.g. a music/ambience slider), without restarting it.
+pub fn set_loop_gain(channel: usize, gain: f32) {
+    let mut m = mixer().lock().unwrap();
+    if channel < m.loop_gains.len() {
+        m.loop_gains[channel] = gain.max(0.0);
+    }
 }
 
-/// Stop the background music (leaving SFX voices untouched).
-pub fn stop_music() {
-    mixer().lock().unwrap().music = None;
+/// Stop a loop channel (leaving SFX + other loops untouched).
+pub fn stop_loop(channel: usize) {
+    let mut m = mixer().lock().unwrap();
+    if channel < m.loops.len() {
+        m.loops[channel] = None;
+    }
 }
+
+// Named convenience wrappers over the loop channels: music = 0, ambience = 1.
+pub fn play_music(samples: Arc<Vec<f32>>, gain: f32) { play_loop(0, samples, gain); }
+pub fn set_music_gain(gain: f32) { set_loop_gain(0, gain); }
+pub fn stop_music() { stop_loop(0); }
+pub fn play_ambience(samples: Arc<Vec<f32>>, gain: f32) { play_loop(1, samples, gain); }
+pub fn set_ambience_gain(gain: f32) { set_loop_gain(1, gain); }
+pub fn stop_ambience() { stop_loop(1); }
 
 /// Stop all currently-playing voices.
 pub fn stop_all() {
@@ -261,7 +284,7 @@ mod tests {
     fn mixer_sums_and_advances_voices() {
         // Drive the mixer directly (no device): two constant "voices" sum and
         // soft-limit, and finish after their samples are consumed.
-        let mut m = Mixer { voices: Vec::new(), music: None, music_gain: 1.0, volume: 1.0, device_rate: 44_100 };
+        let mut m = Mixer { voices: Vec::new(), loops: [None, None, None, None], loop_gains: [1.0; LOOP_CHANNELS], volume: 1.0, device_rate: 44_100 };
         m.voices.push(Voice { samples: Arc::new(vec![0.6, 0.6]), pos: 0, looped: false, gain: 1.0, pan: 0.0 });
         m.voices.push(Voice { samples: Arc::new(vec![0.6, 0.6]), pos: 0, looped: false, gain: 1.0, pan: 0.0 });
         let s = m.next_sample();
@@ -274,14 +297,14 @@ mod tests {
 
     #[test]
     fn volume_scales_the_mix() {
-        let mut m = Mixer { voices: Vec::new(), music: None, music_gain: 1.0, volume: 0.5, device_rate: 44_100 };
+        let mut m = Mixer { voices: Vec::new(), loops: [None, None, None, None], loop_gains: [1.0; LOOP_CHANNELS], volume: 0.5, device_rate: 44_100 };
         m.voices.push(Voice { samples: Arc::new(vec![1.0]), pos: 0, looped: false, gain: 1.0, pan: 0.0 });
         assert!((m.next_sample() - 0.5).abs() < 1e-6, "volume 0.5 halves the sample");
     }
 
     #[test]
     fn pan_splits_into_stereo_channels() {
-        let mut m = Mixer { voices: Vec::new(), music: None, music_gain: 1.0, volume: 1.0, device_rate: 44_100 };
+        let mut m = Mixer { voices: Vec::new(), loops: [None, None, None, None], loop_gains: [1.0; LOOP_CHANNELS], volume: 1.0, device_rate: 44_100 };
         m.voices.push(Voice { samples: Arc::new(vec![1.0]), pos: 0, looped: false, gain: 1.0, pan: -1.0 });
         let (l, r) = m.next_frame();
         assert!(l > 0.85 && r < 0.1, "pan -1 should be full-left, got l={l} r={r}");
@@ -289,14 +312,14 @@ mod tests {
 
     #[test]
     fn gain_attenuates_a_voice() {
-        let mut m = Mixer { voices: Vec::new(), music: None, music_gain: 1.0, volume: 1.0, device_rate: 44_100 };
+        let mut m = Mixer { voices: Vec::new(), loops: [None, None, None, None], loop_gains: [1.0; LOOP_CHANNELS], volume: 1.0, device_rate: 44_100 };
         m.voices.push(Voice { samples: Arc::new(vec![1.0]), pos: 0, looped: false, gain: 0.25, pan: 0.0 });
         assert!((m.next_sample() - 0.25).abs() < 1e-6, "gain 0.25 attenuates the voice");
     }
 
     #[test]
     fn looped_voice_wraps() {
-        let mut m = Mixer { voices: Vec::new(), music: None, music_gain: 1.0, volume: 1.0, device_rate: 44_100 };
+        let mut m = Mixer { voices: Vec::new(), loops: [None, None, None, None], loop_gains: [1.0; LOOP_CHANNELS], volume: 1.0, device_rate: 44_100 };
         m.voices.push(Voice { samples: Arc::new(vec![0.2, 0.4]), pos: 0, looped: true, gain: 1.0, pan: 0.0 });
         let a = m.next_sample();
         let b = m.next_sample();
@@ -308,13 +331,23 @@ mod tests {
     #[test]
     fn music_loops_at_its_own_gain() {
         // Music mixes in at music_gain (centered), loops forever, and is independent of voices.
-        let mut m = Mixer { voices: Vec::new(), music: None, music_gain: 0.5, volume: 1.0, device_rate: 44_100 };
-        m.music = Some(Voice { samples: Arc::new(vec![0.8, 0.4]), pos: 0, looped: true, gain: 1.0, pan: 0.0 });
+        let mut m = Mixer { voices: Vec::new(), loops: [None, None, None, None], loop_gains: [0.5, 1.0, 1.0, 1.0], volume: 1.0, device_rate: 44_100 };
+        m.loops[0] = Some(Voice { samples: Arc::new(vec![0.8, 0.4]), pos: 0, looped: true, gain: 1.0, pan: 0.0 });
         let a = m.next_sample(); // 0.8 * 0.5 gain, summed L+R = 0.8*0.5
         let b = m.next_sample(); // 0.4 * 0.5
         let c = m.next_sample(); // wraps to sample 0 again
         assert!((a - 0.4).abs() < 1e-6, "0.8 at gain 0.5 -> 0.4, got {a}");
         assert!((b - 0.2).abs() < 1e-6, "0.4 at gain 0.5 -> 0.2, got {b}");
         assert!((c - 0.4).abs() < 1e-6, "music wraps, got {c}");
+    }
+
+    #[test]
+    fn loop_channels_mix_independently() {
+        // Two loop channels (music + ambience) sum, each at its own gain.
+        let mut m = Mixer { voices: Vec::new(), loops: [None, None, None, None], loop_gains: [0.5, 0.25, 1.0, 1.0], volume: 1.0, device_rate: 44_100 };
+        m.loops[0] = Some(Voice { samples: Arc::new(vec![0.4]), pos: 0, looped: true, gain: 1.0, pan: 0.0 });
+        m.loops[1] = Some(Voice { samples: Arc::new(vec![0.8]), pos: 0, looped: true, gain: 1.0, pan: 0.0 });
+        // ch0: 0.4*0.5 = 0.2 ; ch1: 0.8*0.25 = 0.2 ; summed L+R = 0.4
+        assert!((m.next_sample() - 0.4).abs() < 1e-6, "two channels mix at their own gains");
     }
 }

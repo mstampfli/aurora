@@ -2035,6 +2035,32 @@ pub extern "C" fn aurora_music_stop() {
     aurora_audio::stop_music();
 }
 
+/// Start looping a cached sound (a load_sound handle) as the AMBIENCE bed at `gain_pct` (0..200).
+/// A second looping channel, independent of the music. Backs `play_ambience`.
+#[no_mangle]
+pub extern "C" fn aurora_play_ambience(handle: i64, gain_pct: i64) {
+    if handle < 0 {
+        return;
+    }
+    let arc = SOUNDS.with(|s| s.borrow().get(handle as usize).cloned());
+    if let Some(a) = arc {
+        let g = 0.7 * (gain_pct.max(0) as f32) / 100.0;
+        aurora_audio::play_ambience(a, g);
+    }
+}
+
+/// Set the ambience-bed gain live from a 0..=200 percentage. Backs `ambience_volume`.
+#[no_mangle]
+pub extern "C" fn aurora_ambience_volume(percent: i64) {
+    aurora_audio::set_ambience_gain(0.7 * (percent.clamp(0, 200) as f32) / 100.0);
+}
+
+/// Stop the ambience bed, leaving music + SFX untouched. Backs `ambience_stop`.
+#[no_mangle]
+pub extern "C" fn aurora_ambience_stop() {
+    aurora_audio::stop_ambience();
+}
+
 // --- native debugger support ----------------------------------------------
 //
 // In debug builds the compiler instruments the *native* code: a call to
