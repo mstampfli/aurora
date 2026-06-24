@@ -1,7 +1,7 @@
 //! Skeletal animation: sample a clip's TRS channels at a time, pose the
 //! skeleton, and produce per-joint skinning matrices for the vertex shader.
 
-use glam::{Mat4, Quat, Vec3};
+use glam::{Mat4, Quat, Vec3, Vec4};
 
 use crate::model::{Channel, Interp, Model, Path, Skeleton};
 
@@ -303,7 +303,7 @@ impl AnimPlayer {
 
     /// The skinning matrices for the current (possibly blended) pose. Empty if
     /// the model has no skeleton.
-    pub fn matrices(&self, model: &Model) -> Vec<Mat4> {
+    pub fn matrices(&self, model: &Model, hidden: u64) -> Vec<Mat4> {
         let Some(skel) = &model.skeleton else { return Vec::new() };
         // Base (full-body) local pose, crossfaded if mid-transition.
         let (mut t, mut r, mut s) = if self.bblend_on {
@@ -362,7 +362,7 @@ impl AnimPlayer {
                 r[j] = q * r[j];
             }
         }
-        locals_to_skin(skel, &t, &r, &s)
+        locals_to_skin(skel, &t, &r, &s, hidden)
     }
 
     /// Model-space global transform of one joint in the CURRENT pose (NOT skinned - no
@@ -473,8 +473,12 @@ fn sample_locals(
     (t, r, s)
 }
 
-/// Turn per-joint local TRS into skinning matrices (`global * inverse_bind`).
-fn locals_to_skin(skel: &Skeleton, t: &[Vec3], r: &[Quat], s: &[Vec3]) -> Vec<Mat4> {
+/// Turn per-joint local TRS into skinning matrices (`global * inverse_bind`). Joints whose bit is
+/// set in `hidden` are COLLAPSED: their matrix maps every bound vertex to the joint's own world
+/// position, so geometry exclusive to them shrinks to a point AT THE BONE (a nearby spot in the
+/// body), and seam vertices shared with a visible joint only pull a little toward that bone -
+/// instead of streaking to the far model origin. Used for first-person arms (hide torso/head/legs).
+fn locals_to_skin(skel: &Skeleton, t: &[Vec3], r: &[Quat], s: &[Vec3], hidden: u64) -> Vec<Mat4> {
     let n = skel.joints.len();
     let local: Vec<Mat4> =
         (0..n).map(|i| Mat4::from_scale_rotation_translation(s[i], r[i], t[i])).collect();
@@ -482,13 +486,23 @@ fn locals_to_skin(skel: &Skeleton, t: &[Vec3], r: &[Quat], s: &[Vec3]) -> Vec<Ma
     for i in 0..n {
         resolve_global(skel, &local, i, &mut global);
     }
-    (0..n).map(|i| global[i].unwrap_or(Mat4::IDENTITY) * skel.joints[i].inverse_bind).collect()
+    (0..n)
+        .map(|i| {
+            let g = global[i].unwrap_or(Mat4::IDENTITY);
+            if i < 64 && (hidden >> i) & 1 == 1 {
+                // Collapse to the bone position: zero linear part, translation = bone world pos.
+                Mat4::from_cols(Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, g.w_axis)
+            } else {
+                g * skel.joints[i].inverse_bind
+            }
+        })
+        .collect()
 }
 
 /// Pose `skel` from `clip` at `time` and return per-joint skinning matrices.
 pub fn skin_matrices(skel: &Skeleton, clip: Option<&crate::model::Clip>, time: f32) -> Vec<Mat4> {
     let (t, r, s) = sample_locals(skel, clip, time);
-    locals_to_skin(skel, &t, &r, &s)
+    locals_to_skin(skel, &t, &r, &s, 0)
 }
 
 /// Blend two clips' poses by weight `w` (0 = clip a, 1 = clip b) and return the
@@ -523,7 +537,7 @@ pub fn skin_matrices_blended(
     w: f32,
 ) -> Vec<Mat4> {
     let (t, r, s) = blended_locals(skel, a, ta, b, tb, w);
-    locals_to_skin(skel, &t, &r, &s)
+    locals_to_skin(skel, &t, &r, &s, 0)
 }
 
 /// Mask of joints that are `root` or descend from it (the upper-body overlay set).

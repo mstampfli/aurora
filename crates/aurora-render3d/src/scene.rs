@@ -426,37 +426,21 @@ impl Scene {
         }
     }
 
-    /// Zero the skinning matrices of any hidden joints (in place), so their geometry collapses.
-    fn mask_hidden(joints: &mut Option<Vec<Mat4>>, mask: u64) {
-        if mask == 0 {
-            return;
-        }
-        if let Some(v) = joints.as_mut() {
-            let n = v.len().min(64);
-            for i in 0..n {
-                if (mask >> i) & 1 == 1 {
-                    v[i] = Mat4::ZERO;
-                }
-            }
-        }
-    }
-
     pub fn draw(&mut self, handle: i64, transform: Mat4) {
         let idx = match self.resolve(handle) {
             Some(i) => i,
             None => return,
         };
-        // Compute skinning matrices once if needed.
+        // Compute skinning matrices once if needed (hidden joints collapsed inside).
         let mask = self.items[idx].hidden_joints;
-        let mut joints = {
+        let joints = {
             let r = &self.items[idx];
             if r.skinned {
-                r.model.as_ref().map(|m| r.player.matrices(m))
+                r.model.as_ref().map(|m| r.player.matrices(m, mask))
             } else {
                 None
             }
         };
-        Self::mask_hidden(&mut joints, mask);
         let prims = self.items[idx].prims.clone();
         for (mesh, mat) in prims {
             let j = joints.clone().filter(|v| !v.is_empty());
@@ -471,15 +455,14 @@ impl Scene {
             None => return,
         };
         let mask = self.items[idx].hidden_joints;
-        let mut joints = {
+        let joints = {
             let r = &self.items[idx];
             if r.skinned {
-                r.model.as_ref().map(|m| r.player.matrices(m))
+                r.model.as_ref().map(|m| r.player.matrices(m, mask))
             } else {
                 None
             }
         };
-        Self::mask_hidden(&mut joints, mask);
         let prims = self.items[idx].prims.clone();
         for (mesh, mat) in prims {
             let j = joints.clone().filter(|v| !v.is_empty());
@@ -494,10 +477,11 @@ impl Scene {
             Some(i) => i,
             None => return,
         };
+        let mask = self.items[idx].hidden_joints;
         let joints = {
             let r = &self.items[idx];
             if r.skinned {
-                r.model.as_ref().map(|m| r.player.matrices(m))
+                r.model.as_ref().map(|m| r.player.matrices(m, mask))
             } else {
                 None
             }
