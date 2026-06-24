@@ -1287,6 +1287,12 @@ impl Renderer3D {
             }
         });
 
+        // Camera frustum planes - reused to cull the SSAO prepass AND the main pass (the same
+        // camera view). NOT used for the shadow cascades: those are rendered from the LIGHT's view,
+        // where an object behind the camera can still cast a shadow into frame, so camera-culling
+        // them would drop valid shadows.
+        let cam_planes = frustum_planes(Mat4::from_cols_array_2d(&self.globals.view_proj));
+
         // Shadow pass: render scene depth into each cascade layer from its light
         // matrix (selected by dynamic offset into the per-cascade buffer).
         if self.shadows_on {
@@ -1351,7 +1357,16 @@ impl Renderer3D {
                 pp.set_pipeline(&self.prepass_pipeline);
                 pp.set_bind_group(0, &self.globals_bg, &[]);
                 for (ci, &(obj_off, joint_off)) in offsets.iter().enumerate() {
-                    let m = &self.meshes[self.queue_cmds[ci].mesh];
+                    let cmd = &self.queue_cmds[ci];
+                    // SSAO only affects on-screen pixels, so skip objects outside the camera
+                    // frustum exactly like the main pass does (safe, no visual change).
+                    if self.frustum_cull {
+                        let (center, radius) = cull_bounds(&cmd.model, self.mesh_radius[cmd.mesh]);
+                        if !sphere_in_frustum(&cam_planes, center, radius) {
+                            continue;
+                        }
+                    }
+                    let m = &self.meshes[cmd.mesh];
                     pp.set_bind_group(1, &self.obj_bg, &[obj_off, joint_off]);
                     pp.set_vertex_buffer(0, m.vbuf.slice(..));
                     pp.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
@@ -1491,18 +1506,13 @@ impl Renderer3D {
         pass.set_bind_group(0, &self.globals_bg, &[]);
         pass.set_bind_group(3, ao_bg, &[]);
         pass.set_bind_group(4, &self.pshadow_bg, &[]);
-        let planes = frustum_planes(Mat4::from_cols_array_2d(&self.globals.view_proj));
         let mut drawn = 0usize;
         for &ci in &order {
             let cmd = &self.queue_cmds[ci];
             // Frustum cull by the mesh's bounding sphere (scaled by the model).
             if self.frustum_cull {
-                let center = cmd.model.w_axis.truncate();
-                let scale = cmd.model.x_axis.truncate().length()
-                    .max(cmd.model.y_axis.truncate().length())
-                    .max(cmd.model.z_axis.truncate().length());
-                let radius = self.mesh_radius[cmd.mesh] * scale;
-                if !sphere_in_frustum(&planes, center, radius) {
+                let (center, radius) = cull_bounds(&cmd.model, self.mesh_radius[cmd.mesh]);
+                if !sphere_in_frustum(&cam_planes, center, radius) {
                     continue;
                 }
             }
@@ -1559,6 +1569,16 @@ impl Renderer3D {
 }
 
 /// The six frustum planes (a,b,c,d) from a view-projection matrix.
+/// Bounding-sphere center + world-space radius for a draw command's model, used by every pass's
+/// frustum cull (single source of truth so the camera and main passes test identical bounds).
+fn cull_bounds(model: &Mat4, mesh_radius: f32) -> (Vec3, f32) {
+    let center = model.w_axis.truncate();
+    let scale = model.x_axis.truncate().length()
+        .max(model.y_axis.truncate().length())
+        .max(model.z_axis.truncate().length());
+    (center, mesh_radius * scale)
+}
+
 fn frustum_planes(vp: Mat4) -> [glam::Vec4; 6] {
     let r = vp.to_cols_array_2d();
     // Row-vector extraction (column-major storage: m[col][row]).
