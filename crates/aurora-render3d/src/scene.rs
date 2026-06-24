@@ -508,6 +508,17 @@ impl Scene {
         self.draw(weapon, host_xform * g * local);
     }
 
+    /// The model-space position of `joint` in the host's CURRENT pose (the translation of its
+    /// global transform, before the draw transform). Lets a first-person rig cancel the bone offset
+    /// so a bone-attached weapon lands at a fixed camera-space spot. None if missing.
+    pub fn joint_pos(&self, host: i64, joint: i64) -> Option<[f32; 3]> {
+        let idx = self.resolve(host)?;
+        let r = &self.items[idx];
+        let g = r.model.as_ref().and_then(|m| r.player.joint_global(m, joint.max(0) as usize))?;
+        let t = g.w_axis;
+        Some([t.x, t.y, t.z])
+    }
+
     /// Print every joint index + name of `host` to stdout (bone-discovery helper).
     pub fn dump_joints(&self, host: i64) {
         let Some(idx) = self.resolve(host) else {

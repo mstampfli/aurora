@@ -675,6 +675,14 @@ pub fn r3d_joint_dump(host: i64) {
         s.dump_joints(host);
     });
 }
+/// Model-space position of `joint` in the host's current pose, component `axis` (0=x,1=y,2=z).
+pub fn r3d_joint_pos(host: i64, joint: i64, axis: i64) -> f32 {
+    with_gfx(0.0f32, |gf| {
+        let (_, _, s) = gf.scene_mut();
+        let p = s.joint_pos(host, joint).unwrap_or([0.0, 0.0, 0.0]);
+        p[(axis.max(0) as usize).min(2)]
+    })
+}
 
 pub fn r3d_anim_play(handle: i64, clip: i64, looping: i64, speed: f32, fade: f32) {
     with_gfx((), |gf| {

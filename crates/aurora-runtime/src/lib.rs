@@ -1409,6 +1409,11 @@ pub extern "C" fn aurora_r3d_draw_on_joint(
 pub extern "C" fn aurora_r3d_joint_dump(host: i64) {
     aurora_window::imm_r3d_joint_dump(host);
 }
+/// Model-space position of a joint (axis 0=x/1=y/2=z) in the host's current pose.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_joint_pos(host: i64, joint: i64, axis: i64) -> f64 {
+    aurora_window::imm_r3d_joint_pos(host, joint, axis) as f64
+}
 #[no_mangle]
 pub extern "C" fn aurora_r3d_anim_play(h: i64, clip: i64, looping: i64, speed: f64, fade: f64) {
     aurora_window::imm_r3d_anim_play(h, clip, looping, speed as f32, fade as f32);
