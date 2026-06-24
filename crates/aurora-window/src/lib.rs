@@ -516,17 +516,22 @@ impl Gfx {
             .copied()
             .find(|f| !f.is_srgb())
             .unwrap_or(caps.formats[0]);
-        // Prefer FifoRelaxed (adaptive vsync) over plain Fifo. Both CAP the framerate to the
-        // refresh rate, so the GPU idles between frames - important on a thermally/power-throttled
-        // laptop (eco mode), where an UNCAPPED mode like Mailbox would render flat-out, max the
-        // throttled GPU, and make pacing WORSE (more heat -> more throttle). FifoRelaxed keeps the
-        // cap but, if a frame arrives late, presents it immediately instead of waiting a whole
-        // refresh - so it avoids Fifo's hard 60->30 cliff (minor tearing only on the late frame).
-        let present_mode = if caps.present_modes.contains(&wgpu::PresentMode::FifoRelaxed) {
-            wgpu::PresentMode::FifoRelaxed
-        } else {
-            wgpu::PresentMode::Fifo
+        // Present mode: DEFAULT to plain Fifo (the long-standing baseline - vsync-capped, GPU idles
+        // between frames, coolest/most stable on a throttled laptop). Override at runtime with
+        // AURORA_PRESENT=mailbox|relaxed|immediate|fifo to A/B which feels best on this machine
+        // (Mailbox = uncapped/lowest-latency but maxes the GPU; relaxed = adaptive vsync, no hard
+        // cliff; immediate = uncapped, may tear). Falls back to Fifo if the pick is unsupported.
+        let present_mode = {
+            let want = std::env::var("AURORA_PRESENT").unwrap_or_default().to_lowercase();
+            let pick = match want.as_str() {
+                "mailbox" => wgpu::PresentMode::Mailbox,
+                "relaxed" | "fiforelaxed" | "adaptive" => wgpu::PresentMode::FifoRelaxed,
+                "immediate" | "nosync" => wgpu::PresentMode::Immediate,
+                _ => wgpu::PresentMode::Fifo,
+            };
+            if caps.present_modes.contains(&pick) { pick } else { wgpu::PresentMode::Fifo }
         };
+        eprintln!("[aurora] present mode: {:?}", present_mode);
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
