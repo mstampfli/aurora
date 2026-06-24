@@ -370,6 +370,8 @@ const BUILTINS: &[&str] = &[
     "mouse_dx", "mouse_dy", "mouse_scroll", "mouse_button", "grab_mouse", "frame_dt", "sleep_ms",
     // 3D positional audio.
     "audio_listener", "play_sound_at", "play_sound_handle", "play_sound_handle_at",
+    // Background music (looping).
+    "play_music", "music_volume", "music_stop",
     // Rich 3D physics queries.
     "phys3d_raycast_full", "phys3d_raycast_ex", "phys3d_raycast_world", "phys3d_hit_x", "phys3d_hit_y", "phys3d_hit_z",
     "phys3d_hit_nx", "phys3d_hit_ny", "phys3d_hit_nz", "phys3d_hit_body",
@@ -694,6 +696,9 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_load_sound", aurora_runtime::aurora_load_sound as *const u8);
     builder.symbol("aurora_play_sound_handle", aurora_runtime::aurora_play_sound_handle as *const u8);
     builder.symbol("aurora_play_sound_handle_at", aurora_runtime::aurora_play_sound_handle_at as *const u8);
+    builder.symbol("aurora_play_music", aurora_runtime::aurora_play_music as *const u8);
+    builder.symbol("aurora_music_volume", aurora_runtime::aurora_music_volume as *const u8);
+    builder.symbol("aurora_music_stop", aurora_runtime::aurora_music_stop as *const u8);
     builder.symbol("aurora_phys3d_raycast_full", aurora_runtime::aurora_phys3d_raycast_full as *const u8);
     builder.symbol("aurora_phys3d_raycast_ex", aurora_runtime::aurora_phys3d_raycast_ex as *const u8);
     builder.symbol("aurora_phys3d_raycast_world", aurora_runtime::aurora_phys3d_raycast_world as *const u8);
@@ -1117,6 +1122,9 @@ fn lower(
     hosts.insert("play_sound_at", import(jmod, "aurora_play_sound_at", &[i, i, i, f64t, f64t, f64t], None));
     hosts.insert("play_sound_handle", import(jmod, "aurora_play_sound_handle", &[i, i], None));
     hosts.insert("play_sound_handle_at", import(jmod, "aurora_play_sound_handle_at", &[i, i, f64t, f64t, f64t], None));
+    hosts.insert("play_music", import(jmod, "aurora_play_music", &[i, i], None));
+    hosts.insert("music_volume", import(jmod, "aurora_music_volume", &[i], None));
+    hosts.insert("music_stop", import(jmod, "aurora_music_stop", &[], None));
     hosts.insert("phys3d_raycast_full", import(jmod, "aurora_phys3d_raycast_full", &[f64t, f64t, f64t, f64t, f64t, f64t, f64t], Some(i)));
     hosts.insert("phys3d_raycast_ex", import(jmod, "aurora_phys3d_raycast_ex", &[i, f64t, f64t, f64t, f64t, f64t, f64t, f64t], Some(i)));
     hosts.insert("phys3d_raycast_world", import(jmod, "aurora_phys3d_raycast_world", &[i, f64t, f64t, f64t, f64t, f64t, f64t, f64t], Some(i)));
@@ -4609,6 +4617,9 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "play_sound_at" => (vec![I64, I64, I64, F64, F64, F64], None),
         "play_sound_handle" => (vec![I64, I64], None),
         "play_sound_handle_at" => (vec![I64, I64, F64, F64, F64], None),
+        "play_music" => (vec![I64, I64], None),
+        "music_volume" => (vec![I64], None),
+        "music_stop" => (vec![], None),
         // Rich 3D physics.
         "phys3d_raycast_full" => (vec![F64, F64, F64, F64, F64, F64, F64], Some(I64)),
         "phys3d_raycast_ex" => (vec![I64, F64, F64, F64, F64, F64, F64, F64], Some(I64)),

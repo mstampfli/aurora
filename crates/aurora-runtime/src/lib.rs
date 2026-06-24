@@ -2007,6 +2007,34 @@ pub extern "C" fn aurora_audio_stop() {
     aurora_audio::stop_all();
 }
 
+/// Start looping a cached sound (a load_sound handle) as background music at `gain_pct` (0..200,
+/// 100 = unity). Replaces any current music. Backs `play_music` - a game loads a track once and
+/// loops it under the action.
+#[no_mangle]
+pub extern "C" fn aurora_play_music(handle: i64, gain_pct: i64) {
+    if handle < 0 {
+        return;
+    }
+    let arc = SOUNDS.with(|s| s.borrow().get(handle as usize).cloned());
+    if let Some(a) = arc {
+        let g = 0.7 * (gain_pct.max(0) as f32) / 100.0;
+        aurora_audio::play_music(a, g);
+    }
+}
+
+/// Set the background-music gain live from a 0..=200 percentage (a music-volume slider), without
+/// restarting the track. Backs `music_volume`.
+#[no_mangle]
+pub extern "C" fn aurora_music_volume(percent: i64) {
+    aurora_audio::set_music_gain(0.7 * (percent.clamp(0, 200) as f32) / 100.0);
+}
+
+/// Stop the background music, leaving SFX untouched. Backs `music_stop`.
+#[no_mangle]
+pub extern "C" fn aurora_music_stop() {
+    aurora_audio::stop_music();
+}
+
 // --- native debugger support ----------------------------------------------
 //
 // In debug builds the compiler instruments the *native* code: a call to
