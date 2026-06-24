@@ -182,6 +182,15 @@ pub struct Session {
     /// BOT_ID_BASE+i). The host's game writes these each frame from its local
     /// AI; clients receive them as remotes and never run the AI themselves.
     bots: Vec<Player>,
+    /// Per-bot input blob (the AI's decision, set via net_set_bot_input). When `bots_sim` is on,
+    /// update() runs the SAME sim on each bot's state with this input as it does for a networked
+    /// client - so a "local" bot is stepped identically to a "network" player, just with its input
+    /// sourced locally instead of from the wire. sim_step lazily creates the bot's body on first run.
+    bot_inputs: Vec<InputBlob>,
+    /// True once the game has opted bots into the local-input sim path (first net_set_bot_input).
+    /// Until then bots keep the legacy position-written behaviour, so nothing changes for a game
+    /// that doesn't use the new API.
+    bots_sim: bool,
     /// World objects (crate position + orientation: x,y,z, qx,qy,qz,qw). Host: authoritative,
     /// written each frame + replicated + recorded in lag-comp. Client: last received host pose.
     objects: Vec<[f32; 10]>,
@@ -314,6 +323,8 @@ impl Session {
             clients: Vec::new(),
             host: Player::spawn(),
             bots: Vec::new(),
+            bot_inputs: Vec::new(),
+            bots_sim: false,
             objects: Vec::new(),
             last_sent_objects: Vec::new(),
             fx: Vec::new(),
@@ -546,6 +557,16 @@ impl Session {
                     imp = [0.0; 3];
                     run_sim(sim_fn, sim_env, &mut c.state.s, &inp);
                     c.acked_seq = seq;
+                }
+            }
+            // LOCAL bots: step each one with the SAME sim as a networked client, from its
+            // host-set input (the AI's decision). A bot is just a player whose input is sourced
+            // locally instead of from the wire - sim_step lazily creates its body on first run, and
+            // its sim'd position rides the normal player snapshot channel. No bot-specific logic.
+            if self.bots_sim {
+                for i in 0..self.bots.len() {
+                    let inp = self.bot_inputs.get(i).copied().unwrap_or([0.0; INPUT_MAX]);
+                    run_sim(sim_fn, sim_env, &mut self.bots[i].s, &inp);
                 }
             }
             self.server_tick += 1;
@@ -989,6 +1010,18 @@ impl Session {
             self.bots.resize(n, Player::spawn());
         } else {
             self.bots.truncate(n);
+        }
+        self.bot_inputs.resize(n, [0.0; INPUT_MAX]);
+    }
+    /// Set bot `i`'s INPUT for this frame (the AI's decision, same layout a client sends). Opts the
+    /// session into the local-input sim path: from now on update() steps each bot with the SAME sim
+    /// it runs for networked clients, instead of using the host-written position. The first
+    /// net_set_bot (position) still seeds where the bot starts; thereafter its input drives it.
+    pub fn set_bot_input(&mut self, i: usize, inp: &[f32]) {
+        self.bots_sim = true;
+        if let Some(slot) = self.bot_inputs.get_mut(i) {
+            let n = inp.len().min(INPUT_MAX);
+            slot[..n].copy_from_slice(&inp[..n]);
         }
     }
     pub fn bot_count(&self) -> usize {
@@ -1851,6 +1884,17 @@ pub extern "C" fn aurora_net_set_bot_count(n: i64) {
 #[no_mangle]
 pub extern "C" fn aurora_net_set_bot(i: i64, x: f64, y: f64, z: f64, yaw: f64) {
     with((), |s| s.set_bot(i.max(0) as usize, x, y, z, yaw))
+}
+/// Host: set bot `i`'s INPUT blob for this frame (pointer to the game's f32 input array, same
+/// layout a player sends). Opts bots into the local-input sim path - the netcode then steps the
+/// bot with the SAME sim it runs for networked clients, so a bot is just a locally-driven player.
+#[no_mangle]
+pub extern "C" fn aurora_net_set_bot_input(i: i64, input: i64) {
+    if input == 0 {
+        return;
+    }
+    let slice = unsafe { std::slice::from_raw_parts(input as *const f32, INPUT_MAX) };
+    with((), |s| s.set_bot_input(i.max(0) as usize, slice))
 }
 /// Host: set bot `i`'s metadata slot (hp/shield/oc), same channel humans use.
 #[no_mangle]
