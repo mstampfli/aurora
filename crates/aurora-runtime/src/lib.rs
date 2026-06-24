@@ -1520,6 +1520,10 @@ pub extern "C" fn aurora_r3d_ssao(on: i64) {
     aurora_window::imm_r3d_ssao(on);
 }
 #[no_mangle]
+pub extern "C" fn aurora_r3d_viewmodel(on: i64) {
+    aurora_window::imm_r3d_viewmodel(on);
+}
+#[no_mangle]
 pub extern "C" fn aurora_r3d_point_shadows(on: i64) {
     aurora_window::imm_r3d_point_shadows(on);
 }

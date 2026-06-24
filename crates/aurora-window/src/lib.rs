@@ -47,6 +47,7 @@ pub use imm::{
     r3d_make_sprite as imm_r3d_make_sprite, r3d_point_light as imm_r3d_point_light,
     r3d_point_shadows as imm_r3d_point_shadows, r3d_present as imm_r3d_present,
     r3d_shadows as imm_r3d_shadows, r3d_sky as imm_r3d_sky, r3d_ssao as imm_r3d_ssao,
+    r3d_viewmodel as imm_r3d_viewmodel,
     blur as imm_blur,
     damage as imm_damage, r3d_world_to_screen as imm_r3d_world_to_screen,
     speedlines as imm_speedlines, surface_h as imm_surface_h, surface_w as imm_surface_w,

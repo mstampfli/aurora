@@ -128,6 +128,9 @@ impl Scene {
     pub fn set_point_shadows(&mut self, on: bool) {
         self.renderer.set_point_shadows(on);
     }
+    pub fn set_viewmodel(&mut self, on: bool) {
+        self.renderer.set_viewmodel(on);
+    }
     pub fn clear_point_lights(&mut self) {
         self.renderer.clear_point_lights();
     }

@@ -107,6 +107,9 @@ struct DrawCmd {
     tint: [f32; 3],
     /// Energy-shield Fresnel rim: [strength, time]. strength 0 = off.
     shield: [f32; 2],
+    /// Viewmodel (first-person arms/weapon): drawn ONLY in the main color pass, skipped in the
+    /// shadow cascades + SSAO prepass so it never casts a world shadow or darkens AO at the camera.
+    viewmodel: bool,
 }
 
 #[repr(C)]
@@ -210,6 +213,9 @@ pub struct Renderer3D {
     materials: Vec<Material>,
 
     frustum_cull: bool,
+    /// When true, draws are flagged as viewmodel (skip shadow + SSAO passes). Toggled around the
+    /// first-person arms/weapon each frame via set_viewmodel.
+    vm_mode: bool,
     last_drawn: usize,
 
     globals: GlobalsU,
@@ -934,6 +940,7 @@ impl Renderer3D {
             mesh_radius: Vec::new(),
             materials: Vec::new(),
             frustum_cull: true,
+            vm_mode: false,
             last_drawn: 0,
             globals,
             queue_cmds: Vec::new(),
@@ -1028,6 +1035,10 @@ impl Renderer3D {
 
     pub fn set_frustum_cull(&mut self, on: bool) {
         self.frustum_cull = on;
+    }
+    /// While on, subsequent draws are tagged as viewmodel (skipped in shadow + SSAO passes).
+    pub fn set_viewmodel(&mut self, on: bool) {
+        self.vm_mode = on;
     }
     /// Number of draws that survived frustum culling in the last `render`.
     pub fn last_drawn(&self) -> usize {
@@ -1136,7 +1147,7 @@ impl Renderer3D {
     pub fn draw_tint(&mut self, mesh: usize, material: usize, model: Mat4, joints: Option<Arc<Vec<Mat4>>>, tint: [f32; 3]) {
         if mesh < self.meshes.len() {
             let material = if material < self.materials.len() { material } else { 0 };
-            self.queue_cmds.push(DrawCmd { mesh, material, model, joints, tint, shield: [0.0, 0.0] });
+            self.queue_cmds.push(DrawCmd { mesh, material, model, joints, tint, shield: [0.0, 0.0], viewmodel: self.vm_mode });
         }
     }
 
@@ -1145,7 +1156,7 @@ impl Renderer3D {
     pub fn draw_shield(&mut self, mesh: usize, material: usize, model: Mat4, joints: Option<Arc<Vec<Mat4>>>, strength: f32, time: f32) {
         if mesh < self.meshes.len() {
             let material = if material < self.materials.len() { material } else { 0 };
-            self.queue_cmds.push(DrawCmd { mesh, material, model, joints, tint: [0.0, 0.0, 0.0], shield: [strength, time] });
+            self.queue_cmds.push(DrawCmd { mesh, material, model, joints, tint: [0.0, 0.0, 0.0], shield: [strength, time], viewmodel: self.vm_mode });
         }
     }
 
@@ -1326,6 +1337,7 @@ impl Renderer3D {
                 sp.set_bind_group(0, &self.shadow_globals_bg, &[off]);
                 for (ci, &(obj_off, joint_off)) in offsets.iter().enumerate() {
                     let cmd = &self.queue_cmds[ci];
+                    if cmd.viewmodel { continue; }   // viewmodels never cast world shadows
                     // Skip objects whose shadow can't land in this cascade's footprint (kept for
                     // every cascade they DO reach, so no shadow is lost - see caster_in_cascade).
                     if self.frustum_cull {
@@ -1376,6 +1388,7 @@ impl Renderer3D {
                 pp.set_bind_group(0, &self.globals_bg, &[]);
                 for (ci, &(obj_off, joint_off)) in offsets.iter().enumerate() {
                     let cmd = &self.queue_cmds[ci];
+                    if cmd.viewmodel { continue; }   // viewmodels don't belong in the AO geometry
                     // SSAO only affects on-screen pixels - cull to the camera frustum like the main pass.
                     if self.frustum_cull {
                         let (center, radius) = cull_bounds(&cmd.model, self.mesh_radius[cmd.mesh]);
