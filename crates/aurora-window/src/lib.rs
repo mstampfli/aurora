@@ -516,13 +516,14 @@ impl Gfx {
             .copied()
             .find(|f| !f.is_srgb())
             .unwrap_or(caps.formats[0]);
-        // Prefer Mailbox (triple-buffered, no-tear) over Fifo: with Fifo a frame that overruns the
-        // vsync interval by even a hair waits for the NEXT vsync, dropping you a whole refresh at
-        // once (the "60->30" lag cliff, very visible under throttled/eco-mode clocks). Mailbox
-        // presents the newest finished frame instead - same image, no tearing, no cliff. Fall back
-        // to Fifo (always supported) if the surface has no Mailbox.
-        let present_mode = if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
-            wgpu::PresentMode::Mailbox
+        // Prefer FifoRelaxed (adaptive vsync) over plain Fifo. Both CAP the framerate to the
+        // refresh rate, so the GPU idles between frames - important on a thermally/power-throttled
+        // laptop (eco mode), where an UNCAPPED mode like Mailbox would render flat-out, max the
+        // throttled GPU, and make pacing WORSE (more heat -> more throttle). FifoRelaxed keeps the
+        // cap but, if a frame arrives late, presents it immediately instead of waiting a whole
+        // refresh - so it avoids Fifo's hard 60->30 cliff (minor tearing only on the late frame).
+        let present_mode = if caps.present_modes.contains(&wgpu::PresentMode::FifoRelaxed) {
+            wgpu::PresentMode::FifoRelaxed
         } else {
             wgpu::PresentMode::Fifo
         };
