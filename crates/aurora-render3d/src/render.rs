@@ -2,6 +2,8 @@
 //! normal mapping, emissive) lit by a directional light plus point lights, with
 //! fog and a depth buffer, drawing indexed, optionally skinned meshes.
 
+use std::sync::Arc;
+
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat3, Mat4, Vec3};
 
@@ -99,7 +101,9 @@ struct DrawCmd {
     mesh: usize,
     material: usize,
     model: Mat4,
-    joints: Option<Vec<Mat4>>,
+    // Skinning matrices, shared via Arc so a model's primitives reference ONE allocation instead
+    // of deep-copying the full 128-matrix array per primitive each frame.
+    joints: Option<Arc<Vec<Mat4>>>,
     tint: [f32; 3],
     /// Energy-shield Fresnel rim: [strength, time]. strength 0 = off.
     shield: [f32; 2],
@@ -1122,12 +1126,12 @@ impl Renderer3D {
         self.inst_cmds.clear();
     }
 
-    pub fn draw(&mut self, mesh: usize, material: usize, model: Mat4, joints: Option<Vec<Mat4>>) {
+    pub fn draw(&mut self, mesh: usize, material: usize, model: Mat4, joints: Option<Arc<Vec<Mat4>>>) {
         self.draw_tint(mesh, material, model, joints, [0.0, 0.0, 0.0]);
     }
 
     /// Like [`draw`] but adds a per-draw RGB `tint` OFFSET to the albedo (identity (0,0,0)).
-    pub fn draw_tint(&mut self, mesh: usize, material: usize, model: Mat4, joints: Option<Vec<Mat4>>, tint: [f32; 3]) {
+    pub fn draw_tint(&mut self, mesh: usize, material: usize, model: Mat4, joints: Option<Arc<Vec<Mat4>>>, tint: [f32; 3]) {
         if mesh < self.meshes.len() {
             let material = if material < self.materials.len() { material } else { 0 };
             self.queue_cmds.push(DrawCmd { mesh, material, model, joints, tint, shield: [0.0, 0.0] });
@@ -1136,7 +1140,7 @@ impl Renderer3D {
 
     /// Like [`draw`] but adds an energy-shield Fresnel rim (cyan crackle, `strength` 0..1,
     /// animated by `time`). Tint stays neutral.
-    pub fn draw_shield(&mut self, mesh: usize, material: usize, model: Mat4, joints: Option<Vec<Mat4>>, strength: f32, time: f32) {
+    pub fn draw_shield(&mut self, mesh: usize, material: usize, model: Mat4, joints: Option<Arc<Vec<Mat4>>>, strength: f32, time: f32) {
         if mesh < self.meshes.len() {
             let material = if material < self.materials.len() { material } else { 0 };
             self.queue_cmds.push(DrawCmd { mesh, material, model, joints, tint: [0.0, 0.0, 0.0], shield: [strength, time] });

@@ -516,12 +516,22 @@ impl Gfx {
             .copied()
             .find(|f| !f.is_srgb())
             .unwrap_or(caps.formats[0]);
+        // Prefer Mailbox (triple-buffered, no-tear) over Fifo: with Fifo a frame that overruns the
+        // vsync interval by even a hair waits for the NEXT vsync, dropping you a whole refresh at
+        // once (the "60->30" lag cliff, very visible under throttled/eco-mode clocks). Mailbox
+        // presents the newest finished frame instead - same image, no tearing, no cliff. Fall back
+        // to Fifo (always supported) if the surface has no Mailbox.
+        let present_mode = if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
+            wgpu::PresentMode::Mailbox
+        } else {
+            wgpu::PresentMode::Fifo
+        };
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
             width: size.width.max(1),
             height: size.height.max(1),
-            present_mode: wgpu::PresentMode::Fifo,
+            present_mode,
             desired_maximum_frame_latency: 2,
             alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],

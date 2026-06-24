@@ -3,6 +3,8 @@
 //! the surface the engine/runtime drives; it owns no device and borrows one per
 //! call so the same scene renders offscreen or to the window.
 
+use std::sync::Arc;
+
 use glam::{Mat4, Vec3};
 
 use crate::anim::AnimPlayer;
@@ -431,20 +433,20 @@ impl Scene {
             Some(i) => i,
             None => return,
         };
-        // Compute skinning matrices once if needed (hidden joints collapsed inside).
+        // Compute skinning matrices ONCE, then share them across all primitives via Arc (a cheap
+        // refcount bump per prim instead of deep-copying the 128-matrix array each time).
         let mask = self.items[idx].hidden_joints;
         let joints = {
             let r = &self.items[idx];
             if r.skinned {
-                r.model.as_ref().map(|m| r.player.matrices(m, mask))
+                r.model.as_ref().map(|m| r.player.matrices(m, mask)).filter(|v| !v.is_empty()).map(Arc::new)
             } else {
                 None
             }
         };
         let prims = self.items[idx].prims.clone();
         for (mesh, mat) in prims {
-            let j = joints.clone().filter(|v| !v.is_empty());
-            self.renderer.draw(mesh, mat, transform, j);
+            self.renderer.draw(mesh, mat, transform, joints.clone());
         }
     }
 
@@ -458,15 +460,14 @@ impl Scene {
         let joints = {
             let r = &self.items[idx];
             if r.skinned {
-                r.model.as_ref().map(|m| r.player.matrices(m, mask))
+                r.model.as_ref().map(|m| r.player.matrices(m, mask)).filter(|v| !v.is_empty()).map(Arc::new)
             } else {
                 None
             }
         };
         let prims = self.items[idx].prims.clone();
         for (mesh, mat) in prims {
-            let j = joints.clone().filter(|v| !v.is_empty());
-            self.renderer.draw_tint(mesh, mat, transform, j, tint);
+            self.renderer.draw_tint(mesh, mat, transform, joints.clone(), tint);
         }
     }
 
@@ -481,15 +482,14 @@ impl Scene {
         let joints = {
             let r = &self.items[idx];
             if r.skinned {
-                r.model.as_ref().map(|m| r.player.matrices(m, mask))
+                r.model.as_ref().map(|m| r.player.matrices(m, mask)).filter(|v| !v.is_empty()).map(Arc::new)
             } else {
                 None
             }
         };
         let prims = self.items[idx].prims.clone();
         for (mesh, mat) in prims {
-            let j = joints.clone().filter(|v| !v.is_empty());
-            self.renderer.draw_shield(mesh, mat, transform, j, strength, time);
+            self.renderer.draw_shield(mesh, mat, transform, joints.clone(), strength, time);
         }
     }
 
