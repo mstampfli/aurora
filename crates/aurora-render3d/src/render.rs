@@ -1373,16 +1373,7 @@ impl Renderer3D {
                 pp.set_pipeline(&self.prepass_pipeline);
                 pp.set_bind_group(0, &self.globals_bg, &[]);
                 for (ci, &(obj_off, joint_off)) in offsets.iter().enumerate() {
-                    let cmd = &self.queue_cmds[ci];
-                    // SSAO only affects on-screen pixels, so skip objects outside the camera
-                    // frustum exactly like the main pass does (safe, no visual change).
-                    if self.frustum_cull {
-                        let (center, radius) = cull_bounds(&cmd.model, self.mesh_radius[cmd.mesh]);
-                        if !sphere_in_frustum(&cam_planes, center, radius) {
-                            continue;
-                        }
-                    }
-                    let m = &self.meshes[cmd.mesh];
+                    let m = &self.meshes[self.queue_cmds[ci].mesh];
                     pp.set_bind_group(1, &self.obj_bg, &[obj_off, joint_off]);
                     pp.set_vertex_buffer(0, m.vbuf.slice(..));
                     pp.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
