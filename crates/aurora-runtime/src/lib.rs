@@ -1522,6 +1522,66 @@ pub extern "C" fn aurora_r3d_present() -> i64 {
     }
 }
 
+/// Capture the queued 3D scene to a PNG at the framebuffer's size (headless
+/// only), with the HUD framebuffer composited on top. Returns 1 on success.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_capture(ptr: *const u8, len: i64) -> i64 {
+    let path = {
+        let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
+        String::from_utf8_lossy(s).into_owned()
+    };
+    let (rgba, w, h) = FB.with(|fb| {
+        fb.borrow()
+            .as_ref()
+            .map(|f| (f.rgba(), f.width(), f.height()))
+            .unwrap_or((Vec::new(), 0, 0))
+    });
+    let (ow, oh) = if w > 0 && h > 0 { (w, h) } else { (1280, 720) };
+    aurora_window::imm_r3d_capture(&path, &rgba, w, h, ow, oh)
+}
+
+/// Like `r3d_capture` but at an explicit output resolution.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_capture_size(ptr: *const u8, len: i64, ow: i64, oh: i64) -> i64 {
+    let path = {
+        let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
+        String::from_utf8_lossy(s).into_owned()
+    };
+    let (rgba, w, h) = FB.with(|fb| {
+        fb.borrow()
+            .as_ref()
+            .map(|f| (f.rgba(), f.width(), f.height()))
+            .unwrap_or((Vec::new(), 0, 0))
+    });
+    aurora_window::imm_r3d_capture(&path, &rgba, w, h, ow.max(16) as u32, oh.max(16) as u32)
+}
+
+/// Input injection builtins: scripted input indistinguishable from a player.
+#[no_mangle]
+pub extern "C" fn aurora_inject_key(code: i64, down: i64) {
+    aurora_window::imm_inject_key(code.max(0) as u32, down != 0);
+}
+#[no_mangle]
+pub extern "C" fn aurora_inject_mouse_move(dx: f64, dy: f64) {
+    aurora_window::imm_inject_mouse_move(dx, dy);
+}
+#[no_mangle]
+pub extern "C" fn aurora_inject_mouse_pos(x: i64, y: i64) {
+    aurora_window::imm_inject_mouse_pos(x, y);
+}
+#[no_mangle]
+pub extern "C" fn aurora_inject_mouse_button(b: i64, down: i64) {
+    aurora_window::imm_inject_mouse_button(b.max(0) as u32, down != 0);
+}
+#[no_mangle]
+pub extern "C" fn aurora_inject_scroll(dy: f64) {
+    aurora_window::imm_inject_scroll(dy);
+}
+#[no_mangle]
+pub extern "C" fn aurora_inject_char(c: i64) {
+    aurora_window::imm_inject_char(c.max(0) as u32);
+}
+
 /// Current window/surface size in physical pixels (0 before the window exists).
 #[no_mangle]
 pub extern "C" fn aurora_surface_w() -> i64 {
@@ -2296,7 +2356,7 @@ pub extern "C" fn aurora_dbg_var_f64(name_ptr: *const u8, name_len: i64, value: 
 /// Touch every host symbol so the linker keeps this crate's object in an AOT
 /// link even when the Rust driver references nothing from it directly.
 pub fn force_link() -> usize {
-    let fns: [*const (); 355] = [
+    let fns: [*const (); 363] = [
         aurora_net_projectile_intent as *const (),
         aurora_net_server_projectile_count as *const (),
         aurora_net_server_projectile_shooter as *const (),
@@ -2663,6 +2723,14 @@ pub fn force_link() -> usize {
         aurora_json_push_str as *const (),
         aurora_json_to_str as *const (),
         aurora_json_write as *const (),
+        aurora_r3d_capture as *const (),
+        aurora_r3d_capture_size as *const (),
+        aurora_inject_key as *const (),
+        aurora_inject_mouse_move as *const (),
+        aurora_inject_mouse_pos as *const (),
+        aurora_inject_mouse_button as *const (),
+        aurora_inject_scroll as *const (),
+        aurora_inject_char as *const (),
     ];
     std::hint::black_box(fns.iter().map(|p| *p as usize).sum())
 }

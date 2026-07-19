@@ -414,6 +414,10 @@ const BUILTINS: &[&str] = &[
     "json_bool", "json_str", "json_kind", "json_has", "json_key", "json_free",
     "json_new_obj", "json_new_arr", "json_set", "json_set_num", "json_set_str", "json_set_bool",
     "json_push", "json_push_num", "json_push_str", "json_to_str", "json_write",
+    // Headless capture + scripted input (the verification harness's hands and eyes).
+    "r3d_capture", "r3d_capture_size",
+    "inject_key", "inject_mouse_move", "inject_mouse_pos", "inject_mouse_button",
+    "inject_scroll", "inject_char",
 ];
 
 /// Byte size of a type (always a multiple of 8). Aggregates lay out their
@@ -626,6 +630,14 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_json_push_str", aurora_runtime::aurora_json_push_str as *const u8);
     builder.symbol("aurora_json_to_str", aurora_runtime::aurora_json_to_str as *const u8);
     builder.symbol("aurora_json_write", aurora_runtime::aurora_json_write as *const u8);
+    builder.symbol("aurora_r3d_capture", aurora_runtime::aurora_r3d_capture as *const u8);
+    builder.symbol("aurora_r3d_capture_size", aurora_runtime::aurora_r3d_capture_size as *const u8);
+    builder.symbol("aurora_inject_key", aurora_runtime::aurora_inject_key as *const u8);
+    builder.symbol("aurora_inject_mouse_move", aurora_runtime::aurora_inject_mouse_move as *const u8);
+    builder.symbol("aurora_inject_mouse_pos", aurora_runtime::aurora_inject_mouse_pos as *const u8);
+    builder.symbol("aurora_inject_mouse_button", aurora_runtime::aurora_inject_mouse_button as *const u8);
+    builder.symbol("aurora_inject_scroll", aurora_runtime::aurora_inject_scroll as *const u8);
+    builder.symbol("aurora_inject_char", aurora_runtime::aurora_inject_char as *const u8);
     builder.symbol("aurora_divzero", aurora_runtime::aurora_divzero as *const u8);
     builder.symbol("aurora_fmod", aurora_runtime::aurora_fmod as *const u8);
     builder.symbol("aurora_load_image", aurora_runtime::aurora_load_image as *const u8);
@@ -1095,6 +1107,14 @@ fn lower(
     hosts.insert("json_push_str", import(jmod, "aurora_json_push_str", &[i, ptr_ty, i], None));
     hosts.insert("json_to_str", import(jmod, "aurora_json_to_str", &[ptr_ty, i], None));
     hosts.insert("json_write", import(jmod, "aurora_json_write", &[i, ptr_ty, i], Some(i)));
+    hosts.insert("r3d_capture", import(jmod, "aurora_r3d_capture", &[ptr_ty, i], Some(i)));
+    hosts.insert("r3d_capture_size", import(jmod, "aurora_r3d_capture_size", &[ptr_ty, i, i, i], Some(i)));
+    hosts.insert("inject_key", import(jmod, "aurora_inject_key", &[i, i], None));
+    hosts.insert("inject_mouse_move", import(jmod, "aurora_inject_mouse_move", &[types::F64, types::F64], None));
+    hosts.insert("inject_mouse_pos", import(jmod, "aurora_inject_mouse_pos", &[i, i], None));
+    hosts.insert("inject_mouse_button", import(jmod, "aurora_inject_mouse_button", &[i, i], None));
+    hosts.insert("inject_scroll", import(jmod, "aurora_inject_scroll", &[types::F64], None));
+    hosts.insert("inject_char", import(jmod, "aurora_inject_char", &[i], None));
     hosts.insert("oob", import(jmod, "aurora_oob", &[i, i], None));
     hosts.insert("frame_dt", import(jmod, "aurora_frame_dt", &[], Some(types::F64)));
     hosts.insert("sleep_ms", import(jmod, "aurora_sleep_ms", &[types::I64], None));
@@ -3547,11 +3567,23 @@ fn tr_call(
         let call = b.ins().call(f, &[pp, pl, dp, dl]);
         return Ok(Term::Val(b.inst_results(call)[0], Cty::I64));
     }
-    // `file_exists(path)` / `json_parse(text)` / `json_load(path)` -> i64.
-    if matches!(name.as_str(), "file_exists" | "json_parse" | "json_load") {
+    // `file_exists(path)` / `json_parse(text)` / `json_load(path)` /
+    // `r3d_capture(path)` -> i64.
+    if matches!(name.as_str(), "file_exists" | "json_parse" | "json_load" | "r3d_capture") {
         let (pp, pl) = str_arg(m, b, l, env, &args[0].value)?;
         let f = m.declare_func_in_func(env.hosts[name.as_str()], b.func);
         let call = b.ins().call(f, &[pp, pl]);
+        return Ok(Term::Val(b.inst_results(call)[0], Cty::I64));
+    }
+    // `r3d_capture_size(path, w, h) -> 1|0`.
+    if name == "r3d_capture_size" {
+        let (pp, pl) = str_arg(m, b, l, env, &args[0].value)?;
+        let (w, wt) = val(m, b, l, env, &args[1].value)?;
+        let w = cast(b, w, &wt, &Cty::I64)?;
+        let (h, ht) = val(m, b, l, env, &args[2].value)?;
+        let h = cast(b, h, &ht, &Cty::I64)?;
+        let f = m.declare_func_in_func(env.hosts["r3d_capture_size"], b.func);
+        let call = b.ins().call(f, &[pp, pl, w, h]);
         return Ok(Term::Val(b.inst_results(call)[0], Cty::I64));
     }
     // `json_get(h, key)` / `json_has(h, key)` -> i64.
@@ -4737,6 +4769,13 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "json_new_arr" => (vec![], Some(I64)),
         "json_push" => (vec![I64, I64], None),
         "json_push_num" => (vec![I64, F64], None),
+        // Scripted input (harness hands).
+        "inject_key" => (vec![I64, I64], None),
+        "inject_mouse_move" => (vec![F64, F64], None),
+        "inject_mouse_pos" => (vec![I64, I64], None),
+        "inject_mouse_button" => (vec![I64, I64], None),
+        "inject_scroll" => (vec![F64], None),
+        "inject_char" => (vec![I64], None),
         "phys_init" => (vec![F64, F64], None),
         "phys_add" => (vec![F64, F64, F64, F64, I64], Some(I64)),
         "phys_step" => (vec![F64], None),

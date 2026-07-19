@@ -16,3 +16,5 @@ winit = "0.30"
 wgpu = "22"
 pollster = "0.3"
 glam = "0.29"
+# PNG encoding for the headless r3d_capture builtin.
+image = { version = "0.25", default-features = false, features = ["png"] }

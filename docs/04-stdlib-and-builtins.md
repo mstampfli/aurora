@@ -104,6 +104,29 @@ tables:
 | `json_to_str(h) -> str`, `json_write(h, path) -> 1|0` | pretty serialization |
 | `json_free(h)` | release a handle (sub-handles keep the document alive) |
 
+## Headless harness (capture, scripted input, tapes)
+
+`AURORA_HEADLESS=1` runs any windowed game with NO window/event loop: presents
+just advance a frame counter, 3D lives on a surface-free device, and
+`AURORA_MAX_FRAMES=N` makes present report "closed" after N frames so any
+unmodified `while r3d_present() { }` loop exits cleanly. If no GPU adapter
+exists the run prints `aurora: HEADLESS-NO-GPU` and closes - runners must treat
+that as BLOCKED, never as a pass.
+
+- `r3d_capture(path) -> 1|0` / `r3d_capture_size(path, w, h)`: render the
+  queued scene offscreen to a PNG with the HUD framebuffer composited on top
+  (black = transparent, same as the live overlay). Headless-only; call it
+  INSTEAD of `r3d_present` for a captured frame.
+- Input injection (indistinguishable from a player; works windowed too):
+  `inject_key(code, down)`, `inject_mouse_move(dx, dy)`,
+  `inject_mouse_pos(x, y)`, `inject_mouse_button(b, down)`,
+  `inject_scroll(dy)`, `inject_char(c)`.
+- Tapes: `AURORA_INPUT_RECORD=file` writes one line of full input state per
+  present; `AURORA_INPUT_REPLAY=file` replays it (real input is overridden)
+  and CLOSES the window when the tape ends. Replay + `srand` defaults +
+  `AURORA_FIXED_DT` reproduce a session bit-for-bit
+  (see `examples/headless_capture.aur` - captures hash-identical on replay).
+
 ## Networking (reliable UDP)
 
 `net_bind(port)`, `net_connect(host, port)`, `net_send(msg)`, `net_recv() -> str`.

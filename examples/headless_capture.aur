@@ -1,0 +1,66 @@
+// Headless harness proof: runs a real 3D game loop with NO window
+// (AURORA_HEADLESS=1), exits via AURORA_MAX_FRAMES, moves a box with INJECTED
+// input, overlays a HUD, and captures PNGs mid-run with r3d_capture.
+// With AURORA_INPUT_RECORD / AURORA_INPUT_REPLAY + fixed dt the whole session
+// reproduces bit-for-bit (the determinism gate).
+
+fn main() {
+    framebuffer(320, 180)
+    window_open(640, 360)
+    set_fixed_dt(0.0166667)
+
+    let box_h = r3d_make_box(0.9, 0.3, 0.2)
+    let ground = r3d_make_plane(30.0, 8.0, 0.4, 0.45, 0.4)
+    r3d_light(0.5, 1.0, 0.35, 1.0, 1.0, 1.0, 0.35)
+    r3d_clear(0.2, 0.22, 0.3)
+
+    let mut x = 0.0
+    let mut frame = 0
+    let mut captured_early = 0
+    let mut captured_late = 0
+
+    while r3d_present() == 1 {
+        let dt = frame_dt()
+
+        // Injected input drives the sim exactly like a player would:
+        // hold D (code 43) from frame 30 to 60 -> the box slides right.
+        if frame == 30 { inject_key(43, 1) }
+        if frame == 60 { inject_key(43, 0) }
+        if key_down(43) { x = x + 4.0 * dt }
+
+        // HUD: a simple crosshair + moving marker to prove the composite.
+        clear(0, 0, 0)
+        let mut i = 0
+        while i < 21 {
+            pixel(150 + i, 90, 255, 255, 255)
+            pixel(160, 80 + i, 255, 255, 255)
+            i = i + 1
+        }
+        pixel(10 + frame, 10, 255, 220, 0)
+
+        r3d_camera(6.0, 4.0, 8.0, x, 0.5, 0.0, 50.0)
+        r3d_begin()
+        r3d_draw(ground, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+        r3d_draw(box_h, x, 0.5, 0.0, 0.0, 0.0, 0.0, 1.0)
+
+        if frame == 20 {
+            captured_early = r3d_capture("qa_tmp/headless_f20.png")
+        }
+        if frame == 90 {
+            captured_late = r3d_capture_size("qa_tmp/headless_f90.png", 640, 360)
+        }
+        frame = frame + 1
+    }
+
+    println("RESULT frames_ran=" + str(frame))
+    println("RESULT capture_early=" + str(captured_early) + " (expect 1)")
+    println("RESULT capture_late=" + str(captured_late) + " (expect 1)")
+    // The injected key must have moved the box: 30 frames of 4 u/s at 1/60s = 2.0.
+    let moved = x > 1.9 and x < 2.1
+    if moved {
+        println("RESULT inject_moved=1 (expect 1)")
+    } else {
+        println("RESULT inject_moved=0 (expect 1)")
+        println("x was " + str(x))
+    }
+}

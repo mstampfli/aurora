@@ -919,8 +919,10 @@ fn cmd_run(path: &str) -> ExitCode {
             Ok(_) => {
                 use std::io::Write;
                 let _ = std::io::stdout().flush();
-                // Exit directly so leaked GPU/audio resources aren't dropped
-                // during thread-local teardown (which trips wgpu's internals).
+                // Leak windowed GPU state / drop headless GPU state deliberately,
+                // then exit directly so nothing is torn down during thread-local
+                // teardown (which trips wgpu's internals).
+                aurora_runtime::aurora_runtime_shutdown();
                 std::process::exit(0);
             }
             Err(e) => {

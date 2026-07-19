@@ -51,6 +51,10 @@ pub use imm::{
     blur as imm_blur,
     damage as imm_damage, r3d_world_to_screen as imm_r3d_world_to_screen,
     speedlines as imm_speedlines, surface_h as imm_surface_h, surface_w as imm_surface_w,
+    r3d_capture as imm_r3d_capture,
+    inject_key as imm_inject_key, inject_mouse_move as imm_inject_mouse_move,
+    inject_mouse_pos as imm_inject_mouse_pos, inject_mouse_button as imm_inject_mouse_button,
+    inject_scroll as imm_inject_scroll, inject_char as imm_inject_char,
 };
 pub use input::{Input, Key};
 

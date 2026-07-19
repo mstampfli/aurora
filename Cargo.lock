@@ -370,6 +370,7 @@ dependencies = [
  "aurora-gfx",
  "aurora-render3d",
  "glam",
+ "image",
  "pollster",
  "wgpu",
  "winit",

@@ -135,7 +135,8 @@ pub fn completions(src: &str) -> Vec<Value> {
         "json_bool", "json_str", "json_kind", "json_has", "json_key", "json_free",
         "json_new_obj", "json_new_arr", "json_set", "json_set_num", "json_set_str",
         "json_set_bool", "json_push", "json_push_num", "json_push_str", "json_to_str",
-        "json_write",
+        "json_write", "r3d_capture", "r3d_capture_size", "inject_key", "inject_mouse_move",
+        "inject_mouse_pos", "inject_mouse_button", "inject_scroll", "inject_char",
     ] {
         push(b, 3);
     }

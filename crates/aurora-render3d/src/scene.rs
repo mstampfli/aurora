@@ -142,6 +142,12 @@ impl Scene {
         self.clear = [r, g, b, 1.0];
     }
 
+    /// The current clear color (offscreen capture renders with the same
+    /// background the live window would).
+    pub fn clear_color(&self) -> [f32; 4] {
+        self.clear
+    }
+
     /// Load a model file (glTF/GLB/OBJ). Returns a handle or -1 on failure.
     pub fn load_model(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, path: &str) -> i64 {
         let model = match Model::load(path) {
