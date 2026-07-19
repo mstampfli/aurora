@@ -17,3 +17,5 @@ Thumbs.db
 
 # Generated render dumps
 *.ppm
+
+qa_tmp/

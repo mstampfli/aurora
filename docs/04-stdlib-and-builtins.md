@@ -65,6 +65,45 @@ run in parallel** (the §6.2 checker proves they can't race). `despawn(e)`,
 | `play_wav(path) -> i64` | decode + play a **WAV** file | `hound` |
 | `scene_save(path)` / `scene_load(path)` | persist the ECS world | built-in |
 
+## Determinism & data
+
+Seeded RNG (deterministic BY DEFAULT - a fixed seed unless `srand` is called):
+
+| Builtin | Signature |
+|---|---|
+| `srand(seed)` | reseed the stream (same seed = same sequence, any machine) |
+| `rand() -> f64` | uniform in `[0, 1)` (53 random bits, SplitMix64) |
+| `rand_range(lo, hi) -> f64` | uniform in `[lo, hi)` |
+| `rand_int(lo, hi) -> i64` | uniform integer, **inclusive** both ends |
+
+Fixed timestep: `set_fixed_dt(dt)` pins `frame_dt()` to exactly `dt` per call
+(and advances a virtual clock); `set_fixed_dt(0.0)` restores the wall clock.
+The `AURORA_FIXED_DT` env var does the same for unmodified programs - the
+test-harness hook for reproducible runs.
+
+Text files: `read_file(path) -> str` ("" if unreadable - discriminate with
+`file_exists(path) -> 1|0`), `write_file(path, contents) -> 1|0` (creates
+parent directories). `save_png(path)` writes the 2D framebuffer as a PNG
+(`save_ppm`'s tool-friendly sibling).
+
+JSON (backed by `serde_json`; handles are `i64`, 0 = invalid/absent, reading a
+bad handle is always safe). Load content as data at boot instead of hardcoding
+tables:
+
+| Builtin | Meaning |
+|---|---|
+| `json_parse(text) -> h` / `json_load(path) -> h` | parse (0 + stderr diagnostic on error) |
+| `json_get(h, key) -> h` / `json_at(h, i) -> h` | O(1) child handles, no copying |
+| `json_len(h)` | array length / object entry count / string bytes |
+| `json_num(h) -> f64`, `json_int(h)`, `json_bool(h)`, `json_str(h) -> str` | leaf reads |
+| `json_kind(h)` | -1 invalid, 0 null, 1 bool, 2 number, 3 string, 4 array, 5 object |
+| `json_has(h, key)`, `json_key(h, i) -> str` | probing / key iteration (document order) |
+| `json_new_obj()`, `json_new_arr()` | mutable builders (saves, telemetry) |
+| `json_set(h, key, child)`, `json_set_num/str/bool(h, key, v)` | object writes |
+| `json_push(h, child)`, `json_push_num/str(h, v)` | array appends |
+| `json_to_str(h) -> str`, `json_write(h, path) -> 1|0` | pretty serialization |
+| `json_free(h)` | release a handle (sub-handles keep the document alive) |
+
 ## Networking (reliable UDP)
 
 `net_bind(port)`, `net_connect(host, port)`, `net_send(msg)`, `net_recv() -> str`.

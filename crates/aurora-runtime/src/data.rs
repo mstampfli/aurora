@@ -1,0 +1,606 @@
+//! Determinism + data builtins: seeded RNG, fixed-timestep override, text file
+//! I/O, and a JSON API. These exist so games load content as data (manifests,
+//! dialogue, quests, levels, tuning) and so any session can be reproduced
+//! bit-for-bit (fixed seed + fixed dt).
+//!
+//! JSON handles are thread-local `i64`s (0 = invalid/absent). Parsed documents
+//! are immutable; child lookups return sub-handles in O(1) without cloning
+//! (the root is refcounted, nodes are interior pointers). Builder handles
+//! (`json_new_obj`/`json_new_arr`) own mutable values for constructing saves /
+//! telemetry, serialized with `json_to_str`/`json_write`.
+
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
+use serde_json::Value;
+
+// --- seeded RNG (SplitMix64) ------------------------------------------------
+//
+// Deterministic BY DEFAULT: a fixed seed unless the program calls `srand`.
+// Games that want entropy must opt in with e.g. `srand(time-derived value)`;
+// the factory's harness relies on the default being reproducible.
+
+const DEFAULT_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
+
+thread_local! {
+    static RNG: Cell<u64> = const { Cell::new(DEFAULT_SEED) };
+}
+
+fn next_u64() -> u64 {
+    RNG.with(|s| {
+        let mut z = s.get().wrapping_add(0x9E37_79B9_7F4A_7C15);
+        s.set(z);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    })
+}
+
+/// Reseed the RNG stream. Same seed => same sequence, on any machine.
+#[no_mangle]
+pub extern "C" fn aurora_srand(seed: i64) {
+    RNG.with(|s| s.set(seed as u64));
+}
+
+/// Uniform f64 in [0, 1) with 53 random bits.
+#[no_mangle]
+pub extern "C" fn aurora_rand() -> f64 {
+    (next_u64() >> 11) as f64 * (1.0 / 9_007_199_254_740_992.0)
+}
+
+/// Uniform f64 in [lo, hi) (degenerate ranges return lo).
+#[no_mangle]
+pub extern "C" fn aurora_rand_range(lo: f64, hi: f64) -> f64 {
+    if hi > lo {
+        lo + aurora_rand() * (hi - lo)
+    } else {
+        lo
+    }
+}
+
+/// Uniform integer in [lo, hi] inclusive (degenerate ranges return lo).
+/// Modulo bias is ~range/2^64 - negligible for gameplay use.
+#[no_mangle]
+pub extern "C" fn aurora_rand_int(lo: i64, hi: i64) -> i64 {
+    if hi > lo {
+        let span = (hi - lo) as u64 + 1;
+        lo + (next_u64() % span) as i64
+    } else {
+        lo
+    }
+}
+
+// --- fixed timestep ---------------------------------------------------------
+//
+// When active, `frame_dt()` returns the scripted step and advances a virtual
+// clock instead of reading the wall clock, so replays and headless runs are
+// time-deterministic. Activated by the `set_fixed_dt` builtin or the
+// `AURORA_FIXED_DT` env var (harness-friendly: works on unmodified games).
+
+thread_local! {
+    /// Some(dt) = fixed step active; None = wall clock. Initialized lazily
+    /// from `AURORA_FIXED_DT`.
+    static FIXED_DT: RefCell<Option<Option<f64>>> = const { RefCell::new(None) };
+    static VIRTUAL_TIME: Cell<f64> = const { Cell::new(0.0) };
+}
+
+/// The active fixed step (> 0) or 0.0 when wall-clock time is in effect.
+pub(crate) fn fixed_dt_override() -> f64 {
+    FIXED_DT.with(|f| {
+        let mut f = f.borrow_mut();
+        let inner = f.get_or_insert_with(|| {
+            std::env::var("AURORA_FIXED_DT").ok().and_then(|v| v.parse::<f64>().ok()).filter(|d| *d > 0.0)
+        });
+        inner.unwrap_or(0.0)
+    })
+}
+
+pub(crate) fn advance_virtual_time(dt: f64) {
+    VIRTUAL_TIME.with(|t| t.set(t.get() + dt));
+}
+
+/// Seconds of virtual time accumulated under a fixed step (for offline audio
+/// capture and telemetry timestamps).
+pub fn virtual_time_seconds() -> f64 {
+    VIRTUAL_TIME.with(|t| t.get())
+}
+
+/// `set_fixed_dt(dt)`: dt > 0 pins `frame_dt()` to exactly dt per call;
+/// dt <= 0 restores wall-clock behavior.
+#[no_mangle]
+pub extern "C" fn aurora_set_fixed_dt(dt: f64) {
+    FIXED_DT.with(|f| *f.borrow_mut() = Some(if dt > 0.0 { Some(dt) } else { None }));
+}
+
+// --- text file I/O ----------------------------------------------------------
+
+fn arg_str(ptr: *const u8, len: i64) -> String {
+    let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
+    String::from_utf8_lossy(s).into_owned()
+}
+
+/// `read_file(path) -> str`: the file's contents, or "" if unreadable
+/// (discriminate with `file_exists`). The string lives in the frame arena.
+#[no_mangle]
+pub extern "C" fn aurora_read_file(out: *mut i64, ptr: *const u8, len: i64) {
+    let bytes = std::fs::read(arg_str(ptr, len)).unwrap_or_default();
+    unsafe { crate::write_str(out, bytes) };
+}
+
+/// `write_file(path, contents) -> 1|0`. Creates parent directories.
+#[no_mangle]
+pub extern "C" fn aurora_write_file(pp: *const u8, pl: i64, dp: *const u8, dl: i64) -> i64 {
+    let path = arg_str(pp, pl);
+    let data = unsafe { std::slice::from_raw_parts(dp, dl.max(0) as usize) };
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        if !parent.as_os_str().is_empty() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    }
+    std::fs::write(&path, data).is_ok() as i64
+}
+
+/// `file_exists(path) -> 1|0`.
+#[no_mangle]
+pub extern "C" fn aurora_file_exists(ptr: *const u8, len: i64) -> i64 {
+    std::path::Path::new(&arg_str(ptr, len)).exists() as i64
+}
+
+// --- JSON -------------------------------------------------------------------
+
+enum JNode {
+    /// A node inside an immutable parsed document. `node` points into the tree
+    /// owned by `root`; parsed values are never mutated, and the Rc keeps the
+    /// tree alive for as long as any sub-handle exists, so the pointer is
+    /// stable. O(1) child access with zero clones.
+    Parsed { root: Rc<Value>, node: *const Value },
+    /// A mutable value being built by the program (saves, telemetry).
+    Owned(Value),
+}
+
+thread_local! {
+    static JSON: RefCell<Vec<Option<JNode>>> = const { RefCell::new(Vec::new()) };
+}
+
+fn push_node(n: JNode) -> i64 {
+    JSON.with(|j| {
+        let mut j = j.borrow_mut();
+        j.push(Some(n));
+        j.len() as i64 // handle = index + 1; 0 stays "invalid"
+    })
+}
+
+/// Run `f` on the value behind `h` (parsed nodes and owned values look the
+/// same to readers). None for invalid/freed handles.
+fn with_value<R>(h: i64, f: impl FnOnce(&Value) -> R) -> Option<R> {
+    JSON.with(|j| {
+        let j = j.borrow();
+        match j.get((h - 1).max(0) as usize)? {
+            Some(JNode::Parsed { node, .. }) if h > 0 => Some(f(unsafe { &**node })),
+            Some(JNode::Owned(v)) if h > 0 => Some(f(v)),
+            _ => None,
+        }
+    })
+}
+
+fn with_owned<R>(h: i64, f: impl FnOnce(&mut Value) -> R) -> Option<R> {
+    JSON.with(|j| {
+        let mut j = j.borrow_mut();
+        match j.get_mut((h - 1).max(0) as usize)? {
+            Some(JNode::Owned(v)) if h > 0 => Some(f(v)),
+            _ => None,
+        }
+    })
+}
+
+/// Wrap a child of `h` as a new handle: parsed children stay zero-copy
+/// pointer nodes; owned children are cloned (builder trees are small).
+fn child_handle(h: i64, pick: impl Fn(&Value) -> Option<&Value>) -> i64 {
+    JSON.with(|j| {
+        let node = {
+            let j = j.borrow();
+            match j.get((h - 1).max(0) as usize) {
+                Some(Some(JNode::Parsed { root, node })) if h > 0 => {
+                    pick(unsafe { &**node }).map(|c| JNode::Parsed { root: root.clone(), node: c })
+                }
+                Some(Some(JNode::Owned(v))) if h > 0 => pick(v).map(|c| JNode::Owned(c.clone())),
+                _ => None,
+            }
+        };
+        match node {
+            Some(n) => {
+                let mut j = j.borrow_mut();
+                j.push(Some(n));
+                j.len() as i64
+            }
+            None => 0,
+        }
+    })
+}
+
+/// `json_parse(text) -> handle` (0 on parse error, with a diagnostic).
+#[no_mangle]
+pub extern "C" fn aurora_json_parse(ptr: *const u8, len: i64) -> i64 {
+    let text = arg_str(ptr, len);
+    match serde_json::from_str::<Value>(&text) {
+        Ok(v) => {
+            let root = Rc::new(v);
+            let node: *const Value = &*root;
+            push_node(JNode::Parsed { root, node })
+        }
+        Err(e) => {
+            eprintln!("aurora: json_parse: {e}");
+            0
+        }
+    }
+}
+
+/// `json_load(path) -> handle`: read + parse a file (0 on failure).
+#[no_mangle]
+pub extern "C" fn aurora_json_load(ptr: *const u8, len: i64) -> i64 {
+    let path = arg_str(ptr, len);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("aurora: json_load {path}: {e}");
+            return 0;
+        }
+    };
+    match serde_json::from_str::<Value>(&text) {
+        Ok(v) => {
+            let root = Rc::new(v);
+            let node: *const Value = &*root;
+            push_node(JNode::Parsed { root, node })
+        }
+        Err(e) => {
+            eprintln!("aurora: json_load {path}: {e}");
+            0
+        }
+    }
+}
+
+/// `json_get(h, key) -> handle` (0 if missing / not an object).
+#[no_mangle]
+pub extern "C" fn aurora_json_get(h: i64, kp: *const u8, kl: i64) -> i64 {
+    let key = arg_str(kp, kl);
+    child_handle(h, |v| v.get(&key))
+}
+
+/// `json_at(h, i) -> handle` (0 if out of range / not an array).
+#[no_mangle]
+pub extern "C" fn aurora_json_at(h: i64, i: i64) -> i64 {
+    child_handle(h, |v| v.get(i.max(0) as usize))
+}
+
+/// `json_len(h)`: array length, object entry count, or string byte length.
+#[no_mangle]
+pub extern "C" fn aurora_json_len(h: i64) -> i64 {
+    with_value(h, |v| match v {
+        Value::Array(a) => a.len() as i64,
+        Value::Object(o) => o.len() as i64,
+        Value::String(s) => s.len() as i64,
+        _ => 0,
+    })
+    .unwrap_or(0)
+}
+
+/// `json_num(h) -> f64` (numbers only; else 0.0).
+#[no_mangle]
+pub extern "C" fn aurora_json_num(h: i64) -> f64 {
+    with_value(h, |v| v.as_f64().unwrap_or(0.0)).unwrap_or(0.0)
+}
+
+/// `json_int(h) -> i64` (truncates fractional numbers).
+#[no_mangle]
+pub extern "C" fn aurora_json_int(h: i64) -> i64 {
+    with_value(h, |v| v.as_i64().unwrap_or_else(|| v.as_f64().unwrap_or(0.0) as i64)).unwrap_or(0)
+}
+
+/// `json_bool(h) -> 1|0`.
+#[no_mangle]
+pub extern "C" fn aurora_json_bool(h: i64) -> i64 {
+    with_value(h, |v| v.as_bool().unwrap_or(false) as i64).unwrap_or(0)
+}
+
+/// `json_str(h) -> str`: string contents ("" for non-strings - use
+/// `json_to_str` to serialize any value).
+#[no_mangle]
+pub extern "C" fn aurora_json_str(out: *mut i64, h: i64) {
+    let s = with_value(h, |v| v.as_str().map(|s| s.to_string()).unwrap_or_default())
+        .unwrap_or_default();
+    unsafe { crate::write_str(out, s.into_bytes()) };
+}
+
+/// `json_kind(h)`: -1 invalid, 0 null, 1 bool, 2 number, 3 string, 4 array,
+/// 5 object.
+#[no_mangle]
+pub extern "C" fn aurora_json_kind(h: i64) -> i64 {
+    with_value(h, |v| match v {
+        Value::Null => 0,
+        Value::Bool(_) => 1,
+        Value::Number(_) => 2,
+        Value::String(_) => 3,
+        Value::Array(_) => 4,
+        Value::Object(_) => 5,
+    })
+    .unwrap_or(-1)
+}
+
+/// `json_has(h, key) -> 1|0`.
+#[no_mangle]
+pub extern "C" fn aurora_json_has(h: i64, kp: *const u8, kl: i64) -> i64 {
+    let key = arg_str(kp, kl);
+    with_value(h, |v| v.get(&key).is_some() as i64).unwrap_or(0)
+}
+
+/// `json_key(h, i) -> str`: the i-th key of an object (document order).
+#[no_mangle]
+pub extern "C" fn aurora_json_key(out: *mut i64, h: i64, i: i64) {
+    let s = with_value(h, |v| match v {
+        Value::Object(o) => o.keys().nth(i.max(0) as usize).cloned().unwrap_or_default(),
+        _ => String::new(),
+    })
+    .unwrap_or_default();
+    unsafe { crate::write_str(out, s.into_bytes()) };
+}
+
+/// `json_free(h)`: release a handle (and, for parsed roots, its share of the
+/// document). Reading a freed handle yields kind -1, never a crash.
+#[no_mangle]
+pub extern "C" fn aurora_json_free(h: i64) {
+    JSON.with(|j| {
+        let mut j = j.borrow_mut();
+        if h > 0 {
+            if let Some(slot) = j.get_mut((h - 1) as usize) {
+                *slot = None;
+            }
+        }
+    });
+}
+
+// --- JSON building (saves / telemetry) --------------------------------------
+
+/// `json_new_obj() -> handle` (mutable).
+#[no_mangle]
+pub extern "C" fn aurora_json_new_obj() -> i64 {
+    push_node(JNode::Owned(Value::Object(Default::default())))
+}
+
+/// `json_new_arr() -> handle` (mutable).
+#[no_mangle]
+pub extern "C" fn aurora_json_new_arr() -> i64 {
+    push_node(JNode::Owned(Value::Array(Vec::new())))
+}
+
+fn snapshot(h: i64) -> Option<Value> {
+    with_value(h, |v| v.clone())
+}
+
+/// `json_set(h, key, child)`: store a deep copy of `child` under `key`.
+#[no_mangle]
+pub extern "C" fn aurora_json_set(h: i64, kp: *const u8, kl: i64, child: i64) {
+    let key = arg_str(kp, kl);
+    let Some(v) = snapshot(child) else { return };
+    with_owned(h, |o| {
+        if let Value::Object(map) = o {
+            map.insert(key, v);
+        }
+    });
+}
+
+/// `json_set_num(h, key, x)`.
+#[no_mangle]
+pub extern "C" fn aurora_json_set_num(h: i64, kp: *const u8, kl: i64, x: f64) {
+    let key = arg_str(kp, kl);
+    with_owned(h, |o| {
+        if let Value::Object(map) = o {
+            map.insert(key, num_value(x));
+        }
+    });
+}
+
+/// `json_set_str(h, key, s)`.
+#[no_mangle]
+pub extern "C" fn aurora_json_set_str(h: i64, kp: *const u8, kl: i64, sp: *const u8, sl: i64) {
+    let key = arg_str(kp, kl);
+    let s = arg_str(sp, sl);
+    with_owned(h, |o| {
+        if let Value::Object(map) = o {
+            map.insert(key, Value::String(s));
+        }
+    });
+}
+
+/// `json_set_bool(h, key, b)`.
+#[no_mangle]
+pub extern "C" fn aurora_json_set_bool(h: i64, kp: *const u8, kl: i64, b: i64) {
+    let key = arg_str(kp, kl);
+    with_owned(h, |o| {
+        if let Value::Object(map) = o {
+            map.insert(key, Value::Bool(b != 0));
+        }
+    });
+}
+
+/// `json_push(h, child)`: append a deep copy of `child` to an array.
+#[no_mangle]
+pub extern "C" fn aurora_json_push(h: i64, child: i64) {
+    let Some(v) = snapshot(child) else { return };
+    with_owned(h, |o| {
+        if let Value::Array(a) = o {
+            a.push(v);
+        }
+    });
+}
+
+/// `json_push_num(h, x)`.
+#[no_mangle]
+pub extern "C" fn aurora_json_push_num(h: i64, x: f64) {
+    with_owned(h, |o| {
+        if let Value::Array(a) = o {
+            a.push(num_value(x));
+        }
+    });
+}
+
+/// `json_push_str(h, s)`.
+#[no_mangle]
+pub extern "C" fn aurora_json_push_str(h: i64, sp: *const u8, sl: i64) {
+    let s = arg_str(sp, sl);
+    with_owned(h, |o| {
+        if let Value::Array(a) = o {
+            a.push(Value::String(s));
+        }
+    });
+}
+
+/// Whole-valued floats serialize as integers (7 not 7.0) so counters and ids
+/// round-trip exactly.
+fn num_value(x: f64) -> Value {
+    if x.is_finite() && x == x.trunc() && x.abs() < 9.0e15 {
+        Value::Number((x as i64).into())
+    } else {
+        serde_json::Number::from_f64(x).map(Value::Number).unwrap_or(Value::Null)
+    }
+}
+
+/// `json_to_str(h) -> str`: pretty-printed JSON of any handle.
+#[no_mangle]
+pub extern "C" fn aurora_json_to_str(out: *mut i64, h: i64) {
+    let s = with_value(h, |v| serde_json::to_string_pretty(v).unwrap_or_default())
+        .unwrap_or_default();
+    unsafe { crate::write_str(out, s.into_bytes()) };
+}
+
+/// `json_write(h, path) -> 1|0`: pretty-print to a file (parent dirs created).
+#[no_mangle]
+pub extern "C" fn aurora_json_write(h: i64, pp: *const u8, pl: i64) -> i64 {
+    let path = arg_str(pp, pl);
+    let Some(text) = with_value(h, |v| serde_json::to_string_pretty(v).unwrap_or_default()) else {
+        return 0;
+    };
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        if !parent.as_os_str().is_empty() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    }
+    std::fs::write(&path, text).is_ok() as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn str_of(f: impl Fn(*mut i64)) -> String {
+        let mut out = [0i64; 2];
+        f(out.as_mut_ptr());
+        let s = unsafe { std::slice::from_raw_parts(out[0] as *const u8, out[1] as usize) };
+        String::from_utf8_lossy(s).into_owned()
+    }
+
+    #[test]
+    fn rng_is_deterministic_and_reseedable() {
+        aurora_srand(42);
+        let a: Vec<f64> = (0..5).map(|_| aurora_rand()).collect();
+        aurora_srand(42);
+        let b: Vec<f64> = (0..5).map(|_| aurora_rand()).collect();
+        assert_eq!(a, b, "same seed must give the same sequence");
+        assert!(a.iter().all(|x| (0.0..1.0).contains(x)));
+        aurora_srand(43);
+        let c: Vec<f64> = (0..5).map(|_| aurora_rand()).collect();
+        assert_ne!(a, c, "different seeds must diverge");
+        for _ in 0..1000 {
+            let v = aurora_rand_int(3, 7);
+            assert!((3..=7).contains(&v));
+        }
+        assert_eq!(aurora_rand_int(5, 5), 5);
+    }
+
+    #[test]
+    fn fixed_dt_overrides_and_restores() {
+        aurora_set_fixed_dt(1.0 / 120.0);
+        let d1 = crate::aurora_frame_dt();
+        let d2 = crate::aurora_frame_dt();
+        assert_eq!(d1, 1.0 / 120.0);
+        assert_eq!(d2, 1.0 / 120.0);
+        assert!(virtual_time_seconds() >= 2.0 / 120.0 - 1e-9);
+        aurora_set_fixed_dt(0.0);
+        let d3 = crate::aurora_frame_dt();
+        assert!(d3 > 0.0 && d3 <= 0.1, "wall clock restored, got {d3}");
+    }
+
+    #[test]
+    fn json_parse_navigate_and_types() {
+        let text = br#"{"name":"grunt","hp":40,"fast":true,"tags":["melee","dumb"],"pos":{"x":1.5}}"#;
+        let h = aurora_json_parse(text.as_ptr(), text.len() as i64);
+        assert!(h > 0);
+        assert_eq!(aurora_json_kind(h), 5);
+        let name = aurora_json_get(h, b"name".as_ptr(), 4);
+        assert_eq!(aurora_json_kind(name), 3);
+        assert_eq!(str_of(|o| aurora_json_str(o, name)), "grunt");
+        let hp = aurora_json_get(h, b"hp".as_ptr(), 2);
+        assert_eq!(aurora_json_int(hp), 40);
+        assert_eq!(aurora_json_num(hp), 40.0);
+        let fast = aurora_json_get(h, b"fast".as_ptr(), 4);
+        assert_eq!(aurora_json_bool(fast), 1);
+        let tags = aurora_json_get(h, b"tags".as_ptr(), 4);
+        assert_eq!(aurora_json_kind(tags), 4);
+        assert_eq!(aurora_json_len(tags), 2);
+        let t1 = aurora_json_at(tags, 1);
+        assert_eq!(str_of(|o| aurora_json_str(o, t1)), "dumb");
+        let pos = aurora_json_get(h, b"pos".as_ptr(), 3);
+        let x = aurora_json_get(pos, b"x".as_ptr(), 1);
+        assert_eq!(aurora_json_num(x), 1.5);
+        // Missing key / out-of-range / freed handles degrade to 0 / -1.
+        assert_eq!(aurora_json_get(h, b"nope".as_ptr(), 4), 0);
+        assert_eq!(aurora_json_at(tags, 99), 0);
+        assert_eq!(aurora_json_has(h, b"hp".as_ptr(), 2), 1);
+        assert_eq!(aurora_json_has(h, b"nope".as_ptr(), 4), 0);
+        aurora_json_free(h);
+        assert_eq!(aurora_json_kind(h), -1);
+        // Sub-handles survive freeing the root handle (Rc keeps the tree).
+        assert_eq!(aurora_json_int(hp), 40);
+    }
+
+    #[test]
+    fn json_build_and_roundtrip() {
+        let obj = aurora_json_new_obj();
+        aurora_json_set_str(obj, b"name".as_ptr(), 4, b"save1".as_ptr(), 5);
+        aurora_json_set_num(obj, b"hp".as_ptr(), 2, 77.0);
+        aurora_json_set_num(obj, b"x".as_ptr(), 1, 1.25);
+        aurora_json_set_bool(obj, b"hard".as_ptr(), 4, 1);
+        let arr = aurora_json_new_arr();
+        aurora_json_push_num(arr, 3.0);
+        aurora_json_push_str(arr, b"sword".as_ptr(), 5);
+        aurora_json_set(obj, b"items".as_ptr(), 5, arr);
+        let text = str_of(|o| aurora_json_to_str(o, obj));
+        let h = aurora_json_parse(text.as_bytes().as_ptr(), text.len() as i64);
+        assert!(h > 0, "round-trip parse of: {text}");
+        assert_eq!(aurora_json_int(aurora_json_get(h, b"hp".as_ptr(), 2)), 77);
+        assert_eq!(aurora_json_num(aurora_json_get(h, b"x".as_ptr(), 1)), 1.25);
+        let items = aurora_json_get(h, b"items".as_ptr(), 5);
+        assert_eq!(aurora_json_len(items), 2);
+        assert_eq!(aurora_json_int(aurora_json_at(items, 0)), 3);
+        // Whole numbers serialize without a fractional suffix.
+        assert!(text.contains("\"hp\": 77"), "got: {text}");
+    }
+
+    #[test]
+    fn file_roundtrip_and_exists() {
+        let dir = std::env::temp_dir().join("aurora_data_test");
+        let path = dir.join("nested").join("t.txt");
+        let p = path.to_string_lossy().into_owned();
+        assert_eq!(aurora_file_exists(p.as_ptr(), p.len() as i64), 0);
+        assert_eq!(
+            aurora_write_file(p.as_ptr(), p.len() as i64, b"hello".as_ptr(), 5),
+            1,
+            "write_file creates parent dirs"
+        );
+        assert_eq!(aurora_file_exists(p.as_ptr(), p.len() as i64), 1);
+        let mut out = [0i64; 2];
+        aurora_read_file(out.as_mut_ptr(), p.as_ptr(), p.len() as i64);
+        let s = unsafe { std::slice::from_raw_parts(out[0] as *const u8, out[1] as usize) };
+        assert_eq!(s, b"hello");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

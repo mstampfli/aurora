@@ -1,4 +1,4 @@
-//! Aurora's native runtime — the host functions compiled Aurora code calls.
+//! Aurora's native runtime â€” the host functions compiled Aurora code calls.
 //!
 //! Every `aurora_*` symbol here is `#[no_mangle] pub extern "C"`, so it is a
 //! real, linkable C-ABI symbol. Two consumers use them:
@@ -23,6 +23,10 @@ pub use phys3d::*;
 mod netgame;
 pub use netgame::*;
 
+// Determinism + data: seeded RNG, fixed dt, file I/O, JSON.
+mod data;
+pub use data::*;
+
 // --- printing --------------------------------------------------------------
 
 #[no_mangle]
@@ -30,7 +34,7 @@ pub extern "C" fn aurora_print_i64(n: i64) {
     print!("{n}");
 }
 /// Format an `f64` for display. Whole-valued finite floats get a trailing `.0`
-/// (`7.0` not `7`) so floats are visually distinct from ints — Aurora is a
+/// (`7.0` not `7`) so floats are visually distinct from ints â€” Aurora is a
 /// float-heavy game-dev language and the ambiguity is a debugging hazard.
 /// Non-finite values (`inf`, `NaN`) and already-fractional values are left as
 /// Rust's default Display renders them.
@@ -56,7 +60,7 @@ pub extern "C" fn aurora_print_nl() {
     println!();
 }
 
-/// Flush buffered stdout — called from the AOT entry shim before exit, since the
+/// Flush buffered stdout â€” called from the AOT entry shim before exit, since the
 /// program does not return through Rust's runtime (which would flush for us).
 #[no_mangle]
 pub extern "C" fn aurora_runtime_flush() {
@@ -80,8 +84,17 @@ thread_local! {
 /// Real elapsed seconds since the previous call (0.016 on the first call),
 /// clamped to 0.1 so a stall can't make the game lurch or spiral. Lets the game
 /// loop run frame-rate-independent instead of assuming a fixed step.
+///
+/// Under a fixed step (`set_fixed_dt` builtin or `AURORA_FIXED_DT` env var)
+/// this returns the scripted dt and advances the virtual clock instead - the
+/// determinism hook replays and headless runs rely on.
 #[no_mangle]
 pub extern "C" fn aurora_frame_dt() -> f64 {
+    let fixed = data::fixed_dt_override();
+    if fixed > 0.0 {
+        data::advance_virtual_time(fixed);
+        return fixed;
+    }
     LAST_FRAME.with(|c| {
         let now = std::time::Instant::now();
         let dt = match c.borrow_mut().replace(now) {
@@ -103,7 +116,7 @@ pub extern "C" fn aurora_sleep_ms(ms: i64) {
 
 /// FFI demonstration target (a Rust `extern "C"` function): dot product of two
 /// `n`-element `f64` buffers. Aurora arrays/structs of `f64` are contiguous
-/// 8-byte slots, so they pass straight through as `const double*` — this is what
+/// 8-byte slots, so they pass straight through as `const double*` â€” this is what
 /// lets `@extern` bind real C/Rust functions that take buffers and vectors.
 #[no_mangle]
 pub extern "C" fn aurora_ffi_dot(a: *const f64, b: *const f64, n: i64) -> f64 {
@@ -112,7 +125,7 @@ pub extern "C" fn aurora_ffi_dot(a: *const f64, b: *const f64, n: i64) -> f64 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
-/// `f32` variant — reads two C-packed `float` buffers. Tests that Aurora `f32`
+/// `f32` variant â€” reads two C-packed `float` buffers. Tests that Aurora `f32`
 /// aggregates are marshaled to C's 4-byte-packed layout over FFI.
 #[no_mangle]
 pub extern "C" fn aurora_ffi_dotf(a: *const f32, b: *const f32, n: i64) -> f32 {
@@ -218,14 +231,46 @@ pub extern "C" fn aurora_save_ppm(ptr: *const u8, len: i64) {
     });
 }
 
+/// Save the 2D framebuffer as a PNG (the format vision tooling reads).
+/// Creates parent directories. Backs the `save_png` builtin.
+#[no_mangle]
+pub extern "C" fn aurora_save_png(ptr: *const u8, len: i64) {
+    let path = {
+        let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
+        String::from_utf8_lossy(s).into_owned()
+    };
+    FB.with(|fb| {
+        if let Some(f) = fb.borrow().as_ref() {
+            let (w, h) = (f.width(), f.height());
+            let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+            for y in 0..h {
+                for x in 0..w {
+                    let c = f.get(x, y);
+                    rgba.extend_from_slice(&[c.r, c.g, c.b, 255]);
+                }
+            }
+            if let Some(parent) = std::path::Path::new(&path).parent() {
+                if !parent.as_os_str().is_empty() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+            }
+            if let Err(e) =
+                image::save_buffer(&path, &rgba, w, h, image::ExtendedColorType::Rgba8)
+            {
+                eprintln!("aurora: save_png {path}: {e}");
+            }
+        }
+    });
+}
+
 // --- region arenas ----------------------------------------------------------
 //
 // A real runtime backing for the language's `#frame`/`#level`/`#perm` regions:
 // each is a chunked bump allocator. Dynamic allocations (string concat, int/
 // float formatting) come from the `#frame` arena, and `frame_reset()` frees the
-// whole frame's allocations at once (O(1)) — so memory is arena-managed and
+// whole frame's allocations at once (O(1)) â€” so memory is arena-managed and
 // reclaimed at frame boundaries instead of leaking. The region *checker*
-// (`aurora-check` §8.2) statically prevents storing shorter-lived (frame) data
+// (`aurora-check` Â§8.2) statically prevents storing shorter-lived (frame) data
 // where longer-lived data is expected, which is what makes the bulk reset safe.
 
 const CHUNK: usize = 1 << 20; // 1 MiB per chunk
@@ -304,7 +349,7 @@ pub fn frame_arena_used() -> usize {
 // resulting `[ptr, len]` into a caller-provided 2-slot aggregate `out`.
 
 /// Write a `[ptr, len]` pair (allocated in the frame arena) into `out`.
-unsafe fn write_str(out: *mut i64, bytes: Vec<u8>) {
+pub(crate) unsafe fn write_str(out: *mut i64, bytes: Vec<u8>) {
     let ptr = frame_alloc(&bytes) as i64;
     *out = ptr;
     *out.add(1) = bytes.len() as i64;
@@ -389,7 +434,7 @@ pub extern "C" fn aurora_load_ppm(ptr: *const u8, len: i64) -> i64 {
 
 /// Load a PNG/JPEG image at `path` into the framebuffer (resizing it to the
 /// image), decoded to RGBA via the `image` crate. Returns 1 on success, 0 on
-/// failure. Backs the `load_image` builtin — the asset pipeline beyond PPM.
+/// failure. Backs the `load_image` builtin â€” the asset pipeline beyond PPM.
 #[no_mangle]
 pub extern "C" fn aurora_load_image(ptr: *const u8, len: i64) -> i64 {
     let path = {
@@ -447,7 +492,7 @@ fn render_text(x: i64, y: i64, text: &str, px: i64, color: i64) {
             let mut fb = fb.borrow_mut();
             let Some(fb) = fb.as_mut() else { return };
             let (w, h) = (fb.width() as i32, fb.height() as i32);
-            let baseline = y + px as i64; // `y` is the top; baseline ≈ y + size
+            let baseline = y + px as i64; // `y` is the top; baseline â‰ˆ y + size
             let mut pen = x;
             for ch in text.chars() {
                 let (m, bitmap) = font.rasterize(ch, px);
@@ -514,7 +559,7 @@ pub extern "C" fn aurora_draw_int(x: i64, y: i64, n: i64, px: i64, color: i64) {
 // --- real 2D physics (Rapier) -----------------------------------------------
 //
 // A stateful physics world backed by Rapier: rigid bodies, colliders, gravity,
-// continuous collision — far beyond the hand-rolled AABB resolver in the stdlib.
+// continuous collision â€” far beyond the hand-rolled AABB resolver in the stdlib.
 // Bodies are referenced by an i64 handle (an index into `handles`). Positions
 // are the body centre, in whatever units the program uses (e.g. pixels).
 
@@ -900,7 +945,7 @@ thread_local! {
 // shared world owned by the main thread. `PAR_WORLD`, when non-null, points at a
 // `ParWorld` living on the main thread's stack for the duration of one batch.
 //
-// SAFETY rests on the §6.2 data-race-freedom theorem the compiler already
+// SAFETY rests on the Â§6.2 data-race-freedom theorem the compiler already
 // enforces: two systems run concurrently only when their component access sets
 // don't conflict, so no two threads ever touch the same component buffer
 // mutably. The `Mutex` serialises only *structural* map access (lookup/insert);
@@ -983,7 +1028,7 @@ pub extern "C" fn aurora_entity_count() -> i64 {
 }
 
 /// Run a batch of zero-arg system functions concurrently over the shared ECS
-/// world. The §6.2 scheduler check guarantees the systems handed to one batch
+/// world. The Â§6.2 scheduler check guarantees the systems handed to one batch
 /// have non-conflicting component access, so concurrent execution is race-free.
 /// `fns` is an array of `n` raw function addresses (each an `extern "C" fn()`).
 #[no_mangle]
@@ -1107,7 +1152,7 @@ pub extern "C" fn aurora_scene_load(ptr: *const u8, len: i64) -> i64 {
 //
 // In profiling builds the compiler emits `aurora_prof_enter(name)` at each
 // function entry and `aurora_prof_exit()` at each return, accumulating call
-// counts and wall-clock time per function — a real instrumenting profiler over
+// counts and wall-clock time per function â€” a real instrumenting profiler over
 // the native code.
 
 #[derive(Default)]
@@ -1213,7 +1258,7 @@ pub extern "C" fn aurora_gpu_render(ptr: *const u8, len: i64, time_ms: i64) {
 
 /// Run a compute shader on the GPU over an `[f64; n]` array, in place. `wgsl`
 /// operates on a `read_write array<f32>` at binding 0. Values are converted
-/// f64→f32 for the GPU and back. Backs the `gpu_compute` builtin.
+/// f64â†’f32 for the GPU and back. Backs the `gpu_compute` builtin.
 #[no_mangle]
 pub extern "C" fn aurora_gpu_compute(wptr: *const u8, wlen: i64, data: *mut f64, n: i64) {
     let wgsl = {
@@ -1229,7 +1274,7 @@ pub extern "C" fn aurora_gpu_compute(wptr: *const u8, wlen: i64, data: *mut f64,
     }
 }
 
-/// Open a real-time window backing a `w`×`h` builtin framebuffer.
+/// Open a real-time window backing a `w`Ã—`h` builtin framebuffer.
 #[no_mangle]
 pub extern "C" fn aurora_window_open(w: i64, h: i64) {
     aurora_window::imm_open(w.max(0) as u32, h.max(0) as u32);
@@ -1726,7 +1771,7 @@ pub extern "C" fn aurora_atan2(y: f64, x: f64) -> f64 {
     y.atan2(x)
 }
 
-/// Play a note WITHOUT blocking — mixed into the persistent audio engine, so
+/// Play a note WITHOUT blocking â€” mixed into the persistent audio engine, so
 /// sounds and music overlap. `looped` != 0 repeats it until volume/stop.
 #[no_mangle]
 pub extern "C" fn aurora_play_sound(semitone: i64, dur_ms: i64, looped: i64) {
@@ -1883,7 +1928,7 @@ pub extern "C" fn aurora_load_settings(data: *mut f64, len: i64) -> i64 {
 
 /// Load and play a WAV file at `path` through the audio mixer (downmixed to
 /// mono, normalized to f32). Returns 1 on success, 0 on failure. Backs the
-/// `play_wav` builtin — audio asset playback beyond the synth.
+/// `play_wav` builtin â€” audio asset playback beyond the synth.
 #[no_mangle]
 pub extern "C" fn aurora_play_wav(ptr: *const u8, len: i64) -> i64 {
     let path = {
@@ -2251,7 +2296,7 @@ pub extern "C" fn aurora_dbg_var_f64(name_ptr: *const u8, name_len: i64, value: 
 /// Touch every host symbol so the linker keeps this crate's object in an AOT
 /// link even when the Rust driver references nothing from it directly.
 pub fn force_link() -> usize {
-    let fns: [*const (); 322] = [
+    let fns: [*const (); 355] = [
         aurora_net_projectile_intent as *const (),
         aurora_net_server_projectile_count as *const (),
         aurora_net_server_projectile_shooter as *const (),
@@ -2585,6 +2630,39 @@ pub fn force_link() -> usize {
         aurora_query_begin as *const (),
         aurora_query_entity as *const (),
         aurora_entity_count as *const (),
+        aurora_save_png as *const (),
+        aurora_srand as *const (),
+        aurora_rand as *const (),
+        aurora_rand_range as *const (),
+        aurora_rand_int as *const (),
+        aurora_set_fixed_dt as *const (),
+        aurora_read_file as *const (),
+        aurora_write_file as *const (),
+        aurora_file_exists as *const (),
+        aurora_json_parse as *const (),
+        aurora_json_load as *const (),
+        aurora_json_get as *const (),
+        aurora_json_at as *const (),
+        aurora_json_len as *const (),
+        aurora_json_num as *const (),
+        aurora_json_int as *const (),
+        aurora_json_bool as *const (),
+        aurora_json_str as *const (),
+        aurora_json_kind as *const (),
+        aurora_json_has as *const (),
+        aurora_json_key as *const (),
+        aurora_json_free as *const (),
+        aurora_json_new_obj as *const (),
+        aurora_json_new_arr as *const (),
+        aurora_json_set as *const (),
+        aurora_json_set_num as *const (),
+        aurora_json_set_str as *const (),
+        aurora_json_set_bool as *const (),
+        aurora_json_push as *const (),
+        aurora_json_push_num as *const (),
+        aurora_json_push_str as *const (),
+        aurora_json_to_str as *const (),
+        aurora_json_write as *const (),
     ];
     std::hint::black_box(fns.iter().map(|p| *p as usize).sum())
 }

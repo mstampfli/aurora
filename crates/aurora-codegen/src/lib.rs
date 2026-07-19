@@ -406,6 +406,14 @@ const BUILTINS: &[&str] = &[
     "input_bind", "input_binding", "input_down", "input_axis", "input_suppress",
     "save_settings", "load_settings",
     "f32_load", "f32_store", "f32_blob",
+    // Determinism: seeded RNG + fixed timestep.
+    "srand", "rand", "rand_range", "rand_int", "set_fixed_dt",
+    // Data: PNG framebuffer capture, text file I/O, JSON parse/build.
+    "save_png", "read_file", "write_file", "file_exists",
+    "json_parse", "json_load", "json_get", "json_at", "json_len", "json_num", "json_int",
+    "json_bool", "json_str", "json_kind", "json_has", "json_key", "json_free",
+    "json_new_obj", "json_new_arr", "json_set", "json_set_num", "json_set_str", "json_set_bool",
+    "json_push", "json_push_num", "json_push_str", "json_to_str", "json_write",
 ];
 
 /// Byte size of a type (always a multiple of 8). Aggregates lay out their
@@ -585,6 +593,39 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_oob", aurora_runtime::aurora_oob as *const u8);
     builder.symbol("aurora_frame_dt", aurora_runtime::aurora_frame_dt as *const u8);
     builder.symbol("aurora_sleep_ms", aurora_runtime::aurora_sleep_ms as *const u8);
+    builder.symbol("aurora_srand", aurora_runtime::aurora_srand as *const u8);
+    builder.symbol("aurora_rand", aurora_runtime::aurora_rand as *const u8);
+    builder.symbol("aurora_rand_range", aurora_runtime::aurora_rand_range as *const u8);
+    builder.symbol("aurora_rand_int", aurora_runtime::aurora_rand_int as *const u8);
+    builder.symbol("aurora_set_fixed_dt", aurora_runtime::aurora_set_fixed_dt as *const u8);
+    builder.symbol("aurora_save_png", aurora_runtime::aurora_save_png as *const u8);
+    builder.symbol("aurora_read_file", aurora_runtime::aurora_read_file as *const u8);
+    builder.symbol("aurora_write_file", aurora_runtime::aurora_write_file as *const u8);
+    builder.symbol("aurora_file_exists", aurora_runtime::aurora_file_exists as *const u8);
+    builder.symbol("aurora_json_parse", aurora_runtime::aurora_json_parse as *const u8);
+    builder.symbol("aurora_json_load", aurora_runtime::aurora_json_load as *const u8);
+    builder.symbol("aurora_json_get", aurora_runtime::aurora_json_get as *const u8);
+    builder.symbol("aurora_json_at", aurora_runtime::aurora_json_at as *const u8);
+    builder.symbol("aurora_json_len", aurora_runtime::aurora_json_len as *const u8);
+    builder.symbol("aurora_json_num", aurora_runtime::aurora_json_num as *const u8);
+    builder.symbol("aurora_json_int", aurora_runtime::aurora_json_int as *const u8);
+    builder.symbol("aurora_json_bool", aurora_runtime::aurora_json_bool as *const u8);
+    builder.symbol("aurora_json_str", aurora_runtime::aurora_json_str as *const u8);
+    builder.symbol("aurora_json_kind", aurora_runtime::aurora_json_kind as *const u8);
+    builder.symbol("aurora_json_has", aurora_runtime::aurora_json_has as *const u8);
+    builder.symbol("aurora_json_key", aurora_runtime::aurora_json_key as *const u8);
+    builder.symbol("aurora_json_free", aurora_runtime::aurora_json_free as *const u8);
+    builder.symbol("aurora_json_new_obj", aurora_runtime::aurora_json_new_obj as *const u8);
+    builder.symbol("aurora_json_new_arr", aurora_runtime::aurora_json_new_arr as *const u8);
+    builder.symbol("aurora_json_set", aurora_runtime::aurora_json_set as *const u8);
+    builder.symbol("aurora_json_set_num", aurora_runtime::aurora_json_set_num as *const u8);
+    builder.symbol("aurora_json_set_str", aurora_runtime::aurora_json_set_str as *const u8);
+    builder.symbol("aurora_json_set_bool", aurora_runtime::aurora_json_set_bool as *const u8);
+    builder.symbol("aurora_json_push", aurora_runtime::aurora_json_push as *const u8);
+    builder.symbol("aurora_json_push_num", aurora_runtime::aurora_json_push_num as *const u8);
+    builder.symbol("aurora_json_push_str", aurora_runtime::aurora_json_push_str as *const u8);
+    builder.symbol("aurora_json_to_str", aurora_runtime::aurora_json_to_str as *const u8);
+    builder.symbol("aurora_json_write", aurora_runtime::aurora_json_write as *const u8);
     builder.symbol("aurora_divzero", aurora_runtime::aurora_divzero as *const u8);
     builder.symbol("aurora_fmod", aurora_runtime::aurora_fmod as *const u8);
     builder.symbol("aurora_load_image", aurora_runtime::aurora_load_image as *const u8);
@@ -1020,6 +1061,40 @@ fn lower(
     hosts.insert("net_recv", import(jmod, "aurora_net_recv", &[ptr_ty], None));
     hosts.insert("frame_reset", import(jmod, "aurora_frame_reset", &[], None));
     hosts.insert("load_ppm", import(jmod, "aurora_load_ppm", &[ptr_ty, i], Some(i)));
+    // Determinism + data builtins.
+    hosts.insert("srand", import(jmod, "aurora_srand", &[i], None));
+    hosts.insert("rand", import(jmod, "aurora_rand", &[], Some(types::F64)));
+    hosts.insert("rand_range", import(jmod, "aurora_rand_range", &[types::F64, types::F64], Some(types::F64)));
+    hosts.insert("rand_int", import(jmod, "aurora_rand_int", &[i, i], Some(i)));
+    hosts.insert("set_fixed_dt", import(jmod, "aurora_set_fixed_dt", &[types::F64], None));
+    hosts.insert("save_png", import(jmod, "aurora_save_png", &[ptr_ty, i], None));
+    hosts.insert("read_file", import(jmod, "aurora_read_file", &[ptr_ty, ptr_ty, i], None));
+    hosts.insert("write_file", import(jmod, "aurora_write_file", &[ptr_ty, i, ptr_ty, i], Some(i)));
+    hosts.insert("file_exists", import(jmod, "aurora_file_exists", &[ptr_ty, i], Some(i)));
+    hosts.insert("json_parse", import(jmod, "aurora_json_parse", &[ptr_ty, i], Some(i)));
+    hosts.insert("json_load", import(jmod, "aurora_json_load", &[ptr_ty, i], Some(i)));
+    hosts.insert("json_get", import(jmod, "aurora_json_get", &[i, ptr_ty, i], Some(i)));
+    hosts.insert("json_at", import(jmod, "aurora_json_at", &[i, i], Some(i)));
+    hosts.insert("json_len", import(jmod, "aurora_json_len", &[i], Some(i)));
+    hosts.insert("json_num", import(jmod, "aurora_json_num", &[i], Some(types::F64)));
+    hosts.insert("json_int", import(jmod, "aurora_json_int", &[i], Some(i)));
+    hosts.insert("json_bool", import(jmod, "aurora_json_bool", &[i], Some(i)));
+    hosts.insert("json_str", import(jmod, "aurora_json_str", &[ptr_ty, i], None));
+    hosts.insert("json_kind", import(jmod, "aurora_json_kind", &[i], Some(i)));
+    hosts.insert("json_has", import(jmod, "aurora_json_has", &[i, ptr_ty, i], Some(i)));
+    hosts.insert("json_key", import(jmod, "aurora_json_key", &[ptr_ty, i, i], None));
+    hosts.insert("json_free", import(jmod, "aurora_json_free", &[i], None));
+    hosts.insert("json_new_obj", import(jmod, "aurora_json_new_obj", &[], Some(i)));
+    hosts.insert("json_new_arr", import(jmod, "aurora_json_new_arr", &[], Some(i)));
+    hosts.insert("json_set", import(jmod, "aurora_json_set", &[i, ptr_ty, i, i], None));
+    hosts.insert("json_set_num", import(jmod, "aurora_json_set_num", &[i, ptr_ty, i, types::F64], None));
+    hosts.insert("json_set_str", import(jmod, "aurora_json_set_str", &[i, ptr_ty, i, ptr_ty, i], None));
+    hosts.insert("json_set_bool", import(jmod, "aurora_json_set_bool", &[i, ptr_ty, i, i], None));
+    hosts.insert("json_push", import(jmod, "aurora_json_push", &[i, i], None));
+    hosts.insert("json_push_num", import(jmod, "aurora_json_push_num", &[i, types::F64], None));
+    hosts.insert("json_push_str", import(jmod, "aurora_json_push_str", &[i, ptr_ty, i], None));
+    hosts.insert("json_to_str", import(jmod, "aurora_json_to_str", &[ptr_ty, i], None));
+    hosts.insert("json_write", import(jmod, "aurora_json_write", &[i, ptr_ty, i], Some(i)));
     hosts.insert("oob", import(jmod, "aurora_oob", &[i, i], None));
     hosts.insert("frame_dt", import(jmod, "aurora_frame_dt", &[], Some(types::F64)));
     hosts.insert("sleep_ms", import(jmod, "aurora_sleep_ms", &[types::I64], None));
@@ -3446,13 +3521,108 @@ fn tr_call(
         };
         return Ok(Term::Val(result, Cty::I64));
     }
-    if name == "save_ppm" {
+    if name == "save_ppm" || name == "save_png" {
         if let Some(a) = args.first() {
             let (ptr, len) = str_arg(m, b, l, env, &a.value)?;
-            let f = m.declare_func_in_func(env.hosts["save_ppm"], b.func);
+            let f = m.declare_func_in_func(env.hosts[name.as_str()], b.func);
             b.ins().call(f, &[ptr, len]);
         }
         return Ok(Term::Val(b.ins().iconst(types::I64, 0), Cty::I64));
+    }
+
+    // Data builtins with string arguments and/or string results.
+    // `read_file(path) -> str` (out-param [ptr,len] like substr).
+    if name == "read_file" {
+        let (pp, pl) = str_arg(m, b, l, env, &args[0].value)?;
+        let out = alloc(b, env, 2);
+        let f = m.declare_func_in_func(env.hosts["read_file"], b.func);
+        b.ins().call(f, &[out, pp, pl]);
+        return Ok(Term::Val(out, Cty::Str));
+    }
+    // `write_file(path, contents) -> 1|0`.
+    if name == "write_file" {
+        let (pp, pl) = str_arg(m, b, l, env, &args[0].value)?;
+        let (dp, dl) = str_arg(m, b, l, env, &args[1].value)?;
+        let f = m.declare_func_in_func(env.hosts["write_file"], b.func);
+        let call = b.ins().call(f, &[pp, pl, dp, dl]);
+        return Ok(Term::Val(b.inst_results(call)[0], Cty::I64));
+    }
+    // `file_exists(path)` / `json_parse(text)` / `json_load(path)` -> i64.
+    if matches!(name.as_str(), "file_exists" | "json_parse" | "json_load") {
+        let (pp, pl) = str_arg(m, b, l, env, &args[0].value)?;
+        let f = m.declare_func_in_func(env.hosts[name.as_str()], b.func);
+        let call = b.ins().call(f, &[pp, pl]);
+        return Ok(Term::Val(b.inst_results(call)[0], Cty::I64));
+    }
+    // `json_get(h, key)` / `json_has(h, key)` -> i64.
+    if name == "json_get" || name == "json_has" {
+        let (h, _) = val(m, b, l, env, &args[0].value)?;
+        let (kp, kl) = str_arg(m, b, l, env, &args[1].value)?;
+        let f = m.declare_func_in_func(env.hosts[name.as_str()], b.func);
+        let call = b.ins().call(f, &[h, kp, kl]);
+        return Ok(Term::Val(b.inst_results(call)[0], Cty::I64));
+    }
+    // `json_str(h)` / `json_to_str(h)` -> str.
+    if name == "json_str" || name == "json_to_str" {
+        let (h, _) = val(m, b, l, env, &args[0].value)?;
+        let out = alloc(b, env, 2);
+        let f = m.declare_func_in_func(env.hosts[name.as_str()], b.func);
+        b.ins().call(f, &[out, h]);
+        return Ok(Term::Val(out, Cty::Str));
+    }
+    // `json_key(h, i) -> str`.
+    if name == "json_key" {
+        let (h, _) = val(m, b, l, env, &args[0].value)?;
+        let (idx, _) = val(m, b, l, env, &args[1].value)?;
+        let out = alloc(b, env, 2);
+        let f = m.declare_func_in_func(env.hosts["json_key"], b.func);
+        b.ins().call(f, &[out, h, idx]);
+        return Ok(Term::Val(out, Cty::Str));
+    }
+    // `json_set(h, key, child)` / `json_set_bool(h, key, b)` (both end in i64).
+    if name == "json_set" || name == "json_set_bool" {
+        let (h, _) = val(m, b, l, env, &args[0].value)?;
+        let (kp, kl) = str_arg(m, b, l, env, &args[1].value)?;
+        let (v, vt) = val(m, b, l, env, &args[2].value)?;
+        let v = cast(b, v, &vt, &Cty::I64)?;
+        let f = m.declare_func_in_func(env.hosts[name.as_str()], b.func);
+        b.ins().call(f, &[h, kp, kl, v]);
+        return Ok(Term::Val(b.ins().iconst(types::I64, 0), Cty::I64));
+    }
+    // `json_set_num(h, key, x)`.
+    if name == "json_set_num" {
+        let (h, _) = val(m, b, l, env, &args[0].value)?;
+        let (kp, kl) = str_arg(m, b, l, env, &args[1].value)?;
+        let (v, vt) = val(m, b, l, env, &args[2].value)?;
+        let v = cast(b, v, &vt, &Cty::F64)?;
+        let f = m.declare_func_in_func(env.hosts["json_set_num"], b.func);
+        b.ins().call(f, &[h, kp, kl, v]);
+        return Ok(Term::Val(b.ins().iconst(types::I64, 0), Cty::I64));
+    }
+    // `json_set_str(h, key, s)`.
+    if name == "json_set_str" {
+        let (h, _) = val(m, b, l, env, &args[0].value)?;
+        let (kp, kl) = str_arg(m, b, l, env, &args[1].value)?;
+        let (sp, sl) = str_arg(m, b, l, env, &args[2].value)?;
+        let f = m.declare_func_in_func(env.hosts["json_set_str"], b.func);
+        b.ins().call(f, &[h, kp, kl, sp, sl]);
+        return Ok(Term::Val(b.ins().iconst(types::I64, 0), Cty::I64));
+    }
+    // `json_push_str(h, s)`.
+    if name == "json_push_str" {
+        let (h, _) = val(m, b, l, env, &args[0].value)?;
+        let (sp, sl) = str_arg(m, b, l, env, &args[1].value)?;
+        let f = m.declare_func_in_func(env.hosts["json_push_str"], b.func);
+        b.ins().call(f, &[h, sp, sl]);
+        return Ok(Term::Val(b.ins().iconst(types::I64, 0), Cty::I64));
+    }
+    // `json_write(h, path) -> 1|0`.
+    if name == "json_write" {
+        let (h, _) = val(m, b, l, env, &args[0].value)?;
+        let (pp, pl) = str_arg(m, b, l, env, &args[1].value)?;
+        let f = m.declare_func_in_func(env.hosts["json_write"], b.func);
+        let call = b.ins().call(f, &[h, pp, pl]);
+        return Ok(Term::Val(b.inst_results(call)[0], Cty::I64));
     }
     // `net_set_name("...")` - set the local player's replicated display name from a string.
     if name == "net_set_name" {
@@ -4549,6 +4719,24 @@ fn fix_enums(c: Cty, enums: &HashSet<String>) -> Cty {
 fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
     use Cty::{F64, I64};
     let sig = match name {
+        // Determinism: seeded RNG + fixed timestep.
+        "srand" => (vec![I64], None),
+        "rand" => (vec![], Some(F64)),
+        "rand_range" => (vec![F64, F64], Some(F64)),
+        "rand_int" => (vec![I64, I64], Some(I64)),
+        "set_fixed_dt" => (vec![F64], None),
+        // JSON scalar accessors/builders (string-arg json_* are lowered explicitly).
+        "json_at" => (vec![I64, I64], Some(I64)),
+        "json_len" => (vec![I64], Some(I64)),
+        "json_num" => (vec![I64], Some(F64)),
+        "json_int" => (vec![I64], Some(I64)),
+        "json_bool" => (vec![I64], Some(I64)),
+        "json_kind" => (vec![I64], Some(I64)),
+        "json_free" => (vec![I64], None),
+        "json_new_obj" => (vec![], Some(I64)),
+        "json_new_arr" => (vec![], Some(I64)),
+        "json_push" => (vec![I64, I64], None),
+        "json_push_num" => (vec![I64, F64], None),
         "phys_init" => (vec![F64, F64], None),
         "phys_add" => (vec![F64, F64, F64, F64, I64], Some(I64)),
         "phys_step" => (vec![F64], None),

@@ -20,6 +20,9 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 fontdue = "0.9"
 # WAV decoding for `play_wav` (pure Rust).
 hound = "3"
+# JSON parse/serialize for the data builtins (preserve_order keeps key
+# iteration and round-trips in document order, deterministically).
+serde_json = { version = "1", features = ["preserve_order"] }
 # Real 2D + 3D physics (Rapier) and weighted A* pathfinding, exposed as builtins.
 rapier2d = "0.22"
 rapier3d = "0.22"
