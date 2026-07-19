@@ -517,6 +517,15 @@ impl Scene {
         self.draw(weapon, host_xform * g * local);
     }
 
+    /// The full model-space global transform of `joint` in the host's CURRENT
+    /// pose (what `draw_on_joint` composes with). Tooling uses it to draw
+    /// attachment gnomons and to solve socket transforms.
+    pub fn joint_global_mat(&self, host: i64, joint: i64) -> Option<Mat4> {
+        let idx = self.resolve(host)?;
+        let r = &self.items[idx];
+        r.model.as_ref().and_then(|m| r.player.joint_global(m, joint.max(0) as usize))
+    }
+
     /// The model-space position of `joint` in the host's CURRENT pose (the translation of its
     /// global transform, before the draw transform). Lets a first-person rig cancel the bone offset
     /// so a bone-attached weapon lands at a fixed camera-space spot. None if missing.
