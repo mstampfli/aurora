@@ -78,21 +78,30 @@ pub extern "C" fn aurora_rand_int(lo: i64, hi: i64) -> i64 {
 // `AURORA_FIXED_DT` env var (harness-friendly: works on unmodified games).
 
 thread_local! {
-    /// Some(dt) = fixed step active; None = wall clock. Initialized lazily
-    /// from `AURORA_FIXED_DT`.
-    static FIXED_DT: RefCell<Option<Option<f64>>> = const { RefCell::new(None) };
+    /// The program's own `set_fixed_dt` override: Some(dt)=fixed, None=wall clock.
+    static FIXED_DT: Cell<Option<f64>> = const { Cell::new(None) };
     static VIRTUAL_TIME: Cell<f64> = const { Cell::new(0.0) };
 }
 
-/// The active fixed step (> 0) or 0.0 when wall-clock time is in effect.
-pub(crate) fn fixed_dt_override() -> f64 {
-    FIXED_DT.with(|f| {
-        let mut f = f.borrow_mut();
-        let inner = f.get_or_insert_with(|| {
-            std::env::var("AURORA_FIXED_DT").ok().and_then(|v| v.parse::<f64>().ok()).filter(|d| *d > 0.0)
-        });
-        inner.unwrap_or(0.0)
+/// The harness reproducibility override, read once from `AURORA_FIXED_DT`.
+/// It WINS over any `set_fixed_dt` the program makes, so a game that requests
+/// wall-clock in normal play still runs at a fixed step under verification.
+fn env_fixed_dt() -> Option<f64> {
+    use std::sync::OnceLock;
+    static E: OnceLock<Option<f64>> = OnceLock::new();
+    *E.get_or_init(|| {
+        std::env::var("AURORA_FIXED_DT").ok().and_then(|v| v.parse::<f64>().ok()).filter(|d| *d > 0.0)
     })
+}
+
+/// The active fixed step (> 0) or 0.0 when wall-clock time is in effect.
+/// Priority: the `AURORA_FIXED_DT` env override, then the program's
+/// `set_fixed_dt`, then wall clock.
+pub(crate) fn fixed_dt_override() -> f64 {
+    if let Some(d) = env_fixed_dt() {
+        return d;
+    }
+    FIXED_DT.with(|f| f.get().unwrap_or(0.0))
 }
 
 pub(crate) fn advance_virtual_time(dt: f64) {
@@ -106,10 +115,11 @@ pub fn virtual_time_seconds() -> f64 {
 }
 
 /// `set_fixed_dt(dt)`: dt > 0 pins `frame_dt()` to exactly dt per call;
-/// dt <= 0 restores wall-clock behavior.
+/// dt <= 0 restores wall-clock behavior. The `AURORA_FIXED_DT` env override,
+/// when set, takes precedence over this (see `fixed_dt_override`).
 #[no_mangle]
 pub extern "C" fn aurora_set_fixed_dt(dt: f64) {
-    FIXED_DT.with(|f| *f.borrow_mut() = Some(if dt > 0.0 { Some(dt) } else { None }));
+    FIXED_DT.with(|f| f.set(if dt > 0.0 { Some(dt) } else { None }));
 }
 
 // --- text file I/O ----------------------------------------------------------
