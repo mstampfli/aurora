@@ -1231,11 +1231,77 @@ pub(crate) fn headless_audio() -> bool {
     *H.get_or_init(|| std::env::var("AURORA_HEADLESS").map(|v| v == "1").unwrap_or(false))
 }
 
+// Offline audio capture: under headless, play_note/play_sound record the note
+// (semitone, seconds, virtual start time) instead of touching the device, so
+// `audio_capture_save` can render them to a WAV that `wav-audit` verifies -
+// closing the loop on synthesized/procedural audio (library WAVs are audited
+// directly).
+thread_local! {
+    static AUDIO_CAP: RefCell<Vec<(i32, f32, f64)>> = const { RefCell::new(Vec::new()) };
+}
+
+fn audio_capture_note(semitone: i64, dur_ms: i64) {
+    let t = crate::data::virtual_time_seconds();
+    AUDIO_CAP.with(|c| c.borrow_mut().push((semitone as i32, (dur_ms.max(0) as f32) / 1000.0, t)));
+}
+
+/// Render the captured note events into a 16-bit mono WAV at 44.1 kHz, placing
+/// each note at its virtual start time. Returns 1 on success, 0 on failure.
+#[no_mangle]
+pub extern "C" fn aurora_audio_capture_save(ptr: *const u8, len: i64) -> i64 {
+    let path = {
+        let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
+        String::from_utf8_lossy(s).into_owned()
+    };
+    let sr = 44_100u32;
+    let events = AUDIO_CAP.with(|c| c.borrow().clone());
+    if events.is_empty() {
+        return 0;
+    }
+    // Buffer spans from 0 to the latest note end.
+    let end_s = events.iter().map(|(_, d, t)| t + *d as f64).fold(0.0, f64::max);
+    let total = ((end_s * sr as f64).ceil() as usize).max(1) + sr as usize / 10;
+    let mut buf = vec![0.0f32; total];
+    for (semi, dur, t) in &events {
+        let note = aurora_audio::Note::new(aurora_audio::pitch(*semi), *dur)
+            .wave(aurora_audio::Wave::Triangle)
+            .gain(0.4);
+        let samples = note.render(sr);
+        let off = (t * sr as f64) as usize;
+        for (i, s) in samples.iter().enumerate() {
+            if off + i < buf.len() {
+                buf[off + i] += *s;
+            }
+        }
+    }
+    // Soft-clip to keep peaks in range, then write 16-bit PCM.
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: sr,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        if !parent.as_os_str().is_empty() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    }
+    let Ok(mut w) = hound::WavWriter::create(&path, spec) else { return 0 };
+    for s in &buf {
+        let v = (s.clamp(-1.0, 1.0) * 32767.0) as i16;
+        if w.write_sample(v).is_err() {
+            return 0;
+        }
+    }
+    w.finalize().is_ok() as i64
+}
+
 /// Synthesize and play one note: `semitone` is relative to A4, `dur_ms` ms long.
 /// Blocks until the note finishes (so notes sequence naturally).
 #[no_mangle]
 pub extern "C" fn aurora_play_note(semitone: i64, dur_ms: i64) {
     if headless_audio() {
+        audio_capture_note(semitone, dur_ms);
         return;
     }
     let sr = 44_100;
@@ -1858,6 +1924,9 @@ pub extern "C" fn aurora_atan2(y: f64, x: f64) -> f64 {
 #[no_mangle]
 pub extern "C" fn aurora_play_sound(semitone: i64, dur_ms: i64, looped: i64) {
     if headless_audio() {
+        if looped == 0 {
+            audio_capture_note(semitone, dur_ms);
+        }
         return;
     }
     let sr = 44_100;
@@ -2393,7 +2462,7 @@ pub extern "C" fn aurora_dbg_var_f64(name_ptr: *const u8, name_len: i64, value: 
 /// Touch every host symbol so the linker keeps this crate's object in an AOT
 /// link even when the Rust driver references nothing from it directly.
 pub fn force_link() -> usize {
-    let fns: [*const (); 365] = [
+    let fns: [*const (); 366] = [
         aurora_net_projectile_intent as *const (),
         aurora_net_server_projectile_count as *const (),
         aurora_net_server_projectile_shooter as *const (),
@@ -2762,6 +2831,7 @@ pub fn force_link() -> usize {
         aurora_json_push_str as *const (),
         aurora_json_to_str as *const (),
         aurora_json_write as *const (),
+        aurora_audio_capture_save as *const (),
         aurora_r3d_capture as *const (),
         aurora_r3d_capture_size as *const (),
         aurora_inject_key as *const (),

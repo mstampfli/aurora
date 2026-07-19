@@ -126,6 +126,16 @@ that as BLOCKED, never as a pass.
   and CLOSES the window when the tape ends. Replay + `srand` defaults +
   `AURORA_FIXED_DT` reproduce a session bit-for-bit
   (see `examples/headless_capture.aur` - captures hash-identical on replay).
+  `AURORA_FIXED_DT` takes precedence over `set_fixed_dt`, so a game runs at a
+  fixed step under verification even if it requests wall-clock in play.
+- Debug overlays (appear in captures, for rig/hitbox audits):
+  `r3d_debug_skeleton(h, px,py,pz, yaw, scale, r,g,b)` draws a model's bones;
+  `phys3d_debug_draw(r,g,b)` draws every physics collider as a wireframe
+  (box/sphere/capsule) so you can verify hitboxes align with the mesh.
+- Offline audio: under headless, `play_note`/`play_sound` record their events
+  (not the device); `audio_capture_save(path) -> 1|0` renders them to a 16-bit
+  WAV at their virtual timestamps, so synthesized audio can be `wav-audit`ed.
+  Audio playback is otherwise a device no-op under headless (deterministic).
 
 ## Networking (reliable UDP)
 

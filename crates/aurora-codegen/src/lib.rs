@@ -371,7 +371,7 @@ const BUILTINS: &[&str] = &[
     // 3D positional audio.
     "audio_listener", "play_sound_at", "play_sound_handle", "play_sound_handle_at",
     // Background music + ambience (looping channels).
-    "play_music", "music_volume", "music_stop",
+    "play_music", "music_volume", "music_stop", "audio_capture_save",
     "play_ambience", "ambience_volume", "ambience_stop",
     // Rich 3D physics queries.
     "phys3d_raycast_full", "phys3d_raycast_ex", "phys3d_raycast_world", "phys3d_hit_x", "phys3d_hit_y", "phys3d_hit_z",
@@ -630,6 +630,7 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_json_push_str", aurora_runtime::aurora_json_push_str as *const u8);
     builder.symbol("aurora_json_to_str", aurora_runtime::aurora_json_to_str as *const u8);
     builder.symbol("aurora_json_write", aurora_runtime::aurora_json_write as *const u8);
+    builder.symbol("aurora_audio_capture_save", aurora_runtime::aurora_audio_capture_save as *const u8);
     builder.symbol("aurora_r3d_capture", aurora_runtime::aurora_r3d_capture as *const u8);
     builder.symbol("aurora_r3d_capture_size", aurora_runtime::aurora_r3d_capture_size as *const u8);
     builder.symbol("aurora_inject_key", aurora_runtime::aurora_inject_key as *const u8);
@@ -1109,6 +1110,7 @@ fn lower(
     hosts.insert("json_push_str", import(jmod, "aurora_json_push_str", &[i, ptr_ty, i], None));
     hosts.insert("json_to_str", import(jmod, "aurora_json_to_str", &[ptr_ty, i], None));
     hosts.insert("json_write", import(jmod, "aurora_json_write", &[i, ptr_ty, i], Some(i)));
+    hosts.insert("audio_capture_save", import(jmod, "aurora_audio_capture_save", &[ptr_ty, i], Some(i)));
     hosts.insert("r3d_capture", import(jmod, "aurora_r3d_capture", &[ptr_ty, i], Some(i)));
     hosts.insert("r3d_capture_size", import(jmod, "aurora_r3d_capture_size", &[ptr_ty, i, i, i], Some(i)));
     hosts.insert("inject_key", import(jmod, "aurora_inject_key", &[i, i], None));
@@ -3573,7 +3575,7 @@ fn tr_call(
     }
     // `file_exists(path)` / `json_parse(text)` / `json_load(path)` /
     // `r3d_capture(path)` -> i64.
-    if matches!(name.as_str(), "file_exists" | "json_parse" | "json_load" | "r3d_capture") {
+    if matches!(name.as_str(), "file_exists" | "json_parse" | "json_load" | "r3d_capture" | "audio_capture_save") {
         let (pp, pl) = str_arg(m, b, l, env, &args[0].value)?;
         let f = m.declare_func_in_func(env.hosts[name.as_str()], b.func);
         let call = b.ins().call(f, &[pp, pl]);
