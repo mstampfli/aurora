@@ -1222,10 +1222,22 @@ pub extern "C" fn aurora_prof_exit() {
 // `key_down` builtins, wiring the language to real audio output (cpal) and a
 // real-time window (winit + wgpu) that presents the builtin framebuffer.
 
+/// Whether audio output should skip the device: true under `AURORA_HEADLESS=1`,
+/// so verification runs never contend for cpal (deterministic, no audio thread).
+/// Read once and cached.
+pub(crate) fn headless_audio() -> bool {
+    use std::sync::OnceLock;
+    static H: OnceLock<bool> = OnceLock::new();
+    *H.get_or_init(|| std::env::var("AURORA_HEADLESS").map(|v| v == "1").unwrap_or(false))
+}
+
 /// Synthesize and play one note: `semitone` is relative to A4, `dur_ms` ms long.
 /// Blocks until the note finishes (so notes sequence naturally).
 #[no_mangle]
 pub extern "C" fn aurora_play_note(semitone: i64, dur_ms: i64) {
+    if headless_audio() {
+        return;
+    }
     let sr = 44_100;
     let dur = (dur_ms.max(0) as f32) / 1000.0;
     let note = aurora_audio::Note::new(aurora_audio::pitch(semitone as i32), dur)
@@ -1835,6 +1847,9 @@ pub extern "C" fn aurora_atan2(y: f64, x: f64) -> f64 {
 /// sounds and music overlap. `looped` != 0 repeats it until volume/stop.
 #[no_mangle]
 pub extern "C" fn aurora_play_sound(semitone: i64, dur_ms: i64, looped: i64) {
+    if headless_audio() {
+        return;
+    }
     let sr = 44_100;
     let dur = (dur_ms.max(0) as f32) / 1000.0;
     let mut note = aurora_audio::Note::new(aurora_audio::pitch(semitone as i32), dur)
@@ -1858,6 +1873,9 @@ pub extern "C" fn aurora_play_sound(semitone: i64, dur_ms: i64, looped: i64) {
 /// that should read as a "thwack/click" rather than a tone. `gain_pct` is 0..200.
 #[no_mangle]
 pub extern "C" fn aurora_play_noise(dur_ms: i64, gain_pct: i64) {
+    if headless_audio() {
+        return;
+    }
     let sr = 44_100;
     let dur = (dur_ms.max(1) as f32) / 1000.0;
     let g = (gain_pct.clamp(0, 200) as f32) / 100.0;
@@ -1931,6 +1949,9 @@ fn norm3(v: [f64; 3]) -> [f64; 3] {
 pub extern "C" fn aurora_play_sound_at(
     semitone: i64, dur_ms: i64, gain_pct: i64, x: f64, y: f64, z: f64,
 ) {
+    if headless_audio() {
+        return;
+    }
     let (gain, pan) = spatialize([x, y, z]);
     if gain <= 0.001 {
         return;
@@ -1995,6 +2016,12 @@ pub extern "C" fn aurora_play_wav(ptr: *const u8, len: i64) -> i64 {
         let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
         String::from_utf8_lossy(s).into_owned()
     };
+    // Headless: don't touch the audio device (deterministic verification runs
+    // must not contend for cpal). Report success if the file is readable so
+    // the wiring is still exercised.
+    if headless_audio() {
+        return std::path::Path::new(&path).exists() as i64;
+    }
     let Ok(mut reader) = hound::WavReader::open(&path) else { return 0 };
     let spec = reader.spec();
     let ch = spec.channels.max(1) as usize;
@@ -2085,7 +2112,7 @@ pub extern "C" fn aurora_load_sound(ptr: *const u8, len: i64) -> i64 {
 /// Backs `play_sound_handle` - no re-decode, so it is safe on the hot path (every shot/footstep).
 #[no_mangle]
 pub extern "C" fn aurora_play_sound_handle(handle: i64, gain_pct: i64) {
-    if handle < 0 {
+    if handle < 0 || headless_audio() {
         return;
     }
     let arc = SOUNDS.with(|s| s.borrow().get(handle as usize).cloned());
@@ -2100,7 +2127,7 @@ pub extern "C" fn aurora_play_sound_handle(handle: i64, gain_pct: i64) {
 /// `play_sound_handle_at`.
 #[no_mangle]
 pub extern "C" fn aurora_play_sound_handle_at(handle: i64, gain_pct: i64, x: f64, y: f64, z: f64) {
-    if handle < 0 {
+    if handle < 0 || headless_audio() {
         return;
     }
     let (sgain, pan) = spatialize([x, y, z]);
@@ -2131,7 +2158,7 @@ pub extern "C" fn aurora_audio_stop() {
 /// loops it under the action.
 #[no_mangle]
 pub extern "C" fn aurora_play_music(handle: i64, gain_pct: i64) {
-    if handle < 0 {
+    if handle < 0 || headless_audio() {
         return;
     }
     let arc = SOUNDS.with(|s| s.borrow().get(handle as usize).cloned());
@@ -2158,7 +2185,7 @@ pub extern "C" fn aurora_music_stop() {
 /// A second looping channel, independent of the music. Backs `play_ambience`.
 #[no_mangle]
 pub extern "C" fn aurora_play_ambience(handle: i64, gain_pct: i64) {
-    if handle < 0 {
+    if handle < 0 || headless_audio() {
         return;
     }
     let arc = SOUNDS.with(|s| s.borrow().get(handle as usize).cloned());
