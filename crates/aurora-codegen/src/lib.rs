@@ -376,7 +376,7 @@ const BUILTINS: &[&str] = &[
     // Rich 3D physics queries.
     "phys3d_raycast_full", "phys3d_raycast_ex", "phys3d_raycast_world", "phys3d_hit_x", "phys3d_hit_y", "phys3d_hit_z",
     "phys3d_hit_nx", "phys3d_hit_ny", "phys3d_hit_nz", "phys3d_hit_body",
-    "phys3d_spherecast", "phys3d_overlap_sphere", "phys3d_apply_force",
+    "phys3d_spherecast", "phys3d_overlap_sphere", "phys3d_debug_draw", "phys3d_apply_force",
     "phys3d_apply_torque", "phys3d_set_angvel", "phys3d_set_rot",
     "phys3d_rot_qx", "phys3d_rot_qy", "phys3d_rot_qz", "phys3d_rot_qw",
     // Multiplayer (generic framework: the game registers its Aurora sim).
@@ -772,6 +772,7 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_phys3d_hit_body", aurora_runtime::aurora_phys3d_hit_body as *const u8);
     builder.symbol("aurora_phys3d_spherecast", aurora_runtime::aurora_phys3d_spherecast as *const u8);
     builder.symbol("aurora_phys3d_overlap_sphere", aurora_runtime::aurora_phys3d_overlap_sphere as *const u8);
+    builder.symbol("aurora_phys3d_debug_draw", aurora_runtime::aurora_phys3d_debug_draw as *const u8);
     builder.symbol("aurora_phys3d_apply_force", aurora_runtime::aurora_phys3d_apply_force as *const u8);
     builder.symbol("aurora_phys3d_apply_torque", aurora_runtime::aurora_phys3d_apply_torque as *const u8);
     builder.symbol("aurora_phys3d_set_angvel", aurora_runtime::aurora_phys3d_set_angvel as *const u8);
@@ -1252,6 +1253,7 @@ fn lower(
     hosts.insert("phys3d_hit_body", import(jmod, "aurora_phys3d_hit_body", &[], Some(i)));
     hosts.insert("phys3d_spherecast", import(jmod, "aurora_phys3d_spherecast", &[f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t], Some(f64t)));
     hosts.insert("phys3d_overlap_sphere", import(jmod, "aurora_phys3d_overlap_sphere", &[f64t, f64t, f64t, f64t], Some(i)));
+    hosts.insert("phys3d_debug_draw", import(jmod, "aurora_phys3d_debug_draw", &[f64t, f64t, f64t], None));
     hosts.insert("phys3d_apply_force", import(jmod, "aurora_phys3d_apply_force", &[i, f64t, f64t, f64t], None));
     hosts.insert("phys3d_apply_torque", import(jmod, "aurora_phys3d_apply_torque", &[i, f64t, f64t, f64t], None));
     hosts.insert("phys3d_set_angvel", import(jmod, "aurora_phys3d_set_angvel", &[i, f64t, f64t, f64t], None));
@@ -4810,6 +4812,7 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "phys3d_apply_impulse" => (vec![I64, F64, F64, F64], None),
         "phys3d_move_character" => (vec![I64, F64, F64, F64, F64], None),
         "phys3d_grounded" => (vec![I64], Some(I64)),
+        "phys3d_debug_draw" => (vec![F64, F64, F64], None),
         "phys3d_raycast" => (vec![F64, F64, F64, F64, F64, F64, F64], Some(F64)),
         // 3D pathfinding.
         "nav3d_init" => (vec![I64, I64, I64], None),
