@@ -16,7 +16,7 @@ mod scene;
 pub use anim::{skin_matrices, skin_matrices_blended, AnimPlayer};
 pub use glam::{Mat4, Quat, Vec3};
 pub use mesh::{GpuMesh, MeshData, Vertex};
-pub use model::{Clip, Joint, Model, Primitive, Skeleton};
+pub use model::{Channel, Clip, Interp, Joint, Model, Path, Primitive, Skeleton};
 pub use render::{InstanceRaw, Material, MaterialDesc, Renderer3D, DEPTH_FORMAT, MAX_JOINTS, MAX_LIGHTS};
 pub use scene::Scene;
 
