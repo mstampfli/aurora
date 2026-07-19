@@ -537,6 +537,35 @@ impl Scene {
         Some([t.x, t.y, t.z])
     }
 
+    /// Draw the host's skeleton as debug lines (parent->child bones) at the
+    /// given world transform, for headless rig/hitbox visual audits. Uses the
+    /// current animation pose. No-op if the model has no skeleton.
+    pub fn debug_skeleton(&mut self, host: i64, host_xform: Mat4, color: Vec3) {
+        let Some(idx) = self.resolve(host) else { return };
+        // Collect (parent_world, child_world) segments first (immutable borrow),
+        // then draw (mutable borrow of the renderer).
+        let mut segs: Vec<(Vec3, Vec3)> = Vec::new();
+        {
+            let r = &self.items[idx];
+            let Some(model) = r.model.as_ref() else { return };
+            let Some(skel) = model.skeleton.as_ref() else { return };
+            for (ji, joint) in skel.joints.iter().enumerate() {
+                let Some(parent) = joint.parent else { continue };
+                let (Some(cg), Some(pg)) =
+                    (r.player.joint_global(model, ji), r.player.joint_global(model, parent))
+                else {
+                    continue;
+                };
+                let cp = host_xform.transform_point3(cg.w_axis.truncate());
+                let pp = host_xform.transform_point3(pg.w_axis.truncate());
+                segs.push((pp, cp));
+            }
+        }
+        for (a, b) in segs {
+            self.renderer.debug_line(a, b, color);
+        }
+    }
+
     /// Print every joint index + name of `host` to stdout (bone-discovery helper).
     pub fn dump_joints(&self, host: i64) {
         let Some(idx) = self.resolve(host) else {

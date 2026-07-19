@@ -657,6 +657,21 @@ pub fn r3d_frustum_cull(on: i64) {
         s.renderer.set_frustum_cull(on != 0);
     });
 }
+
+/// Draw a model's skeleton as debug bone lines at (px,py,pz)/yaw/scale, in the
+/// current pose - for headless rig/hitbox visual audits.
+#[allow(clippy::too_many_arguments)]
+pub fn r3d_debug_skeleton(handle: i64, px: f32, py: f32, pz: f32, yaw: f32, scale: f32, r: f32, g: f32, b: f32) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        let m = Mat4::from_scale_rotation_translation(
+            Vec3::splat(scale),
+            Quat::from_euler(EulerRot::YXZ, yaw, 0.0, 0.0),
+            Vec3::new(px, py, pz),
+        );
+        s.debug_skeleton(handle, m, Vec3::new(r, g, b));
+    });
+}
 pub fn r3d_begin() {
     with_gfx((), |gf| {
         let (_, _, s) = gf.scene_mut();

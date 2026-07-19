@@ -1670,6 +1670,16 @@ pub extern "C" fn aurora_r3d_debug_line(ax: f64, ay: f64, az: f64, bx: f64, by: 
         ax as f32, ay as f32, az as f32, bx as f32, by as f32, bz as f32, r as f32, g as f32, b as f32,
     );
 }
+/// Draw a model's skeleton as debug bone lines (headless rig/hitbox audits).
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn aurora_r3d_debug_skeleton(
+    handle: i64, px: f64, py: f64, pz: f64, yaw: f64, scale: f64, r: f64, g: f64, b: f64,
+) {
+    aurora_window::imm_r3d_debug_skeleton(
+        handle, px as f32, py as f32, pz as f32, yaw as f32, scale as f32, r as f32, g as f32, b as f32,
+    );
+}
 #[no_mangle]
 pub extern "C" fn aurora_r3d_frustum_cull(on: i64) {
     aurora_window::imm_r3d_frustum_cull(on);
@@ -2383,7 +2393,7 @@ pub extern "C" fn aurora_dbg_var_f64(name_ptr: *const u8, name_len: i64, value: 
 /// Touch every host symbol so the linker keeps this crate's object in an AOT
 /// link even when the Rust driver references nothing from it directly.
 pub fn force_link() -> usize {
-    let fns: [*const (); 363] = [
+    let fns: [*const (); 364] = [
         aurora_net_projectile_intent as *const (),
         aurora_net_server_projectile_count as *const (),
         aurora_net_server_projectile_shooter as *const (),
@@ -2534,6 +2544,7 @@ pub fn force_link() -> usize {
         aurora_r3d_make_sprite as *const (),
         aurora_r3d_draw_billboard as *const (),
         aurora_r3d_debug_line as *const (),
+        aurora_r3d_debug_skeleton as *const (),
         aurora_r3d_frustum_cull as *const (),
         aurora_r3d_screen_x as *const (),
         aurora_r3d_screen_y as *const (),

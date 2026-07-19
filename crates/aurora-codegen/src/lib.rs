@@ -364,7 +364,7 @@ const BUILTINS: &[&str] = &[
     "r3d_draw_on_joint", "r3d_joint_dump", "r3d_joint_pos", "r3d_draw_shield",
     "r3d_anim_play", "r3d_anim_update", "r3d_anim_play_upper", "r3d_anim_aim_upper", "r3d_anim_blend", "r3d_anim_seek_upper", "r3d_pose_bone", "r3d_clear_pose", "r3d_hide_joint", "r3d_anim_stop_upper", "r3d_clip_count", "r3d_present",
     "r3d_fog", "r3d_speedlines", "r3d_damage", "r3d_blur", "r3d_sky", "r3d_shadows", "r3d_ssao", "r3d_viewmodel", "r3d_point_shadows", "r3d_clear_lights", "r3d_point_light",
-    "r3d_make_sprite", "r3d_draw_billboard", "r3d_debug_line", "r3d_frustum_cull",
+    "r3d_make_sprite", "r3d_draw_billboard", "r3d_debug_line", "r3d_debug_skeleton", "r3d_frustum_cull",
     "r3d_screen_x", "r3d_screen_y",
     // FPS input.
     "mouse_dx", "mouse_dy", "mouse_scroll", "mouse_button", "grab_mouse", "frame_dt", "sleep_ms",
@@ -740,6 +740,7 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_r3d_make_sprite", aurora_runtime::aurora_r3d_make_sprite as *const u8);
     builder.symbol("aurora_r3d_draw_billboard", aurora_runtime::aurora_r3d_draw_billboard as *const u8);
     builder.symbol("aurora_r3d_debug_line", aurora_runtime::aurora_r3d_debug_line as *const u8);
+    builder.symbol("aurora_r3d_debug_skeleton", aurora_runtime::aurora_r3d_debug_skeleton as *const u8);
     builder.symbol("aurora_r3d_frustum_cull", aurora_runtime::aurora_r3d_frustum_cull as *const u8);
     builder.symbol("aurora_r3d_screen_x", aurora_runtime::aurora_r3d_screen_x as *const u8);
     builder.symbol("aurora_r3d_screen_y", aurora_runtime::aurora_r3d_screen_y as *const u8);
@@ -1220,6 +1221,7 @@ fn lower(
     hosts.insert("r3d_make_sprite", import(jmod, "aurora_r3d_make_sprite", &[f64t, f64t, f64t], Some(i)));
     hosts.insert("r3d_draw_billboard", import(jmod, "aurora_r3d_draw_billboard", &[i, f64t, f64t, f64t, f64t], None));
     hosts.insert("r3d_debug_line", import(jmod, "aurora_r3d_debug_line", &[f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t], None));
+    hosts.insert("r3d_debug_skeleton", import(jmod, "aurora_r3d_debug_skeleton", &[i, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t], None));
     hosts.insert("r3d_frustum_cull", import(jmod, "aurora_r3d_frustum_cull", &[i], None));
     hosts.insert("r3d_screen_x", import(jmod, "aurora_r3d_screen_x", &[f64t, f64t, f64t], Some(f64t)));
     hosts.insert("r3d_screen_y", import(jmod, "aurora_r3d_screen_y", &[f64t, f64t, f64t], Some(f64t)));
@@ -4857,6 +4859,7 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "r3d_make_sprite" => (vec![F64, F64, F64], Some(I64)),
         "r3d_draw_billboard" => (vec![I64, F64, F64, F64, F64], None),
         "r3d_debug_line" => (vec![F64, F64, F64, F64, F64, F64, F64, F64, F64], None),
+        "r3d_debug_skeleton" => (vec![I64, F64, F64, F64, F64, F64, F64, F64, F64], None),
         "r3d_frustum_cull" => (vec![I64], None),
         "r3d_screen_x" | "r3d_screen_y" => (vec![F64, F64, F64], Some(F64)),
         // FPS input.
