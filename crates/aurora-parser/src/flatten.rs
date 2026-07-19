@@ -57,7 +57,7 @@ fn flatten_mod(prefix: &str, items: Vec<Item>) -> Vec<Item> {
 
     // Rewrite references inside each own item, then mangle its defined name.
     for mut item in own {
-        let cx = Cx { prefix, locals: &locals, submods: &submods };
+        let cx = Cx { prefix, locals: &locals, submods: &submods, bound: HashSet::new() };
         rewrite_item(&mut item, &cx);
         mangle_item(&mut item, prefix);
         flat.push(item);
@@ -67,8 +67,64 @@ fn flatten_mod(prefix: &str, items: Vec<Item>) -> Vec<Item> {
 
 struct Cx<'a> {
     prefix: &'a str,
+    /// Module-level item names (functions/structs/enums/consts) defined here.
     locals: &'a HashSet<String>,
     submods: &'a HashSet<String>,
+    /// Names bound by enclosing params / `let`s / closure params / pattern
+    /// binders. A reference to one of these is a LOCAL, not a module item, so
+    /// it must NOT be module-qualified even if it shares a name with an item.
+    bound: HashSet<String>,
+}
+
+impl<'a> Cx<'a> {
+    /// A child context with additional local bindings in scope.
+    fn with_bound(&self, extra: impl IntoIterator<Item = String>) -> Cx<'a> {
+        let mut bound = self.bound.clone();
+        bound.extend(extra);
+        Cx { prefix: self.prefix, locals: self.locals, submods: self.submods, bound }
+    }
+}
+
+/// Names a binding pattern introduces (so references to them stay local).
+fn pat_binding_names(pat: &Pat, out: &mut Vec<String>) {
+    match &pat.kind {
+        PatKind::Binding { name, sub, .. } => {
+            out.push(name.name.clone());
+            if let Some(s) = sub {
+                pat_binding_names(s, out);
+            }
+        }
+        PatKind::TupleStruct { elems, .. } => {
+            for e in elems {
+                pat_binding_names(e, out);
+            }
+        }
+        PatKind::Struct { fields, .. } => {
+            for f in fields {
+                match &f.pat {
+                    Some(sub) => pat_binding_names(sub, out),
+                    // Shorthand `Struct { x }` binds `x`.
+                    None => out.push(f.name.name.clone()),
+                }
+            }
+        }
+        PatKind::Tuple(ps) => {
+            for p in ps {
+                pat_binding_names(p, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn param_names(params: &[Param]) -> Vec<String> {
+    params
+        .iter()
+        .filter_map(|p| match p {
+            Param::Normal { name, .. } => Some(name.name.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 fn item_name(item: &Item) -> Option<String> {
@@ -105,8 +161,10 @@ fn rewrite_item(item: &mut Item, cx: &Cx) {
             if let Some(t) = &mut f.ret {
                 rewrite_type(t, cx);
             }
+            // Parameters are in scope for the body: they shadow module items.
+            let body_cx = cx.with_bound(param_names(&f.params));
             if let Some(b) = &mut f.body {
-                rewrite_block(b, cx);
+                rewrite_block(b, &body_cx);
             }
         }
         ItemKind::Struct(s) | ItemKind::Component(s) => {
@@ -121,8 +179,11 @@ fn rewrite_item(item: &mut Item, cx: &Cx) {
             rewrite_type(&mut im.self_ty, cx);
             for it in &mut im.items {
                 if let AssocItem::Fn(f) = it {
+                    let mut names = param_names(&f.params);
+                    names.push("self".into());
+                    let body_cx = cx.with_bound(names);
                     if let Some(b) = &mut f.body {
-                        rewrite_block(b, cx);
+                        rewrite_block(b, &body_cx);
                     }
                 }
             }
@@ -167,7 +228,12 @@ fn rewrite_type(ty: &mut Type, cx: &Cx) {
 fn rewrite_path(p: &mut aurora_ast::Path, cx: &Cx) {
     if p.segments.len() == 1 {
         let n = &p.segments[0].ident.name;
-        if cx.locals.contains(n) {
+        // Only qualify a bare name that names a MODULE ITEM and is NOT shadowed
+        // by a local binding (param / let / pattern binder). Without the shadow
+        // check, a parameter that shares a name with a module function (e.g.
+        // `fn pick(phase: ...)` alongside `fn phase()`) was wrongly rewritten to
+        // `mod::phase`, silently reading the wrong value.
+        if cx.locals.contains(n) && !cx.bound.contains(n) {
             p.segments[0].ident.name = format!("{}::{}", cx.prefix, n);
         }
     } else if cx.submods.contains(&p.segments[0].ident.name) {
@@ -179,21 +245,29 @@ fn rewrite_path(p: &mut aurora_ast::Path, cx: &Cx) {
 }
 
 fn rewrite_block(b: &mut Block, cx: &Cx) {
+    // `let` bindings come into scope for SUBSEQUENT statements, so grow the
+    // bound set as we go (a later `phase` referring to `let phase = ...` must
+    // stay local).
+    let mut scope = cx.with_bound(std::iter::empty());
     for stmt in &mut b.stmts {
         match stmt {
             Stmt::Let(l) => {
                 if let Some(t) = &mut l.ty {
-                    rewrite_type(t, cx);
+                    rewrite_type(t, &scope);
                 }
+                // The initializer is evaluated BEFORE the binding exists.
                 if let Some(e) = &mut l.init {
-                    rewrite_expr(e, cx);
+                    rewrite_expr(e, &scope);
                 }
+                let mut names = Vec::new();
+                pat_binding_names(&l.pat, &mut names);
+                scope = scope.with_bound(names);
             }
-            Stmt::Defer(e) | Stmt::Expr(e) => rewrite_expr(e, cx),
+            Stmt::Defer(e) | Stmt::Expr(e) => rewrite_expr(e, &scope),
         }
     }
     if let Some(t) = &mut b.tail {
-        rewrite_expr(t, cx);
+        rewrite_expr(t, &scope);
     }
 }
 
@@ -290,16 +364,22 @@ fn rewrite_expr(e: &mut Expr, cx: &Cx) {
             }
         }
         ExprKind::For { pat, iter, body } => {
+            // The loop pattern's bindings are in scope for the body.
             rewrite_pat(pat, cx);
             rewrite_expr(iter, cx);
-            rewrite_block(body, cx);
+            let mut names = Vec::new();
+            pat_binding_names(pat, &mut names);
+            rewrite_block(body, &cx.with_bound(names));
         }
         ExprKind::While { cond, body } => {
             rewrite_expr(cond, cx);
             rewrite_block(body, cx);
         }
         ExprKind::Loop(b) | ExprKind::Block(b) | ExprKind::Unsafe(b) => rewrite_block(b, cx),
-        ExprKind::Closure { body, .. } => rewrite_expr(body, cx),
+        ExprKind::Closure { params, body } => {
+            // Closure parameters shadow module items inside the body.
+            rewrite_expr(body, &cx.with_bound(param_names(params)));
+        }
         ExprKind::Spawn(args) => {
             for a in args {
                 rewrite_expr(&mut a.value, cx);
@@ -324,8 +404,70 @@ fn rewrite_if(ifx: &mut aurora_ast::IfExpr, cx: &Cx) {
 
 fn rewrite_arm(arm: &mut MatchArm, cx: &Cx) {
     rewrite_pat(&mut arm.pat, cx);
+    // The arm pattern's bindings are in scope for the guard and body.
+    let mut names = Vec::new();
+    pat_binding_names(&arm.pat, &mut names);
+    let arm_cx = cx.with_bound(names);
     if let Some(g) = &mut arm.guard {
-        rewrite_expr(g, cx);
+        rewrite_expr(g, &arm_cx);
     }
-    rewrite_expr(&mut arm.body, cx);
+    rewrite_expr(&mut arm.body, &arm_cx);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aurora_ast::ItemKind;
+
+    fn fn_body_tail_name(items: &[Item], fn_name: &str) -> Option<String> {
+        for it in items {
+            if let ItemKind::Fn(f) = &it.kind {
+                if f.name.name == fn_name {
+                    if let Some(tail) = f.body.as_ref().and_then(|b| b.tail.as_ref()) {
+                        if let ExprKind::Path(p) = &tail.kind {
+                            return Some(p.segments[0].ident.name.clone());
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// A parameter that shares a name with a sibling module function must NOT be
+    /// module-qualified: it is a local, and qualifying it silently read the
+    /// function instead (regression: boss::pick(phase: ...) beside fn phase()).
+    #[test]
+    fn param_shadowing_a_module_fn_is_not_qualified() {
+        let src = "mod m {\n  fn phase(x: i64) -> i64 { x }\n  fn pick(phase: i64) -> i64 { phase }\n}";
+        let (module, diags) = crate::parse_str(src);
+        assert!(!diags.iter().any(|d| d.is_error()), "parse errors: {diags:?}");
+        let flat = flatten_modules(module.items);
+        // The body of m::pick must still reference the bare local `phase`,
+        // not the qualified `m::phase`.
+        assert_eq!(
+            fn_body_tail_name(&flat, "m::pick").as_deref(),
+            Some("phase"),
+            "the parameter `phase` was wrongly qualified to a module item"
+        );
+        // Sanity: a genuine reference to the sibling function IS still qualified.
+        let src2 = "mod m {\n  fn phase(x: i64) -> i64 { x }\n  fn caller() -> i64 { phase(3) }\n}";
+        let (m2, _) = crate::parse_str(src2);
+        let flat2 = flatten_modules(m2.items);
+        let calls_qualified = flat2.iter().any(|it| {
+            if let ItemKind::Fn(f) = &it.kind {
+                if f.name.name == "m::caller" {
+                    if let Some(ExprKind::Call { callee, .. }) =
+                        f.body.as_ref().and_then(|b| b.tail.as_ref()).map(|t| &t.kind)
+                    {
+                        if let ExprKind::Path(p) = &callee.kind {
+                            return p.segments[0].ident.name == "m::phase";
+                        }
+                    }
+                }
+            }
+            false
+        });
+        assert!(calls_qualified, "a real sibling-fn call must stay qualified");
+    }
 }
