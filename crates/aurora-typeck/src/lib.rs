@@ -565,10 +565,25 @@ impl Typeck {
         let arg_tys: Vec<(Span, Ty)> = args.iter().map(|a| (a.value.span, self.infer(&a.value))).collect();
 
         // Only known top-level function paths get argument checking; everything
-        // else (methods, builtins, imports) is treated as unknown.
+        // else (methods, imports) is treated as unknown. A bare name that is
+        // NOT a user fn, a local binding (closure), or a builtin resolves to
+        // nothing at all, and must be reported here: left alone it reaches
+        // codegen, which can only fail late with an internal message or, worse,
+        // stub the call and silently compute the wrong answer.
         if let ExprKind::Path(p) = &callee.kind {
             if p.is_single() {
                 let name = &p.segments[0].ident.name;
+                if !self.fns.contains_key(name)
+                    && self.lookup(name).is_none()
+                    && !aurora_types::is_builtin(name)
+                {
+                    self.diags.push(
+                        Diagnostic::error(format!("cannot find function `{name}` in this scope"))
+                            .with_code("E0313")
+                            .primary(p.span, "not a function, local binding, or builtin"),
+                    );
+                    return Ty::Error;
+                }
                 if let Some(Ty::Fn(params, ret)) = self.fns.get(name).cloned() {
                     // Instantiate generic type parameters with fresh variables so
                     // each call is checked independently (e.g. `pair(1, true)`).

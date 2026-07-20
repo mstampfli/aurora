@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 aurora-ast.workspace = true
+aurora-types.workspace = true
 aurora-lexer.workspace = true
 aurora-span.workspace = true
 aurora-gfx.workspace = true

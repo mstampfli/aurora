@@ -52,21 +52,45 @@ fn mixed_scalar_arithmetic_is_caught() {
 #[test]
 fn vector_scalar_arithmetic_is_allowed() {
     // Vec3 * f32 is overloaded algebra, not an error.
-    let errs = errors("fn f() { let v: Vec3 = make()\n let s: f32 = 2.0\n let r = v * s }");
+    let errs = errors(
+        "@extern fn make() -> Vec3
+         fn f() { let v: Vec3 = make()\n let s: f32 = 2.0\n let r = v * s }",
+    );
     assert!(errs.is_empty(), "vector*scalar should be allowed, got {errs:?}");
 }
 
 #[test]
-fn unknown_names_do_not_false_positive() {
-    // App.new / load / texture are all unresolved externs; no errors expected.
+fn methods_and_declared_externs_do_not_false_positive() {
+    // Method/associated calls go through Dot paths the checker cannot resolve
+    // yet, and a DECLARED `@extern` is a real binding: neither may error.
     let errs = errors(
-        "fn main() {
+        "@extern fn load(path: str) -> i64
+         fn main() {
             let app = App.new(\"x\", 1, 2)
-            let cube: Handle = load(\"c.glb\")
+            let cube = load(\"c.glb\")
             app.run()
          }",
     );
-    assert!(errs.is_empty(), "externs must not false-positive, got {errs:?}");
+    assert!(errs.is_empty(), "methods/declared externs must not false-positive, got {errs:?}");
+}
+
+#[test]
+fn undeclared_call_is_an_error() {
+    // The regression this suite exists for: a bare name that is not a fn, a
+    // local binding, or a builtin used to sail through the checker and only
+    // fail (or silently stub) at codegen. `@extern` is the declared escape
+    // hatch for a real foreign symbol - undeclared is a typo.
+    let errs = errors("fn main() { let x = definitely_not_defined(1) }");
+    assert!(
+        errs.iter().any(|e| e.contains("cannot find function")),
+        "undeclared call must be reported, got {errs:?}"
+    );
+}
+
+#[test]
+fn builtins_and_locals_are_callable() {
+    let errs = errors("fn main() { let f = |q| q + 1\n println(str(f(1))) }");
+    assert!(errs.is_empty(), "builtins and closure locals must call clean, got {errs:?}");
 }
 
 #[test]

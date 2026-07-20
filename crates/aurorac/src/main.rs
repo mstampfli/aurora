@@ -952,7 +952,12 @@ fn cmd_check(path: &str) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let file = SourceFile::new(path, src);
+    // Check the SAME program `run`/`build` compile: module dependencies plus
+    // the std prelude. Checking the bare file alone made `check` green on code
+    // that could not resolve (missing module fns, missing prelude helpers) -
+    // a false pass from the tool whose whole job is to catch that.
+    let deps = collect_dep_sources();
+    let file = SourceFile::new(path, aurora_std::with_std(&format!("{src}{deps}")));
     let (module, mut diags) = aurora_parser::parse_str(&file.src);
     diags.extend(aurora_check::check(&module));
     diags.extend(aurora_typeck::check_types(&module));
