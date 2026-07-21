@@ -464,10 +464,13 @@ impl Scene {
     /// this feeds the HOST's skin matrices to those weights, so an attached piece
     /// of gear deforms exactly with the character without owning a skeleton.
     pub fn draw_skinned(&mut self, armor: i64, host: i64, transform: Mat4) {
+        // Skin the armour from the host's FULL pose - never the host's hidden mask.
+        // hide_joint hides the host's OWN covered mesh (so the body can't clip through
+        // the armour); the armour worn over it must still render in full, otherwise
+        // hiding the body under a gauntlet would collapse the gauntlet too.
         let host_joints = self.resolve(host).and_then(|idx| {
             let r = &self.items[idx];
-            let mask = r.hidden_joints;
-            r.model.as_ref().map(|m| r.player.matrices(m, mask)).filter(|v| !v.is_empty()).map(Arc::new)
+            r.model.as_ref().map(|m| r.player.matrices(m, 0)).filter(|v| !v.is_empty()).map(Arc::new)
         });
         let a = match self.resolve(armor) { Some(i) => i, None => return };
         let prims = self.items[a].prims.clone();
