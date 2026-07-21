@@ -459,6 +459,23 @@ impl Scene {
         }
     }
 
+    /// Draw `armor`'s mesh skinned by `host`'s CURRENT pose. The armor mesh
+    /// carries per-vertex joint indices/weights (in the host's skinning order);
+    /// this feeds the HOST's skin matrices to those weights, so an attached piece
+    /// of gear deforms exactly with the character without owning a skeleton.
+    pub fn draw_skinned(&mut self, armor: i64, host: i64, transform: Mat4) {
+        let host_joints = self.resolve(host).and_then(|idx| {
+            let r = &self.items[idx];
+            let mask = r.hidden_joints;
+            r.model.as_ref().map(|m| r.player.matrices(m, mask)).filter(|v| !v.is_empty()).map(Arc::new)
+        });
+        let a = match self.resolve(armor) { Some(i) => i, None => return };
+        let prims = self.items[a].prims.clone();
+        for (mesh, mat) in prims {
+            self.renderer.draw(mesh, mat, transform, host_joints.clone());
+        }
+    }
+
     /// Like [`draw`] but shifts the model's albedo by `tint` (RGB additive offset).
     pub fn draw_tint(&mut self, handle: i64, transform: Mat4, tint: [f32; 3]) {
         let idx = match self.resolve(handle) {

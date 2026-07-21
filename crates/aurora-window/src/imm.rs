@@ -793,6 +793,23 @@ pub fn r3d_draw_on_joint(
     });
 }
 
+/// Draw `armor` skinned by `host`'s current pose (armour carries per-vertex
+/// weights in the host's joint order). Lets fitted gear deform with the body.
+pub fn r3d_draw_skinned(
+    armor: i64, host: i64,
+    x: f32, y: f32, z: f32, yaw: f32, pitch: f32, roll: f32, scale: f32,
+) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        let xf = Mat4::from_scale_rotation_translation(
+            Vec3::splat(scale),
+            Quat::from_euler(EulerRot::YXZ, yaw, pitch, roll),
+            Vec3::new(x, y, z),
+        );
+        s.draw_skinned(armor, host, xf);
+    });
+}
+
 /// Print every joint index + name of a model to stdout (bone-discovery helper).
 pub fn r3d_joint_dump(host: i64) {
     with_gfx((), |gf| {

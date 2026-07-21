@@ -1529,6 +1529,16 @@ pub extern "C" fn aurora_r3d_draw_on_joint(
     );
 }
 #[no_mangle]
+pub extern "C" fn aurora_r3d_draw_skinned(
+    armor: i64, host: i64,
+    x: f64, y: f64, z: f64, yaw: f64, pitch: f64, roll: f64, scale: f64,
+) {
+    aurora_window::imm_r3d_draw_skinned(
+        armor, host,
+        x as f32, y as f32, z as f32, yaw as f32, pitch as f32, roll as f32, scale as f32,
+    );
+}
+#[no_mangle]
 pub extern "C" fn aurora_r3d_joint_dump(host: i64) {
     aurora_window::imm_r3d_joint_dump(host);
 }
@@ -2462,7 +2472,7 @@ pub extern "C" fn aurora_dbg_var_f64(name_ptr: *const u8, name_len: i64, value: 
 /// Touch every host symbol so the linker keeps this crate's object in an AOT
 /// link even when the Rust driver references nothing from it directly.
 pub fn force_link() -> usize {
-    let fns: [*const (); 366] = [
+    let fns: [*const (); 367] = [
         aurora_net_projectile_intent as *const (),
         aurora_net_server_projectile_count as *const (),
         aurora_net_server_projectile_shooter as *const (),
@@ -2541,6 +2551,7 @@ pub fn force_link() -> usize {
         aurora_r3d_draw_shield as *const (),
         aurora_net_player_state as *const (),
         aurora_r3d_draw_on_joint as *const (),
+        aurora_r3d_draw_skinned as *const (),
         aurora_r3d_joint_dump as *const (),
         aurora_r3d_blur as *const (),
         aurora_input_suppress as *const (),

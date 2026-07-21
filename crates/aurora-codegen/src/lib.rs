@@ -632,6 +632,7 @@ fn register_host_symbols(builder: &mut JITBuilder) {
     builder.symbol("aurora_r3d_draw_tint", aurora_runtime::aurora_r3d_draw_tint as *const u8);
     builder.symbol("aurora_r3d_draw_shield", aurora_runtime::aurora_r3d_draw_shield as *const u8);
     builder.symbol("aurora_r3d_draw_on_joint", aurora_runtime::aurora_r3d_draw_on_joint as *const u8);
+    builder.symbol("aurora_r3d_draw_skinned", aurora_runtime::aurora_r3d_draw_skinned as *const u8);
     builder.symbol("aurora_r3d_joint_dump", aurora_runtime::aurora_r3d_joint_dump as *const u8);
     builder.symbol("aurora_r3d_joint_pos", aurora_runtime::aurora_r3d_joint_pos as *const u8);
     builder.symbol("aurora_r3d_anim_play", aurora_runtime::aurora_r3d_anim_play as *const u8);
@@ -1115,6 +1116,7 @@ fn lower(
     hosts.insert("r3d_draw_tint", import(jmod, "aurora_r3d_draw_tint", &[i, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t], None));
     hosts.insert("r3d_draw_shield", import(jmod, "aurora_r3d_draw_shield", &[i, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t], None));
     hosts.insert("r3d_draw_on_joint", import(jmod, "aurora_r3d_draw_on_joint", &[i, i, i, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t], None));
+    hosts.insert("r3d_draw_skinned", import(jmod, "aurora_r3d_draw_skinned", &[i, i, f64t, f64t, f64t, f64t, f64t, f64t, f64t], None));
     hosts.insert("r3d_joint_dump", import(jmod, "aurora_r3d_joint_dump", &[i], None));
     hosts.insert("r3d_joint_pos", import(jmod, "aurora_r3d_joint_pos", &[i, i, i], Some(f64t)));
     hosts.insert("r3d_anim_play", import(jmod, "aurora_r3d_anim_play", &[i, i, i, f64t, f64t], None));
@@ -4763,6 +4765,7 @@ fn scalar_builtin_sig(name: &str) -> Option<(Vec<Cty>, Option<Cty>)> {
         "r3d_draw_tint" => (vec![I64, F64, F64, F64, F64, F64, F64, F64, F64, F64, F64], None),
         "r3d_draw_shield" => (vec![I64, F64, F64, F64, F64, F64, F64, F64, F64, F64], None),
         "r3d_draw_on_joint" => (vec![I64, I64, I64, F64, F64, F64, F64, F64, F64, F64, F64, F64, F64, F64, F64, F64, F64], None),
+        "r3d_draw_skinned" => (vec![I64, I64, F64, F64, F64, F64, F64, F64, F64], None),
         "r3d_joint_dump" => (vec![I64], None),
         "r3d_joint_pos" => (vec![I64, I64, I64], Some(F64)),
         "r3d_anim_play" => (vec![I64, I64, I64, F64, F64], None),
