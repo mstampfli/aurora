@@ -8,17 +8,17 @@ use bytemuck::{Pod, Zeroable};
 use glam::{Mat3, Mat4, Vec3};
 
 use crate::mesh::{GpuMesh, MeshData, Vertex};
-use crate::slot::SlotMap;
+use aurora_slot::SlotMap;
 
 /// Handle to a GPU mesh registered with [`Renderer3D::add_mesh`].
 ///
 /// Generation-tagged, so freeing a mesh invalidates every outstanding handle to
 /// it instead of letting the next `add_mesh` silently inherit them.
-pub type MeshId = crate::slot::Key<GpuMesh>;
+pub type MeshId = aurora_slot::Key<GpuMesh>;
 
 /// Handle to a material registered with [`Renderer3D::add_material`]. Same
 /// lifetime rules as [`MeshId`].
-pub type MaterialId = crate::slot::Key<Material>;
+pub type MaterialId = aurora_slot::Key<Material>;
 
 /// Maximum joints per skinned mesh (fits a 16 KiB uniform: 128 * 64 B = 8 KiB).
 pub const MAX_JOINTS: usize = 128;

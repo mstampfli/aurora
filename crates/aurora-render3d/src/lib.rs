@@ -12,7 +12,6 @@ mod mesh;
 mod model;
 mod render;
 mod scene;
-pub mod slot;
 pub mod terrain;
 
 pub use anim::{skin_matrices, skin_matrices_blended, AnimPlayer};
@@ -23,8 +22,10 @@ pub use render::{
     InstanceRaw, Material, MaterialDesc, MaterialId, MeshId, Renderer3D, DEPTH_FORMAT, MAX_JOINTS,
     MAX_LIGHTS,
 };
+// Re-exported so a `MeshId`/`MaterialId` can be named without every consumer
+// also depending on `aurora-slot` directly.
+pub use aurora_slot::{Key, SlotMap};
 pub use scene::Scene;
-pub use slot::SlotMap;
 pub use terrain::{Heightfield, TerrainRender, TileLod, TILE_CACHE_BUDGET};
 
 /// A right-handed perspective projection with a wgpu-style depth range (z in

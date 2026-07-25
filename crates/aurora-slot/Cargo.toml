@@ -1,0 +1,13 @@
+[package]
+name = "aurora-slot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Generation-tagged slot storage: the one handle primitive shared by everything
+# in Aurora that hands an `i64` to a program and later has to take the resource
+# back (GPU meshes and materials, physics bodies, JSON nodes). It depends on
+# NOTHING, so the renderer and the runtime can both sit above it without either
+# pulling in the other.
+
+[dependencies]

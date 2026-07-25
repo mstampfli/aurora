@@ -123,6 +123,7 @@ crates/
   aurora-diag      diagnostics + caret renderer
   aurora-lexer     hand-rolled lexer (nested comments, newline-aware ASI)
   aurora-abi       the ONE builtin table (name, symbol, signature) every layer generates from
+  aurora-slot      the ONE handle store: generation-tagged slots a freed handle cannot alias
   aurora-ast       the syntax tree
   aurora-parser    recursive-descent + Pratt expressions
   aurora-types     type representation + union-find unifier

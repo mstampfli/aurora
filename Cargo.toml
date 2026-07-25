@@ -10,6 +10,7 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 aurora-abi = { path = "crates/aurora-abi" }
+aurora-slot = { path = "crates/aurora-slot" }
 aurora-span = { path = "crates/aurora-span" }
 aurora-diag = { path = "crates/aurora-diag" }
 aurora-lexer = { path = "crates/aurora-lexer" }

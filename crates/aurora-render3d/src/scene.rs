@@ -11,7 +11,7 @@ use crate::anim::AnimPlayer;
 use crate::mesh::MeshData;
 use crate::model::Model;
 use crate::render::{MaterialDesc, MaterialId, MeshId, Renderer3D};
-use crate::slot::{Key, SlotMap};
+use aurora_slot::{Key, SlotMap};
 
 /// One drawable: a set of (mesh, material) primitives, with an optional skeleton
 /// and animation player when it came from an animated model.

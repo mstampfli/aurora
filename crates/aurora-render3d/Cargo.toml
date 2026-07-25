@@ -12,6 +12,9 @@ license.workspace = true
 # surface, sharing one device.
 
 [dependencies]
+# Mesh and material handles: the shared generation-tagged slot store, so a
+# freed mesh's handle is rejected rather than inherited by the next upload.
+aurora-slot.workspace = true
 wgpu = "22"
 pollster = "0.3"
 glam = { version = "0.29", features = ["bytemuck"] }

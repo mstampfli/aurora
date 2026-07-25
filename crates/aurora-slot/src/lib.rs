@@ -1,15 +1,21 @@
 //! Generation-tagged slot storage: stable handles whose freed slots cannot
 //! alias.
 //!
+//! This is the ONE handle primitive behind every Aurora resource a program
+//! holds as an `i64` and the runtime later has to take back: GPU meshes and
+//! materials in `aurora-render3d`, 2D and 3D physics bodies and JSON nodes in
+//! `aurora-runtime`. It is its own crate, depending on nothing, precisely so
+//! those can share one implementation instead of growing drifting copies.
+//!
 //! # Why not a `Vec` and an index
 //!
-//! GPU resources have to be released when the thing that owns them dies -
-//! a level change, a terrain reload, an asset unload. A plain `Vec` gives you
-//! two bad options: never remove (which is the leak) or remove and shuffle
-//! (which silently repoints every handle a game is still holding at a
+//! A resource has to be released when the thing that owns it dies - a level
+//! change, a terrain reload, an asset unload, a body despawn. A plain `Vec`
+//! gives you two bad options: never remove (which is the leak) or remove and
+//! shuffle (which silently repoints every handle a game is still holding at a
 //! DIFFERENT resource). Reusing a slot without shuffling is no better on its
 //! own: the next allocation lands in the hole, and a stale handle now reads a
-//! live neighbour's mesh instead of failing.
+//! live neighbour's mesh - or another player's position - instead of failing.
 //!
 //! So a handle is not an index. It is `(index, generation)`, and a slot only
 //! answers to the generation it is currently at. Freeing bumps the generation,
@@ -244,6 +250,31 @@ impl<T> SlotMap<T> {
         Some(value)
     }
 
+    /// Free every live value, invalidating every outstanding key at once.
+    ///
+    /// This is what a world reset needs: `phys3d_init` builds a fresh physics
+    /// world, and a body handle from the PREVIOUS world must not resolve in the
+    /// new one. Dropping the whole map and starting over would restart
+    /// generations at 1 and hand the new world's first body exactly the `i64`
+    /// the old world's first body had - the aliasing this type exists to
+    /// prevent, just across a reset instead of across a free. Clearing bumps
+    /// each live slot's generation instead, so old handles stay rejected.
+    ///
+    /// Slots are kept and returned to the free list, so reset-in-a-loop
+    /// occupies bounded address space exactly as free-in-a-loop does.
+    pub fn clear(&mut self) {
+        for (index, slot) in self.slots.iter_mut().enumerate() {
+            // Only slots that were LIVE move: an already-free slot is on the
+            // free list, and pushing it again would hand the same index out
+            // twice.
+            if slot.value.take().is_some() && slot.generation < MAX_GENERATION {
+                slot.generation += 1;
+                self.free.push(index as u32);
+            }
+        }
+        self.live = 0;
+    }
+
     /// Number of live values.
     pub fn len(&self) -> usize {
         self.live
@@ -374,6 +405,52 @@ mod tests {
         assert_ne!(real, p);
         // It is also not a value any program could have received over the ABI.
         assert_eq!(Key::<i32>::from_i64(p.to_i64()), None);
+    }
+
+    #[test]
+    fn clear_invalidates_every_key_without_growing_the_store() {
+        let mut m: SlotMap<i32> = SlotMap::new();
+        let a = m.insert(1);
+        let b = m.insert(2);
+        let c = m.insert(3);
+        m.remove(b).unwrap();
+        m.clear();
+        assert_eq!(m.len(), 0);
+        assert_eq!(m.get(a), None, "a key from before the clear resolved");
+        assert_eq!(m.get(c), None, "a key from before the clear resolved");
+        // Every slot is reusable exactly once, so refilling reuses all three
+        // rather than allocating more. A slot pushed onto the free list twice
+        // by `clear` would show up here as a store that never refills slot 1.
+        let refilled: Vec<u32> = (0..3).map(|i| m.insert(i).slot()).collect();
+        let mut sorted = refilled.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, vec![0, 1, 2], "got slots {refilled:?}");
+        assert_eq!(m.slot_count(), 3, "clear must not grow the store");
+        // ...and the pre-clear keys still do not alias what took their slots.
+        assert_eq!(m.get(a), None, "a stale key aliased a post-clear value");
+        assert_eq!(m.get(c), None, "a stale key aliased a post-clear value");
+    }
+
+    #[test]
+    fn reset_in_a_loop_occupies_bounded_slots() {
+        let mut m: SlotMap<i32> = SlotMap::new();
+        for _ in 0..10_000 {
+            for i in 0..4 {
+                m.insert(i);
+            }
+            m.clear();
+        }
+        assert_eq!(m.len(), 0);
+        assert_eq!(m.slot_count(), 4, "four slots should serve every reset");
+    }
+
+    #[test]
+    fn clearing_an_empty_map_is_a_no_op() {
+        let mut m: SlotMap<i32> = SlotMap::new();
+        m.clear();
+        assert_eq!(m.slot_count(), 0);
+        let a = m.insert(9);
+        assert_eq!(m.get(a), Some(&9));
     }
 
     #[test]

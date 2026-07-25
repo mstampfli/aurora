@@ -303,6 +303,7 @@ dependencies = [
 name = "aurora-render3d"
 version = "0.1.0"
 dependencies = [
+ "aurora-slot",
  "bytemuck",
  "glam",
  "gltf",
@@ -339,6 +340,10 @@ dependencies = [
  "aurora-ast",
  "aurora-parser",
 ]
+
+[[package]]
+name = "aurora-slot"
+version = "0.1.0"
 
 [[package]]
 name = "aurora-span"
