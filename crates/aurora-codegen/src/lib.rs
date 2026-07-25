@@ -280,6 +280,15 @@ struct Env {
     structs: HashMap<String, Vec<(String, Cty)>>,
     /// Enum name -> layout.
     enums: HashMap<String, EnumLayout>,
+    /// Top-level `const` name -> its initializer expression. A const is not a
+    /// runtime global: each use lowers the initializer inline, so a literal folds
+    /// to an immediate (no load, and no initialization order to get wrong) and a
+    /// const is readable from every function.
+    consts: HashMap<String, Expr>,
+    /// Consts whose initializer is currently being lowered, so `const A = B`
+    /// alongside `const B = A` is a clear error instead of unbounded recursion.
+    /// `RefCell` because it is used while bodies compile (like `closure_sigs`).
+    const_stack: std::cell::RefCell<std::collections::HashSet<String>>,
     /// (receiver type, method name) -> compiled function key.
     methods: HashMap<(String, String), String>,
     /// Closure expression span -> lambda-lifted function name.
@@ -1491,6 +1500,16 @@ fn lower(
         }
     }
 
+    // Top-level consts. Module flattening mangles a module's const to `m::NAME`,
+    // so a module const is keyed by its qualified name here and needs no special
+    // case at the use site.
+    let mut consts = HashMap::new();
+    for item in &module.items {
+        if let ItemKind::Const(c) = &item.kind {
+            consts.insert(c.name.name.clone(), c.value.clone());
+        }
+    }
+
     // Declare top-level functions and struct/enum `impl` methods. `compile_list`
     // pairs each (decl, key, optional self-receiver type) for pass 2.
     let mut fns: HashMap<String, FnInfo> = HashMap::new();
@@ -1714,6 +1733,8 @@ fn lower(
         hosts,
         structs,
         enums,
+        consts,
+        const_stack: std::cell::RefCell::new(std::collections::HashSet::new()),
         methods,
         closures,
         lambda_captures,
@@ -2404,6 +2425,30 @@ fn tr_stmt_if(
     Ok(())
 }
 
+/// Lower a use of `const NAME` by lowering its initializer inline at this use
+/// site. Consts have no runtime storage, so this is both the cheapest lowering (a
+/// literal folds to an immediate) and the reason a const needs no initialization
+/// order. `name` is the mangled name, so a module's const arrives as `m::NAME`.
+fn tr_const(
+    m: &mut dyn Module,
+    b: &mut FunctionBuilder,
+    l: &mut Locals,
+    env: &Env,
+    name: &str,
+) -> Result<Term, String> {
+    let Some(value) = env.consts.get(name) else {
+        return Err(format!("unknown variable `{name}` in JIT"));
+    };
+    // A const defined in terms of itself has no value; recursing would exhaust
+    // the stack, so report it instead.
+    if !env.const_stack.borrow_mut().insert(name.to_string()) {
+        return Err(format!("`const {name}` is defined in terms of itself"));
+    }
+    let r = tr_expr(m, b, l, env, value);
+    env.const_stack.borrow_mut().remove(name);
+    r
+}
+
 fn tr_expr(
     m: &mut dyn Module,
     b: &mut FunctionBuilder,
@@ -2433,18 +2478,24 @@ fn tr_expr(
         }
         ExprKind::Path(p) if p.is_single() => {
             let name = &p.segments[0].ident.name;
-            let (var, cty) = l
-                .scope
-                .get(name)
-                .cloned()
-                .ok_or_else(|| format!("unknown variable `{name}` in JIT"))?;
-            (b.use_var(var), cty)
+            match l.scope.get(name).cloned() {
+                Some((var, cty)) => (b.use_var(var), cty),
+                // Not a local, so it may be a `const` (a module's const was
+                // mangled to the single name `m::NAME`), lowered inline.
+                None => return tr_const(m, b, l, env, name),
+            }
         }
         ExprKind::Path(p) => {
-            // Enum unit-variant `Enum::Variant`.
-            let (enm, idx) = env
-                .enum_variant(p)
-                .ok_or("unsupported path expression in JIT")?;
+            // Enum unit-variant `Enum::Variant`, or a const reached through a
+            // module path (`m::NAME`) from outside that module.
+            let Some((enm, idx)) = env.enum_variant(p) else {
+                let joined =
+                    p.segments.iter().map(|s| s.ident.name.as_str()).collect::<Vec<_>>().join("::");
+                if env.consts.contains_key(&joined) {
+                    return tr_const(m, b, l, env, &joined);
+                }
+                return Err("unsupported path expression in JIT".into());
+            };
             let ptr = alloc(b, env, env.enums[&enm].slots);
             let tag = b.ins().iconst(types::I64, idx as i64);
             store_at(b, ptr, 0, tag);

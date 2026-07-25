@@ -134,6 +134,11 @@ ConstDecl   ::= "const" ident ":" Type "=" Expr ";"
 ComptimeBlock ::= "comptime" Block
 ```
 
+A `const` has no runtime storage: each use is replaced by its initializer. That
+makes a const readable from every function with no initialization order to get
+wrong, including through a module path (`m::LIMIT`). A const defined in terms of
+itself is an error.
+
 ### 3.2 Functions
 ```
 FnDecl   ::= "fn" ident [ Generics ] "(" [ Params ] ")" [ "->" Type ]

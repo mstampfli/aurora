@@ -1110,3 +1110,33 @@ fn wrong_entry_type_errors_clearly() {
 fn aurora_interp_eval(_module: &aurora_parser::ast::Module, _n: i64) -> Option<i64> {
     None
 }
+
+// --- top-level consts -------------------------------------------------------
+
+#[test]
+fn top_level_consts_compile_and_run() {
+    // A const has no runtime storage: each use lowers its initializer inline.
+    let src = "const LIMIT: i64 = 7
+    const STEP: i64 = LIMIT * 2
+    fn run() -> i64 { LIMIT * 100 + STEP }"; // 700 + 14 = 714
+    assert_eq!(compile_call(src, "run", &[]), 714);
+}
+
+#[test]
+fn float_const_compiles_and_runs() {
+    let src = "const G: f64 = 2.5
+    fn run() -> f64 { G * 4.0 }";
+    assert_eq!(compile_call_f64(src, "run", &[]), 10.0);
+}
+
+#[test]
+fn self_referential_const_is_reported_not_a_stack_overflow() {
+    // Inlining a const that names itself would recurse forever, and a stack
+    // overflow is an uncatchable abort, so it has to be a diagnostic.
+    let src = "const A: i64 = B
+    const B: i64 = A
+    fn run() -> i64 { A }";
+    let (module, _) = parse_str(src);
+    let err = jit_call(&module, "run", &[]).expect_err("a const cycle must be rejected");
+    assert!(err.contains("defined in terms of itself"), "unexpected error: {err}");
+}
