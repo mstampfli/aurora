@@ -1,4 +1,4 @@
-//! Aurora's native runtime â€” the host functions compiled Aurora code calls.
+//! Aurora's native runtime - the host functions compiled Aurora code calls.
 //!
 //! Every `aurora_*` symbol here is `#[no_mangle] pub extern "C"`, so it is a
 //! real, linkable C-ABI symbol. Two consumers use them:
@@ -48,7 +48,7 @@ pub extern "C" fn aurora_print_i64(n: i64) {
     print!("{n}");
 }
 /// Format an `f64` for display. Whole-valued finite floats get a trailing `.0`
-/// (`7.0` not `7`) so floats are visually distinct from ints â€” Aurora is a
+/// (`7.0` not `7`) so floats are visually distinct from ints - Aurora is a
 /// float-heavy game-dev language and the ambiguity is a debugging hazard.
 /// Non-finite values (`inf`, `NaN`) and already-fractional values are left as
 /// Rust's default Display renders them.
@@ -76,7 +76,7 @@ pub extern "C" fn aurora_print_nl() {
     println!();
 }
 
-/// Flush buffered stdout â€” called from the AOT entry shim before exit, since the
+/// Flush buffered stdout - called from the AOT entry shim before exit, since the
 /// program does not return through Rust's runtime (which would flush for us).
 #[no_mangle]
 pub extern "C" fn aurora_runtime_flush() {
@@ -132,7 +132,7 @@ pub extern "C" fn aurora_sleep_ms(ms: i64) {
 
 /// FFI demonstration target (a Rust `extern "C"` function): dot product of two
 /// `n`-element `f64` buffers. Aurora arrays/structs of `f64` are contiguous
-/// 8-byte slots, so they pass straight through as `const double*` â€” this is what
+/// 8-byte slots, so they pass straight through as `const double*` - this is what
 /// lets `@extern` bind real C/Rust functions that take buffers and vectors.
 ///
 /// # Safety
@@ -149,7 +149,7 @@ pub unsafe extern "C" fn aurora_ffi_dot(a: *const f64, b: *const f64, n: i64) ->
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
-/// `f32` variant â€” reads two C-packed `float` buffers. Tests that Aurora `f32`
+/// `f32` variant - reads two C-packed `float` buffers. Tests that Aurora `f32`
 /// aggregates are marshaled to C's 4-byte-packed layout over FFI.
 ///
 /// # Safety
@@ -332,10 +332,11 @@ pub unsafe extern "C" fn aurora_save_png(ptr: *const u8, len: i64) {
 // A real runtime backing for the language's `#frame`/`#level`/`#perm` regions:
 // each is a chunked bump allocator. Dynamic allocations (string concat, int/
 // float formatting) come from the `#frame` arena, and `frame_reset()` frees the
-// whole frame's allocations at once (O(1)) â€” so memory is arena-managed and
+// whole frame's allocations at once (O(1)) - so memory is arena-managed and
 // reclaimed at frame boundaries instead of leaking. The region *checker*
-// (`aurora-check` Â§8.2) statically prevents storing shorter-lived (frame) data
-// where longer-lived data is expected, which is what makes the bulk reset safe.
+// (`aurora-check` section 8.2) statically prevents storing shorter-lived
+// (frame) data where longer-lived data is expected, which is what makes the
+// bulk reset safe.
 
 const CHUNK: usize = 1 << 20; // 1 MiB per chunk
 
@@ -540,7 +541,7 @@ pub unsafe extern "C" fn aurora_load_ppm(ptr: *const u8, len: i64) -> i64 {
 
 /// Load a PNG/JPEG image at `path` into the framebuffer (resizing it to the
 /// image), decoded to RGBA via the `image` crate. Returns 1 on success, 0 on
-/// failure. Backs the `load_image` builtin â€” the asset pipeline beyond PPM.
+/// failure. Backs the `load_image` builtin - the asset pipeline beyond PPM.
 ///
 /// # Safety
 /// `ptr` must point to `len` initialized bytes.
@@ -610,7 +611,7 @@ fn render_text(x: i64, y: i64, text: &str, px: i64, color: i64) {
             let mut fb = fb.borrow_mut();
             let Some(fb) = fb.as_mut() else { return };
             let (w, h) = (fb.width() as i32, fb.height() as i32);
-            let baseline = y + px as i64; // `y` is the top; baseline â‰ˆ y + size
+            let baseline = y + px as i64; // `y` is the top; baseline ~= y + size
             let mut pen = x;
             for ch in text.chars() {
                 let (m, bitmap) = font.rasterize(ch, px);
@@ -694,7 +695,7 @@ pub extern "C" fn aurora_draw_int(x: i64, y: i64, n: i64, px: i64, color: i64) {
 // --- real 2D physics (Rapier) -----------------------------------------------
 //
 // A stateful physics world backed by Rapier: rigid bodies, colliders, gravity,
-// continuous collision â€” far beyond the hand-rolled AABB resolver in the stdlib.
+// continuous collision - far beyond the hand-rolled AABB resolver in the stdlib.
 // Bodies are referenced by an i64 handle (an index into `handles`). Positions
 // are the body centre, in whatever units the program uses (e.g. pixels).
 
@@ -1462,7 +1463,7 @@ pub unsafe extern "C" fn aurora_scene_load(ptr: *const u8, len: i64) -> i64 {
 //
 // In profiling builds the compiler emits `aurora_prof_enter(name)` at each
 // function entry and `aurora_prof_exit()` at each return, accumulating call
-// counts and wall-clock time per function â€” a real instrumenting profiler over
+// counts and wall-clock time per function - a real instrumenting profiler over
 // the native code.
 
 #[derive(Default)]
@@ -1670,7 +1671,7 @@ pub unsafe extern "C" fn aurora_gpu_render(ptr: *const u8, len: i64, time_ms: i6
 
 /// Run a compute shader on the GPU over an `[f64; n]` array, in place. `wgsl`
 /// operates on a `read_write array<f32>` at binding 0. Values are converted
-/// f64â†’f32 for the GPU and back. Backs the `gpu_compute` builtin.
+/// f64->f32 for the GPU and back. Backs the `gpu_compute` builtin.
 ///
 /// # Safety
 /// `wptr` must point to `wlen` initialized bytes. `data` must be valid for
@@ -1690,7 +1691,7 @@ pub unsafe extern "C" fn aurora_gpu_compute(wptr: *const u8, wlen: i64, data: *m
     }
 }
 
-/// Open a real-time window backing a `w`Ã—`h` builtin framebuffer.
+/// Open a real-time window backing a `w` x `h` builtin framebuffer.
 #[no_mangle]
 pub extern "C" fn aurora_window_open(w: i64, h: i64) {
     aurora_window::imm_open(w.max(0) as u32, h.max(0) as u32);
@@ -2484,7 +2485,7 @@ pub extern "C" fn aurora_atan2(y: f64, x: f64) -> f64 {
     y.atan2(x)
 }
 
-/// Play a note WITHOUT blocking â€” mixed into the persistent audio engine, so
+/// Play a note WITHOUT blocking - mixed into the persistent audio engine, so
 /// sounds and music overlap. `looped` != 0 repeats it until volume/stop.
 #[no_mangle]
 pub extern "C" fn aurora_play_sound(semitone: i64, dur_ms: i64, looped: i64) {
@@ -2670,7 +2671,7 @@ pub unsafe extern "C" fn aurora_load_settings(data: *mut f64, len: i64) -> i64 {
 
 /// Load and play a WAV file at `path` through the audio mixer (downmixed to
 /// mono, normalized to f32). Returns 1 on success, 0 on failure. Backs the
-/// `play_wav` builtin â€” audio asset playback beyond the synth.
+/// `play_wav` builtin - audio asset playback beyond the synth.
 ///
 /// # Safety
 /// `ptr` must point to `len` initialized bytes.
