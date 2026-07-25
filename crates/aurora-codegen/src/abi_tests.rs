@@ -39,6 +39,9 @@ fn host_imports_match_the_builtin_table() {
         aurora_abi::Ty::I64 => types::I64,
         aurora_abi::Ty::F64 => types::F64,
         aurora_abi::Ty::Ptr => ptr,
+        // Never reached: `abi_params`/`abi_ret` turn a `Str` result into the
+        // leading out-pointer, so no declared slot is ever `Str`.
+        aurora_abi::Ty::Str => unreachable!("Str is not an ABI slot type"),
     };
 
     let expected: Vec<&aurora_abi::Builtin> =
@@ -51,9 +54,9 @@ fn host_imports_match_the_builtin_table() {
     for (key, symbol, params, returns) in &declared {
         let row = aurora_abi::lookup(key).expect("declared import is not in the table");
         assert_eq!(symbol, row.symbol, "`{key}` imports the wrong symbol");
-        let want: Vec<Type> = row.params.iter().map(|t| clif(*t)).collect();
+        let want: Vec<Type> = row.abi_params().iter().map(|t| clif(*t)).collect();
         assert_eq!(params, &want, "`{key}` imports the wrong parameter types");
-        let want_ret: Vec<Type> = row.ret.map(clif).into_iter().collect();
+        let want_ret: Vec<Type> = row.abi_ret().map(clif).into_iter().collect();
         assert_eq!(returns, &want_ret, "`{key}` imports the wrong return type");
     }
 }
@@ -69,6 +72,7 @@ fn scalar_dispatch_agrees_with_the_declared_import() {
         let clif = |t: aurora_abi::Ty| match t {
             aurora_abi::Ty::F64 => types::F64,
             aurora_abi::Ty::I64 | aurora_abi::Ty::Ptr => types::I64,
+            aurora_abi::Ty::Str => unreachable!("a scalar row cannot return Str"),
         };
         let want: Vec<Type> = sig_params.iter().map(|t| clif(*t)).collect();
         assert_eq!(params, want, "`{key}` is called with types its import does not take");

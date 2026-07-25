@@ -511,12 +511,26 @@ macro_rules! cl_ty {
     };
 }
 
+// A `Str` result is not returned: the caller allocates its two slots and passes
+// their address as a leading pointer parameter, which the row does not spell.
 macro_rules! cl_ret {
     ($ptr:ident, void) => {
         None
     };
+    ($ptr:ident, Str) => {
+        None
+    };
     ($ptr:ident, $t:ident) => {
         Some(cl_ty!($ptr, $t))
+    };
+}
+
+macro_rules! cl_params {
+    ($ptr:ident, [$($p:ident),*], Str) => {
+        &[$ptr, $(cl_ty!($ptr, $p)),*]
+    };
+    ($ptr:ident, [$($p:ident),*], $r:ident) => {
+        &[$(cl_ty!($ptr, $p)),*]
     };
 }
 
@@ -549,7 +563,7 @@ macro_rules! host_import {
     ($h:ident, $m:ident, $ptr:ident, $k:ident, $n:ident, $s:ident, [$($p:ident),*], $r:ident) => {
         $h.insert(
             stringify!($n),
-            import($m, stringify!($s), &[$(cl_ty!($ptr, $p)),*], cl_ret!($ptr, $r)),
+            import($m, stringify!($s), cl_params!($ptr, [$($p),*], $r), cl_ret!($ptr, $r)),
         );
     };
 }
@@ -3277,6 +3291,40 @@ fn tr_call(
         }
     }
 
+    // Text builtins: same table-driven dispatch, extended to `str`. A `Ptr`
+    // parameter is one Aurora `str` argument passed as its two slots, and a
+    // `Str` result is a caller-allocated 2-slot out-pointer passed first.
+    if let Some(row) = aurora_abi::text_row(name.as_str()) {
+        if Some(args.len()) == row.arity() {
+            let mut argv = Vec::new();
+            if row.ret == Some(aurora_abi::Ty::Str) {
+                argv.push(alloc(b, env, 2));
+            }
+            let mut arg = args.iter();
+            let mut p = row.params.iter();
+            while let Some(pc) = p.next() {
+                let a = arg.next().expect("arity checked above");
+                if *pc == aurora_abi::Ty::Ptr {
+                    // Its `I64` length slot belongs to the same argument.
+                    p.next();
+                    let (ptr, len) = str_arg(m, b, l, env, &a.value)?;
+                    argv.push(ptr);
+                    argv.push(len);
+                } else {
+                    let (v, t) = val(m, b, l, env, &a.value)?;
+                    argv.push(cast(b, v, &t, &abi_cty(*pc))?);
+                }
+            }
+            let f = m.declare_func_in_func(env.hosts[name.as_str()], b.func);
+            let call = b.ins().call(f, &argv);
+            return Ok(match row.ret {
+                Some(aurora_abi::Ty::Str) => Term::Val(argv[0], Cty::Str),
+                Some(t) => Term::Val(b.inst_results(call)[0], abi_cty(t)),
+                None => Term::Val(b.ins().iconst(types::I64, 0), Cty::I64),
+            });
+        }
+    }
+
     // `frame_reset()` — free the frame arena (no args, no result).
     if name == "frame_reset" {
         let f = m.declare_func_in_func(env.hosts["frame_reset"], b.func);
@@ -4061,12 +4109,13 @@ fn scalar_builtin_sig(name: &str) -> Option<(&'static [aurora_abi::Ty], Option<a
     aurora_abi::scalar_sig(name)
 }
 
-/// The compiled type an ABI type lowers to. A `Ptr` never reaches here (a
-/// `scalar` row may not take one - `aurora-abi` tests that), but an address is
-/// an `i64` to the backend either way.
+/// The compiled type an ABI type lowers to. `Ptr`/`Str` never reach here - the
+/// text dispatch handles both before coercing anything - but a string value IS
+/// a pointer to its two slots, and an address is an `i64` to the backend.
 fn abi_cty(t: aurora_abi::Ty) -> Cty {
     match t {
         aurora_abi::Ty::F64 => Cty::F64,
+        aurora_abi::Ty::Str => Cty::Str,
         aurora_abi::Ty::I64 | aurora_abi::Ty::Ptr => Cty::I64,
     }
 }

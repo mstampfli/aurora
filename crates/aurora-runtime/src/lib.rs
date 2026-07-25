@@ -2479,15 +2479,25 @@ macro_rules! rust_ty {
     (F64) => {
         f64
     };
+    // A `str` argument is its two slots: this is the data pointer, and the
+    // `I64` that follows it in the row is the length.
+    (Ptr) => {
+        *const u8
+    };
 }
 
 /// Take a host function's address THROUGH a function pointer spelled from its
 /// table row. Rust then checks the row against the real definition, so a row
 /// that claims the wrong parameter or return type does not compile - the only
-/// thing that can otherwise catch it is a program miscompiled at run time.
+/// thing that can otherwise catch it is a program miscompiled at run time. A
+/// `Str` result is the caller-allocated 2-slot out-pointer, passed first.
 macro_rules! checked_addr {
     ($sym:ident, [$($p:ident),*], void) => {{
         let f: extern "C" fn($(rust_ty!($p)),*) = $sym;
+        f as usize
+    }};
+    ($sym:ident, [$($p:ident),*], Str) => {{
+        let f: extern "C" fn(*mut i64, $(rust_ty!($p)),*) = $sym;
         f as usize
     }};
     ($sym:ident, [$($p:ident),*], $ret:ident) => {{
@@ -2496,13 +2506,16 @@ macro_rules! checked_addr {
     }};
 }
 
-// An `inline` builtin has no runtime function to keep. A `scalar` one is
-// entirely table-driven - nothing else describes its signature - so it is the
-// kind whose row is checked against the definition. The rest take pointers,
-// whose Rust spelling (`*const u8`, `*mut f64`, ...) the table does not model.
+// An `inline` builtin has no runtime function to keep. `scalar` and `text` rows
+// are entirely table-driven - nothing else describes their signature - so they
+// are the kinds whose row is checked against the definition. The rest pass
+// arrays and closures, whose Rust spelling the table does not model.
 macro_rules! force_link_one {
     ($acc:ident, inline, $sym:ident, [$($p:ident),*], $ret:ident) => {};
     ($acc:ident, scalar, $sym:ident, [$($p:ident),*], $ret:ident) => {
+        $acc = $acc.wrapping_add(checked_addr!($sym, [$($p),*], $ret));
+    };
+    ($acc:ident, text, $sym:ident, [$($p:ident),*], $ret:ident) => {
         $acc = $acc.wrapping_add(checked_addr!($sym, [$($p),*], $ret));
     };
     ($acc:ident, $kind:ident, $sym:ident, [$($p:ident),*], $ret:ident) => {

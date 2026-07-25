@@ -39,14 +39,18 @@
 //! | `kind` | meaning |
 //! |---|---|
 //! | `scalar` | an Aurora builtin taking plain `i64`/`f64` arguments; the backend's generic dispatch lowers the call, so it needs no bespoke code |
-//! | `special` | an Aurora builtin with bespoke lowering in `aurora-codegen` (strings, arrays, closures) |
+//! | `text` | an Aurora builtin that takes and/or returns a `str`, also lowered by a generic dispatch and so needing no bespoke code either |
+//! | `special` | an Aurora builtin with bespoke lowering in `aurora-codegen` (arrays, closures, and the string builtins that predate `text`) |
 //! | `internal` | a runtime host function that Aurora source cannot call: printing primitives, string helpers, ECS plumbing, debugger hooks |
 //! | `inline` | an Aurora builtin the backend expands inline, with no runtime call at all; its symbol column is `none` and it has no signature |
 //! | `linkonly` | a runtime function that only needs a JIT symbol and an AOT link edge, so an `@extern` declaration can bind it |
 //!
-//! Parameter/return types are `I64`, `F64`, or `Ptr` (the target pointer type);
-//! the return column is `void` for a function that returns nothing. An Aurora
-//! `str` argument is passed as the pair `Ptr, I64` (data, length).
+//! Parameter types are `I64`, `F64`, or `Ptr` (the target pointer type); the
+//! return column is those, `Str`, or `void`. An Aurora `str` argument is passed
+//! as the pair `Ptr, I64` (data, length), and a `Str` RETURN is passed as a
+//! caller-allocated 2-slot out-pointer prepended to the parameter list, which
+//! the row does not spell (see [`Builtin::abi_params`]). Only a `text` row may
+//! return `Str`, because only its dispatch knows to allocate that slot.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
@@ -58,6 +62,10 @@ pub enum Ty {
     F64,
     /// The target's pointer type (`i64` on every backend Aurora supports today).
     Ptr,
+    /// An Aurora `str` RESULT: the caller allocates its two slots and passes
+    /// their address as a leading [`Ty::Ptr`] parameter, so the host function
+    /// itself returns nothing. Only ever a return type, only on a `text` row.
+    Str,
 }
 
 /// How the backend treats a table row. See the crate docs for the full table.
@@ -65,6 +73,9 @@ pub enum Ty {
 pub enum Kind {
     /// Aurora builtin lowered by the generic scalar call-site dispatch.
     Scalar,
+    /// Aurora builtin taking and/or returning a `str`, lowered by the generic
+    /// text call-site dispatch.
+    Text,
     /// Aurora builtin with bespoke lowering in `aurora-codegen`.
     Special,
     /// Runtime host function that Aurora source cannot call.
@@ -78,7 +89,7 @@ pub enum Kind {
 impl Kind {
     /// Can Aurora source call a builtin of this kind by name?
     pub const fn is_aurora_visible(self) -> bool {
-        matches!(self, Kind::Scalar | Kind::Special | Kind::Inline)
+        matches!(self, Kind::Scalar | Kind::Text | Kind::Special | Kind::Inline)
     }
 
     /// Is this row backed by an `aurora_*` function in `aurora-runtime`? Those
@@ -89,7 +100,7 @@ impl Kind {
 
     /// Is this row declared as an import in the backend's host table?
     pub const fn is_host_import(self) -> bool {
-        matches!(self, Kind::Scalar | Kind::Special | Kind::Internal)
+        matches!(self, Kind::Scalar | Kind::Text | Kind::Special | Kind::Internal)
     }
 }
 
@@ -102,11 +113,47 @@ pub struct Builtin {
     pub kind: Kind,
     /// The C symbol of the runtime function, or `""` for [`Kind::Inline`].
     pub symbol: &'static str,
-    /// ABI parameter types. Empty for [`Kind::Inline`], which has no single
-    /// signature (`min`/`max`/`abs` are polymorphic over `i64` and `f64`).
+    /// ABI parameter types, WITHOUT the out-pointer a [`Ty::Str`] return adds
+    /// (see [`Builtin::abi_params`]). Empty for [`Kind::Inline`], which has no
+    /// single signature (`min`/`max`/`abs` are polymorphic over `i64`/`f64`).
     pub params: &'static [Ty],
-    /// ABI return type, or `None` for a function that returns nothing.
+    /// Return type, or `None` for a function that returns nothing.
     pub ret: Option<Ty>,
+}
+
+impl Builtin {
+    /// The parameter types the host function is actually declared with: a
+    /// [`Ty::Str`] result is a caller-allocated 2-slot out-pointer passed FIRST,
+    /// so it is not a Cranelift return value at all.
+    pub fn abi_params(&self) -> Vec<Ty> {
+        match self.ret {
+            Some(Ty::Str) => std::iter::once(Ty::Ptr).chain(self.params.iter().copied()).collect(),
+            _ => self.params.to_vec(),
+        }
+    }
+
+    /// The type the host function returns, or `None` when it returns nothing -
+    /// including a [`Ty::Str`] result, which is written through the out-pointer.
+    pub fn abi_ret(&self) -> Option<Ty> {
+        match self.ret {
+            Some(Ty::Str) => None,
+            other => other,
+        }
+    }
+
+    /// How many arguments an Aurora call site passes, for the kinds whose call
+    /// the table fully describes ([`Kind::Scalar`] and [`Kind::Text`]): a `str`
+    /// argument takes two ABI slots (`Ptr, I64`) but is one argument in the
+    /// source. `None` for the kinds it does not model - `special` (arrays,
+    /// closures), `inline`, and the rows Aurora cannot call at all.
+    pub fn arity(&self) -> Option<usize> {
+        match self.kind {
+            Kind::Scalar | Kind::Text => {
+                Some(self.params.len() - self.params.iter().filter(|t| **t == Ty::Ptr).count())
+            }
+            _ => None,
+        }
+    }
 }
 
 /// The builtin table. Hands every row to the callback macro `$m` in one
@@ -553,6 +600,9 @@ macro_rules! kind_of {
     (scalar) => {
         $crate::Kind::Scalar
     };
+    (text) => {
+        $crate::Kind::Text
+    };
     (special) => {
         $crate::Kind::Special
     };
@@ -576,6 +626,9 @@ macro_rules! ty_of {
     };
     (Ptr) => {
         $crate::Ty::Ptr
+    };
+    (Str) => {
+        $crate::Ty::Str
     };
 }
 
@@ -645,6 +698,15 @@ pub fn lookup(name: &str) -> Option<&'static Builtin> {
 pub fn scalar_sig(name: &str) -> Option<(&'static [Ty], Option<Ty>)> {
     let b = lookup(name)?;
     (b.kind == Kind::Scalar).then_some((b.params, b.ret))
+}
+
+/// The row for a builtin the backend lowers with its generic TEXT call-site
+/// dispatch (a `str` argument and/or a `str` result), or `None` for anything
+/// else. A `Ptr` parameter is the first slot of a `str` argument and is always
+/// followed by its `I64` length.
+pub fn text_row(name: &str) -> Option<&'static Builtin> {
+    let b = lookup(name)?;
+    (b.kind == Kind::Text).then_some(b)
 }
 
 #[cfg(test)]

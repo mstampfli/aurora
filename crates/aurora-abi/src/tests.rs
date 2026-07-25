@@ -82,9 +82,47 @@ fn inline_rows_carry_no_signature() {
 fn scalar_rows_take_only_scalars() {
     for b in TABLE.iter().filter(|b| b.kind == Kind::Scalar) {
         assert!(
-            !b.params.contains(&Ty::Ptr) && b.ret != Some(Ty::Ptr),
+            !b.params.contains(&Ty::Ptr) && !matches!(b.ret, Some(Ty::Ptr) | Some(Ty::Str)),
             "`{}` takes or returns a pointer, so it cannot use the scalar dispatch",
             b.name
+        );
+    }
+}
+
+/// `Str` is a RESULT convention (a caller-allocated out-pointer), never a slot.
+/// Only the text dispatch allocates that slot, so only a `text` row may use it.
+#[test]
+fn str_is_only_a_text_rows_return() {
+    for b in TABLE {
+        assert!(!b.params.contains(&Ty::Str), "`{}` has a Str parameter slot", b.name);
+        if b.ret == Some(Ty::Str) {
+            assert_eq!(b.kind, Kind::Text, "`{}` returns Str but is not a text row", b.name);
+        }
+    }
+}
+
+/// The text dispatch reads a `Ptr` slot as the first half of one Aurora `str`
+/// argument and consumes the `I64` after it as its length. A `Ptr` that is last,
+/// or followed by anything else, would silently eat the next argument.
+#[test]
+fn text_rows_pair_each_pointer_with_a_length() {
+    for b in TABLE.iter().filter(|b| b.kind == Kind::Text) {
+        let mut i = 0;
+        while i < b.params.len() {
+            if b.params[i] == Ty::Ptr {
+                assert_eq!(
+                    b.params.get(i + 1),
+                    Some(&Ty::I64),
+                    "`{}`: a str argument must be `Ptr, I64` (data, length)",
+                    b.name
+                );
+                i += 1;
+            }
+            i += 1;
+        }
+        assert_eq!(
+            b.arity(),
+            Some(b.params.len() - b.params.iter().filter(|t| **t == Ty::Ptr).count())
         );
     }
 }
@@ -257,22 +295,22 @@ fn documentation_debt_only_shrinks() {
 }
 
 /// The bug that started all of this: `net_fire` grew a `weapon` parameter and
-/// the documented call kept six arguments. For a builtin whose parameters are
-/// all scalars the Aurora-level arity IS the ABI arity, so the docs can be
-/// checked against the table directly.
+/// the documented call kept six arguments. `Builtin::arity` is the number of
+/// arguments a call site passes, for every kind whose call the table fully
+/// describes, so the docs can be checked against the table directly.
 #[test]
 fn documented_arity_matches_the_table() {
-    let (_, arity) = documented();
+    let (_, doc_arity) = documented();
     let mut wrong = Vec::new();
+    let mut checked = 0;
     for b in TABLE.iter().filter(|b| b.kind.is_aurora_visible()) {
-        if b.kind == Kind::Inline || b.params.contains(&Ty::Ptr) {
-            continue; // no ABI arity, or a `str`/array argument spanning two slots
-        }
-        if let Some(&n) = arity.get(b.name) {
-            if n != b.params.len() {
-                wrong.push(format!("{} documented with {n} args, table has {}", b.name, b.params.len()));
-            }
+        let (Some(want), Some(&n)) = (b.arity(), doc_arity.get(b.name)) else { continue };
+        checked += 1;
+        if n != want {
+            wrong.push(format!("{} documented with {n} args, table has {want}", b.name));
         }
     }
     assert!(wrong.is_empty(), "docs/04-stdlib-and-builtins.md disagrees with the table:\n{}", wrong.join("\n"));
+    // A parser that silently stopped matching would pass vacuously.
+    assert!(checked > 100, "only {checked} builtins had a documented argument list");
 }
