@@ -132,8 +132,10 @@ fn main() {
         r3d_camera(px, eye, pz, px + fx, eye + fy, pz + fz, 80.0)
 
         // Shoot: a lag-compensated hitscan, validated by the server.
+        // The last argument is the weapon id, carried through to the server's
+        // hit queue so damage can differ per weapon.
         if mouse_button(0) == 1 {
-            net_fire(px, eye, pz, fx, fy, fz)
+            net_fire(px, eye, pz, fx, fy, fz, 0)
             r3d_debug_line(px, eye - 0.1, pz, px + fx * 80.0, eye + fy * 80.0, pz + fz * 80.0, 1.0, 0.9, 0.4)
         }
         // The server reports the validated hit; show a spark on the victim.

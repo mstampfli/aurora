@@ -15,9 +15,6 @@ use std::path::{Path, PathBuf};
 
 /// Examples with a known-stubbed function, and why. Do not grow this list.
 const KNOWN_STUBBED: &[(&str, &str)] = &[
-    // `net_fire` is a registered builtin the backend never lowers, so `main` is
-    // a stub: the multiplayer example compiles to a program that does nothing.
-    ("mp_shooter3d.aur", "the `net_fire` builtin has no lowering"),
     // Spec showcases written ahead of the backend.
     ("netcode.aur", "uses region/field forms the backend does not lower yet"),
     ("spinner.aur", "uses the unimplemented `App` API and `Transform::rotate`"),
