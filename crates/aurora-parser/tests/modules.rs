@@ -14,8 +14,7 @@ use aurora_parser::ast::ItemKind;
 /// Write a throwaway multi-file program to its own temp directory and return the
 /// path of its entry file. `files[0]` is the entry.
 fn program(tag: &str, files: &[(&str, &str)]) -> PathBuf {
-    let dir =
-        std::env::temp_dir().join(format!("aurora_modload_{}_{tag}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("aurora_modload_{}_{tag}", std::process::id()));
     // Fresh every run, so a stale file from an earlier run cannot mask a failure.
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create temp dir");
@@ -47,7 +46,11 @@ fn load(entry: &Path) -> (Vec<String>, Vec<Diagnostic>) {
 }
 
 fn assert_no_errors(diags: &[Diagnostic]) {
-    let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).map(|d| &d.message).collect();
+    let errors: Vec<_> = diags
+        .iter()
+        .filter(|d| d.is_error())
+        .map(|d| &d.message)
+        .collect();
     assert!(errors.is_empty(), "unexpected errors: {errors:?}");
 }
 
@@ -58,14 +61,23 @@ fn file_module_function_is_loaded_and_namespaced() {
     let entry = program(
         "fn",
         &[
-            ("main.aur", "mod helper;\nfn main() { println(helper::add(2, 3)) }"),
+            (
+                "main.aur",
+                "mod helper;\nfn main() { println(helper::add(2, 3)) }",
+            ),
             ("helper.aur", "fn add(a: i64, b: i64) -> i64 { a + b }"),
         ],
     );
     let (names, diags) = load(&entry);
     assert_no_errors(&diags);
-    assert!(names.contains(&"helper::add".to_string()), "module fn missing: {names:?}");
-    assert!(names.contains(&"main".to_string()), "entry fn missing: {names:?}");
+    assert!(
+        names.contains(&"helper::add".to_string()),
+        "module fn missing: {names:?}"
+    );
+    assert!(
+        names.contains(&"main".to_string()),
+        "entry fn missing: {names:?}"
+    );
 }
 
 /// Every item kind a module can define has to come across, not just functions.
@@ -84,7 +96,10 @@ fn file_module_struct_enum_and_const_are_loaded() {
     let (names, diags) = load(&entry);
     assert_no_errors(&diags);
     for want in ["shape::P", "shape::Kind", "shape::LIMIT"] {
-        assert!(names.contains(&want.to_string()), "`{want}` missing: {names:?}");
+        assert!(
+            names.contains(&want.to_string()),
+            "`{want}` missing: {names:?}"
+        );
     }
 }
 
@@ -96,15 +111,27 @@ fn nested_file_module_is_loaded_transitively() {
     let entry = program(
         "nested",
         &[
-            ("main.aur", "mod mid;\nfn main() { println(mid::doubled()) }"),
-            ("mid.aur", "mod leaf;\nfn doubled() -> i64 { leaf::base() * 2 }"),
+            (
+                "main.aur",
+                "mod mid;\nfn main() { println(mid::doubled()) }",
+            ),
+            (
+                "mid.aur",
+                "mod leaf;\nfn doubled() -> i64 { leaf::base() * 2 }",
+            ),
             ("leaf.aur", "fn base() -> i64 { 10 }"),
         ],
     );
     let (names, diags) = load(&entry);
     assert_no_errors(&diags);
-    assert!(names.contains(&"mid::doubled".to_string()), "mid missing: {names:?}");
-    assert!(names.contains(&"leaf::base".to_string()), "transitive leaf missing: {names:?}");
+    assert!(
+        names.contains(&"mid::doubled".to_string()),
+        "mid missing: {names:?}"
+    );
+    assert!(
+        names.contains(&"leaf::base".to_string()),
+        "transitive leaf missing: {names:?}"
+    );
 }
 
 /// A module whose file does not exist must be a hard error naming the path that
@@ -112,13 +139,20 @@ fn nested_file_module_is_loaded_transitively() {
 /// feature exists to remove.
 #[test]
 fn missing_module_file_is_a_hard_error() {
-    let entry = program("missing", &[("main.aur", "mod nope;\nfn main() { println(1) }")]);
+    let entry = program(
+        "missing",
+        &[("main.aur", "mod nope;\nfn main() { println(1) }")],
+    );
     let (_, diags) = load(&entry);
     let d = diags
         .iter()
         .find(|d| d.is_error() && d.code.as_deref() == Some("E0110"))
         .expect("missing module file must produce an E0110 error");
-    assert!(d.message.contains("nope"), "error must name the module: {}", d.message);
+    assert!(
+        d.message.contains("nope"),
+        "error must name the module: {}",
+        d.message
+    );
     assert!(
         d.notes.iter().any(|n| n.contains("nope.aur")),
         "error must name the path looked for: {:?}",
@@ -130,12 +164,20 @@ fn missing_module_file_is_a_hard_error() {
 /// has to say so rather than just claiming the file is absent.
 #[test]
 fn directory_module_is_reported_as_unsupported() {
-    let entry = program("dirmod", &[("main.aur", "mod pack;\nfn main() { println(1) }")]);
+    let entry = program(
+        "dirmod",
+        &[("main.aur", "mod pack;\nfn main() { println(1) }")],
+    );
     std::fs::create_dir_all(entry.parent().unwrap().join("pack")).expect("create module dir");
     let (_, diags) = load(&entry);
-    let d = diags.iter().find(|d| d.is_error()).expect("a directory is not a module");
+    let d = diags
+        .iter()
+        .find(|d| d.is_error())
+        .expect("a directory is not a module");
     assert!(
-        d.notes.iter().any(|n| n.contains("directory modules are not supported")),
+        d.notes
+            .iter()
+            .any(|n| n.contains("directory modules are not supported")),
         "expected a directory-module note, got {:?}",
         d.notes
     );
@@ -148,16 +190,28 @@ fn diamond_import_loads_the_shared_module_once() {
     let entry = program(
         "diamond",
         &[
-            ("main.aur", "mod l;\nmod r;\nfn main() { println(l::lv() + r::rv()) }"),
-            ("l.aur", "mod shared;\nfn lv() -> i64 { shared::base() + 1 }"),
-            ("r.aur", "mod shared;\nfn rv() -> i64 { shared::base() + 2 }"),
+            (
+                "main.aur",
+                "mod l;\nmod r;\nfn main() { println(l::lv() + r::rv()) }",
+            ),
+            (
+                "l.aur",
+                "mod shared;\nfn lv() -> i64 { shared::base() + 1 }",
+            ),
+            (
+                "r.aur",
+                "mod shared;\nfn rv() -> i64 { shared::base() + 2 }",
+            ),
             ("shared.aur", "fn base() -> i64 { 4 }"),
         ],
     );
     let (names, diags) = load(&entry);
     assert_no_errors(&diags);
     let loads = names.iter().filter(|n| *n == "shared::base").count();
-    assert_eq!(loads, 1, "shared module loaded {loads} times, want exactly 1: {names:?}");
+    assert_eq!(
+        loads, 1,
+        "shared module loaded {loads} times, want exactly 1: {names:?}"
+    );
 }
 
 /// Two files that declare each other terminate instead of recursing forever, and
@@ -174,8 +228,16 @@ fn mutual_module_declarations_terminate_and_load_once() {
     );
     let (names, diags) = load(&entry);
     assert_no_errors(&diags);
-    assert_eq!(names.iter().filter(|n| *n == "ca::av").count(), 1, "{names:?}");
-    assert_eq!(names.iter().filter(|n| *n == "cb::bv").count(), 1, "{names:?}");
+    assert_eq!(
+        names.iter().filter(|n| *n == "ca::av").count(),
+        1,
+        "{names:?}"
+    );
+    assert_eq!(
+        names.iter().filter(|n| *n == "cb::bv").count(),
+        1,
+        "{names:?}"
+    );
 }
 
 /// The entry file is the root module. Loading it again under its own name (a file
@@ -183,19 +245,32 @@ fn mutual_module_declarations_terminate_and_load_once() {
 /// defines a second, prefixed name.
 #[test]
 fn entry_file_is_not_reloaded_under_its_own_name() {
-    let entry = program("selfmod", &[("main.aur", "mod main;\nfn only() -> i64 { 1 }")]);
+    let entry = program(
+        "selfmod",
+        &[("main.aur", "mod main;\nfn only() -> i64 { 1 }")],
+    );
     let (names, diags) = load(&entry);
     assert_no_errors(&diags);
-    assert_eq!(names, vec!["only".to_string()], "root module was re-loaded: {names:?}");
+    assert_eq!(
+        names,
+        vec!["only".to_string()],
+        "root module was re-loaded: {names:?}"
+    );
 }
 
 /// One file is one module, so a module name is a single segment. `mod a::b;` used
 /// to parse as `mod a` plus junk; it must be an explicit error instead.
 #[test]
 fn path_module_declaration_is_rejected() {
-    let entry = program("pathmod", &[("main.aur", "mod a::b;\nfn main() { println(1) }")]);
+    let entry = program(
+        "pathmod",
+        &[("main.aur", "mod a::b;\nfn main() { println(1) }")],
+    );
     let (_, diags) = load(&entry);
-    let d = diags.iter().find(|d| d.is_error()).expect("`mod a::b;` must be rejected");
+    let d = diags
+        .iter()
+        .find(|d| d.is_error())
+        .expect("`mod a::b;` must be rejected");
     assert!(
         d.message.contains("path modules"),
         "expected a path-module error, got: {}",
@@ -210,13 +285,22 @@ fn expansion_appends_and_preserves_entry_offsets() {
     let entry = program(
         "offsets",
         &[
-            ("main.aur", "mod helper;\nfn main() { println(helper::add(2, 3)) }"),
+            (
+                "main.aur",
+                "mod helper;\nfn main() { println(helper::add(2, 3)) }",
+            ),
             ("helper.aur", "fn add(a: i64, b: i64) -> i64 { a + b }"),
         ],
     );
     let src = std::fs::read_to_string(&entry).unwrap();
     let (expanded, diags) = aurora_parser::load_file_modules(&src, &entry);
     assert_no_errors(&diags);
-    assert!(expanded.starts_with(&src), "expansion must not move the entry file's bytes");
-    assert!(expanded.len() > src.len(), "the module's text was never appended");
+    assert!(
+        expanded.starts_with(&src),
+        "expansion must not move the entry file's bytes"
+    );
+    assert!(
+        expanded.len() > src.len(),
+        "the module's text was never appended"
+    );
 }

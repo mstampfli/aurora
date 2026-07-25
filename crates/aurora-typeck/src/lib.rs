@@ -113,7 +113,12 @@ impl Typeck {
                     if let aurora_ast::StructBody::Named(fields) = &s.body {
                         let fs = fields
                             .iter()
-                            .map(|f| (f.name.name.clone(), convert::type_to_ty(&f.ty, &mut self.cx, &self.user_types)))
+                            .map(|f| {
+                                (
+                                    f.name.name.clone(),
+                                    convert::type_to_ty(&f.ty, &mut self.cx, &self.user_types),
+                                )
+                            })
                             .collect();
                         self.structs.insert(s.name.name.clone(), fs);
                         if !s.generics.is_empty() {
@@ -141,7 +146,9 @@ impl Typeck {
                         .iter()
                         .flat_map(|g| {
                             g.bounds.iter().filter_map(move |b| {
-                                b.segments.last().map(|s| (g.name.name.clone(), s.ident.name.clone()))
+                                b.segments
+                                    .last()
+                                    .map(|s| (g.name.name.clone(), s.ident.name.clone()))
                             })
                         })
                         .collect();
@@ -185,7 +192,9 @@ impl Typeck {
             .params
             .iter()
             .filter_map(|p| match p {
-                Param::Normal { ty, .. } => Some(convert::type_to_ty(ty, &mut self.cx, &self.user_types)),
+                Param::Normal { ty, .. } => {
+                    Some(convert::type_to_ty(ty, &mut self.cx, &self.user_types))
+                }
                 Param::SelfParam { .. } => None,
             })
             .collect();
@@ -240,8 +249,10 @@ impl Typeck {
             }
         }
         // Make the declared return type available to `return expr` checks.
-        let declared_ret =
-            f.ret.as_ref().map(|ret| convert::type_to_ty(ret, &mut self.cx, &self.user_types));
+        let declared_ret = f
+            .ret
+            .as_ref()
+            .map(|ret| convert::type_to_ty(ret, &mut self.cx, &self.user_types));
         let prev_ret = self.cur_ret.take();
         self.cur_ret = declared_ret.clone();
         let body_ty = self.check_block_no_scope(body);
@@ -286,7 +297,10 @@ impl Typeck {
             self.diags.push(
                 Diagnostic::error(format!("type mismatch in {ctx}: {}", e.message))
                     .with_code("E0300")
-                    .primary(span, format!("expected `{}`, found `{}`", e.expected, e.found)),
+                    .primary(
+                        span,
+                        format!("expected `{}`, found `{}`", e.expected, e.found),
+                    ),
             );
         }
     }
@@ -316,7 +330,9 @@ impl Typeck {
     }
 
     fn check_let(&mut self, l: &aurora_ast::LetStmt) {
-        let declared = l.ty.as_ref().map(|t| convert::type_to_ty(t, &mut self.cx, &self.user_types));
+        let declared =
+            l.ty.as_ref()
+                .map(|t| convert::type_to_ty(t, &mut self.cx, &self.user_types));
         let init_ty = l.init.as_ref().map(|e| (e.span, self.infer(e)));
 
         let bind_ty = match (&declared, &init_ty) {
@@ -356,7 +372,8 @@ impl Typeck {
                 let lt = self.infer(lhs);
                 let rt = self.infer(rhs);
                 // Lenient: only flag when both sides are known and incompatible.
-                if !is_unknown(&self.cx.resolve_deep(&lt)) && !is_unknown(&self.cx.resolve_deep(&rt))
+                if !is_unknown(&self.cx.resolve_deep(&lt))
+                    && !is_unknown(&self.cx.resolve_deep(&rt))
                 {
                     self.expect(rhs.span, &lt, &rt, "assignment");
                 }
@@ -390,26 +407,33 @@ impl Typeck {
                 self.infer(func);
                 Ty::Error
             }
-            ExprKind::Struct { path, fields, base } => self.infer_struct(path, fields, base.as_deref()),
+            ExprKind::Struct { path, fields, base } => {
+                self.infer_struct(path, fields, base.as_deref())
+            }
             ExprKind::Array(items) => {
                 let elem = self.cx.fresh();
                 for it in items {
                     let t = self.infer(it);
                     self.expect(it.span, &elem, &t, "array element");
                 }
-                Ty::Array(Box::new(self.cx.resolve_deep(&elem)), Some(items.len() as u64))
+                Ty::Array(
+                    Box::new(self.cx.resolve_deep(&elem)),
+                    Some(items.len() as u64),
+                )
             }
             ExprKind::ArrayRepeat { value, count } => {
                 self.infer(count);
                 let e = self.infer(value);
                 // A literal repeat count gives a known array size, so `[0; 32]`
                 // matches a `[i64; 32]` field/annotation.
-                let n = if let ExprKind::Int(v, _) = &count.kind { Some(*v as u64) } else { None };
+                let n = if let ExprKind::Int(v, _) = &count.kind {
+                    Some(*v as u64)
+                } else {
+                    None
+                };
                 Ty::Array(Box::new(self.cx.resolve_deep(&e)), n)
             }
-            ExprKind::Tuple(items) => {
-                Ty::Tuple(items.iter().map(|it| self.infer(it)).collect())
-            }
+            ExprKind::Tuple(items) => Ty::Tuple(items.iter().map(|it| self.infer(it)).collect()),
             ExprKind::If(ifx) => {
                 self.check_cond(&ifx.cond);
                 let then_ty = self.check_block(&ifx.then_branch);
@@ -546,7 +570,8 @@ impl Typeck {
                 Ty::Bool
             }
             BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
-                if !is_unknown(&ra) && !is_unknown(&rb) && !is_vectorish(&ra) && !is_vectorish(&rb) {
+                if !is_unknown(&ra) && !is_unknown(&rb) && !is_vectorish(&ra) && !is_vectorish(&rb)
+                {
                     self.expect(b.span, &ra, &rb, "comparison");
                 }
                 Ty::Bool
@@ -562,7 +587,11 @@ impl Typeck {
     /// unknowns propagate leniently.
     fn arith(&mut self, a: &Ty, b: &Ty, span: Span) -> Ty {
         if is_unknown(a) {
-            return if is_unknown(b) { self.cx.fresh() } else { b.clone() };
+            return if is_unknown(b) {
+                self.cx.fresh()
+            } else {
+                b.clone()
+            };
         }
         if is_unknown(b) {
             return a.clone();
@@ -575,10 +604,18 @@ impl Typeck {
         }
         // Integer literals adapt to a concrete integer operand (and vice versa).
         if is_int_like(a) && is_int_like(b) {
-            return if matches!(a, Ty::Int(_)) { a.clone() } else { b.clone() };
+            return if matches!(a, Ty::Int(_)) {
+                a.clone()
+            } else {
+                b.clone()
+            };
         }
         if is_float_like(a) && is_float_like(b) {
-            return if matches!(a, Ty::Float(_)) { a.clone() } else { b.clone() };
+            return if matches!(a, Ty::Float(_)) {
+                a.clone()
+            } else {
+                b.clone()
+            };
         }
         // Both scalar/known: require equality.
         if a == b {
@@ -598,7 +635,10 @@ impl Typeck {
     }
 
     fn infer_call(&mut self, callee: &Expr, args: &[aurora_ast::Arg]) -> Ty {
-        let arg_tys: Vec<(Span, Ty)> = args.iter().map(|a| (a.value.span, self.infer(&a.value))).collect();
+        let arg_tys: Vec<(Span, Ty)> = args
+            .iter()
+            .map(|a| (a.value.span, self.infer(&a.value)))
+            .collect();
 
         // Only known top-level function paths get argument checking; everything
         // else (methods, builtins, imports) is treated as unknown for TYPING
@@ -613,8 +653,10 @@ impl Typeck {
                     // Instantiate generic type parameters with fresh variables so
                     // each call is checked independently (e.g. `pair(1, true)`).
                     let generics = self.fn_generics.get(name).cloned().unwrap_or_default();
-                    let subst: HashMap<String, Ty> =
-                        generics.iter().map(|g| (g.clone(), self.cx.fresh())).collect();
+                    let subst: HashMap<String, Ty> = generics
+                        .iter()
+                        .map(|g| (g.clone(), self.cx.fresh()))
+                        .collect();
                     let params: Vec<Ty> = params.iter().map(|p| subst_ty(p, &subst)).collect();
                     let ret = subst_ty(&ret, &subst);
 
@@ -640,7 +682,8 @@ impl Typeck {
                         for (param, trait_name) in bounds {
                             if let Some(tv) = subst.get(&param) {
                                 if let Ty::Named(ty) = self.cx.resolve_deep(tv) {
-                                    if !self.trait_impls.contains(&(ty.clone(), trait_name.clone())) {
+                                    if !self.trait_impls.contains(&(ty.clone(), trait_name.clone()))
+                                    {
                                         self.diags.push(
                                             Diagnostic::error(format!(
                                                 "`{ty}` does not implement trait `{trait_name}`"
@@ -704,7 +747,11 @@ impl Typeck {
         fields: &[aurora_ast::FieldInit],
         base: Option<&Expr>,
     ) -> Ty {
-        let name = path.segments.last().map(|s| s.ident.name.clone()).unwrap_or_default();
+        let name = path
+            .segments
+            .last()
+            .map(|s| s.ident.name.clone())
+            .unwrap_or_default();
         let known = self.structs.get(&name).cloned();
 
         for f in fields {
@@ -742,7 +789,11 @@ impl Typeck {
                     fields.iter().map(|f| f.name.name.as_str()).collect();
                 for req in required {
                     if !provided.contains(req.as_str()) {
-                        let span = path.segments.last().map(|s| s.ident.span).unwrap_or(path.span);
+                        let span = path
+                            .segments
+                            .last()
+                            .map(|s| s.ident.span)
+                            .unwrap_or(path.span);
                         self.diags.push(
                             Diagnostic::error(format!("missing field `{req}` in `{name}`"))
                                 .with_code("E0302")
@@ -835,7 +886,12 @@ fn query_elem_ty(q: &QueryExpr) -> Ty {
 }
 
 fn named(p: &aurora_ast::Path) -> Ty {
-    Ty::Named(p.segments.last().map(|s| s.ident.name.clone()).unwrap_or_default())
+    Ty::Named(
+        p.segments
+            .last()
+            .map(|s| s.ident.name.clone())
+            .unwrap_or_default(),
+    )
 }
 
 /// Substitute generic type-parameter names with their instantiated types.
@@ -843,9 +899,10 @@ fn subst_ty(ty: &Ty, subst: &HashMap<String, Ty>) -> Ty {
     match ty {
         Ty::Named(n) => subst.get(n).cloned().unwrap_or_else(|| ty.clone()),
         Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| subst_ty(t, subst)).collect()),
-        Ty::Ref { mutable, inner } => {
-            Ty::Ref { mutable: *mutable, inner: Box::new(subst_ty(inner, subst)) }
-        }
+        Ty::Ref { mutable, inner } => Ty::Ref {
+            mutable: *mutable,
+            inner: Box::new(subst_ty(inner, subst)),
+        },
         Ty::Owned(t) => Ty::Owned(Box::new(subst_ty(t, subst))),
         Ty::Rc(t) => Ty::Rc(Box::new(subst_ty(t, subst))),
         Ty::Array(t, n) => Ty::Array(Box::new(subst_ty(t, subst)), *n),

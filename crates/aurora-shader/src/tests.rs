@@ -19,7 +19,10 @@ struct VsOut { clip: Vec4, uv: Vec2 }
 
 fn wgsl() -> String {
     let (module, diags) = parse_str(SHADER);
-    assert!(!diags.iter().any(|d| d.is_error()), "shader failed to parse");
+    assert!(
+        !diags.iter().any(|d| d.is_error()),
+        "shader failed to parse"
+    );
     lower_module(&module)
 }
 
@@ -50,7 +53,10 @@ fn vec_constructor_and_let_lowering() {
 fn struct_literal_becomes_positional_constructor() {
     // Fields reordered to declaration order (clip, uv) regardless of literal order.
     let w = wgsl();
-    assert!(w.contains("return VsOut(vec4<f32>(scaled, 1.0), vin.uv);"), "{w}");
+    assert!(
+        w.contains("return VsOut(vec4<f32>(scaled, 1.0), vin.uv);"),
+        "{w}"
+    );
 }
 
 #[test]
@@ -58,7 +64,10 @@ fn fragment_stage_output_location_and_texture_sample() {
     let w = wgsl();
     assert!(w.contains("@fragment"), "{w}");
     assert!(w.contains("-> @location(0) vec4<f32>"), "{w}");
-    assert!(w.contains("textureSample(albedo, albedo_sampler, vin.uv)"), "{w}");
+    assert!(
+        w.contains("textureSample(albedo, albedo_sampler, vin.uv)"),
+        "{w}"
+    );
 }
 
 #[test]
@@ -93,5 +102,8 @@ fn non_shader_functions_are_ignored() {
     let src = "fn helper(x: i32) -> i32 { x }";
     let (m, _) = parse_str(src);
     let w = lower_module(&m);
-    assert!(!w.contains("fn helper"), "non-shader fns must not be emitted: {w}");
+    assert!(
+        !w.contains("fn helper"),
+        "non-shader fns must not be emitted: {w}"
+    );
 }

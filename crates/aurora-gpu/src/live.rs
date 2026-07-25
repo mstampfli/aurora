@@ -131,11 +131,18 @@ impl Live {
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &bgl,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() }],
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform.as_entire_binding(),
+            }],
         });
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("live-target"),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -172,8 +179,11 @@ impl Live {
         let u: [f32; 4] = [time, 0.0, self.w as f32, self.h as f32];
         queue.write_buffer(&self.uniform, 0, bytemuck(&u));
 
-        let view = self.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let view = self
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut enc =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
@@ -208,7 +218,11 @@ impl Live {
                     rows_per_image: Some(self.h),
                 },
             },
-            wgpu::Extent3d { width: self.w, height: self.h, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: self.w,
+                height: self.h,
+                depth_or_array_layers: 1,
+            },
         );
         queue.submit(Some(enc.finish()));
 

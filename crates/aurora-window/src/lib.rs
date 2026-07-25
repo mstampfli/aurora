@@ -19,42 +19,37 @@
 mod imm;
 mod input;
 pub use imm::{
-    imm_leak,
-    grab_mouse as imm_grab_mouse, input_char as imm_input_char, key_down as imm_key_down,
-    window_fullscreen as imm_window_fullscreen, mouse as imm_mouse,
+    blur as imm_blur, damage as imm_damage, grab_mouse as imm_grab_mouse, imm_leak,
+    inject_char as imm_inject_char, inject_key as imm_inject_key,
+    inject_mouse_button as imm_inject_mouse_button, inject_mouse_move as imm_inject_mouse_move,
+    inject_mouse_pos as imm_inject_mouse_pos, inject_scroll as imm_inject_scroll,
+    input_char as imm_input_char, key_down as imm_key_down, mouse as imm_mouse,
     mouse_button as imm_mouse_button, mouse_delta as imm_mouse_delta, open as imm_open,
-    present as imm_present, scroll as imm_scroll,
-    r3d_anim_play as imm_r3d_anim_play, r3d_anim_play_upper as imm_r3d_anim_play_upper,
-    r3d_anim_aim_upper as imm_r3d_anim_aim_upper, r3d_anim_blend as imm_r3d_anim_blend,
-    r3d_anim_seek_upper as imm_r3d_anim_seek_upper,
-    r3d_pose_bone as imm_r3d_pose_bone, r3d_clear_pose as imm_r3d_clear_pose,
-    r3d_hide_joint as imm_r3d_hide_joint,
+    present as imm_present, r3d_anim_aim_upper as imm_r3d_anim_aim_upper,
+    r3d_anim_blend as imm_r3d_anim_blend, r3d_anim_play as imm_r3d_anim_play,
+    r3d_anim_play_upper as imm_r3d_anim_play_upper, r3d_anim_seek_upper as imm_r3d_anim_seek_upper,
     r3d_anim_stop_upper as imm_r3d_anim_stop_upper, r3d_anim_update as imm_r3d_anim_update,
     r3d_begin as imm_r3d_begin, r3d_camera as imm_r3d_camera,
-    r3d_camera_roll as imm_r3d_camera_roll, r3d_clear as imm_r3d_clear,
-    r3d_clear_lights as imm_r3d_clear_lights, r3d_clip_count as imm_r3d_clip_count,
-    r3d_debug_line as imm_r3d_debug_line, r3d_draw as imm_r3d_draw, r3d_draw_quat as imm_r3d_draw_quat,
-    r3d_draw_tint as imm_r3d_draw_tint,
-    r3d_draw_on_joint as imm_r3d_draw_on_joint, r3d_joint_dump as imm_r3d_joint_dump,
-    r3d_joint_pos as imm_r3d_joint_pos,
-    r3d_draw_shield as imm_r3d_draw_shield,
-    r3d_draw_billboard as imm_r3d_draw_billboard, r3d_fog as imm_r3d_fog,
-    r3d_frustum_cull as imm_r3d_frustum_cull, r3d_light as imm_r3d_light,
+    r3d_camera_roll as imm_r3d_camera_roll, r3d_capture as imm_r3d_capture,
+    r3d_clear as imm_r3d_clear, r3d_clear_lights as imm_r3d_clear_lights,
+    r3d_clear_pose as imm_r3d_clear_pose, r3d_clip_count as imm_r3d_clip_count,
+    r3d_debug_line as imm_r3d_debug_line, r3d_debug_skeleton as imm_r3d_debug_skeleton,
+    r3d_draw as imm_r3d_draw, r3d_draw_billboard as imm_r3d_draw_billboard,
+    r3d_draw_on_joint as imm_r3d_draw_on_joint, r3d_draw_quat as imm_r3d_draw_quat,
+    r3d_draw_shield as imm_r3d_draw_shield, r3d_draw_tint as imm_r3d_draw_tint,
+    r3d_fog as imm_r3d_fog, r3d_frustum_cull as imm_r3d_frustum_cull,
+    r3d_hide_joint as imm_r3d_hide_joint, r3d_joint_dump as imm_r3d_joint_dump,
+    r3d_joint_pos as imm_r3d_joint_pos, r3d_light as imm_r3d_light,
     r3d_load_model as imm_r3d_load_model, r3d_make_box as imm_r3d_make_box,
     r3d_make_box_emissive as imm_r3d_make_box_emissive,
-    r3d_make_box_sized as imm_r3d_make_box_sized,
-    r3d_make_plane as imm_r3d_make_plane, r3d_make_sphere as imm_r3d_make_sphere,
-    r3d_make_sprite as imm_r3d_make_sprite, r3d_point_light as imm_r3d_point_light,
-    r3d_point_shadows as imm_r3d_point_shadows, r3d_present as imm_r3d_present,
+    r3d_make_box_sized as imm_r3d_make_box_sized, r3d_make_plane as imm_r3d_make_plane,
+    r3d_make_sphere as imm_r3d_make_sphere, r3d_make_sprite as imm_r3d_make_sprite,
+    r3d_point_light as imm_r3d_point_light, r3d_point_shadows as imm_r3d_point_shadows,
+    r3d_pose_bone as imm_r3d_pose_bone, r3d_present as imm_r3d_present,
     r3d_shadows as imm_r3d_shadows, r3d_sky as imm_r3d_sky, r3d_ssao as imm_r3d_ssao,
-    r3d_viewmodel as imm_r3d_viewmodel,
-    blur as imm_blur,
-    damage as imm_damage, r3d_world_to_screen as imm_r3d_world_to_screen,
-    speedlines as imm_speedlines, surface_h as imm_surface_h, surface_w as imm_surface_w,
-    r3d_capture as imm_r3d_capture, r3d_debug_skeleton as imm_r3d_debug_skeleton,
-    inject_key as imm_inject_key, inject_mouse_move as imm_inject_mouse_move,
-    inject_mouse_pos as imm_inject_mouse_pos, inject_mouse_button as imm_inject_mouse_button,
-    inject_scroll as imm_inject_scroll, inject_char as imm_inject_char,
+    r3d_viewmodel as imm_r3d_viewmodel, r3d_world_to_screen as imm_r3d_world_to_screen,
+    scroll as imm_scroll, speedlines as imm_speedlines, surface_h as imm_surface_h,
+    surface_w as imm_surface_w, window_fullscreen as imm_window_fullscreen,
 };
 pub use input::{Input, Key};
 
@@ -112,7 +107,9 @@ pub fn run(
         last: Instant::now(),
         frame: Box::new(frame),
     };
-    event_loop.run_app(&mut app).map_err(|e| format!("run: {e}"))
+    event_loop
+        .run_app(&mut app)
+        .map_err(|e| format!("run: {e}"))
 }
 
 /// A built-in interactive demo: an arrow-key/WASD-controlled box with simple
@@ -124,49 +121,54 @@ pub fn demo() -> Result<(), String> {
     let mut x = (w / 2) as f32;
     let mut y = (h / 2) as f32;
     let (mut vx, mut vy) = (48.0f32, 33.0f32);
-    run("Aurora — live window (arrows/WASD move, Esc quits)", w, h, move |input, dt, fb| {
-        let dt = dt.min(0.05); // clamp huge first-frame dt
-        let accel = 320.0;
-        if input.is_down(Key::Left) || input.is_down(Key::A) {
-            vx -= accel * dt;
-        }
-        if input.is_down(Key::Right) || input.is_down(Key::D) {
-            vx += accel * dt;
-        }
-        if input.is_down(Key::Up) || input.is_down(Key::W) {
-            vy -= accel * dt;
-        }
-        if input.is_down(Key::Down) || input.is_down(Key::S) {
-            vy += accel * dt;
-        }
-        x += vx * dt;
-        y += vy * dt;
-        // Bounce off the walls.
-        if x < 4.0 {
-            x = 4.0;
-            vx = vx.abs();
-        }
-        if x > (w - 4) as f32 {
-            x = (w - 4) as f32;
-            vx = -vx.abs();
-        }
-        if y < 4.0 {
-            y = 4.0;
-            vy = vy.abs();
-        }
-        if y > (h - 4) as f32 {
-            y = (h - 4) as f32;
-            vy = -vy.abs();
-        }
-
-        fb.clear(Color::rgb(10, 12, 22));
-        let c = Color::rgb(120, 200, 255);
-        for dy in -3..=3 {
-            for dx in -3..=3 {
-                fb.set(x as i32 + dx, y as i32 + dy, c);
+    run(
+        "Aurora — live window (arrows/WASD move, Esc quits)",
+        w,
+        h,
+        move |input, dt, fb| {
+            let dt = dt.min(0.05); // clamp huge first-frame dt
+            let accel = 320.0;
+            if input.is_down(Key::Left) || input.is_down(Key::A) {
+                vx -= accel * dt;
             }
-        }
-    })
+            if input.is_down(Key::Right) || input.is_down(Key::D) {
+                vx += accel * dt;
+            }
+            if input.is_down(Key::Up) || input.is_down(Key::W) {
+                vy -= accel * dt;
+            }
+            if input.is_down(Key::Down) || input.is_down(Key::S) {
+                vy += accel * dt;
+            }
+            x += vx * dt;
+            y += vy * dt;
+            // Bounce off the walls.
+            if x < 4.0 {
+                x = 4.0;
+                vx = vx.abs();
+            }
+            if x > (w - 4) as f32 {
+                x = (w - 4) as f32;
+                vx = -vx.abs();
+            }
+            if y < 4.0 {
+                y = 4.0;
+                vy = vy.abs();
+            }
+            if y > (h - 4) as f32 {
+                y = (h - 4) as f32;
+                vy = -vy.abs();
+            }
+
+            fb.clear(Color::rgb(10, 12, 22));
+            let c = Color::rgb(120, 200, 255);
+            for dy in -3..=3 {
+                for dx in -3..=3 {
+                    fb.set(x as i32 + dx, y as i32 + dy, c);
+                }
+            }
+        },
+    )
 }
 
 struct App {
@@ -188,7 +190,10 @@ impl ApplicationHandler for App {
         }
         let attrs = Window::default_attributes()
             .with_title(&self.title)
-            .with_inner_size(winit::dpi::LogicalSize::new(self.width * 2, self.height * 2));
+            .with_inner_size(winit::dpi::LogicalSize::new(
+                self.width * 2,
+                self.height * 2,
+            ));
         let window = match el.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -223,13 +228,18 @@ impl ApplicationHandler for App {
             WindowEvent::CursorMoved { position, .. } => {
                 self.input.mouse = (position.x as f32, position.y as f32);
             }
-            WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => {
                 self.input.mouse_down = state == ElementState::Pressed;
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
                     if let Some(key) = map_key(code) {
-                        self.input.set_key(key, event.state == ElementState::Pressed);
+                        self.input
+                            .set_key(key, event.state == ElementState::Pressed);
                     }
                     if code == KeyCode::Escape {
                         el.exit();
@@ -503,7 +513,10 @@ impl Gfx {
         for (i, a) in all.iter().enumerate() {
             let info = a.get_info();
             let compat = a.is_surface_supported(&surface);
-            eprintln!("[aurora] candidate GPU: {} ({:?}, {:?}, surface_ok={})", info.name, info.device_type, info.backend, compat);
+            eprintln!(
+                "[aurora] candidate GPU: {} ({:?}, {:?}, surface_ok={})",
+                info.name, info.device_type, info.backend, compat
+            );
             if pick.is_none() && compat && info.device_type == wgpu::DeviceType::DiscreteGpu {
                 pick = Some(i);
             }
@@ -523,7 +536,10 @@ impl Gfx {
             // strong GPU". If it's the iGPU, relaunch with PRIME offload:
             //   __NV_PRIME_RENDER_OFFLOAD=1 __VK_LAYER_NV_optimus=NVIDIA_only <game>
             let info = adapter.get_info();
-            eprintln!("[aurora] GPU: {} ({:?}, backend {:?})", info.name, info.device_type, info.backend);
+            eprintln!(
+                "[aurora] GPU: {} ({:?}, backend {:?})",
+                info.name, info.device_type, info.backend
+            );
         }
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
@@ -553,14 +569,20 @@ impl Gfx {
         // (Mailbox = uncapped/lowest-latency but maxes the GPU; relaxed = adaptive vsync, no hard
         // cliff; immediate = uncapped, may tear). Falls back to Fifo if the pick is unsupported.
         let present_mode = {
-            let want = std::env::var("AURORA_PRESENT").unwrap_or_default().to_lowercase();
+            let want = std::env::var("AURORA_PRESENT")
+                .unwrap_or_default()
+                .to_lowercase();
             let pick = match want.as_str() {
                 "mailbox" => wgpu::PresentMode::Mailbox,
                 "relaxed" | "fiforelaxed" | "adaptive" => wgpu::PresentMode::FifoRelaxed,
                 "immediate" | "nosync" => wgpu::PresentMode::Immediate,
                 _ => wgpu::PresentMode::Fifo,
             };
-            if caps.present_modes.contains(&pick) { pick } else { wgpu::PresentMode::Fifo }
+            if caps.present_modes.contains(&pick) {
+                pick
+            } else {
+                wgpu::PresentMode::Fifo
+            }
         };
         eprintln!("[aurora] present mode: {:?}", present_mode);
         let config = wgpu::SurfaceConfiguration {
@@ -580,7 +602,11 @@ impl Gfx {
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("framebuffer"),
-            size: wgpu::Extent3d { width: tex_w, height: tex_h, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: tex_w,
+                height: tex_h,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -629,8 +655,14 @@ impl Gfx {
             label: Some("blit"),
             layout: &pipeline.get_bind_group_layout(0),
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
             ],
         });
 
@@ -678,8 +710,14 @@ impl Gfx {
             label: Some("hud"),
             layout: &hud_pipeline.get_bind_group_layout(0),
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&hud_sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&hud_sampler),
+                },
             ],
         });
 
@@ -803,14 +841,21 @@ impl Gfx {
         let dmg_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("damage"),
             layout: &dmg_layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: dmg_buf.as_entire_binding() }],
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: dmg_buf.as_entire_binding(),
+            }],
         });
 
         // Offscreen scene target + fullscreen blur/blit pass (the paused/menu backdrop).
         let (post_w, post_h) = (config.width.max(1), config.height.max(1));
         let post_tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("post-scene"),
-            size: wgpu::Extent3d { width: post_w, height: post_h, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: post_w,
+                height: post_h,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -900,9 +945,18 @@ impl Gfx {
             label: Some("blur"),
             layout: &blur_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&post_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&blur_sampler) },
-                wgpu::BindGroupEntry { binding: 2, resource: blur_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&post_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&blur_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: blur_buf.as_entire_binding(),
+                },
             ],
         });
 
@@ -961,7 +1015,11 @@ impl Gfx {
     fn resize_hud_texture(&mut self, w: u32, h: u32) {
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("framebuffer"),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -986,16 +1044,28 @@ impl Gfx {
             label: Some("blit"),
             layout: &self.pipeline.get_bind_group_layout(0),
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&nearest) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&nearest),
+                },
             ],
         });
         self.hud_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("hud"),
             layout: &self.hud_pipeline.get_bind_group_layout(0),
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&linear) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&linear),
+                },
             ],
         });
         self.texture = texture;
@@ -1006,8 +1076,18 @@ impl Gfx {
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     fn present_scene(
-        &mut self, hud_rgba: &[u8], hud_w: u32, hud_h: u32, sl_wind: f32, sl_time: f32,
-        dmg_vig: f32, dmg_hit: f32, dmg_dx: f32, dmg_dy: f32, dmg_oc: f32, blur: f32,
+        &mut self,
+        hud_rgba: &[u8],
+        hud_w: u32,
+        hud_h: u32,
+        sl_wind: f32,
+        sl_time: f32,
+        dmg_vig: f32,
+        dmg_hit: f32,
+        dmg_dx: f32,
+        dmg_dy: f32,
+        dmg_oc: f32,
+        blur: f32,
     ) {
         let (w, h) = (self.config.width.max(1), self.config.height.max(1));
         // Keep the offscreen scene target sized to the surface, recreating its bind group
@@ -1015,22 +1095,38 @@ impl Gfx {
         if w != self.post_w || h != self.post_h {
             self.post_tex = self.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("post-scene"),
-                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                size: wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: self.config.format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             });
-            self.post_view = self.post_tex.create_view(&wgpu::TextureViewDescriptor::default());
+            self.post_view = self
+                .post_tex
+                .create_view(&wgpu::TextureViewDescriptor::default());
             self.blur_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("blur"),
                 layout: &self.blur_pipeline.get_bind_group_layout(0),
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.post_view) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.blur_sampler) },
-                    wgpu::BindGroupEntry { binding: 2, resource: self.blur_buf.as_entire_binding() },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&self.post_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.blur_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: self.blur_buf.as_entire_binding(),
+                    },
                 ],
             });
             self.post_w = w;
@@ -1085,7 +1181,11 @@ impl Gfx {
                     bytes_per_row: Some(self.tex_w * 4),
                     rows_per_image: Some(self.tex_h),
                 },
-                wgpu::Extent3d { width: self.tex_w, height: self.tex_h, depth_or_array_layers: 1 },
+                wgpu::Extent3d {
+                    width: self.tex_w,
+                    height: self.tex_h,
+                    depth_or_array_layers: 1,
+                },
             );
         }
         let surface_tex = match self.surface.get_current_texture() {
@@ -1101,9 +1201,12 @@ impl Gfx {
                 return;
             }
         };
-        let view = surface_tex.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut enc =
-            self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let view = surface_tex
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut enc = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         // Render the 3D scene into the offscreen target, then a fullscreen pass copies it
         // to the surface - blurred when `blur` > 0 (paused/menu), an exact copy otherwise.
         if let Some(scene) = self.scene.as_mut() {
@@ -1115,7 +1218,10 @@ impl Gfx {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
@@ -1132,7 +1238,10 @@ impl Gfx {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
@@ -1149,7 +1258,10 @@ impl Gfx {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
@@ -1166,7 +1278,10 @@ impl Gfx {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
@@ -1188,11 +1303,21 @@ impl Gfx {
             }
             let now = Instant::now();
             T0.with(|t0| {
-                if t0.get().is_none() { t0.set(Some(now)); }
-                let n = FRAMES.with(|f| { let n = f.get() + 1; f.set(n); n });
+                if t0.get().is_none() {
+                    t0.set(Some(now));
+                }
+                let n = FRAMES.with(|f| {
+                    let n = f.get() + 1;
+                    f.set(n);
+                    n
+                });
                 let el = now.duration_since(t0.get().unwrap()).as_secs_f64();
                 if el >= 1.0 {
-                    eprintln!("[aurora] {:.0} fps ({:.1} ms/frame)", n as f64 / el, el * 1000.0 / n as f64);
+                    eprintln!(
+                        "[aurora] {:.0} fps ({:.1} ms/frame)",
+                        n as f64 / el,
+                        el * 1000.0 / n as f64
+                    );
                     FRAMES.with(|f| f.set(0));
                     t0.set(Some(now));
                 }
@@ -1228,7 +1353,11 @@ impl Gfx {
                 bytes_per_row: Some(self.tex_w * 4),
                 rows_per_image: Some(self.tex_h),
             },
-            wgpu::Extent3d { width: self.tex_w, height: self.tex_h, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: self.tex_w,
+                height: self.tex_h,
+                depth_or_array_layers: 1,
+            },
         );
 
         let surface_tex = match self.surface.get_current_texture() {
@@ -1244,9 +1373,12 @@ impl Gfx {
                 return;
             }
         };
-        let view = surface_tex.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut enc =
-            self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let view = surface_tex
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut enc = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,

@@ -16,7 +16,11 @@ impl Parser {
     pub(crate) fn parse_item(&mut self) -> Option<Item> {
         let start = self.cur_span();
         let attrs = self.parse_attrs();
-        let vis = if self.eat_kw(Keyword::Pub) { Vis::Pub } else { Vis::Private };
+        let vis = if self.eat_kw(Keyword::Pub) {
+            Vis::Pub
+        } else {
+            Vis::Private
+        };
 
         let kind = match self.kind() {
             TokenKind::Kw(Keyword::Use) => ItemKind::Use(self.parse_use()),
@@ -47,7 +51,12 @@ impl Parser {
             }
         };
 
-        Some(Item { attrs, vis, kind, span: self.finish(start) })
+        Some(Item {
+            attrs,
+            vis,
+            kind,
+            span: self.finish(start),
+        })
     }
 
     // --- attributes ----------------------------------------------------------
@@ -63,7 +72,11 @@ impl Parser {
             } else {
                 Vec::new()
             };
-            attrs.push(Attr { name, args, span: self.finish(start) });
+            attrs.push(Attr {
+                name,
+                args,
+                span: self.finish(start),
+            });
         }
         attrs
     }
@@ -73,8 +86,8 @@ impl Parser {
         let mut args = Vec::new();
         while !self.at(&TokenKind::RParen) && !self.is_eof() {
             // Named arg uses either `key: value` or `key = value`.
-            let named = self.at_ident()
-                && matches!(self.nth_kind(1), TokenKind::Colon | TokenKind::Eq);
+            let named =
+                self.at_ident() && matches!(self.nth_kind(1), TokenKind::Colon | TokenKind::Eq);
             if named {
                 let name = self.ident();
                 self.bump(); // : or =
@@ -112,7 +125,10 @@ impl Parser {
                     self.expect(&TokenKind::RBrace);
                     self.eat(&TokenKind::Semi); // optional terminator
                     let path = path_from_idents(segs, start, self.prev().span);
-                    return UseDecl { path, kind: UseKind::Group(names) };
+                    return UseDecl {
+                        path,
+                        kind: UseKind::Group(names),
+                    };
                 }
                 self.bump(); // ::
                 segs.push(self.ident());
@@ -120,10 +136,17 @@ impl Parser {
                 break;
             }
         }
-        let alias = if self.eat_kw(Keyword::As) { Some(self.ident()) } else { None };
+        let alias = if self.eat_kw(Keyword::As) {
+            Some(self.ident())
+        } else {
+            None
+        };
         self.eat(&TokenKind::Semi); // optional terminator
         let path = path_from_idents(segs, start, self.prev().span);
-        UseDecl { path, kind: UseKind::Single(alias) }
+        UseDecl {
+            path,
+            kind: UseKind::Single(alias),
+        }
     }
 
     fn parse_mod(&mut self) -> ItemKind {
@@ -189,7 +212,14 @@ impl Parser {
             self.eat(&TokenKind::Semi); // signature-only (trait method)
             None
         };
-        FnDecl { name, generics, params, ret, where_clause, body }
+        FnDecl {
+            name,
+            generics,
+            params,
+            ret,
+            where_clause,
+            body,
+        }
     }
 
     fn parse_params(&mut self) -> Vec<Param> {
@@ -197,13 +227,19 @@ impl Parser {
         while !self.at(&TokenKind::RParen) && !self.is_eof() {
             if self.at_kw(Keyword::LowerSelf) {
                 self.bump();
-                params.push(Param::SelfParam { by_ref: false, mutable: false });
+                params.push(Param::SelfParam {
+                    by_ref: false,
+                    mutable: false,
+                });
             } else if self.at(&TokenKind::Amp)
                 && matches!(self.nth_kind(1), TokenKind::Kw(Keyword::LowerSelf))
             {
                 self.bump(); // &
                 self.bump(); // self
-                params.push(Param::SelfParam { by_ref: true, mutable: false });
+                params.push(Param::SelfParam {
+                    by_ref: true,
+                    mutable: false,
+                });
             } else if self.at(&TokenKind::Amp)
                 && matches!(self.nth_kind(1), TokenKind::Kw(Keyword::Mut))
                 && matches!(self.nth_kind(2), TokenKind::Kw(Keyword::LowerSelf))
@@ -211,7 +247,10 @@ impl Parser {
                 self.bump(); // &
                 self.bump(); // mut
                 self.bump(); // self
-                params.push(Param::SelfParam { by_ref: true, mutable: true });
+                params.push(Param::SelfParam {
+                    by_ref: true,
+                    mutable: true,
+                });
             } else {
                 let mutable = self.eat_kw(Keyword::Mut);
                 let name = self.ident();
@@ -255,7 +294,11 @@ impl Parser {
             self.eat(&TokenKind::Semi);
             StructBody::Unit
         };
-        StructDecl { name, generics, body }
+        StructDecl {
+            name,
+            generics,
+            body,
+        }
     }
 
     fn parse_named_fields(&mut self) -> Vec<Field> {
@@ -267,7 +310,11 @@ impl Parser {
             let before = self.pos;
             let fstart = self.cur_span();
             let attrs = self.parse_attrs();
-            let vis = if self.eat_kw(Keyword::Pub) { Vis::Pub } else { Vis::Private };
+            let vis = if self.eat_kw(Keyword::Pub) {
+                Vis::Pub
+            } else {
+                Vis::Private
+            };
             let name = self.ident();
             self.expect(&TokenKind::Colon);
             let ty = self.parse_type();
@@ -277,7 +324,14 @@ impl Parser {
                 None
             };
             let span = self.finish(fstart);
-            fields.push(Field { attrs, vis, name, ty, default, span });
+            fields.push(Field {
+                attrs,
+                vis,
+                name,
+                ty,
+                default,
+                span,
+            });
             self.eat(&TokenKind::Comma); // optional separator
             if self.pos == before {
                 self.bump(); // progress guard
@@ -320,14 +374,23 @@ impl Parser {
             } else {
                 None
             };
-            variants.push(Variant { name: vname, data, discriminant, span: self.finish(vstart) });
+            variants.push(Variant {
+                name: vname,
+                data,
+                discriminant,
+                span: self.finish(vstart),
+            });
             self.eat(&TokenKind::Comma); // optional separator (comma or newline)
             if self.pos == before {
                 self.bump(); // progress guard
             }
         }
         self.expect(&TokenKind::RBrace);
-        EnumDecl { name, generics, variants }
+        EnumDecl {
+            name,
+            generics,
+            variants,
+        }
     }
 
     // --- systems -------------------------------------------------------------
@@ -368,7 +431,12 @@ impl Parser {
         }
 
         let body = self.parse_block();
-        SystemDecl { name, params, schedule, body }
+        SystemDecl {
+            name,
+            params,
+            schedule,
+            body,
+        }
     }
 
     fn parse_paren_paths(&mut self) -> Vec<Path> {
@@ -397,7 +465,12 @@ impl Parser {
         };
         self.expect(&TokenKind::LBrace);
         let items = self.parse_assoc_items();
-        TraitDecl { name, generics, supertraits, items }
+        TraitDecl {
+            name,
+            generics,
+            supertraits,
+            items,
+        }
     }
 
     fn parse_impl(&mut self) -> aurora_ast::ImplDecl {
@@ -408,7 +481,11 @@ impl Parser {
             let trait_path = match first.kind {
                 TypeKind::Path(p) => Some(p),
                 _ => {
-                    self.error(first.span, "expected a trait path before `for`", "not a trait");
+                    self.error(
+                        first.span,
+                        "expected a trait path before `for`",
+                        "not a trait",
+                    );
                     None
                 }
             };
@@ -419,7 +496,13 @@ impl Parser {
         let where_clause = self.parse_where();
         self.expect(&TokenKind::LBrace);
         let items = self.parse_assoc_items();
-        aurora_ast::ImplDecl { generics, trait_, self_ty, where_clause, items }
+        aurora_ast::ImplDecl {
+            generics,
+            trait_,
+            self_ty,
+            where_clause,
+            items,
+        }
     }
 
     fn parse_assoc_items(&mut self) -> Vec<AssocItem> {
@@ -462,7 +545,10 @@ impl Parser {
                 let span = key.span;
                 aurora_ast::Expr {
                     kind: ExprKind::Path(Path {
-                        segments: vec![PathSeg { ident: key.clone(), args: Vec::new() }],
+                        segments: vec![PathSeg {
+                            ident: key.clone(),
+                            args: Vec::new(),
+                        }],
                         span,
                     }),
                     span,
@@ -496,7 +582,13 @@ impl Parser {
 fn path_from_idents(idents: Vec<Ident>, start: aurora_span::Span, end: aurora_span::Span) -> Path {
     let segments = idents
         .into_iter()
-        .map(|ident| PathSeg { ident, args: Vec::new() })
+        .map(|ident| PathSeg {
+            ident,
+            args: Vec::new(),
+        })
         .collect();
-    Path { segments, span: start.to(end) }
+    Path {
+        segments,
+        span: start.to(end),
+    }
 }

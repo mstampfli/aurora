@@ -37,7 +37,13 @@ fn gidx(g: &Grid3, x: i32, y: i32, z: i32) -> usize {
 #[no_mangle]
 pub extern "C" fn aurora_nav3d_init(w: i64, h: i64, d: i64) {
     let (w, h, d) = (w.max(0) as i32, h.max(0) as i32, d.max(0) as i32);
-    let g = Grid3 { w, h, d, walls: vec![false; (w * h * d).max(0) as usize], path: Vec::new() };
+    let g = Grid3 {
+        w,
+        h,
+        d,
+        walls: vec![false; (w * h * d).max(0) as usize],
+        path: Vec::new(),
+    };
     GRID3.with(|x| *x.borrow_mut() = Some(g));
 }
 
@@ -65,7 +71,13 @@ pub extern "C" fn aurora_nav3d_find(sx: i64, sy: i64, sz: i64, gx: i64, gy: i64,
         let walls = g.walls.clone();
         let goal = (gx as i32, gy as i32, gz as i32);
         let blocked = |x: i32, y: i32, z: i32| -> bool {
-            x < 0 || y < 0 || z < 0 || x >= w || y >= h || z >= d || walls[((z * h + y) * w + x) as usize]
+            x < 0
+                || y < 0
+                || z < 0
+                || x >= w
+                || y >= h
+                || z >= d
+                || walls[((z * h + y) * w + x) as usize]
         };
         let result = astar(
             &(sx as i32, sy as i32, sz as i32),
@@ -81,7 +93,8 @@ pub extern "C" fn aurora_nav3d_find(sx: i64, sy: i64, sz: i64, gx: i64, gy: i64,
                             if blocked(nx, ny, nz) {
                                 continue;
                             }
-                            let step = (((dx * dx + dy * dy + dz * dz) as f64).sqrt() * 1000.0) as i64;
+                            let step =
+                                (((dx * dx + dy * dy + dz * dz) as f64).sqrt() * 1000.0) as i64;
                             out.push(((nx, ny, nz), step));
                         }
                     }
@@ -89,7 +102,11 @@ pub extern "C" fn aurora_nav3d_find(sx: i64, sy: i64, sz: i64, gx: i64, gy: i64,
                 out
             },
             |&(x, y, z)| {
-                let (dx, dy, dz) = ((x - goal.0) as f64, (y - goal.1) as f64, (z - goal.2) as f64);
+                let (dx, dy, dz) = (
+                    (x - goal.0) as f64,
+                    (y - goal.1) as f64,
+                    (z - goal.2) as f64,
+                );
                 ((dx * dx + dy * dy + dz * dz).sqrt() * 1000.0) as i64
             },
             |&p| p == goal,
@@ -118,11 +135,17 @@ fn grid_cell(i: i64, axis: usize) -> i64 {
     })
 }
 #[no_mangle]
-pub extern "C" fn aurora_nav3d_x(i: i64) -> i64 { grid_cell(i, 0) }
+pub extern "C" fn aurora_nav3d_x(i: i64) -> i64 {
+    grid_cell(i, 0)
+}
 #[no_mangle]
-pub extern "C" fn aurora_nav3d_y(i: i64) -> i64 { grid_cell(i, 1) }
+pub extern "C" fn aurora_nav3d_y(i: i64) -> i64 {
+    grid_cell(i, 1)
+}
 #[no_mangle]
-pub extern "C" fn aurora_nav3d_z(i: i64) -> i64 { grid_cell(i, 2) }
+pub extern "C" fn aurora_nav3d_z(i: i64) -> i64 {
+    grid_cell(i, 2)
+}
 
 // --- polygon navmesh + funnel ----------------------------------------------
 
@@ -146,7 +169,10 @@ thread_local! {
 /// rather than dereferenced.
 #[no_mangle]
 pub unsafe extern "C" fn aurora_navmesh_build(
-    verts: *const f64, vcount: i64, indices: *const i64, icount: i64,
+    verts: *const f64,
+    vcount: i64,
+    indices: *const i64,
+    icount: i64,
 ) -> i64 {
     if verts.is_null() || indices.is_null() || vcount <= 0 || icount < 3 {
         return -1;
@@ -178,8 +204,11 @@ pub unsafe extern "C" fn aurora_navmesh_build(
     let mut neighbors = vec![Vec::new(); tris.len()];
     for a in 0..idx_tris.len() {
         for b in (a + 1)..idx_tris.len() {
-            let shared: Vec<i64> =
-                idx_tris[a].iter().copied().filter(|v| idx_tris[b].contains(v)).collect();
+            let shared: Vec<i64> = idx_tris[a]
+                .iter()
+                .copied()
+                .filter(|v| idx_tris[b].contains(v))
+                .collect();
             if shared.len() == 2 {
                 let (e0, e1) = (vert(shared[0]), vert(shared[1]));
                 neighbors[a].push((b, e0, e1));
@@ -188,13 +217,22 @@ pub unsafe extern "C" fn aurora_navmesh_build(
         }
     }
 
-    NAVMESH.with(|n| *n.borrow_mut() = Some(NavMesh { tris, centroids, neighbors, path: Vec::new() }));
+    NAVMESH.with(|n| {
+        *n.borrow_mut() = Some(NavMesh {
+            tris,
+            centroids,
+            neighbors,
+            path: Vec::new(),
+        })
+    });
     0
 }
 
 fn nearest_tri(nm: &NavMesh, p: V3) -> Option<usize> {
     (0..nm.centroids.len()).min_by(|&a, &b| {
-        dist(nm.centroids[a], p).partial_cmp(&dist(nm.centroids[b], p)).unwrap()
+        dist(nm.centroids[a], p)
+            .partial_cmp(&dist(nm.centroids[b], p))
+            .unwrap()
     })
 }
 
@@ -216,7 +254,12 @@ pub extern "C" fn aurora_navmesh_find(sx: f64, sy: f64, sz: f64, gx: f64, gy: f6
             |&t| {
                 nm.neighbors[t]
                     .iter()
-                    .map(|&(nb, _, _)| (nb, (dist(nm.centroids[t], nm.centroids[nb]) * 1000.0) as i64))
+                    .map(|&(nb, _, _)| {
+                        (
+                            nb,
+                            (dist(nm.centroids[t], nm.centroids[nb]) * 1000.0) as i64,
+                        )
+                    })
                     .collect::<Vec<_>>()
             },
             |&t| (dist(nm.centroids[t], goal) * 1000.0) as i64,
@@ -256,7 +299,8 @@ pub extern "C" fn aurora_navmesh_find(sx: f64, sy: f64, sz: f64, gx: f64, gy: f6
 /// Simple Stupid Funnel over portals given as (left, right), in the XZ plane.
 #[allow(unused_assignments)]
 fn funnel(portals: &[(V3, V3)]) -> Vec<V3> {
-    let tri_area2 = |a: V3, b: V3, c: V3| (b[0] - a[0]) * (c[2] - a[2]) - (c[0] - a[0]) * (b[2] - a[2]);
+    let tri_area2 =
+        |a: V3, b: V3, c: V3| (b[0] - a[0]) * (c[2] - a[2]) - (c[0] - a[0]) * (b[2] - a[2]);
     let eq = |a: V3, b: V3| (a[0] - b[0]).abs() < 1e-5 && (a[2] - b[2]).abs() < 1e-5;
 
     let mut pts: Vec<V3> = Vec::new();
@@ -353,15 +397,25 @@ fn bary_height(tri: [V3; 3], x: f64, z: f64) -> Option<f64> {
 
 fn nav_wp(i: i64, axis: usize) -> f64 {
     NAVMESH.with(|n| {
-        n.borrow().as_ref().and_then(|n| n.path.get(i.max(0) as usize)).map(|p| p[axis]).unwrap_or(0.0)
+        n.borrow()
+            .as_ref()
+            .and_then(|n| n.path.get(i.max(0) as usize))
+            .map(|p| p[axis])
+            .unwrap_or(0.0)
     })
 }
 #[no_mangle]
-pub extern "C" fn aurora_navmesh_x(i: i64) -> f64 { nav_wp(i, 0) }
+pub extern "C" fn aurora_navmesh_x(i: i64) -> f64 {
+    nav_wp(i, 0)
+}
 #[no_mangle]
-pub extern "C" fn aurora_navmesh_y(i: i64) -> f64 { nav_wp(i, 1) }
+pub extern "C" fn aurora_navmesh_y(i: i64) -> f64 {
+    nav_wp(i, 1)
+}
 #[no_mangle]
-pub extern "C" fn aurora_navmesh_z(i: i64) -> f64 { nav_wp(i, 2) }
+pub extern "C" fn aurora_navmesh_z(i: i64) -> f64 {
+    nav_wp(i, 2)
+}
 
 #[cfg(test)]
 mod tests {
@@ -391,9 +445,8 @@ mod tests {
         let idx: Vec<i64> = vec![0, 1, 2, 2, 1, 3, 2, 3, 4, 4, 3, 5];
         // SAFETY: `verts` and `idx` are live local vectors, and the counts passed
         // are exactly their lengths (6 vertices = 18 floats, `idx.len()` indices).
-        let built = unsafe {
-            aurora_navmesh_build(verts.as_ptr(), 6, idx.as_ptr(), idx.len() as i64)
-        };
+        let built =
+            unsafe { aurora_navmesh_build(verts.as_ptr(), 6, idx.as_ptr(), idx.len() as i64) };
         assert_eq!(built, 0);
         let n = aurora_navmesh_find(0.5, 0.0, 1.0, 3.5, 0.0, 1.0);
         assert!(n >= 2, "expected waypoints, got {n}");

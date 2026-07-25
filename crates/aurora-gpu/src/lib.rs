@@ -58,7 +58,11 @@ impl Gpu {
             None,
         ))
         .ok()?;
-        Some(Gpu { device, queue, adapter_name })
+        Some(Gpu {
+            device,
+            queue,
+            adapter_name,
+        })
     }
 
     /// The underlying adapter's reported name (e.g. "NVIDIA GeForce ...").
@@ -87,13 +91,15 @@ impl Gpu {
         }
         let bytes = (n * std::mem::size_of::<f32>()) as wgpu::BufferAddress;
 
-        let storage = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("data"),
-            contents: bytemuck_cast(data),
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_SRC
-                | wgpu::BufferUsages::COPY_DST,
-        });
+        let storage = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("data"),
+                contents: bytemuck_cast(data),
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_SRC
+                    | wgpu::BufferUsages::COPY_DST,
+            });
         let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("staging"),
             size: bytes,
@@ -101,30 +107,39 @@ impl Gpu {
             mapped_at_creation: false,
         });
 
-        let module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("compute"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(wgsl)),
-        });
-        let pipeline = self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("compute"),
-            layout: None,
-            module: &module,
-            entry_point: "main",
-            compilation_options: Default::default(),
-            cache: None,
-        });
+        let module = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("compute"),
+                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(wgsl)),
+            });
+        let pipeline = self
+            .device
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("compute"),
+                layout: None,
+                module: &module,
+                entry_point: "main",
+                compilation_options: Default::default(),
+                cache: None,
+            });
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &pipeline.get_bind_group_layout(0),
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: storage.as_entire_binding() }],
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: storage.as_entire_binding(),
+            }],
         });
 
         let mut enc = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         {
-            let mut pass =
-                enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None,
+            });
             pass.set_pipeline(&pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             let groups = n.div_ceil(64) as u32;
@@ -144,8 +159,10 @@ impl Gpu {
             .map_err(|e| format!("map channel: {e}"))?
             .map_err(|e| format!("buffer map failed: {e:?}"))?;
         let view = slice.get_mapped_range();
-        let out: Vec<f32> =
-            view.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+        let out: Vec<f32> = view
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
         drop(view);
         staging.unmap();
         Ok(out)
@@ -175,7 +192,11 @@ impl Gpu {
         let fmt = wgpu::TextureFormat::Rgba8Unorm;
         let tex = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("target"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -185,35 +206,39 @@ impl Gpu {
         });
         let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("render"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(wgsl)),
-        });
-        let pipeline = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("render"),
-            layout: None,
-            vertex: wgpu::VertexState {
-                module: &module,
-                entry_point: vs_entry,
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &module,
-                entry_point: fs_entry,
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: fmt,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
+        let module = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("render"),
+                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(wgsl)),
+            });
+        let pipeline = self
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("render"),
+                layout: None,
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: vs_entry,
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: fs_entry,
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: fmt,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            });
 
         // Padded row length (wgpu requires 256-byte row alignment for copies).
         let unpadded = width * 4;
@@ -236,7 +261,12 @@ impl Gpu {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 1.0,
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -262,7 +292,11 @@ impl Gpu {
                     rows_per_image: Some(height),
                 },
             },
-            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
         );
         self.queue.submit(Some(enc.finish()));
 
@@ -391,11 +425,15 @@ fn fs_main() -> @location(0) vec4<f32> {
         // Lower an Aurora fragment shader to WGSL.
         let aurora_src = "@fragment fn aurora_solid() -> Color { vec4(0.6, 0.3, 0.1, 1.0) }";
         let (module, diags) = aurora_parser::parse_str(aurora_src);
-        assert!(!diags.iter().any(|d| d.is_error()), "Aurora shader failed to parse");
+        assert!(
+            !diags.iter().any(|d| d.is_error()),
+            "Aurora shader failed to parse"
+        );
         let fs_wgsl = aurora_shader::lower_module(&module);
 
         // A fixed fullscreen-triangle vertex stage, plus the lowered fragment.
-        let vs = "@vertex fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {\n\
+        let vs =
+            "@vertex fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {\n\
             var p = array<vec2<f32>, 3>(vec2(-1.0, -3.0), vec2(-1.0, 1.0), vec2(3.0, 1.0));\n\
             return vec4<f32>(p[i], 0.0, 1.0);\n}\n";
         let combined = format!("{vs}\n{fs_wgsl}");

@@ -58,7 +58,10 @@ impl World {
     }
 
     fn set(&mut self, comp: &str, id: u64, value: Value) {
-        self.comps.entry(comp.to_string()).or_default().insert(id, value);
+        self.comps
+            .entry(comp.to_string())
+            .or_default()
+            .insert(id, value);
     }
 }
 
@@ -231,7 +234,9 @@ impl<'a> Interp<'a> {
         if self.globals.contains_key(name) {
             return Ok(self.globals.get_mut(name).unwrap());
         }
-        Err(Signal::Error(format!("assignment to unbound variable `{name}`")))
+        Err(Signal::Error(format!(
+            "assignment to unbound variable `{name}`"
+        )))
     }
 
     // --- blocks & statements -------------------------------------------------
@@ -305,7 +310,11 @@ impl<'a> Interp<'a> {
             ExprKind::Path(p) => {
                 // A qualified `Enum::Variant` unit variant.
                 if let Some((enm, variant)) = self.enum_variant_of(p) {
-                    Ok(Value::Enum { enm, variant, payload: Payload::Unit })
+                    Ok(Value::Enum {
+                        enm,
+                        variant,
+                        payload: Payload::Unit,
+                    })
                 } else {
                     Err(Signal::Error("unsupported path expression".into()))
                 }
@@ -397,7 +406,11 @@ impl<'a> Interp<'a> {
                 let v = self.eval(value)?;
                 let n = match self.eval(count)? {
                     Value::Int(n) if n >= 0 => n as usize,
-                    _ => return Err(Signal::Error("array repeat count must be a non-negative int".into())),
+                    _ => {
+                        return Err(Signal::Error(
+                            "array repeat count must be a non-negative int".into(),
+                        ))
+                    }
                 };
                 Ok(Value::Array(vec![v; n]))
             }
@@ -410,7 +423,9 @@ impl<'a> Interp<'a> {
                 let b = self.eval(base)?;
                 field_value(b, field).map_err(Signal::Error)
             }
-            ExprKind::Struct { path, fields, base } => self.eval_struct(path, fields, base.as_deref()),
+            ExprKind::Struct { path, fields, base } => {
+                self.eval_struct(path, fields, base.as_deref())
+            }
             ExprKind::Return(opt) => {
                 let v = match opt {
                     Some(e) => self.eval(e)?,
@@ -456,7 +471,11 @@ impl<'a> Interp<'a> {
                         aurora_ast::Param::SelfParam { .. } => None,
                     })
                     .collect();
-                Ok(Value::Closure { params: names, body: Box::new((**body).clone()), env })
+                Ok(Value::Closure {
+                    params: names,
+                    body: Box::new((**body).clone()),
+                    env,
+                })
             }
             ExprKind::Spawn(args) => {
                 let mut comps = Vec::with_capacity(args.len());
@@ -477,7 +496,10 @@ impl<'a> Interp<'a> {
                 }
                 Ok(Value::Unit)
             }
-            other => Err(Signal::Error(format!("unsupported expression: {}", describe(other)))),
+            other => Err(Signal::Error(format!(
+                "unsupported expression: {}",
+                describe(other)
+            ))),
         }
     }
 
@@ -486,7 +508,11 @@ impl<'a> Interp<'a> {
             return self.eval_query_loop(pat, q, body);
         }
         let items: Vec<Value> = match &iter.kind {
-            ExprKind::Range { start, end, inclusive } => {
+            ExprKind::Range {
+                start,
+                end,
+                inclusive,
+            } => {
                 let s = match start.as_ref().map(|e| self.eval(e)).transpose()? {
                     Some(Value::Int(n)) => n,
                     _ => return Err(Signal::Error("range start must be an int".into())),
@@ -545,16 +571,31 @@ impl<'a> Interp<'a> {
                 QTerm::Read(p) => {
                     let c = comp_name(p);
                     required.push(c.clone());
-                    data.push(DataTerm { comp: Some(c), write: false });
+                    data.push(DataTerm {
+                        comp: Some(c),
+                        write: false,
+                    });
                 }
                 QTerm::Write(p) => {
                     let c = comp_name(p);
                     required.push(c.clone());
-                    data.push(DataTerm { comp: Some(c), write: true });
+                    data.push(DataTerm {
+                        comp: Some(c),
+                        write: true,
+                    });
                 }
-                QTerm::OptRead(p) => data.push(DataTerm { comp: Some(comp_name(p)), write: false }),
-                QTerm::OptWrite(p) => data.push(DataTerm { comp: Some(comp_name(p)), write: true }),
-                QTerm::Entity => data.push(DataTerm { comp: None, write: false }),
+                QTerm::OptRead(p) => data.push(DataTerm {
+                    comp: Some(comp_name(p)),
+                    write: false,
+                }),
+                QTerm::OptWrite(p) => data.push(DataTerm {
+                    comp: Some(comp_name(p)),
+                    write: true,
+                }),
+                QTerm::Entity => data.push(DataTerm {
+                    comp: None,
+                    write: false,
+                }),
                 QTerm::With(p) => required.push(comp_name(p)),
                 QTerm::Without(p) => excluded.push(comp_name(p)),
             }
@@ -642,7 +683,11 @@ impl<'a> Interp<'a> {
     fn dispatch_call(&mut self, callee: &Expr, argv: Vec<Value>) -> EvalResult {
         // Method call `recv.method(args)`: resolve against `impl` blocks by the
         // receiver's runtime type; otherwise the field may hold a closure.
-        if let ExprKind::Field { base, field: FieldAccess::Named(m) } = &callee.kind {
+        if let ExprKind::Field {
+            base,
+            field: FieldAccess::Named(m),
+        } = &callee.kind
+        {
             let recv = self.eval(base)?;
             if let Some(ty) = value_type_name(&recv) {
                 if let Some(method) = self.methods.get(&(ty, m.name.clone())).copied() {
@@ -656,7 +701,11 @@ impl<'a> Interp<'a> {
         // A qualified `Enum::Variant(args)` tuple-variant constructor.
         if let ExprKind::Path(p) = &callee.kind {
             if let Some((enm, variant)) = self.enum_variant_of(p) {
-                return Ok(Value::Enum { enm, variant, payload: Payload::Tuple(argv) });
+                return Ok(Value::Enum {
+                    enm,
+                    variant,
+                    payload: Payload::Tuple(argv),
+                });
             }
         }
 
@@ -762,7 +811,9 @@ impl<'a> Interp<'a> {
                     Some(fb) => std::fs::write(&path, fb.to_ppm())
                         .map(|_| Value::Unit)
                         .map_err(|e| Signal::Error(format!("save_ppm: {e}"))),
-                    None => Err(Signal::Error("no framebuffer; call framebuffer(w, h) first".into())),
+                    None => Err(Signal::Error(
+                        "no framebuffer; call framebuffer(w, h) first".into(),
+                    )),
                 }
             }
             // Math builtins (games need real math). Float-returning unless the
@@ -811,7 +862,9 @@ impl<'a> Interp<'a> {
                 Ok(Value::Int(r as i128))
             }
             "bnot" => Ok(Value::Int(!int_arg(&argv, 0) as i128)),
-            "str" => Ok(Value::Str(argv.first().map(|v| v.to_string()).unwrap_or_default())),
+            "str" => Ok(Value::Str(
+                argv.first().map(|v| v.to_string()).unwrap_or_default(),
+            )),
             "len" => Ok(Value::Int(match argv.first() {
                 Some(Value::Array(v)) | Some(Value::Tuple(v)) => v.len() as i128,
                 Some(Value::Str(s)) => s.chars().count() as i128,
@@ -834,7 +887,10 @@ impl<'a> Interp<'a> {
     /// Call an `impl` method with `recv` bound to `self`.
     fn call_method(&mut self, method: &FnDecl, recv: Value, argv: Vec<Value>) -> EvalResult {
         let Some(body) = &method.body else {
-            return Err(Signal::Error(format!("method `{}` has no body", method.name.name)));
+            return Err(Signal::Error(format!(
+                "method `{}` has no body",
+                method.name.name
+            )));
         };
         let mut frame = HashMap::new();
         frame.insert("self".to_string(), recv);
@@ -856,7 +912,10 @@ impl<'a> Interp<'a> {
     /// Invoke a value as a function (it must be a closure).
     fn invoke_value(&mut self, callee: Value, argv: Vec<Value>) -> EvalResult {
         let Value::Closure { params, body, env } = callee else {
-            return Err(Signal::Error(format!("value of type {} is not callable", callee.type_name())));
+            return Err(Signal::Error(format!(
+                "value of type {} is not callable",
+                callee.type_name()
+            )));
         };
         let mut frame: HashMap<String, Value> = env.into_iter().collect();
         for (p, v) in params.iter().zip(argv.into_iter()) {
@@ -894,7 +953,11 @@ impl<'a> Interp<'a> {
         base: Option<&Expr>,
     ) -> EvalResult {
         let enum_variant = self.enum_variant_of(path);
-        let name = path.segments.last().map(|s| s.ident.name.clone()).unwrap_or_default();
+        let name = path
+            .segments
+            .last()
+            .map(|s| s.ident.name.clone())
+            .unwrap_or_default();
         let mut map = BTreeMap::new();
         if let Some(b) = base {
             if let Value::Struct(_, base_fields) = self.eval(b)? {
@@ -911,7 +974,11 @@ impl<'a> Interp<'a> {
             map.insert(f.name.name.clone(), v);
         }
         match enum_variant {
-            Some((enm, variant)) => Ok(Value::Enum { enm, variant, payload: Payload::Struct(map) }),
+            Some((enm, variant)) => Ok(Value::Enum {
+                enm,
+                variant,
+                payload: Payload::Struct(map),
+            }),
             None => Ok(Value::Struct(name, map)),
         }
     }
@@ -961,15 +1028,19 @@ impl<'a> Interp<'a> {
                 let ev = self.enum_variant_of(path);
                 let map = match (value, &ev) {
                     (Value::Struct(name, map), None)
-                        if Some(name.as_str()) == path.segments.last().map(|s| s.ident.name.as_str()) =>
+                        if Some(name.as_str())
+                            == path.segments.last().map(|s| s.ident.name.as_str()) =>
                     {
                         map.clone()
                     }
-                    (Value::Enum { enm, variant, payload: Payload::Struct(map) }, Some((e, v)))
-                        if enm == e && variant == v =>
-                    {
-                        map.clone()
-                    }
+                    (
+                        Value::Enum {
+                            enm,
+                            variant,
+                            payload: Payload::Struct(map),
+                        },
+                        Some((e, v)),
+                    ) if enm == e && variant == v => map.clone(),
                     _ => return Ok(false),
                 };
                 for fp in fields {
@@ -996,21 +1067,24 @@ impl<'a> Interp<'a> {
                     _ => Ok(false),
                 }
             }
-            PatKind::TupleStruct { path, elems } => {
-                match (self.enum_variant_of(path), value) {
-                    (Some((e, v)), Value::Enum { enm, variant, payload: Payload::Tuple(vals) })
-                        if enm == &e && variant == &v && vals.len() == elems.len() =>
-                    {
-                        for (p, val) in elems.iter().zip(vals.clone()) {
-                            if !self.pat_matches(p, &val)? {
-                                return Ok(false);
-                            }
+            PatKind::TupleStruct { path, elems } => match (self.enum_variant_of(path), value) {
+                (
+                    Some((e, v)),
+                    Value::Enum {
+                        enm,
+                        variant,
+                        payload: Payload::Tuple(vals),
+                    },
+                ) if enm == &e && variant == &v && vals.len() == elems.len() => {
+                    for (p, val) in elems.iter().zip(vals.clone()) {
+                        if !self.pat_matches(p, &val)? {
+                            return Ok(false);
                         }
-                        Ok(true)
                     }
-                    _ => Ok(false),
+                    Ok(true)
                 }
-            }
+                _ => Ok(false),
+            },
             PatKind::Error => Ok(false),
         }
     }
@@ -1026,9 +1100,11 @@ impl<'a> Interp<'a> {
                 (Value::Struct(_, m), Acc::Field(f)) => m
                     .get_mut(f)
                     .ok_or_else(|| Signal::Error(format!("no field `{f}`")))?,
-                (Value::Tuple(items), Acc::Index(i)) | (Value::Array(items), Acc::Index(i)) => items
-                    .get_mut(*i)
-                    .ok_or_else(|| Signal::Error("index out of bounds".into()))?,
+                (Value::Tuple(items), Acc::Index(i)) | (Value::Array(items), Acc::Index(i)) => {
+                    items
+                        .get_mut(*i)
+                        .ok_or_else(|| Signal::Error("index out of bounds".into()))?
+                }
                 _ => return Err(Signal::Error("invalid assignment target".into())),
             };
         }
@@ -1038,7 +1114,9 @@ impl<'a> Interp<'a> {
 
     fn place(&mut self, e: &Expr) -> Result<(String, Vec<Acc>), Signal> {
         match &e.kind {
-            ExprKind::Path(p) if p.is_single() => Ok((p.segments[0].ident.name.clone(), Vec::new())),
+            ExprKind::Path(p) if p.is_single() => {
+                Ok((p.segments[0].ident.name.clone(), Vec::new()))
+            }
             ExprKind::Field { base, field } => {
                 let (root, mut accs) = self.place(base)?;
                 accs.push(match field {
@@ -1067,7 +1145,10 @@ impl<'a> Interp<'a> {
             (UnOp::Neg, Value::Int(n)) => Ok(Value::Int(-n)),
             (UnOp::Neg, Value::Float(x)) => Ok(Value::Float(-x)),
             (UnOp::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
-            (op, v) => Err(Signal::Error(format!("cannot apply {op:?} to {}", v.type_name()))),
+            (op, v) => Err(Signal::Error(format!(
+                "cannot apply {op:?} to {}",
+                v.type_name()
+            ))),
         }
     }
 
@@ -1104,7 +1185,8 @@ impl<'a> Interp<'a> {
     }
 
     fn is_true(&self, v: Value, _at: &Expr) -> Result<bool, Signal> {
-        v.truthy().ok_or_else(|| Signal::Error("condition must be a bool".into()))
+        v.truthy()
+            .ok_or_else(|| Signal::Error("condition must be a bool".into()))
     }
 }
 
@@ -1147,7 +1229,11 @@ fn apply_arith(op: BinOp, a: Value, b: Value) -> Result<Value, String> {
             _ => return Err("not an arithmetic operator".into()),
         })),
         (Value::Str(x), Value::Str(y)) if op == BinOp::Add => Ok(Value::Str(x + &y)),
-        (a, b) => Err(format!("cannot apply {op:?} to {} and {}", a.type_name(), b.type_name())),
+        (a, b) => Err(format!(
+            "cannot apply {op:?} to {} and {}",
+            a.type_name(),
+            b.type_name()
+        )),
     }
 }
 
@@ -1157,7 +1243,13 @@ fn compare(op: BinOp, a: Value, b: Value) -> Result<Value, String> {
         (Value::Float(x), Value::Float(y)) => x.partial_cmp(y),
         (Value::Char(x), Value::Char(y)) => x.partial_cmp(y),
         (Value::Str(x), Value::Str(y)) => x.partial_cmp(y),
-        _ => return Err(format!("cannot compare {} and {}", a.type_name(), b.type_name())),
+        _ => {
+            return Err(format!(
+                "cannot compare {} and {}",
+                a.type_name(),
+                b.type_name()
+            ))
+        }
     };
     let Some(ord) = ord else {
         return Ok(Value::Bool(false));
@@ -1178,21 +1270,24 @@ fn index_value(base: Value, index: Value) -> Result<Value, String> {
         _ => return Err("index must be a non-negative int".into()),
     };
     match base {
-        Value::Array(items) | Value::Tuple(items) => {
-            items.into_iter().nth(i).ok_or_else(|| "index out of bounds".into())
-        }
+        Value::Array(items) | Value::Tuple(items) => items
+            .into_iter()
+            .nth(i)
+            .ok_or_else(|| "index out of bounds".into()),
         other => Err(format!("cannot index a {}", other.type_name())),
     }
 }
 
 fn field_value(base: Value, field: &FieldAccess) -> Result<Value, String> {
     match (base, field) {
-        (Value::Struct(_, fields), FieldAccess::Named(id)) => {
-            fields.get(&id.name).cloned().ok_or_else(|| format!("no field `{}`", id.name))
-        }
-        (Value::Tuple(items), FieldAccess::Index(i)) => {
-            items.into_iter().nth(*i as usize).ok_or_else(|| "tuple index out of bounds".into())
-        }
+        (Value::Struct(_, fields), FieldAccess::Named(id)) => fields
+            .get(&id.name)
+            .cloned()
+            .ok_or_else(|| format!("no field `{}`", id.name)),
+        (Value::Tuple(items), FieldAccess::Index(i)) => items
+            .into_iter()
+            .nth(*i as usize)
+            .ok_or_else(|| "tuple index out of bounds".into()),
         (other, _) => Err(format!("cannot access a field of {}", other.type_name())),
     }
 }
@@ -1237,7 +1332,10 @@ fn value_type_name(v: &Value) -> Option<String> {
 
 /// The component name a query path refers to (its last segment).
 fn comp_name(p: &aurora_ast::Path) -> String {
-    p.segments.last().map(|s| s.ident.name.clone()).unwrap_or_default()
+    p.segments
+        .last()
+        .map(|s| s.ident.name.clone())
+        .unwrap_or_default()
 }
 
 /// Positional binding names from a for-loop pattern: `(t, s)` -> [t, s],

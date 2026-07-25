@@ -5,17 +5,30 @@ use aurora_typeck::check_types;
 
 fn errors(src: &str) -> Vec<String> {
     let (module, pdiags) = parse_str(src);
-    assert!(!pdiags.iter().any(|d| d.is_error()), "parse error in test source");
-    check_types(&module).iter().filter(|d| d.is_error()).map(|d| d.message.clone()).collect()
+    assert!(
+        !pdiags.iter().any(|d| d.is_error()),
+        "parse error in test source"
+    );
+    check_types(&module)
+        .iter()
+        .filter(|d| d.is_error())
+        .map(|d| d.message.clone())
+        .collect()
 }
 
 #[test]
 fn arg_count_mismatch_is_reported() {
     let errs = errors("fn add(a: i64, b: i64) -> i64 { a + b }\nfn main() { let x = add(1) }");
-    assert!(errs.iter().any(|e| e.contains("expects 2 argument")), "got: {errs:?}");
+    assert!(
+        errs.iter().any(|e| e.contains("expects 2 argument")),
+        "got: {errs:?}"
+    );
 
     let errs = errors("fn id(a: i64) -> i64 { a }\nfn main() { let x = id(1, 2, 3) }");
-    assert!(errs.iter().any(|e| e.contains("expects 1 argument")), "got: {errs:?}");
+    assert!(
+        errs.iter().any(|e| e.contains("expects 1 argument")),
+        "got: {errs:?}"
+    );
 }
 
 #[test]

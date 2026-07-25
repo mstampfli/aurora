@@ -59,7 +59,10 @@ fn ordering_resolves_conflict() {
              for t in query<&mut Transform> { t.x = 2 }
          }",
     );
-    assert!(errs.is_empty(), "ordering should resolve conflict, got {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "ordering should resolve conflict, got {errs:?}"
+    );
 }
 
 #[test]
@@ -88,7 +91,10 @@ fn different_stages_never_conflict() {
              for t in query<&mut Transform> { t.x = 2 }
          }",
     );
-    assert!(errs.is_empty(), "different stages run sequentially, got {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "different stages run sequentially, got {errs:?}"
+    );
 }
 
 #[test]
@@ -116,20 +122,29 @@ fn intra_query_aliasing_error() {
              for (a, b) in query<&mut T, &mut T> { use2(a, b) }
          }",
     );
-    assert!(errs.iter().any(|e| e.contains("borrowed more than once")), "got {errs:?}");
+    assert!(
+        errs.iter().any(|e| e.contains("borrowed more than once")),
+        "got {errs:?}"
+    );
 }
 
 #[test]
 fn duplicate_component_error() {
     let errs = check_src("component A { x: f32 }\ncomponent A { y: f32 }");
-    assert!(errs.iter().any(|e| e.contains("duplicate component `A`")), "got {errs:?}");
+    assert!(
+        errs.iter().any(|e| e.contains("duplicate component `A`")),
+        "got {errs:?}"
+    );
 }
 
 #[test]
 fn fn_and_struct_may_share_name() {
     // Different namespaces: no error.
     let errs = check_src("struct Mesh { n: i32 }\nfn Mesh() {}");
-    assert!(errs.is_empty(), "type and value namespaces are separate, got {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "type and value namespaces are separate, got {errs:?}"
+    );
 }
 
 #[test]
@@ -139,13 +154,19 @@ fn query_on_struct_is_rejected() {
         "struct NotAComp { x: f32 }
          system s(dt: Time) { for n in query<&NotAComp> { use1(n) } }",
     );
-    assert!(errs.iter().any(|e| e.contains("not a component")), "got {errs:?}");
+    assert!(
+        errs.iter().any(|e| e.contains("not a component")),
+        "got {errs:?}"
+    );
 }
 
 #[test]
 fn query_on_unknown_component_is_rejected() {
     let errs = check_src("system s(dt: Time) { for n in query<&Ghost> { use1(n) } }");
-    assert!(errs.iter().any(|e| e.contains("unknown component `Ghost`")), "got {errs:?}");
+    assert!(
+        errs.iter().any(|e| e.contains("unknown component `Ghost`")),
+        "got {errs:?}"
+    );
 }
 
 #[test]
@@ -156,7 +177,10 @@ fn query_on_builtin_and_imported_is_accepted() {
         "use engine::{Foo}
          system s(dt: Time) { for (t, f) in query<&mut Transform, &Foo> { go(t, f) } }",
     );
-    assert!(errs.is_empty(), "builtin/imported components should resolve, got {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "builtin/imported components should resolve, got {errs:?}"
+    );
 }
 
 // --- region escape checking ----------------------------------------------
@@ -171,7 +195,8 @@ fn frame_inside_perm_is_rejected() {
          }",
     );
     assert!(
-        errs.iter().any(|e| e.contains("stored inside a longer-lived")),
+        errs.iter()
+            .any(|e| e.contains("stored inside a longer-lived")),
         "got {errs:?}"
     );
 }
@@ -185,7 +210,10 @@ fn longer_inside_shorter_is_fine() {
              let tmp = #frame Holder { inner: #perm Thing { x: 1 } }
          }",
     );
-    assert!(errs.is_empty(), "longer-lived inside shorter-lived is ok, got {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "longer-lived inside shorter-lived is ok, got {errs:?}"
+    );
 }
 
 #[test]
@@ -197,7 +225,10 @@ fn frame_passed_to_call_in_perm_is_not_flagged() {
              let x = #perm build(#frame Thing { x: 1 })
          }",
     );
-    assert!(errs.is_empty(), "transient frame arg must not be flagged, got {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "transient frame arg must not be flagged, got {errs:?}"
+    );
 }
 
 #[test]
@@ -212,7 +243,8 @@ fn frame_binding_stored_in_perm_is_rejected() {
          }",
     );
     assert!(
-        errs.iter().any(|e| e.contains("stored inside a longer-lived")),
+        errs.iter()
+            .any(|e| e.contains("stored inside a longer-lived")),
         "a frame-region binding stored into perm should be flagged, got {errs:?}"
     );
 }
@@ -226,7 +258,10 @@ fn perm_binding_stored_in_frame_is_fine() {
              let tmp = #frame Holder { inner: keep }
          }",
     );
-    assert!(errs.is_empty(), "perm binding inside frame is ok, got {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "perm binding inside frame is ok, got {errs:?}"
+    );
 }
 
 #[test]
@@ -239,7 +274,8 @@ fn frame_returning_call_stored_in_perm_is_rejected() {
          fn f() { let cache = #perm Holder { inner: make_frame() } }",
     );
     assert!(
-        errs.iter().any(|e| e.contains("stored inside a longer-lived")),
+        errs.iter()
+            .any(|e| e.contains("stored inside a longer-lived")),
         "a frame-returning call stored into perm should be flagged, got {errs:?}"
     );
 }
@@ -251,7 +287,10 @@ fn perm_returning_call_in_frame_is_fine() {
         "fn make_perm() -> Thing { #perm Thing { x: 1 } }
          fn f() { let tmp = #frame Holder { inner: make_perm() } }",
     );
-    assert!(errs.is_empty(), "perm-returning call inside frame is ok, got {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "perm-returning call inside frame is ok, got {errs:?}"
+    );
 }
 
 #[test]
@@ -267,7 +306,8 @@ fn region_polymorphic_passthrough_propagates_arg_region() {
          }",
     );
     assert!(
-        errs.iter().any(|e| e.contains("stored inside a longer-lived")),
+        errs.iter()
+            .any(|e| e.contains("stored inside a longer-lived")),
         "region must flow through a passthrough fn, got {errs:?}"
     );
 }
@@ -329,16 +369,20 @@ fn region_polymorphic_passthrough_legal_case_is_fine() {
              let tmp = #frame Holder { inner: id(keep) }
          }",
     );
-    assert!(errs.is_empty(), "perm through id inside frame is ok, got {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "perm through id inside frame is ok, got {errs:?}"
+    );
 }
 
 #[test]
 fn call_with_unknown_region_is_not_flagged() {
     // A call whose return region can't be inferred makes no assumption.
-    let errs = check_src(
-        "fn f() { let cache = #perm Holder { inner: build() } }",
+    let errs = check_src("fn f() { let cache = #perm Holder { inner: build() } }");
+    assert!(
+        errs.is_empty(),
+        "unknown call region must not be flagged, got {errs:?}"
     );
-    assert!(errs.is_empty(), "unknown call region must not be flagged, got {errs:?}");
 }
 
 #[test]
@@ -351,7 +395,10 @@ fn non_region_binding_in_perm_is_not_flagged() {
              let cache = #perm Holder { inner: v }
          }",
     );
-    assert!(errs.is_empty(), "plain binding must not be flagged, got {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "plain binding must not be flagged, got {errs:?}"
+    );
 }
 
 // --- move checking (owned `~T`) ------------------------------------------
@@ -365,7 +412,10 @@ fn use_after_move_is_caught() {
              consume(m)
          }",
     );
-    assert!(errs.iter().any(|e| e.contains("use of moved value `m`")), "got {errs:?}");
+    assert!(
+        errs.iter().any(|e| e.contains("use of moved value `m`")),
+        "got {errs:?}"
+    );
 }
 
 #[test]
@@ -404,7 +454,10 @@ fn move_in_loop_is_caught() {
              while true { consume(m) }
          }",
     );
-    assert!(errs.iter().any(|e| e.contains("moved inside a loop")), "got {errs:?}");
+    assert!(
+        errs.iter().any(|e| e.contains("moved inside a loop")),
+        "got {errs:?}"
+    );
 }
 
 #[test]
@@ -417,7 +470,10 @@ fn move_in_one_if_branch_only_is_ok_after() {
              if cond { consume(m) } else { consume(m) }
          }",
     );
-    assert!(errs.is_empty(), "mutually-exclusive branch moves are fine, got {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "mutually-exclusive branch moves are fine, got {errs:?}"
+    );
 }
 
 #[test]
@@ -441,7 +497,10 @@ fn after_unknown_system_is_rejected() {
              for t in query<&mut T> { t.x = 1 }
          }",
     );
-    assert!(errs.iter().any(|e| e.contains("unknown system `ghost`")), "got {errs:?}");
+    assert!(
+        errs.iter().any(|e| e.contains("unknown system `ghost`")),
+        "got {errs:?}"
+    );
 }
 
 #[test]
@@ -455,7 +514,8 @@ fn frame_arg_into_perm_storing_callee_is_rejected() {
          fn use_it() { keep(#frame Thing { x: 1 }) }",
     );
     assert!(
-        errs.iter().any(|e| e.contains("longer-lived") && e.contains("#perm")),
+        errs.iter()
+            .any(|e| e.contains("longer-lived") && e.contains("#perm")),
         "expected a cross-call region-escape error, got {errs:?}"
     );
 }
@@ -483,7 +543,8 @@ fn extern_region_param_annotation_is_enforced() {
          fn use_it() { ffi_keep(#frame Thing { x: 1 }) }",
     );
     assert!(
-        bad.iter().any(|e| e.contains("longer-lived") && e.contains("#perm")),
+        bad.iter()
+            .any(|e| e.contains("longer-lived") && e.contains("#perm")),
         "expected a region-contract error, got {bad:?}"
     );
     let ok = check_src(
@@ -505,7 +566,8 @@ fn extern_region_return_annotation_is_enforced() {
          fn use_it() { let c = #perm Holder { inner: ffi_tmp() } }",
     );
     assert!(
-        errs.iter().any(|e| e.contains("stored inside a longer-lived")),
+        errs.iter()
+            .any(|e| e.contains("stored inside a longer-lived")),
         "expected a return-region escape error, got {errs:?}"
     );
 }

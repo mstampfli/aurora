@@ -16,12 +16,21 @@ use std::path::{Path, PathBuf};
 /// Examples with a known-stubbed function, and why. Do not grow this list.
 const KNOWN_STUBBED: &[(&str, &str)] = &[
     // Spec showcases written ahead of the backend.
-    ("netcode.aur", "uses region/field forms the backend does not lower yet"),
-    ("spinner.aur", "uses the unimplemented `App` API and `Transform::rotate`"),
+    (
+        "netcode.aur",
+        "uses region/field forms the backend does not lower yet",
+    ),
+    (
+        "spinner.aur",
+        "uses the unimplemented `App` API and `Transform::rotate`",
+    ),
 ];
 
 fn examples_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("examples")
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("examples")
 }
 
 #[test]
@@ -33,7 +42,11 @@ fn every_example_lowers_with_no_stubbed_functions() {
         .filter(|p| p.extension().is_some_and(|x| x == "aur"))
         .collect();
     sources.sort();
-    assert!(!sources.is_empty(), "no examples found in {}", dir.display());
+    assert!(
+        !sources.is_empty(),
+        "no examples found in {}",
+        dir.display()
+    );
 
     let mut regressions: Vec<String> = Vec::new();
     for path in &sources {
@@ -79,7 +92,10 @@ fn shader_stages_are_not_compiled_as_cpu_code() {
     let src = "@fragment fn shade() -> Color { vec4(0.9, 0.2, 0.5, 1.0) }\n\
                fn main() { println(7) }";
     let (module, diags) = aurora_parser::parse_str(src);
-    assert!(!diags.iter().any(|d| d.is_error()), "parse failed: {diags:?}");
+    assert!(
+        !diags.iter().any(|d| d.is_error()),
+        "parse failed: {diags:?}"
+    );
     let jit = aurora_codegen::build(&module).expect("codegen failed");
     assert!(
         jit.failures().is_empty(),
@@ -89,5 +105,8 @@ fn shader_stages_are_not_compiled_as_cpu_code() {
     assert!(jit.compiled("main"), "`main` must still compile");
     // The stage is absent from the native module, so calling it from CPU code is
     // a hard error rather than a silent no-op.
-    assert!(!jit.compiled("shade"), "a shader stage must not be a callable CPU function");
+    assert!(
+        !jit.compiled("shade"),
+        "a shader stage must not be a callable CPU function"
+    );
 }

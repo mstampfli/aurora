@@ -24,7 +24,9 @@ impl Color {
 
     fn lerp3(a: Color, b: Color, c: Color, w: [f32; 3]) -> Color {
         let mix = |x: u8, y: u8, z: u8| {
-            (x as f32 * w[0] + y as f32 * w[1] + z as f32 * w[2]).round().clamp(0.0, 255.0) as u8
+            (x as f32 * w[0] + y as f32 * w[1] + z as f32 * w[2])
+                .round()
+                .clamp(0.0, 255.0) as u8
         };
         Color {
             r: mix(a.r, b.r, c.r),
@@ -46,7 +48,11 @@ pub struct Framebuffer {
 
 impl Framebuffer {
     pub fn new(width: u32, height: u32) -> Framebuffer {
-        Framebuffer { width, height, pixels: vec![Color::BLACK; (width * height) as usize] }
+        Framebuffer {
+            width,
+            height,
+            pixels: vec![Color::BLACK; (width * height) as usize],
+        }
     }
 
     pub fn width(&self) -> u32 {
@@ -106,14 +112,24 @@ impl Framebuffer {
         }
 
         // Bounding box, clamped to the framebuffer.
-        let min_x = p.iter().map(|q| q[0]).fold(f32::INFINITY, f32::min).floor().max(0.0) as i32;
+        let min_x = p
+            .iter()
+            .map(|q| q[0])
+            .fold(f32::INFINITY, f32::min)
+            .floor()
+            .max(0.0) as i32;
         let max_x = p
             .iter()
             .map(|q| q[0])
             .fold(f32::NEG_INFINITY, f32::max)
             .ceil()
             .min((self.width - 1) as f32) as i32;
-        let min_y = p.iter().map(|q| q[1]).fold(f32::INFINITY, f32::min).floor().max(0.0) as i32;
+        let min_y = p
+            .iter()
+            .map(|q| q[1])
+            .fold(f32::INFINITY, f32::min)
+            .floor()
+            .max(0.0) as i32;
         let max_y = p
             .iter()
             .map(|q| q[1])
@@ -277,12 +293,19 @@ mod tests {
         fb.clear(Color::BLACK);
         fb.triangle(
             [[15.0, 1.0], [1.0, 28.0], [28.0, 28.0]],
-            [Color::rgb(255, 0, 0), Color::rgb(0, 255, 0), Color::rgb(0, 0, 255)],
+            [
+                Color::rgb(255, 0, 0),
+                Color::rgb(0, 255, 0),
+                Color::rgb(0, 0, 255),
+            ],
         );
         // Center of the triangle blends all three vertex colors (no channel is
         // 0 or 255).
         let c = fb.get(15, 19);
-        assert!(c.r > 0 && c.g > 0 && c.b > 0, "expected a blended pixel, got {c:?}");
+        assert!(
+            c.r > 0 && c.g > 0 && c.b > 0,
+            "expected a blended pixel, got {c:?}"
+        );
     }
 
     #[test]

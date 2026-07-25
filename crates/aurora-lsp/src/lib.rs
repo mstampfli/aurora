@@ -40,8 +40,12 @@ impl Lsp {
                 }),
             )],
             "textDocument/didOpen" => {
-                let uri = msg.pointer("/params/textDocument/uri").and_then(Value::as_str);
-                let text = msg.pointer("/params/textDocument/text").and_then(Value::as_str);
+                let uri = msg
+                    .pointer("/params/textDocument/uri")
+                    .and_then(Value::as_str);
+                let text = msg
+                    .pointer("/params/textDocument/text")
+                    .and_then(Value::as_str);
                 if let (Some(uri), Some(text)) = (uri, text) {
                     self.docs.insert(uri.to_string(), text.to_string());
                     return vec![self.diagnostics_notification(uri)];
@@ -49,7 +53,9 @@ impl Lsp {
                 vec![]
             }
             "textDocument/didChange" => {
-                let uri = msg.pointer("/params/textDocument/uri").and_then(Value::as_str);
+                let uri = msg
+                    .pointer("/params/textDocument/uri")
+                    .and_then(Value::as_str);
                 // Full sync: take the last content change's full text.
                 let text = msg
                     .pointer("/params/contentChanges")
@@ -64,7 +70,10 @@ impl Lsp {
                 vec![]
             }
             "textDocument/didClose" => {
-                if let Some(uri) = msg.pointer("/params/textDocument/uri").and_then(Value::as_str) {
+                if let Some(uri) = msg
+                    .pointer("/params/textDocument/uri")
+                    .and_then(Value::as_str)
+                {
                     self.docs.remove(uri);
                     // Clear diagnostics for the closed file.
                     return vec![publish(uri, vec![])];
@@ -72,9 +81,17 @@ impl Lsp {
                 vec![]
             }
             "textDocument/completion" => {
-                let uri = msg.pointer("/params/textDocument/uri").and_then(Value::as_str);
-                let src = uri.and_then(|u| self.docs.get(u)).cloned().unwrap_or_default();
-                vec![response(id, json!({ "isIncomplete": false, "items": completions(&src) }))]
+                let uri = msg
+                    .pointer("/params/textDocument/uri")
+                    .and_then(Value::as_str);
+                let src = uri
+                    .and_then(|u| self.docs.get(u))
+                    .cloned()
+                    .unwrap_or_default();
+                vec![response(
+                    id,
+                    json!({ "isIncomplete": false, "items": completions(&src) }),
+                )]
             }
             "shutdown" => {
                 self.shutdown = true;
@@ -118,25 +135,111 @@ pub fn completions(src: &str) -> Vec<Value> {
         items.push(json!({ "label": label, "kind": kind }));
     };
     for kw in [
-        "fn", "let", "mut", "struct", "enum", "trait", "impl", "component", "system", "match",
-        "if", "else", "while", "for", "in", "return", "break", "continue", "true", "false", "mod",
+        "fn",
+        "let",
+        "mut",
+        "struct",
+        "enum",
+        "trait",
+        "impl",
+        "component",
+        "system",
+        "match",
+        "if",
+        "else",
+        "while",
+        "for",
+        "in",
+        "return",
+        "break",
+        "continue",
+        "true",
+        "false",
+        "mod",
     ] {
         push(kw, 14);
     }
     for b in [
-        "println", "print", "sqrt", "sin", "cos", "abs", "min", "max", "clamp", "len", "str",
-        "spawn", "despawn", "run_systems", "entity_count", "framebuffer", "clear", "pixel",
-        "triangle", "save_ppm", "play_note", "play_sound", "window_open", "window_present",
-        "key_down", "mouse_x", "mouse_y", "mouse_down", "gpu_render", "gpu_compute", "net_bind",
-        "net_send", "net_recv", "load_ppm", "scene_save", "scene_load", "frame_reset",
-        "srand", "rand", "rand_range", "rand_int", "set_fixed_dt", "save_png",
-        "read_file", "write_file", "file_exists",
-        "json_parse", "json_load", "json_get", "json_at", "json_len", "json_num", "json_int",
-        "json_bool", "json_str", "json_kind", "json_has", "json_key", "json_free",
-        "json_new_obj", "json_new_arr", "json_set", "json_set_num", "json_set_str",
-        "json_set_bool", "json_push", "json_push_num", "json_push_str", "json_to_str",
-        "json_write", "r3d_capture", "r3d_capture_size", "r3d_debug_skeleton", "audio_capture_save", "inject_key", "inject_mouse_move",
-        "inject_mouse_pos", "inject_mouse_button", "inject_scroll", "inject_char",
+        "println",
+        "print",
+        "sqrt",
+        "sin",
+        "cos",
+        "abs",
+        "min",
+        "max",
+        "clamp",
+        "len",
+        "str",
+        "spawn",
+        "despawn",
+        "run_systems",
+        "entity_count",
+        "framebuffer",
+        "clear",
+        "pixel",
+        "triangle",
+        "save_ppm",
+        "play_note",
+        "play_sound",
+        "window_open",
+        "window_present",
+        "key_down",
+        "mouse_x",
+        "mouse_y",
+        "mouse_down",
+        "gpu_render",
+        "gpu_compute",
+        "net_bind",
+        "net_send",
+        "net_recv",
+        "load_ppm",
+        "scene_save",
+        "scene_load",
+        "frame_reset",
+        "srand",
+        "rand",
+        "rand_range",
+        "rand_int",
+        "set_fixed_dt",
+        "save_png",
+        "read_file",
+        "write_file",
+        "file_exists",
+        "json_parse",
+        "json_load",
+        "json_get",
+        "json_at",
+        "json_len",
+        "json_num",
+        "json_int",
+        "json_bool",
+        "json_str",
+        "json_kind",
+        "json_has",
+        "json_key",
+        "json_free",
+        "json_new_obj",
+        "json_new_arr",
+        "json_set",
+        "json_set_num",
+        "json_set_str",
+        "json_set_bool",
+        "json_push",
+        "json_push_num",
+        "json_push_str",
+        "json_to_str",
+        "json_write",
+        "r3d_capture",
+        "r3d_capture_size",
+        "r3d_debug_skeleton",
+        "audio_capture_save",
+        "inject_key",
+        "inject_mouse_move",
+        "inject_mouse_pos",
+        "inject_mouse_button",
+        "inject_scroll",
+        "inject_char",
     ] {
         push(b, 3);
     }
@@ -212,14 +315,21 @@ mod tests {
     #[test]
     fn clean_source_has_no_diagnostics() {
         let d = compute_diagnostics("fn add(a: i32, b: i32) -> i32 { a + b }");
-        assert!(d.is_empty(), "clean source should produce no diagnostics, got {d:?}");
+        assert!(
+            d.is_empty(),
+            "clean source should produce no diagnostics, got {d:?}"
+        );
     }
 
     #[test]
     fn type_error_becomes_an_lsp_diagnostic_with_range() {
         let d = compute_diagnostics("fn f() -> bool { 1 }");
         assert_eq!(d.len(), 1, "expected one diagnostic, got {d:?}");
-        assert_eq!(d[0]["severity"], json!(1), "type errors are LSP severity 1 (Error)");
+        assert_eq!(
+            d[0]["severity"],
+            json!(1),
+            "type errors are LSP severity 1 (Error)"
+        );
         assert!(d[0]["message"].as_str().unwrap().contains("return value"));
         // The range is well-formed and 0-based.
         assert!(d[0]["range"]["start"]["line"].is_number());
@@ -231,7 +341,10 @@ mod tests {
         let mut lsp = Lsp::new();
         let out = lsp.handle(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}));
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0]["result"]["capabilities"]["textDocumentSync"], json!(1));
+        assert_eq!(
+            out[0]["result"]["capabilities"]["textDocumentSync"],
+            json!(1)
+        );
         assert_eq!(out[0]["id"], json!(1));
     }
 
@@ -266,14 +379,16 @@ mod tests {
             }
         }));
         let diags = out[0]["params"]["diagnostics"].as_array().unwrap();
-        assert!(diags.is_empty(), "corrected source should clear diagnostics, got {diags:?}");
+        assert!(
+            diags.is_empty(),
+            "corrected source should clear diagnostics, got {diags:?}"
+        );
     }
 
     #[test]
     fn completion_offers_keywords_builtins_and_user_symbols() {
         let items = completions("struct Player { hp: i64 }\nfn heal(p: Player) -> i64 { p.hp }");
-        let labels: Vec<&str> =
-            items.iter().filter_map(|i| i["label"].as_str()).collect();
+        let labels: Vec<&str> = items.iter().filter_map(|i| i["label"].as_str()).collect();
         assert!(labels.contains(&"fn"), "keywords: {labels:?}");
         assert!(labels.contains(&"println"), "builtins: {labels:?}");
         assert!(labels.contains(&"Player"), "user struct: {labels:?}");
@@ -292,7 +407,10 @@ mod tests {
             "params": { "textDocument": { "uri": "file:///a.aur" } }
         }));
         let items = out[0]["result"]["items"].as_array().unwrap();
-        assert!(items.iter().any(|i| i["label"] == "go"), "should offer the user fn `go`");
+        assert!(
+            items.iter().any(|i| i["label"] == "go"),
+            "should offer the user fn `go`"
+        );
     }
 
     #[test]

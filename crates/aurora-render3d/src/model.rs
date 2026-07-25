@@ -101,7 +101,11 @@ impl Model {
     pub fn load_obj(path: &str) -> Result<Model, String> {
         let (models, materials) = tobj::load_obj(
             path,
-            &tobj::LoadOptions { triangulate: true, single_index: true, ..Default::default() },
+            &tobj::LoadOptions {
+                triangulate: true,
+                single_index: true,
+                ..Default::default()
+            },
         )
         .map_err(|e| format!("load obj {path}: {e}"))?;
         let materials = materials.unwrap_or_default();
@@ -114,9 +118,17 @@ impl Model {
             let has_normals = mesh.normals.len() == mesh.positions.len();
             let has_uv = mesh.texcoords.len() / 2 == count;
             for i in 0..count {
-                let pos = [mesh.positions[i * 3], mesh.positions[i * 3 + 1], mesh.positions[i * 3 + 2]];
+                let pos = [
+                    mesh.positions[i * 3],
+                    mesh.positions[i * 3 + 1],
+                    mesh.positions[i * 3 + 2],
+                ];
                 let normal = if has_normals {
-                    [mesh.normals[i * 3], mesh.normals[i * 3 + 1], mesh.normals[i * 3 + 2]]
+                    [
+                        mesh.normals[i * 3],
+                        mesh.normals[i * 3 + 1],
+                        mesh.normals[i * 3 + 2],
+                    ]
                 } else {
                     [0.0, 1.0, 0.0]
                 };
@@ -151,7 +163,11 @@ impl Model {
                 skinned: false,
             });
         }
-        Ok(Model { primitives, skeleton: None, clips: Vec::new() })
+        Ok(Model {
+            primitives,
+            skeleton: None,
+            clips: Vec::new(),
+        })
     }
 
     /// Load a glTF/GLB model with materials, skeleton, and animation clips.
@@ -185,7 +201,10 @@ impl Model {
             let mut joints = Vec::with_capacity(joints_nodes.len());
             for (ji, n) in joints_nodes.iter().enumerate() {
                 let (t, r, s) = n.transform().decomposed();
-                let parent = node_parent.get(&n.index()).and_then(|pi| node_to_joint.get(pi)).copied();
+                let parent = node_parent
+                    .get(&n.index())
+                    .and_then(|pi| node_to_joint.get(pi))
+                    .copied();
                 joints.push(Joint {
                     parent,
                     inverse_bind: ibm.get(ji).copied().unwrap_or(Mat4::IDENTITY),
@@ -206,7 +225,10 @@ impl Model {
         for node in doc.nodes() {
             let Some(mesh) = node.mesh() else { continue };
             let is_skinned = node.skin().is_some();
-            let world = globals.get(&node.index()).copied().unwrap_or(Mat4::IDENTITY);
+            let world = globals
+                .get(&node.index())
+                .copied()
+                .unwrap_or(Mat4::IDENTITY);
             let normal_world = Mat4::from_mat3(glam::Mat3::from_mat4(world).inverse().transpose());
             for prim in mesh.primitives() {
                 let reader = prim.reader(buf);
@@ -236,17 +258,28 @@ impl Model {
                         // the model sits where the file places it; the caller's
                         // object matrix is then applied on top.
                         let p = world.transform_point3(Vec3::from(positions[i]));
-                        let n = normal_world.transform_vector3(Vec3::from(normals[i])).normalize_or_zero();
+                        let n = normal_world
+                            .transform_vector3(Vec3::from(normals[i]))
+                            .normalize_or_zero();
                         (p.into(), n.into())
                     };
                     let mut v = Vertex::new(pos, normal, uvs[i]);
                     if let (Some(j), Some(w)) = (&joints_attr, &weights_attr) {
-                        v.joints = [j[i][0] as u32, j[i][1] as u32, j[i][2] as u32, j[i][3] as u32];
+                        v.joints = [
+                            j[i][0] as u32,
+                            j[i][1] as u32,
+                            j[i][2] as u32,
+                            j[i][3] as u32,
+                        ];
                         // Remap glTF skin-local joint indices: read_joints already
                         // indexes into the skin's joint list, which is our order.
                         let ww = w[i];
                         let sum = ww[0] + ww[1] + ww[2] + ww[3];
-                        v.weights = if sum > 0.0 { [ww[0] / sum, ww[1] / sum, ww[2] / sum, ww[3] / sum] } else { [1.0, 0.0, 0.0, 0.0] };
+                        v.weights = if sum > 0.0 {
+                            [ww[0] / sum, ww[1] / sum, ww[2] / sum, ww[3] / sum]
+                        } else {
+                            [1.0, 0.0, 0.0, 0.0]
+                        };
                     }
                     data.vertices.push(v);
                 }
@@ -270,9 +303,13 @@ impl Model {
                     rgba_from_gltf(images.get(info.source().index())?)
                 };
                 let texture = pbr.base_color_texture().and_then(|i| tex_of(i.texture()));
-                let mr_tex = pbr.metallic_roughness_texture().and_then(|i| tex_of(i.texture()));
+                let mr_tex = pbr
+                    .metallic_roughness_texture()
+                    .and_then(|i| tex_of(i.texture()));
                 let normal_tex = material.normal_texture().and_then(|i| tex_of(i.texture()));
-                let emissive_tex = material.emissive_texture().and_then(|i| tex_of(i.texture()));
+                let emissive_tex = material
+                    .emissive_texture()
+                    .and_then(|i| tex_of(i.texture()));
                 primitives.push(Primitive {
                     mesh: data,
                     base_color: pbr.base_color_factor(),
@@ -295,7 +332,9 @@ impl Model {
             let mut duration = 0.0f32;
             for ch in anim.channels() {
                 let target = ch.target();
-                let Some(&joint) = node_to_joint.get(&target.node().index()) else { continue };
+                let Some(&joint) = node_to_joint.get(&target.node().index()) else {
+                    continue;
+                };
                 let path = match target.property() {
                     gltf::animation::Property::Translation => Path::Translation,
                     gltf::animation::Property::Rotation => Path::Rotation,
@@ -326,13 +365,27 @@ impl Model {
                 if let Some(&last) = times.last() {
                     duration = duration.max(last);
                 }
-                channels.push(Channel { joint, path, interp, times, values });
+                channels.push(Channel {
+                    joint,
+                    path,
+                    interp,
+                    times,
+                    values,
+                });
             }
             let name = anim.name().unwrap_or("clip").to_string();
-            clips.push(Clip { name, duration, channels });
+            clips.push(Clip {
+                name,
+                duration,
+                channels,
+            });
         }
 
-        Ok(Model { primitives, skeleton, clips })
+        Ok(Model {
+            primitives,
+            skeleton,
+            clips,
+        })
     }
 }
 
@@ -363,9 +416,15 @@ fn rgba_from_gltf(img: &gltf::image::Data) -> Option<(Vec<u8>, u32, u32)> {
     let px = &img.pixels;
     let rgba = match img.format {
         Format::R8G8B8A8 => px.clone(),
-        Format::R8G8B8 => px.chunks_exact(3).flat_map(|c| [c[0], c[1], c[2], 255]).collect(),
+        Format::R8G8B8 => px
+            .chunks_exact(3)
+            .flat_map(|c| [c[0], c[1], c[2], 255])
+            .collect(),
         Format::R8 => px.iter().flat_map(|&v| [v, v, v, 255]).collect(),
-        Format::R8G8 => px.chunks_exact(2).flat_map(|c| [c[0], c[0], c[0], c[1]]).collect(),
+        Format::R8G8 => px
+            .chunks_exact(2)
+            .flat_map(|c| [c[0], c[0], c[0], c[1]])
+            .collect(),
         _ => return None,
     };
     Some((rgba, w, h))

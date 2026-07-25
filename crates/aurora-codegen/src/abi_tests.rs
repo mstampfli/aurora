@@ -23,8 +23,16 @@ fn declared_imports() -> (Type, Vec<(&'static str, String, Vec<Type>, Vec<Type>)
             (
                 key,
                 decl.linkage_name(id).into_owned(),
-                decl.signature.params.iter().map(|p| p.value_type).collect::<Vec<_>>(),
-                decl.signature.returns.iter().map(|p| p.value_type).collect::<Vec<_>>(),
+                decl.signature
+                    .params
+                    .iter()
+                    .map(|p| p.value_type)
+                    .collect::<Vec<_>>(),
+                decl.signature
+                    .returns
+                    .iter()
+                    .map(|p| p.value_type)
+                    .collect::<Vec<_>>(),
             )
         })
         .collect();
@@ -44,12 +52,17 @@ fn host_imports_match_the_builtin_table() {
         aurora_abi::Ty::Str => unreachable!("Str is not an ABI slot type"),
     };
 
-    let expected: Vec<&aurora_abi::Builtin> =
-        aurora_abi::TABLE.iter().filter(|b| b.kind.is_host_import()).collect();
+    let expected: Vec<&aurora_abi::Builtin> = aurora_abi::TABLE
+        .iter()
+        .filter(|b| b.kind.is_host_import())
+        .collect();
     let declared_keys: Vec<&str> = declared.iter().map(|(k, ..)| *k).collect();
     let mut expected_keys: Vec<&str> = expected.iter().map(|b| b.name).collect();
     expected_keys.sort();
-    assert_eq!(declared_keys, expected_keys, "the backend's host table is not the builtin table");
+    assert_eq!(
+        declared_keys, expected_keys,
+        "the backend's host table is not the builtin table"
+    );
 
     for (key, symbol, params, returns) in &declared {
         let row = aurora_abi::lookup(key).expect("declared import is not in the table");
@@ -68,21 +81,35 @@ fn host_imports_match_the_builtin_table() {
 fn scalar_dispatch_agrees_with_the_declared_import() {
     let mut checked = 0;
     for (key, _, params, returns) in declared_imports().1 {
-        let Some((sig_params, sig_ret)) = scalar_builtin_sig(key) else { continue };
+        let Some((sig_params, sig_ret)) = scalar_builtin_sig(key) else {
+            continue;
+        };
         let clif = |t: aurora_abi::Ty| match t {
             aurora_abi::Ty::F64 => types::F64,
             aurora_abi::Ty::I64 | aurora_abi::Ty::Ptr => types::I64,
             aurora_abi::Ty::Str => unreachable!("a scalar row cannot return Str"),
         };
         let want: Vec<Type> = sig_params.iter().map(|t| clif(*t)).collect();
-        assert_eq!(params, want, "`{key}` is called with types its import does not take");
+        assert_eq!(
+            params, want,
+            "`{key}` is called with types its import does not take"
+        );
         let want_ret: Vec<Type> = sig_ret.map(clif).into_iter().collect();
-        assert_eq!(returns, want_ret, "`{key}` returns a type its import does not return");
+        assert_eq!(
+            returns, want_ret,
+            "`{key}` returns a type its import does not return"
+        );
         // The compiled type the call site yields must follow the same mapping.
         assert_eq!(sig_ret.map(abi_cty), sig_ret.map(|t| clif_to_cty(clif(t))));
         checked += 1;
     }
-    assert_eq!(checked, aurora_abi::TABLE.iter().filter(|b| b.kind == aurora_abi::Kind::Scalar).count());
+    assert_eq!(
+        checked,
+        aurora_abi::TABLE
+            .iter()
+            .filter(|b| b.kind == aurora_abi::Kind::Scalar)
+            .count()
+    );
 }
 
 fn clif_to_cty(t: Type) -> Cty {
@@ -99,10 +126,17 @@ fn clif_to_cty(t: Type) -> Cty {
 #[test]
 fn every_visible_builtin_is_reachable() {
     let declared: Vec<&str> = declared_imports().1.iter().map(|(k, ..)| *k).collect();
-    for b in aurora_abi::TABLE.iter().filter(|b| b.kind.is_aurora_visible()) {
+    for b in aurora_abi::TABLE
+        .iter()
+        .filter(|b| b.kind.is_aurora_visible())
+    {
         if b.kind == aurora_abi::Kind::Inline {
             continue;
         }
-        assert!(declared.contains(&b.name), "builtin `{}` has no host import", b.name);
+        assert!(
+            declared.contains(&b.name),
+            "builtin `{}` has no host import",
+            b.name
+        );
     }
 }

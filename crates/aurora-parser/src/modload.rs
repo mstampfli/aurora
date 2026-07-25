@@ -75,7 +75,10 @@ pub fn load_file_modules(src: &str, path: &Path) -> (String, Vec<Diagnostic>) {
     if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
         loaded.insert(stem.to_string());
     }
-    let mut queue = vec![Pending { range: 0..src.len(), dir: parent_dir(path) }];
+    let mut queue = vec![Pending {
+        range: 0..src.len(),
+        dir: parent_dir(path),
+    }];
 
     while let Some(p) = queue.pop() {
         // Collected up front: the loop body appends to `out`.
@@ -94,13 +97,11 @@ pub fn load_file_modules(src: &str, path: &Path) -> (String, Vec<Diagnostic>) {
             let text = match std::fs::read_to_string(&target) {
                 Ok(t) => t,
                 Err(e) => {
-                    let mut d = Diagnostic::error(format!(
-                        "cannot find file for module `{}`",
-                        decl.name
-                    ))
-                    .with_code("E0110")
-                    .primary(span, "no file for this module")
-                    .note(format!("looked for `{}`: {e}", target.display()));
+                    let mut d =
+                        Diagnostic::error(format!("cannot find file for module `{}`", decl.name))
+                            .with_code("E0110")
+                            .primary(span, "no file for this module")
+                            .note(format!("looked for `{}`: {e}", target.display()));
                     if p.dir.join(&decl.name).is_dir() {
                         d = d.note(format!(
                             "a directory `{}` exists, but directory modules are not \
@@ -124,7 +125,10 @@ pub fn load_file_modules(src: &str, path: &Path) -> (String, Vec<Diagnostic>) {
             out.push_str(&text);
             let end = out.len();
             out.push_str("\n}\n");
-            queue.push(Pending { range: start..end, dir: parent_dir(&target) });
+            queue.push(Pending {
+                range: start..end,
+                dir: parent_dir(&target),
+            });
         }
     }
     (out, diags)
@@ -173,7 +177,10 @@ fn bodiless_mods(src: &str) -> Vec<ModDecl> {
             // No terminator (ASI): the name ends the declaration.
             _ => {}
         }
-        out.push(ModDecl { name, span: start.to(end) });
+        out.push(ModDecl {
+            name,
+            span: start.to(end),
+        });
     }
     out
 }

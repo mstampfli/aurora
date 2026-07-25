@@ -91,7 +91,10 @@ pub enum Kind {
 impl Kind {
     /// Can Aurora source call a builtin of this kind by name?
     pub const fn is_aurora_visible(self) -> bool {
-        matches!(self, Kind::Scalar | Kind::Text | Kind::Special | Kind::Inline)
+        matches!(
+            self,
+            Kind::Scalar | Kind::Text | Kind::Special | Kind::Inline
+        )
     }
 
     /// Is this row backed by an `aurora_*` function in `aurora-runtime`? Those
@@ -102,7 +105,10 @@ impl Kind {
 
     /// Is this row declared as an import in the backend's host table?
     pub const fn is_host_import(self) -> bool {
-        matches!(self, Kind::Scalar | Kind::Text | Kind::Special | Kind::Internal)
+        matches!(
+            self,
+            Kind::Scalar | Kind::Text | Kind::Special | Kind::Internal
+        )
     }
 }
 
@@ -129,7 +135,9 @@ impl Builtin {
     /// so it is not a Cranelift return value at all.
     pub fn abi_params(&self) -> Vec<Ty> {
         match self.ret {
-            Some(Ty::Str) => std::iter::once(Ty::Ptr).chain(self.params.iter().copied()).collect(),
+            Some(Ty::Str) => std::iter::once(Ty::Ptr)
+                .chain(self.params.iter().copied())
+                .collect(),
             _ => self.params.to_vec(),
         }
     }
@@ -680,7 +688,11 @@ for_each_builtin!(build_table);
 pub fn builtin_names() -> &'static [&'static str] {
     static NAMES: OnceLock<Vec<&'static str>> = OnceLock::new();
     NAMES.get_or_init(|| {
-        TABLE.iter().filter(|b| b.kind.is_aurora_visible()).map(|b| b.name).collect()
+        TABLE
+            .iter()
+            .filter(|b| b.kind.is_aurora_visible())
+            .map(|b| b.name)
+            .collect()
     })
 }
 
@@ -689,14 +701,18 @@ pub fn builtin_names() -> &'static [&'static str] {
 /// real typo still is.
 pub fn is_builtin(name: &str) -> bool {
     static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
-    SET.get_or_init(|| builtin_names().iter().copied().collect()).contains(name)
+    SET.get_or_init(|| builtin_names().iter().copied().collect())
+        .contains(name)
 }
 
 /// The table row for `name`, including rows Aurora source cannot call
 /// (`internal` / `linkonly`), which the backend looks up by the same key. O(1).
 pub fn lookup(name: &str) -> Option<&'static Builtin> {
     static BY_NAME: OnceLock<HashMap<&'static str, &'static Builtin>> = OnceLock::new();
-    BY_NAME.get_or_init(|| TABLE.iter().map(|b| (b.name, b)).collect()).get(name).copied()
+    BY_NAME
+        .get_or_init(|| TABLE.iter().map(|b| (b.name, b)).collect())
+        .get(name)
+        .copied()
 }
 
 /// Parameter and return types of a builtin the backend lowers with its generic

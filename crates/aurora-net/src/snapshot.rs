@@ -34,7 +34,12 @@ pub struct InterpBuffer {
 
 impl InterpBuffer {
     pub fn new(delay: f32) -> InterpBuffer {
-        InterpBuffer { samples: VecDeque::new(), delay, max_extrapolation: 2.0, capacity: 32 }
+        InterpBuffer {
+            samples: VecDeque::new(),
+            delay,
+            max_extrapolation: 2.0,
+            capacity: 32,
+        }
     }
 
     pub fn with_extrapolation(mut self, ticks: f32) -> InterpBuffer {
@@ -96,7 +101,11 @@ impl InterpBuffer {
         let (t0, p0) = self.samples[i - 1];
         let (t1, p1) = self.samples[i];
         let span = t1 - t0;
-        let alpha = if span > 0.0 { (render - t0) / span } else { 0.0 };
+        let alpha = if span > 0.0 {
+            (render - t0) / span
+        } else {
+            0.0
+        };
         Some(lerp(p0, p1, alpha))
     }
 }
@@ -141,7 +150,7 @@ mod snapshot_tests {
         let mut buf = InterpBuffer::new(0.0).with_extrapolation(1.0);
         buf.push(0.0, [0.0, 0.0, 0.0]);
         buf.push(10.0, [10.0, 0.0, 0.0]); // velocity 1.0/tick
-        // 1 tick past -> extrapolate to 11.
+                                          // 1 tick past -> extrapolate to 11.
         assert!(approx(buf.sample(11.0).unwrap(), [11.0, 0.0, 0.0]));
         // Far past -> clamped to last + max_extrapolation (1 tick) -> 11, not 100.
         assert!(approx(buf.sample(100.0).unwrap(), [11.0, 0.0, 0.0]));

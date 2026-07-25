@@ -13,7 +13,11 @@ pub struct Token {
 
 impl Token {
     pub fn new(kind: TokenKind, span: Span) -> Token {
-        Token { kind, span, nl_before: false }
+        Token {
+            kind,
+            span,
+            nl_before: false,
+        }
     }
 }
 
@@ -170,8 +174,14 @@ impl Keyword {
 #[derive(Clone, Debug, PartialEq)]
 pub enum TokenKind {
     // Literals
-    Int { value: u128, suffix: Option<IntTy> },
-    Float { value: f64, suffix: Option<FloatTy> },
+    Int {
+        value: u128,
+        suffix: Option<IntTy>,
+    },
+    Float {
+        value: f64,
+        suffix: Option<FloatTy>,
+    },
     Str(String),
     Char(char),
 
@@ -195,7 +205,7 @@ pub enum TokenKind {
     Dot,
     DotDot,
     DotDotEq,
-    Arrow,   // ->
+    Arrow,    // ->
     FatArrow, // =>
     At,       // @
     Hash,     // #
@@ -203,10 +213,10 @@ pub enum TokenKind {
     Question, // ?
 
     // Operators
-    Amp,     // &
-    Pipe,    // |
-    Caret,   // ^
-    Bang,    // !
+    Amp,   // &
+    Pipe,  // |
+    Caret, // ^
+    Bang,  // !
     Plus,
     Minus,
     Star,

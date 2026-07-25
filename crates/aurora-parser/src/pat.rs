@@ -93,7 +93,10 @@ impl Parser {
                 PatKind::Error
             }
         };
-        Pat { kind, span: self.finish(start) }
+        Pat {
+            kind,
+            span: self.finish(start),
+        }
     }
 
     /// Parse a literal (optionally negated) used in pattern position.
@@ -116,6 +119,9 @@ impl Parser {
             _ => ExprKind::Error,
         };
         self.bump();
-        Expr { kind, span: self.finish(start) }
+        Expr {
+            kind,
+            span: self.finish(start),
+        }
     }
 }

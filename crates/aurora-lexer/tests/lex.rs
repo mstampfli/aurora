@@ -77,13 +77,34 @@ fn integer_literals_and_suffixes() {
     assert_eq!(
         kinds("0 42 1_000 0xFF 0b1010 7u8 64i32"),
         vec![
-            Int { value: 0, suffix: None },
-            Int { value: 42, suffix: None },
-            Int { value: 1000, suffix: None },
-            Int { value: 255, suffix: None },
-            Int { value: 10, suffix: None },
-            Int { value: 7, suffix: Some(IntTy::U8) },
-            Int { value: 64, suffix: Some(IntTy::I32) },
+            Int {
+                value: 0,
+                suffix: None
+            },
+            Int {
+                value: 42,
+                suffix: None
+            },
+            Int {
+                value: 1000,
+                suffix: None
+            },
+            Int {
+                value: 255,
+                suffix: None
+            },
+            Int {
+                value: 10,
+                suffix: None
+            },
+            Int {
+                value: 7,
+                suffix: Some(IntTy::U8)
+            },
+            Int {
+                value: 64,
+                suffix: Some(IntTy::I32)
+            },
         ]
     );
     no_errors("0 42 1_000 0xFF 0b1010 7u8 64i32");
@@ -95,11 +116,26 @@ fn float_literals() {
     assert_eq!(
         kinds("1.0 3.14 2.0e3 1.5f32 1e10"),
         vec![
-            Float { value: 1.0, suffix: None },
-            Float { value: 3.14, suffix: None },
-            Float { value: 2000.0, suffix: None },
-            Float { value: 1.5, suffix: Some(FloatTy::F32) },
-            Float { value: 1e10, suffix: None },
+            Float {
+                value: 1.0,
+                suffix: None
+            },
+            Float {
+                value: 3.14,
+                suffix: None
+            },
+            Float {
+                value: 2000.0,
+                suffix: None
+            },
+            Float {
+                value: 1.5,
+                suffix: Some(FloatTy::F32)
+            },
+            Float {
+                value: 1e10,
+                suffix: None
+            },
         ]
     );
     no_errors("1.0 3.14 2.0e3 1.5f32 1e10");
@@ -111,12 +147,32 @@ fn range_is_not_a_float() {
     use TokenKind::*;
     assert_eq!(
         kinds("1..2"),
-        vec![Int { value: 1, suffix: None }, DotDot, Int { value: 2, suffix: None }]
+        vec![
+            Int {
+                value: 1,
+                suffix: None
+            },
+            DotDot,
+            Int {
+                value: 2,
+                suffix: None
+            }
+        ]
     );
     // `1..=2` likewise.
     assert_eq!(
         kinds("0..=9"),
-        vec![Int { value: 0, suffix: None }, DotDotEq, Int { value: 9, suffix: None }]
+        vec![
+            Int {
+                value: 0,
+                suffix: None
+            },
+            DotDotEq,
+            Int {
+                value: 9,
+                suffix: None
+            }
+        ]
     );
 }
 
@@ -125,7 +181,14 @@ fn method_call_on_int_is_not_a_float() {
     use TokenKind::*;
     assert_eq!(
         kinds("1.foo"),
-        vec![Int { value: 1, suffix: None }, Dot, Ident("foo".into())]
+        vec![
+            Int {
+                value: 1,
+                suffix: None
+            },
+            Dot,
+            Ident("foo".into())
+        ]
     );
 }
 
@@ -142,7 +205,10 @@ fn strings_with_escapes() {
 #[test]
 fn char_literals() {
     use TokenKind::*;
-    assert_eq!(kinds("'a' '\\n' '\\''"), vec![Char('a'), Char('\n'), Char('\'')]);
+    assert_eq!(
+        kinds("'a' '\\n' '\\''"),
+        vec![Char('a'), Char('\n'), Char('\'')]
+    );
 }
 
 #[test]

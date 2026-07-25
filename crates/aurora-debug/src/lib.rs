@@ -22,7 +22,8 @@ pub use aurora_runtime::{DbgCmd, DbgVal, Stop};
 pub fn debug_trace(src: &str, breakpoints: &[u32], step: bool) -> Result<Vec<Stop>, String> {
     let jit = compile_debug(src)?;
     aurora_runtime::dbg_reset(breakpoints.iter().copied().collect::<HashSet<_>>(), step);
-    jit.call_i64("main", &[]).map_err(|e| format!("runtime error: {e}"))?;
+    jit.call_i64("main", &[])
+        .map_err(|e| format!("runtime error: {e}"))?;
     Ok(aurora_runtime::dbg_take_stops())
 }
 
@@ -32,12 +33,19 @@ pub fn debug_trace(src: &str, breakpoints: &[u32], step: bool) -> Result<Vec<Sto
 pub fn debug_interactive(src: &str, breakpoints: &[u32]) -> Result<(), String> {
     let jit = compile_debug(src)?;
     let step_all = breakpoints.is_empty();
-    aurora_runtime::dbg_reset(breakpoints.iter().copied().collect::<HashSet<_>>(), step_all);
+    aurora_runtime::dbg_reset(
+        breakpoints.iter().copied().collect::<HashSet<_>>(),
+        step_all,
+    );
     aurora_runtime::dbg_set_handler(Box::new(|stop: &Stop| {
         let vars = if stop.vars.is_empty() {
             "(no locals)".to_string()
         } else {
-            stop.vars.iter().map(|(n, v)| format!("{n} = {v}")).collect::<Vec<_>>().join(", ")
+            stop.vars
+                .iter()
+                .map(|(n, v)| format!("{n} = {v}"))
+                .collect::<Vec<_>>()
+                .join(", ")
         };
         println!("\n⏸  line {}: {vars}", stop.line);
         print!("(adbg) [s]tep / [c]ontinue / [q]uit > ");
@@ -53,7 +61,8 @@ pub fn debug_interactive(src: &str, breakpoints: &[u32]) -> Result<(), String> {
         }
     }));
     println!("aurora native debugger — running `main`");
-    jit.call_i64("main", &[]).map_err(|e| format!("runtime error: {e}"))?;
+    jit.call_i64("main", &[])
+        .map_err(|e| format!("runtime error: {e}"))?;
     println!("program exited.");
     Ok(())
 }
@@ -92,7 +101,10 @@ mod tests {
         // The loop body (`total = total + i`) runs 3 times.
         let body_line = 4; // `total = total + i`
         let body_hits = stops.iter().filter(|s| s.line == body_line).count();
-        assert_eq!(body_hits, 3, "loop body should be hit once per iteration, got {body_hits}");
+        assert_eq!(
+            body_hits, 3,
+            "loop body should be hit once per iteration, got {body_hits}"
+        );
     }
 
     #[test]
@@ -103,12 +115,12 @@ mod tests {
         assert_eq!(stops.len(), 3, "three breakpoint hits, got {}", stops.len());
         let totals: Vec<i64> = stops
             .iter()
-            .map(|s| {
-                match s.vars.iter().find(|(n, _)| n == "total").map(|(_, v)| v) {
+            .map(
+                |s| match s.vars.iter().find(|(n, _)| n == "total").map(|(_, v)| v) {
                     Some(DbgVal::Int(n)) => *n,
                     _ => -1,
-                }
-            })
+                },
+            )
             .collect();
         // On entry to each iteration: before adding 1, 2, 3 respectively.
         assert_eq!(totals, vec![0, 1, 3], "total at each loop-body entry");
@@ -127,10 +139,30 @@ fn main() {
         let stops = debug_trace(prog, &[], true).expect("debug run failed");
         // The last stop (at `println`) sees all bindings made so far.
         let last = stops.last().expect("at least one stop");
-        let get = |n: &str| last.vars.iter().find(|(name, _)| name == n).map(|(_, v)| v.clone());
-        assert_eq!(get("pi"), Some(DbgVal::Float(3.5)), "float local: {:?}", last.vars);
-        assert_eq!(get("p.x"), Some(DbgVal::Int(7)), "struct field x: {:?}", last.vars);
-        assert_eq!(get("p.y"), Some(DbgVal::Int(9)), "struct field y: {:?}", last.vars);
+        let get = |n: &str| {
+            last.vars
+                .iter()
+                .find(|(name, _)| name == n)
+                .map(|(_, v)| v.clone())
+        };
+        assert_eq!(
+            get("pi"),
+            Some(DbgVal::Float(3.5)),
+            "float local: {:?}",
+            last.vars
+        );
+        assert_eq!(
+            get("p.x"),
+            Some(DbgVal::Int(7)),
+            "struct field x: {:?}",
+            last.vars
+        );
+        assert_eq!(
+            get("p.y"),
+            Some(DbgVal::Int(9)),
+            "struct field y: {:?}",
+            last.vars
+        );
     }
 
     #[test]
@@ -151,15 +183,28 @@ fn main() {
         assert!(!stops.is_empty(), "should hit the breakpoint");
         // The deepest stop's stack is [main, fact, fact] (n=3 calls fact(2)).
         let deepest = stops.iter().max_by_key(|s| s.stack.len()).unwrap();
-        assert!(deepest.stack.len() >= 3, "call stack should nest: {:?}", deepest.stack);
+        assert!(
+            deepest.stack.len() >= 3,
+            "call stack should nest: {:?}",
+            deepest.stack
+        );
         assert_eq!(deepest.stack.last().map(String::as_str), Some("fact"));
         // Across stops, `n` takes distinct per-frame values (3 and 2).
         let ns: Vec<i64> = stops
             .iter()
             .filter_map(|s| s.vars.iter().find(|(n, _)| n == "n"))
-            .filter_map(|(_, v)| if let DbgVal::Int(n) = v { Some(*n) } else { None })
+            .filter_map(|(_, v)| {
+                if let DbgVal::Int(n) = v {
+                    Some(*n)
+                } else {
+                    None
+                }
+            })
             .collect();
-        assert!(ns.contains(&3) && ns.contains(&2), "isolated frame locals, got {ns:?}");
+        assert!(
+            ns.contains(&3) && ns.contains(&2),
+            "isolated frame locals, got {ns:?}"
+        );
     }
 
     #[test]
@@ -171,8 +216,17 @@ fn main() {
 }";
         let stops = debug_trace(prog, &[], true).expect("debug run failed");
         let last = stops.last().unwrap();
-        let tag = last.vars.iter().find(|(n, _)| n == "s.tag").map(|(_, v)| v.clone());
-        assert_eq!(tag, Some(DbgVal::Int(2)), "Seg is variant index 2: {:?}", last.vars);
+        let tag = last
+            .vars
+            .iter()
+            .find(|(n, _)| n == "s.tag")
+            .map(|(_, v)| v.clone());
+        assert_eq!(
+            tag,
+            Some(DbgVal::Int(2)),
+            "Seg is variant index 2: {:?}",
+            last.vars
+        );
     }
 
     #[test]

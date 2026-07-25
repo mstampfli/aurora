@@ -23,7 +23,11 @@ pub struct InterestGrid {
 impl InterestGrid {
     pub fn new(cell_size: f32) -> InterestGrid {
         assert!(cell_size > 0.0, "cell size must be positive");
-        InterestGrid { cell_size, cells: HashMap::new(), pos: HashMap::new() }
+        InterestGrid {
+            cell_size,
+            cells: HashMap::new(),
+            pos: HashMap::new(),
+        }
     }
 
     fn cell_of(&self, p: V3) -> Cell {
@@ -74,7 +78,9 @@ impl InterestGrid {
         for cx in lo.0..=hi.0 {
             for cy in lo.1..=hi.1 {
                 for cz in lo.2..=hi.2 {
-                    let Some(entities) = self.cells.get(&(cx, cy, cz)) else { continue };
+                    let Some(entities) = self.cells.get(&(cx, cy, cz)) else {
+                        continue;
+                    };
                     for &e in entities {
                         let p = self.pos[&e];
                         let d = [p[0] - center[0], p[1] - center[1], p[2] - center[2]];

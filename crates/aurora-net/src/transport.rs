@@ -29,7 +29,11 @@ impl UdpEndpoint {
     pub fn bind(local: impl ToSocketAddrs) -> io::Result<UdpEndpoint> {
         let sock = UdpSocket::bind(local)?;
         sock.set_nonblocking(true)?;
-        Ok(UdpEndpoint { sock, chan: Reliable::new(), buf: vec![0u8; 2048] })
+        Ok(UdpEndpoint {
+            sock,
+            chan: Reliable::new(),
+            buf: vec![0u8; 2048],
+        })
     }
 
     /// Point this endpoint at `peer`; afterwards send/recv talk only to it.
@@ -153,7 +157,10 @@ mod transport_tests {
             a.poll();
         }
 
-        assert!(a.fully_acked(), "all messages should be acked within budget");
+        assert!(
+            a.fully_acked(),
+            "all messages should be acked within budget"
+        );
         assert_eq!(got, msgs, "received every message exactly once, in order");
     }
 

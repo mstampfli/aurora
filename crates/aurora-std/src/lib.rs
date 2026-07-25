@@ -514,10 +514,17 @@ mod tests {
     fn prelude_parses_and_checks_clean() {
         // The standard library must itself parse and pass all static checks.
         let (module, pdiags) = aurora_parser::parse_str(super::PRELUDE);
-        assert!(!pdiags.iter().any(|d| d.is_error()), "prelude parse errors: {pdiags:?}");
+        assert!(
+            !pdiags.iter().any(|d| d.is_error()),
+            "prelude parse errors: {pdiags:?}"
+        );
         let mut diags = aurora_check::check(&module);
         diags.extend(aurora_typeck::check_types(&module));
-        let errs: Vec<_> = diags.iter().filter(|d| d.is_error()).map(|d| &d.message).collect();
+        let errs: Vec<_> = diags
+            .iter()
+            .filter(|d| d.is_error())
+            .map(|d| &d.message)
+            .collect();
         assert!(errs.is_empty(), "prelude check errors: {errs:?}");
     }
 }

@@ -8,38 +8,145 @@ use super::*;
 /// builtin is added without documentation and when an entry here becomes
 /// documented but is not removed.
 const UNDOCUMENTED: &[&str] = &[
-    "frame_reset", "json_set_str", "json_push_str", "sleep_ms", "load_sound",
-    "phys3d_add_box_rot", "r3d_make_box_sized", "r3d_make_box_emissive", "r3d_camera_roll",
-    "r3d_draw_quat", "r3d_draw_tint", "r3d_draw_shield", "r3d_draw_on_joint", "r3d_joint_dump",
-    "r3d_joint_pos", "r3d_anim_play_upper", "r3d_anim_aim_upper", "r3d_anim_blend",
-    "r3d_anim_seek_upper", "r3d_pose_bone", "r3d_hide_joint", "r3d_clear_pose",
-    "r3d_anim_stop_upper", "r3d_speedlines", "r3d_damage", "r3d_blur", "r3d_viewmodel",
-    "play_sound_handle", "play_sound_handle_at", "play_music", "music_volume", "music_stop",
-    "play_ambience", "ambience_volume", "ambience_stop", "phys3d_raycast_ex",
-    "phys3d_raycast_world", "net_serve", "save_settings", "load_settings", "net_leave",
-    "net_player_state", "net_set_meta", "net_player_meta", "net_set_name",
-    "net_player_name_len", "net_player_name_char", "net_max_clients", "net_rejected",
-    "net_connected", "net_dedicated", "net_cfg_set", "net_cfg_get", "net_set_bot_count",
-    "net_set_bot", "net_set_bot_input", "net_set_bot_state", "net_set_bot_alive",
-    "net_set_bot_meta", "net_set_bot_name", "net_bot_count", "net_set_object_count",
-    "net_set_object", "net_object_count", "net_object_x", "net_object_y", "net_object_z",
-    "net_set_object_rot", "net_object_qx", "net_object_qy", "net_object_qz", "net_object_qw",
-    "net_set_object_vel", "net_object_vx", "net_object_vy", "net_object_vz", "net_set_fx_count",
-    "net_set_fx", "net_fx_count", "net_fx_x", "net_fx_y", "net_fx_z", "net_fx_kind",
-    "net_spawn_input_slot", "net_respawn_client", "net_impulse_input_slot", "net_push_impulse",
-    "net_respawn_trigger_slot", "net_force_respawn", "net_server_hit_count",
-    "net_server_hit_shooter", "net_server_hit_victim", "net_server_hit_x", "net_server_hit_y",
-    "net_server_hit_z", "net_server_hits_clear", "net_push_kill", "net_kill_count",
-    "net_kill_killer", "net_kill_victim", "net_kills_clear", "net_push_shot", "net_shot_count",
-    "net_shot_shooter", "net_shot_field", "net_shot_weapon", "net_shots_clear", "net_push_boom",
-    "net_boom_count", "net_boom_source", "net_boom_field", "net_booms_clear",
-    "net_projectile_intent", "net_server_projectile_count", "net_server_projectile_shooter",
-    "net_server_projectile_kind", "net_server_projectile_ox", "net_server_projectile_oy",
-    "net_server_projectile_oz", "net_server_projectile_vx", "net_server_projectile_vy",
-    "net_server_projectile_vz", "net_server_projectiles_clear", "net_set_player_meta",
-    "net_hit_seq", "input_suppress", "f32_blob", "log", "exp", "atan2", "draw_int",
-    "text_width", "play_noise", "audio_volume", "window_fullscreen", "audio_stop", "surface_w",
-    "surface_h", "input_char",
+    "frame_reset",
+    "json_set_str",
+    "json_push_str",
+    "sleep_ms",
+    "load_sound",
+    "phys3d_add_box_rot",
+    "r3d_make_box_sized",
+    "r3d_make_box_emissive",
+    "r3d_camera_roll",
+    "r3d_draw_quat",
+    "r3d_draw_tint",
+    "r3d_draw_shield",
+    "r3d_draw_on_joint",
+    "r3d_joint_dump",
+    "r3d_joint_pos",
+    "r3d_anim_play_upper",
+    "r3d_anim_aim_upper",
+    "r3d_anim_blend",
+    "r3d_anim_seek_upper",
+    "r3d_pose_bone",
+    "r3d_hide_joint",
+    "r3d_clear_pose",
+    "r3d_anim_stop_upper",
+    "r3d_speedlines",
+    "r3d_damage",
+    "r3d_blur",
+    "r3d_viewmodel",
+    "play_sound_handle",
+    "play_sound_handle_at",
+    "play_music",
+    "music_volume",
+    "music_stop",
+    "play_ambience",
+    "ambience_volume",
+    "ambience_stop",
+    "phys3d_raycast_ex",
+    "phys3d_raycast_world",
+    "net_serve",
+    "save_settings",
+    "load_settings",
+    "net_leave",
+    "net_player_state",
+    "net_set_meta",
+    "net_player_meta",
+    "net_set_name",
+    "net_player_name_len",
+    "net_player_name_char",
+    "net_max_clients",
+    "net_rejected",
+    "net_connected",
+    "net_dedicated",
+    "net_cfg_set",
+    "net_cfg_get",
+    "net_set_bot_count",
+    "net_set_bot",
+    "net_set_bot_input",
+    "net_set_bot_state",
+    "net_set_bot_alive",
+    "net_set_bot_meta",
+    "net_set_bot_name",
+    "net_bot_count",
+    "net_set_object_count",
+    "net_set_object",
+    "net_object_count",
+    "net_object_x",
+    "net_object_y",
+    "net_object_z",
+    "net_set_object_rot",
+    "net_object_qx",
+    "net_object_qy",
+    "net_object_qz",
+    "net_object_qw",
+    "net_set_object_vel",
+    "net_object_vx",
+    "net_object_vy",
+    "net_object_vz",
+    "net_set_fx_count",
+    "net_set_fx",
+    "net_fx_count",
+    "net_fx_x",
+    "net_fx_y",
+    "net_fx_z",
+    "net_fx_kind",
+    "net_spawn_input_slot",
+    "net_respawn_client",
+    "net_impulse_input_slot",
+    "net_push_impulse",
+    "net_respawn_trigger_slot",
+    "net_force_respawn",
+    "net_server_hit_count",
+    "net_server_hit_shooter",
+    "net_server_hit_victim",
+    "net_server_hit_x",
+    "net_server_hit_y",
+    "net_server_hit_z",
+    "net_server_hits_clear",
+    "net_push_kill",
+    "net_kill_count",
+    "net_kill_killer",
+    "net_kill_victim",
+    "net_kills_clear",
+    "net_push_shot",
+    "net_shot_count",
+    "net_shot_shooter",
+    "net_shot_field",
+    "net_shot_weapon",
+    "net_shots_clear",
+    "net_push_boom",
+    "net_boom_count",
+    "net_boom_source",
+    "net_boom_field",
+    "net_booms_clear",
+    "net_projectile_intent",
+    "net_server_projectile_count",
+    "net_server_projectile_shooter",
+    "net_server_projectile_kind",
+    "net_server_projectile_ox",
+    "net_server_projectile_oy",
+    "net_server_projectile_oz",
+    "net_server_projectile_vx",
+    "net_server_projectile_vy",
+    "net_server_projectile_vz",
+    "net_server_projectiles_clear",
+    "net_set_player_meta",
+    "net_hit_seq",
+    "input_suppress",
+    "f32_blob",
+    "log",
+    "exp",
+    "atan2",
+    "draw_int",
+    "text_width",
+    "play_noise",
+    "audio_volume",
+    "window_fullscreen",
+    "audio_stop",
+    "surface_w",
+    "surface_h",
+    "input_char",
 ];
 
 #[test]
@@ -63,7 +170,11 @@ fn symbols_follow_the_naming_convention() {
                 b.name
             );
         } else {
-            assert_eq!(b.symbol, "", "inline builtin `{}` must have no symbol", b.name);
+            assert_eq!(
+                b.symbol, "",
+                "inline builtin `{}` must have no symbol",
+                b.name
+            );
         }
     }
 }
@@ -71,8 +182,16 @@ fn symbols_follow_the_naming_convention() {
 #[test]
 fn inline_rows_carry_no_signature() {
     for b in TABLE.iter().filter(|b| b.kind == Kind::Inline) {
-        assert!(b.params.is_empty(), "inline builtin `{}` must have no parameters", b.name);
-        assert_eq!(b.ret, None, "inline builtin `{}` must have no return type", b.name);
+        assert!(
+            b.params.is_empty(),
+            "inline builtin `{}` must have no parameters",
+            b.name
+        );
+        assert_eq!(
+            b.ret, None,
+            "inline builtin `{}` must have no return type",
+            b.name
+        );
     }
 }
 
@@ -94,9 +213,18 @@ fn scalar_rows_take_only_scalars() {
 #[test]
 fn str_is_only_a_text_rows_return() {
     for b in TABLE {
-        assert!(!b.params.contains(&Ty::Str), "`{}` has a Str parameter slot", b.name);
+        assert!(
+            !b.params.contains(&Ty::Str),
+            "`{}` has a Str parameter slot",
+            b.name
+        );
         if b.ret == Some(Ty::Str) {
-            assert_eq!(b.kind, Kind::Text, "`{}` returns Str but is not a text row", b.name);
+            assert_eq!(
+                b.kind,
+                Kind::Text,
+                "`{}` returns Str but is not a text row",
+                b.name
+            );
         }
     }
 }
@@ -267,11 +395,18 @@ fn expand_family(group: &str) -> Vec<&'static str> {
 #[test]
 fn documentation_debt_only_shrinks() {
     let (documented, _) = documented();
-    let missing: Vec<&str> =
-        builtin_names().iter().copied().filter(|n| !documented.contains(n)).collect();
+    let missing: Vec<&str> = builtin_names()
+        .iter()
+        .copied()
+        .filter(|n| !documented.contains(n))
+        .collect();
     let allowed: HashSet<&str> = UNDOCUMENTED.iter().copied().collect();
 
-    let new: Vec<&str> = missing.iter().copied().filter(|n| !allowed.contains(n)).collect();
+    let new: Vec<&str> = missing
+        .iter()
+        .copied()
+        .filter(|n| !allowed.contains(n))
+        .collect();
     assert!(
         new.is_empty(),
         "{} builtin(s) have no entry in docs/04-stdlib-and-builtins.md: {:?}\n\
@@ -281,16 +416,22 @@ fn documentation_debt_only_shrinks() {
     );
 
     let missing_set: HashSet<&str> = missing.iter().copied().collect();
-    let now_documented: Vec<&str> =
-        UNDOCUMENTED.iter().copied().filter(|n| !missing_set.contains(n)).collect();
+    let now_documented: Vec<&str> = UNDOCUMENTED
+        .iter()
+        .copied()
+        .filter(|n| !missing_set.contains(n))
+        .collect();
     assert!(
         now_documented.is_empty(),
         "{:?} are documented now - remove them from UNDOCUMENTED so the debt cannot grow back.",
         now_documented
     );
 
-    let stale: Vec<&str> =
-        UNDOCUMENTED.iter().copied().filter(|n| lookup(n).is_none()).collect();
+    let stale: Vec<&str> = UNDOCUMENTED
+        .iter()
+        .copied()
+        .filter(|n| lookup(n).is_none())
+        .collect();
     assert!(stale.is_empty(), "UNDOCUMENTED names no builtin: {stale:?}");
 }
 
@@ -304,13 +445,25 @@ fn documented_arity_matches_the_table() {
     let mut wrong = Vec::new();
     let mut checked = 0;
     for b in TABLE.iter().filter(|b| b.kind.is_aurora_visible()) {
-        let (Some(want), Some(&n)) = (b.arity(), doc_arity.get(b.name)) else { continue };
+        let (Some(want), Some(&n)) = (b.arity(), doc_arity.get(b.name)) else {
+            continue;
+        };
         checked += 1;
         if n != want {
-            wrong.push(format!("{} documented with {n} args, table has {want}", b.name));
+            wrong.push(format!(
+                "{} documented with {n} args, table has {want}",
+                b.name
+            ));
         }
     }
-    assert!(wrong.is_empty(), "docs/04-stdlib-and-builtins.md disagrees with the table:\n{}", wrong.join("\n"));
+    assert!(
+        wrong.is_empty(),
+        "docs/04-stdlib-and-builtins.md disagrees with the table:\n{}",
+        wrong.join("\n")
+    );
     // A parser that silently stopped matching would pass vacuously.
-    assert!(checked > 100, "only {checked} builtins had a documented argument list");
+    assert!(
+        checked > 100,
+        "only {checked} builtins had a documented argument list"
+    );
 }

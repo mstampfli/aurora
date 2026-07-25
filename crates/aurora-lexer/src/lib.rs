@@ -34,7 +34,12 @@ struct Lexer<'a> {
 
 impl<'a> Lexer<'a> {
     fn new(src: &'a str) -> Lexer<'a> {
-        Lexer { src, pos: 0, tokens: Vec::new(), diags: Vec::new() }
+        Lexer {
+            src,
+            pos: 0,
+            tokens: Vec::new(),
+            diags: Vec::new(),
+        }
     }
 
     // --- cursor primitives ---------------------------------------------------
@@ -74,8 +79,11 @@ impl<'a> Lexer<'a> {
     }
 
     fn error(&mut self, span: Span, msg: impl Into<String>, label: impl Into<String>) {
-        self.diags
-            .push(Diagnostic::error(msg).with_code("E0001").primary(span, label));
+        self.diags.push(
+            Diagnostic::error(msg)
+                .with_code("E0001")
+                .primary(span, label),
+        );
     }
 
     // --- driver --------------------------------------------------------------
@@ -107,10 +115,17 @@ impl<'a> Lexer<'a> {
                 self.lex_symbol(c)
             };
 
-            self.tokens.push(Token { kind, span: self.span_from(start), nl_before });
+            self.tokens.push(Token {
+                kind,
+                span: self.span_from(start),
+                nl_before,
+            });
         }
 
-        LexResult { tokens: self.tokens, diagnostics: self.diags }
+        LexResult {
+            tokens: self.tokens,
+            diagnostics: self.diags,
+        }
     }
 
     /// Skip whitespace and comments (line `//`, `///`, and nestable block `/* */`).
@@ -199,7 +214,9 @@ impl<'a> Lexer<'a> {
         }
 
         let num_start = self.pos;
-        let mut text = self.eat_while(|c| c.is_ascii_digit() || c == '_').to_string();
+        let mut text = self
+            .eat_while(|c| c.is_ascii_digit() || c == '_')
+            .to_string();
         let mut is_float = false;
 
         // Fractional part: only if `.` is followed by a digit (so `1..2` and
@@ -246,13 +263,21 @@ impl<'a> Lexer<'a> {
         let clean: String = digits.chars().filter(|&c| c != '_').collect();
         if clean.is_empty() {
             let span = self.span_from(start);
-            self.error(span, "missing digits in numeric literal", "expected one or more digits");
+            self.error(
+                span,
+                "missing digits in numeric literal",
+                "expected one or more digits",
+            );
         }
         let suffix = match self.eat_suffix() {
             Some(Suffix::Int(it)) => Some(it),
             Some(Suffix::Float(_)) => {
                 let span = self.span_from(start);
-                self.error(span, "float suffix on an integer literal", "use an integer suffix");
+                self.error(
+                    span,
+                    "float suffix on an integer literal",
+                    "use an integer suffix",
+                );
                 None
             }
             None => None,
@@ -260,7 +285,13 @@ impl<'a> Lexer<'a> {
         self.make_int(&clean, radix, suffix, start)
     }
 
-    fn make_int(&mut self, clean: &str, radix: u32, suffix: Option<IntTy>, start: usize) -> TokenKind {
+    fn make_int(
+        &mut self,
+        clean: &str,
+        radix: u32,
+        suffix: Option<IntTy>,
+        start: usize,
+    ) -> TokenKind {
         let value = u128::from_str_radix(if clean.is_empty() { "0" } else { clean }, radix)
             .unwrap_or_else(|_| {
                 let span = self.span_from(start);
@@ -341,7 +372,11 @@ impl<'a> Lexer<'a> {
                 Some('"') => break,
                 None => {
                     let span = self.span_from(start);
-                    self.error(span, "unterminated raw string literal", "raw string starts here");
+                    self.error(
+                        span,
+                        "unterminated raw string literal",
+                        "raw string starts here",
+                    );
                     break;
                 }
                 Some(c) => value.push(c),
@@ -363,7 +398,11 @@ impl<'a> Lexer<'a> {
             Some(c) => c,
             None => {
                 let span = self.span_from(start);
-                self.error(span, "unterminated character literal", "expected a character");
+                self.error(
+                    span,
+                    "unterminated character literal",
+                    "expected a character",
+                );
                 return TokenKind::Char('\u{FFFD}');
             }
         };
@@ -371,7 +410,11 @@ impl<'a> Lexer<'a> {
             self.bump();
         } else {
             let span = self.span_from(start);
-            self.error(span, "unterminated character literal", "expected closing `'`");
+            self.error(
+                span,
+                "unterminated character literal",
+                "expected closing `'`",
+            );
         }
         TokenKind::Char(value)
     }
@@ -396,7 +439,11 @@ impl<'a> Lexer<'a> {
                             Some(byte) if byte <= 0x7F => Some(byte as char),
                             _ => {
                                 let span = self.span_from(lit_start);
-                                self.error(span, "invalid `\\x` escape", "expected two hex digits 00-7F");
+                                self.error(
+                                    span,
+                                    "invalid `\\x` escape",
+                                    "expected two hex digits 00-7F",
+                                );
                                 None
                             }
                         }
@@ -420,7 +467,9 @@ impl<'a> Lexer<'a> {
                 if ok {
                     self.bump();
                 }
-                let parsed = u32::from_str_radix(hex.trim(), 16).ok().and_then(char::from_u32);
+                let parsed = u32::from_str_radix(hex.trim(), 16)
+                    .ok()
+                    .and_then(char::from_u32);
                 match (ok, parsed) {
                     (true, Some(c)) => Some(c),
                     _ => {
@@ -433,7 +482,11 @@ impl<'a> Lexer<'a> {
             other => {
                 let span = self.span_from(lit_start);
                 let shown = other.map(|c| c.to_string()).unwrap_or_default();
-                self.error(span, format!("unknown escape `\\{shown}`"), "not a valid escape");
+                self.error(
+                    span,
+                    format!("unknown escape `\\{shown}`"),
+                    "not a valid escape",
+                );
                 other
             }
         }

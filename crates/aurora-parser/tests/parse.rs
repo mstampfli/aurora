@@ -7,8 +7,15 @@ use aurora_parser::parse_str;
 /// Parse, asserting no error diagnostics, and return the module.
 fn ok(src: &str) -> Module {
     let (module, diags) = parse_str(src);
-    let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).map(|d| &d.message).collect();
-    assert!(errors.is_empty(), "unexpected errors parsing {src:?}: {errors:?}");
+    let errors: Vec<_> = diags
+        .iter()
+        .filter(|d| d.is_error())
+        .map(|d| &d.message)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "unexpected errors parsing {src:?}: {errors:?}"
+    );
     module
 }
 
@@ -30,7 +37,9 @@ fn empty_module() {
 #[test]
 fn function_with_params_and_return() {
     let m = ok("fn add(a: i32, b: i32) -> i32 { a + b }");
-    let ItemKind::Fn(f) = &m.items[0].kind else { panic!() };
+    let ItemKind::Fn(f) = &m.items[0].kind else {
+        panic!()
+    };
     assert_eq!(f.name.name, "add");
     assert_eq!(f.params.len(), 2);
     assert!(f.ret.is_some());
@@ -40,8 +49,12 @@ fn function_with_params_and_return() {
 #[test]
 fn struct_with_default_and_attrs() {
     let m = ok("component Spinner { @interp speed: f32 = 1.0, label: str }");
-    let ItemKind::Component(s) = &m.items[0].kind else { panic!() };
-    let StructBody::Named(fields) = &s.body else { panic!() };
+    let ItemKind::Component(s) = &m.items[0].kind else {
+        panic!()
+    };
+    let StructBody::Named(fields) = &s.body else {
+        panic!()
+    };
     assert_eq!(fields.len(), 2);
     assert_eq!(fields[0].name.name, "speed");
     assert_eq!(fields[0].attrs[0].name.name, "interp");
@@ -65,12 +78,12 @@ fn replicated_component_attribute_args() {
 
 #[test]
 fn system_with_query_and_schedule() {
-    let m = ok(
-        "system mv(dt: Time) stage(Update) after(spin) {
+    let m = ok("system mv(dt: Time) stage(Update) after(spin) {
             for (a, e) in query<&mut Avatar, Entity> where owns(e) { a.x = 1 }
-         }",
-    );
-    let ItemKind::System(s) = &m.items[0].kind else { panic!() };
+         }");
+    let ItemKind::System(s) = &m.items[0].kind else {
+        panic!()
+    };
     assert_eq!(s.name.name, "mv");
     assert_eq!(s.schedule.len(), 2);
     assert!(matches!(s.schedule[0], SysSched::Stage(_)));
@@ -122,10 +135,14 @@ fn method_chain_and_turbofish() {
     // hit.get_mut::<Avatar>().health
     let e = expr("hit.get_mut::<Avatar>().health");
     // Outermost is a field access `.health`.
-    let ExprKind::Field { base, field } = e.kind else { panic!("expected field") };
+    let ExprKind::Field { base, field } = e.kind else {
+        panic!("expected field")
+    };
     assert!(matches!(field, FieldAccess::Named(ref i) if i.name == "health"));
     // Its base is a turbofish call.
-    let ExprKind::Call { type_args, .. } = base.kind else { panic!("expected call") };
+    let ExprKind::Call { type_args, .. } = base.kind else {
+        panic!("expected call")
+    };
     assert_eq!(type_args.len(), 1);
 }
 
@@ -133,11 +150,21 @@ fn method_chain_and_turbofish() {
 fn struct_literal_vs_block_in_condition() {
     // In `if cond { ... }`, the `{` is the block, not a struct literal.
     let m = ok("fn f() { if player { return } }");
-    let ItemKind::Fn(f) = &m.items[0].kind else { panic!() };
+    let ItemKind::Fn(f) = &m.items[0].kind else {
+        panic!()
+    };
     // The `if` is the block's tail expression; its cond is a plain path, not a
     // struct literal (the `{` was read as the block).
-    let tail = f.body.as_ref().unwrap().tail.as_ref().expect("expected tail if-expr");
-    let ExprKind::If(ifx) = &tail.kind else { panic!("expected if") };
+    let tail = f
+        .body
+        .as_ref()
+        .unwrap()
+        .tail
+        .as_ref()
+        .expect("expected tail if-expr");
+    let ExprKind::If(ifx) = &tail.kind else {
+        panic!("expected if")
+    };
     assert!(matches!(ifx.cond.kind, ExprKind::Path(_)));
 }
 
@@ -145,28 +172,36 @@ fn struct_literal_vs_block_in_condition() {
 fn struct_literal_allowed_in_call_args() {
     // Inside parens, struct literals ARE allowed.
     let e = expr("spawn(Spinner { speed: 1.5 })");
-    let ExprKind::Call { args, .. } = e.kind else { panic!() };
+    let ExprKind::Call { args, .. } = e.kind else {
+        panic!()
+    };
     assert!(matches!(args[0].value.kind, ExprKind::Struct { .. }));
 }
 
 #[test]
 fn use_group_and_alias() {
     let m = ok("use engine::{App, Camera, load}\nuse math::Vec3 as V3");
-    let ItemKind::Use(u0) = &m.items[0].kind else { panic!() };
+    let ItemKind::Use(u0) = &m.items[0].kind else {
+        panic!()
+    };
     assert!(matches!(&u0.kind, UseKind::Group(names) if names.len() == 3));
-    let ItemKind::Use(u1) = &m.items[1].kind else { panic!() };
+    let ItemKind::Use(u1) = &m.items[1].kind else {
+        panic!()
+    };
     assert!(matches!(&u1.kind, UseKind::Single(Some(a)) if a.name == "V3"));
 }
 
 #[test]
 fn trait_and_impl() {
-    let m = ok(
-        "trait Drawable { fn draw(&self) }
-         impl Drawable for Sprite { fn draw(&self) { render(self) } }",
-    );
-    let ItemKind::Trait(t) = &m.items[0].kind else { panic!() };
+    let m = ok("trait Drawable { fn draw(&self) }
+         impl Drawable for Sprite { fn draw(&self) { render(self) } }");
+    let ItemKind::Trait(t) = &m.items[0].kind else {
+        panic!()
+    };
     assert_eq!(t.items.len(), 1);
-    let ItemKind::Impl(i) = &m.items[1].kind else { panic!() };
+    let ItemKind::Impl(i) = &m.items[1].kind else {
+        panic!()
+    };
     assert!(i.trait_.is_some());
     assert_eq!(i.items.len(), 1);
 }
@@ -174,16 +209,26 @@ fn trait_and_impl() {
 #[test]
 fn region_and_owned_types() {
     let m = ok("fn f() { let bullets = #frame make() }");
-    let ItemKind::Fn(f) = &m.items[0].kind else { panic!() };
-    let Stmt::Let(l) = &f.body.as_ref().unwrap().stmts[0] else { panic!() };
-    assert!(matches!(l.init.as_ref().unwrap().kind, ExprKind::Region { .. }));
+    let ItemKind::Fn(f) = &m.items[0].kind else {
+        panic!()
+    };
+    let Stmt::Let(l) = &f.body.as_ref().unwrap().stmts[0] else {
+        panic!()
+    };
+    assert!(matches!(
+        l.init.as_ref().unwrap().kind,
+        ExprKind::Region { .. }
+    ));
 }
 
 #[test]
 fn error_recovery_continues_after_bad_item() {
     // A broken item should not swallow the following good one.
     let (module, diags) = parse_str("fn good1() {}\n@@@ junk\nfn good2() {}");
-    assert!(diags.iter().any(|d| d.is_error()), "expected at least one error");
+    assert!(
+        diags.iter().any(|d| d.is_error()),
+        "expected at least one error"
+    );
     let fn_names: Vec<_> = module
         .items
         .iter()
@@ -225,7 +270,9 @@ fn block_statements_need_no_separator_before_a_tail() {
     // A block-form statement (`if {…}`) is self-delimiting, so a tail
     // expression may follow on the same line without a `;`.
     let m = ok("fn f(x: i64) -> i64 { if x < 0 { return 0 - x } x }");
-    let ItemKind::Fn(f) = &m.items[0].kind else { panic!() };
+    let ItemKind::Fn(f) = &m.items[0].kind else {
+        panic!()
+    };
     let body = f.body.as_ref().unwrap();
     assert_eq!(body.stmts.len(), 1, "the `if` is a statement");
     assert!(body.tail.is_some(), "`x` is the block tail");
@@ -235,8 +282,12 @@ fn block_statements_need_no_separator_before_a_tail() {
 fn region_annotated_parameter_type_parses() {
     // `#perm T` on a parameter parses as a region-annotated type wrapping `T`.
     let m = ok("fn keep(t: #perm Thing) {}");
-    let ItemKind::Fn(f) = &m.items[0].kind else { panic!() };
-    let Param::Normal { ty, .. } = &f.params[0] else { panic!() };
+    let ItemKind::Fn(f) = &m.items[0].kind else {
+        panic!()
+    };
+    let Param::Normal { ty, .. } = &f.params[0] else {
+        panic!()
+    };
     let TypeKind::Region(region, inner) = &ty.kind else {
         panic!("expected a region-annotated type, got {:?}", ty.kind)
     };
@@ -252,16 +303,24 @@ fn deeply_nested_input_errors_instead_of_crashing() {
     std::thread::Builder::new()
         .stack_size(64 * 1024 * 1024)
         .spawn(|| {
-            let deep_expr = format!("fn main() {{ let x = {}1{} }}", "(".repeat(4000), ")".repeat(4000));
+            let deep_expr = format!(
+                "fn main() {{ let x = {}1{} }}",
+                "(".repeat(4000),
+                ")".repeat(4000)
+            );
             let (_, diags) = parse_str(&deep_expr);
             assert!(
-                diags.iter().any(|d| d.is_error() && d.message.contains("nests too deeply")),
+                diags
+                    .iter()
+                    .any(|d| d.is_error() && d.message.contains("nests too deeply")),
                 "expected a depth-limit diagnostic for deeply nested parens"
             );
             let deep_ty = format!("fn f(x: {}i32{}) {{}}", "[".repeat(4000), "]".repeat(4000));
             let (_, diags) = parse_str(&deep_ty);
             assert!(
-                diags.iter().any(|d| d.is_error() && d.message.contains("nests too deeply")),
+                diags
+                    .iter()
+                    .any(|d| d.is_error() && d.message.contains("nests too deeply")),
                 "expected a depth-limit diagnostic for deeply nested types"
             );
         })

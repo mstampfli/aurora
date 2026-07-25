@@ -74,7 +74,12 @@ pub(crate) fn check_regions(module: &Module, diags: &mut Vec<Diagnostic>) {
             _ => {}
         }
     }
-    let mut chk = RegionChk { diags, scopes: Vec::new(), fn_regions, fn_param_cons };
+    let mut chk = RegionChk {
+        diags,
+        scopes: Vec::new(),
+        fn_regions,
+        fn_param_cons,
+    };
     for item in &module.items {
         match &item.kind {
             ItemKind::Fn(f) => chk.fn_body(f),
@@ -163,7 +168,9 @@ fn fixed_region_of(e: &Expr) -> Option<RegionKind> {
     match &e.kind {
         ExprKind::Region { region, .. } => Some(*region),
         ExprKind::Paren(inner) => fixed_region_of(inner),
-        ExprKind::Block(b) | ExprKind::Unsafe(b) => b.tail.as_ref().and_then(|t| fixed_region_of(t)),
+        ExprKind::Block(b) | ExprKind::Unsafe(b) => {
+            b.tail.as_ref().and_then(|t| fixed_region_of(t))
+        }
         _ => None,
     }
 }
@@ -212,7 +219,12 @@ fn param_index(e: &Expr, params: &[String]) -> Option<usize> {
 }
 
 // Record that `value` (if a bare parameter) is stored into region `enclosing`.
-fn note_store(value: &Expr, enclosing: Option<RegionKind>, params: &[String], cons: &mut [Option<RegionKind>]) {
+fn note_store(
+    value: &Expr,
+    enclosing: Option<RegionKind>,
+    params: &[String],
+    cons: &mut [Option<RegionKind>],
+) {
     if let (Some(idx), Some(r)) = (param_index(value, params), enclosing) {
         let keep = matches!(cons[idx], Some(p) if rank(p) >= rank(r));
         if !keep {
@@ -221,7 +233,12 @@ fn note_store(value: &Expr, enclosing: Option<RegionKind>, params: &[String], co
     }
 }
 
-fn cons_block(b: &Block, enclosing: Option<RegionKind>, params: &[String], cons: &mut [Option<RegionKind>]) {
+fn cons_block(
+    b: &Block,
+    enclosing: Option<RegionKind>,
+    params: &[String],
+    cons: &mut [Option<RegionKind>],
+) {
     for stmt in &b.stmts {
         match stmt {
             Stmt::Let(l) => {
@@ -237,7 +254,12 @@ fn cons_block(b: &Block, enclosing: Option<RegionKind>, params: &[String], cons:
     }
 }
 
-fn cons_expr(e: &Expr, enclosing: Option<RegionKind>, params: &[String], cons: &mut [Option<RegionKind>]) {
+fn cons_expr(
+    e: &Expr,
+    enclosing: Option<RegionKind>,
+    params: &[String],
+    cons: &mut [Option<RegionKind>],
+) {
     match &e.kind {
         ExprKind::Region { region, value } => cons_expr(value, Some(*region), params, cons),
         ExprKind::Struct { fields, base, .. } => {
@@ -399,7 +421,9 @@ impl RegionChk<'_> {
             // A call carries its callee's inferred return region: either a fixed
             // region, or the region of the corresponding argument.
             ExprKind::Call { callee, args, .. } => {
-                let ExprKind::Path(p) = &callee.kind else { return None };
+                let ExprKind::Path(p) = &callee.kind else {
+                    return None;
+                };
                 if p.segments.len() != 1 {
                     return None;
                 }
@@ -419,13 +443,19 @@ impl RegionChk<'_> {
     /// At a call site, reject an argument that doesn't outlive the region the
     /// callee stores it into (region-parameterized signature inference, §8.2).
     fn check_call_args(&mut self, callee: &Expr, args: &[aurora_ast::Arg]) {
-        let ExprKind::Path(p) = &callee.kind else { return };
+        let ExprKind::Path(p) = &callee.kind else {
+            return;
+        };
         if p.segments.len() != 1 {
             return;
         }
-        let Some(cons) = self.fn_param_cons.get(&p.segments[0].ident.name).cloned() else { return };
+        let Some(cons) = self.fn_param_cons.get(&p.segments[0].ident.name).cloned() else {
+            return;
+        };
         for (i, a) in args.iter().enumerate() {
-            let Some(Some(need)) = cons.get(i).copied() else { continue };
+            let Some(Some(need)) = cons.get(i).copied() else {
+                continue;
+            };
             if let Some((arg_reg, arg_span)) = self.region_of(&a.value) {
                 if rank(arg_reg) < rank(need) {
                     self.diags.push(

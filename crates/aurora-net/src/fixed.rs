@@ -59,7 +59,11 @@ pub struct FVec3 {
 }
 
 impl FVec3 {
-    pub const ZERO: FVec3 = FVec3 { x: Fixed::ZERO, y: Fixed::ZERO, z: Fixed::ZERO };
+    pub const ZERO: FVec3 = FVec3 {
+        x: Fixed::ZERO,
+        y: Fixed::ZERO,
+        z: Fixed::ZERO,
+    };
 
     pub fn new(x: Fixed, y: Fixed, z: Fixed) -> FVec3 {
         FVec3 { x, y, z }

@@ -20,9 +20,17 @@ pub enum Value {
     /// An ECS entity handle.
     Entity(u64),
     /// A closure: parameter names, body, and a snapshot of captured bindings.
-    Closure { params: Vec<String>, body: Box<Expr>, env: BTreeMap<String, Value> },
+    Closure {
+        params: Vec<String>,
+        body: Box<Expr>,
+        env: BTreeMap<String, Value>,
+    },
     /// An enum value: `enum_name::variant` with its payload.
-    Enum { enm: String, variant: String, payload: Payload },
+    Enum {
+        enm: String,
+        variant: String,
+        payload: Payload,
+    },
 }
 
 /// The data carried by an enum variant.
@@ -108,7 +116,11 @@ impl fmt::Display for Value {
             }
             Value::Entity(id) => write!(f, "Entity#{id}"),
             Value::Closure { params, .. } => write!(f, "<closure/{}>", params.len()),
-            Value::Enum { enm, variant, payload } => {
+            Value::Enum {
+                enm,
+                variant,
+                payload,
+            } => {
                 write!(f, "{enm}::{variant}")?;
                 match payload {
                     Payload::Unit => Ok(()),

@@ -27,7 +27,10 @@ fn errors(src: &str) -> Vec<String> {
 #[test]
 fn let_annotation_mismatch_is_caught() {
     let errs = errors("fn f() { let x: bool = 1 }");
-    assert!(errs.iter().any(|e| e.contains("let binding")), "got {errs:?}");
+    assert!(
+        errs.iter().any(|e| e.contains("let binding")),
+        "got {errs:?}"
+    );
 }
 
 #[test]
@@ -40,7 +43,10 @@ fn matching_let_annotation_is_ok() {
 #[test]
 fn wrong_return_type_is_caught() {
     let errs = errors("fn f() -> bool { 1 }");
-    assert!(errs.iter().any(|e| e.contains("return value")), "got {errs:?}");
+    assert!(
+        errs.iter().any(|e| e.contains("return value")),
+        "got {errs:?}"
+    );
 }
 
 #[test]
@@ -52,14 +58,20 @@ fn correct_return_type_is_ok() {
 fn mixed_scalar_arithmetic_is_caught() {
     // i32 + f32 with both operands known is a real error.
     let errs = errors("fn f() { let a: i32 = 1\n let b: f32 = 2.0\n let c = a + b }");
-    assert!(errs.iter().any(|e| e.contains("arithmetic")), "got {errs:?}");
+    assert!(
+        errs.iter().any(|e| e.contains("arithmetic")),
+        "got {errs:?}"
+    );
 }
 
 #[test]
 fn vector_scalar_arithmetic_is_allowed() {
     // Vec3 * f32 is overloaded algebra, not an error.
     let errs = errors("fn f(v: Vec3) { let s: f32 = 2.0\n let r = v * s }");
-    assert!(errs.is_empty(), "vector*scalar should be allowed, got {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "vector*scalar should be allowed, got {errs:?}"
+    );
 }
 
 #[test]
@@ -75,7 +87,10 @@ fn unknown_names_do_not_false_positive() {
             app.run()
          }",
     );
-    assert!(errs.is_empty(), "externs must not false-positive, got {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "externs must not false-positive, got {errs:?}"
+    );
 }
 
 #[test]
@@ -90,7 +105,10 @@ fn function_argument_mismatch_is_caught() {
 #[test]
 fn if_branches_must_agree_when_known() {
     let errs = errors("fn f() { let x = if cond() { 1 } else { true } }");
-    assert!(errs.iter().any(|e| e.contains("if branches")), "got {errs:?}");
+    assert!(
+        errs.iter().any(|e| e.contains("if branches")),
+        "got {errs:?}"
+    );
 }
 
 #[test]
@@ -99,7 +117,10 @@ fn struct_field_type_checked_for_local_type() {
         "struct P { x: f32, y: f32 }
          fn f() { let p = P { x: true, y: 2.0 } }",
     );
-    assert!(errs.iter().any(|e| e.contains("struct field")), "got {errs:?}");
+    assert!(
+        errs.iter().any(|e| e.contains("struct field")),
+        "got {errs:?}"
+    );
 }
 
 #[test]
@@ -111,7 +132,10 @@ fn user_struct_shadows_builtin_name() {
          fn id(v: Vec3) -> Vec3 { v }
          fn f() { let a = Vec3 { x: 1, y: 2 }\n let b = id(a) }",
     );
-    assert!(errs.is_empty(), "user Vec3 should shadow the builtin, got {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "user Vec3 should shadow the builtin, got {errs:?}"
+    );
 }
 
 #[test]
@@ -120,7 +144,10 @@ fn missing_required_field_is_caught() {
         "struct P { x: f32, y: f32 }
          fn f() { let p = P { x: 1.0 } }", // y missing, no default
     );
-    assert!(errs.iter().any(|e| e.contains("missing field `y`")), "got {errs:?}");
+    assert!(
+        errs.iter().any(|e| e.contains("missing field `y`")),
+        "got {errs:?}"
+    );
 }
 
 #[test]
@@ -130,7 +157,10 @@ fn field_with_default_may_be_omitted() {
         "component Spinner { speed: f32 = 1.0, name: str }
          fn f() { let s = Spinner { name: \"x\" } }",
     );
-    assert!(errs.is_empty(), "defaulted field omission must be ok, got {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "defaulted field omission must be ok, got {errs:?}"
+    );
 }
 
 #[test]
@@ -139,7 +169,10 @@ fn base_spread_satisfies_missing_fields() {
         "struct P { x: f32, y: f32 }
          fn f(orig: P) { let p = P { x: 1.0, ..orig } }",
     );
-    assert!(errs.is_empty(), "..base should cover the rest, got {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "..base should cover the rest, got {errs:?}"
+    );
 }
 
 #[test]
@@ -148,7 +181,10 @@ fn unknown_struct_field_is_caught() {
         "struct P { x: f32 }
          fn f() { let p = P { x: 1.0, z: 2.0 } }",
     );
-    assert!(errs.iter().any(|e| e.contains("no field `z`")), "got {errs:?}");
+    assert!(
+        errs.iter().any(|e| e.contains("no field `z`")),
+        "got {errs:?}"
+    );
 }
 
 #[test]
@@ -195,7 +231,8 @@ fn unsatisfied_trait_bound_is_caught() {
          fn f() { yell(Rock { w: 1 }) }",
     );
     assert!(
-        errs.iter().any(|e| e.contains("does not implement trait `Speaker`")),
+        errs.iter()
+            .any(|e| e.contains("does not implement trait `Speaker`")),
         "Rock lacks Speaker, got {errs:?}"
     );
 }
@@ -250,7 +287,10 @@ fn runtime_builtins_are_not_unknown_functions() {
             par_for(r, |i| i)
          }",
     );
-    assert!(errs.is_empty(), "a builtin was reported as unknown, got {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "a builtin was reported as unknown, got {errs:?}"
+    );
 }
 
 /// A bodiless `@extern` import is a declaration, not a definition: it still
@@ -258,14 +298,20 @@ fn runtime_builtins_are_not_unknown_functions() {
 #[test]
 fn an_extern_import_resolves() {
     let errs = errors("@extern fn hypot(x: f64, y: f64) -> f64\nfn f() -> f64 { hypot(3.0, 4.0) }");
-    assert!(errs.is_empty(), "an `@extern` import was reported as unknown, got {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "an `@extern` import was reported as unknown, got {errs:?}"
+    );
 }
 
 /// A local holding a closure is a legitimate callee that is not a `fn` item.
 #[test]
 fn a_local_closure_is_a_legitimate_callee() {
     let errs = errors("fn main() { let f = |x: i64| x + 1\n println(str(f(2))) }");
-    assert!(errs.is_empty(), "calling a local closure was reported, got {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "calling a local closure was reported, got {errs:?}"
+    );
 }
 
 /// A shader stage is GPU code: its intrinsics and bound globals have no CPU
@@ -273,10 +319,15 @@ fn a_local_closure_is_a_legitimate_callee() {
 #[test]
 fn shader_stage_intrinsics_are_not_unknown_functions() {
     let errs = errors("@fragment fn shade() -> Color { vec4(0.9, 0.2, 0.5, 1.0) }");
-    assert!(errs.is_empty(), "a shader intrinsic was reported as unknown, got {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "a shader intrinsic was reported as unknown, got {errs:?}"
+    );
     // ...and leaving the stage re-arms the check.
-    let errs = errors("@fragment fn shade() -> Color { vec4(1.0, 1.0, 1.0, 1.0) }\n\
-                       fn main() { println(str(nope(1))) }");
+    let errs = errors(
+        "@fragment fn shade() -> Color { vec4(1.0, 1.0, 1.0, 1.0) }\n\
+                       fn main() { println(str(nope(1))) }",
+    );
     assert!(
         errs.iter().any(|e| e.contains("`nope`")),
         "the check must resume after a shader stage, got {errs:?}"
@@ -287,5 +338,8 @@ fn shader_stage_intrinsics_are_not_unknown_functions() {
 #[test]
 fn a_used_import_is_not_an_unknown_function() {
     let errs = errors("use engine::spawn_actor\nfn main() { spawn_actor(1) }");
-    assert!(errs.is_empty(), "a `use`d name was reported as unknown, got {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "a `use`d name was reported as unknown, got {errs:?}"
+    );
 }

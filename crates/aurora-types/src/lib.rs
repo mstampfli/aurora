@@ -36,7 +36,10 @@ pub enum Ty {
     /// A nominal type: struct, enum, or component, referenced by name.
     Named(String),
     Tuple(Vec<Ty>),
-    Ref { mutable: bool, inner: Box<Ty> },
+    Ref {
+        mutable: bool,
+        inner: Box<Ty>,
+    },
     Owned(Box<Ty>),
     Rc(Box<Ty>),
     Array(Box<Ty>, Option<u64>),
@@ -52,7 +55,10 @@ impl Ty {
         Ty::Unit
     }
     pub fn reference(mutable: bool, inner: Ty) -> Ty {
-        Ty::Ref { mutable, inner: Box::new(inner) }
+        Ty::Ref {
+            mutable,
+            inner: Box::new(inner),
+        }
     }
 
     /// A short human-facing rendering for diagnostics.
@@ -136,9 +142,10 @@ impl InferCtx {
         let shallow = self.resolve_shallow(ty);
         match shallow {
             Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| self.resolve_deep(t)).collect()),
-            Ty::Ref { mutable, inner } => {
-                Ty::Ref { mutable, inner: Box::new(self.resolve_deep(&inner)) }
-            }
+            Ty::Ref { mutable, inner } => Ty::Ref {
+                mutable,
+                inner: Box::new(self.resolve_deep(&inner)),
+            },
             Ty::Owned(t) => Ty::Owned(Box::new(self.resolve_deep(&t))),
             Ty::Rc(t) => Ty::Rc(Box::new(self.resolve_deep(&t))),
             Ty::Array(t, n) => Ty::Array(Box::new(self.resolve_deep(&t)), n),
@@ -188,8 +195,14 @@ impl InferCtx {
                 Ok(())
             }
             (
-                Ty::Ref { mutable: m1, inner: i1 },
-                Ty::Ref { mutable: m2, inner: i2 },
+                Ty::Ref {
+                    mutable: m1,
+                    inner: i1,
+                },
+                Ty::Ref {
+                    mutable: m2,
+                    inner: i2,
+                },
             ) if m1 == m2 => self.unify(i1, i2),
             (Ty::Owned(x), Ty::Owned(y)) | (Ty::Rc(x), Ty::Rc(y)) => self.unify(x, y),
             (Ty::Array(x, n1), Ty::Array(y, n2)) if n1 == n2 => self.unify(x, y),

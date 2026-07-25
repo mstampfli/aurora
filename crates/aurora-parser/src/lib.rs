@@ -66,7 +66,13 @@ impl Parser {
             let at = tokens.last().map(|t| t.span.hi).unwrap_or(0);
             tokens.push(Token::new(TokenKind::Eof, Span::new(at, at)));
         }
-        Parser { tokens, pos: 0, diags: Vec::new(), restrict_struct: false, depth: 0 }
+        Parser {
+            tokens,
+            pos: 0,
+            diags: Vec::new(),
+            restrict_struct: false,
+            depth: 0,
+        }
     }
 
     // --- cursor --------------------------------------------------------------
@@ -183,7 +189,10 @@ impl Parser {
             _ => {
                 self.err_expected("an identifier");
                 let span = self.cur_span();
-                Ident { name: "<error>".into(), span }
+                Ident {
+                    name: "<error>".into(),
+                    span,
+                }
             }
         }
     }
@@ -191,14 +200,21 @@ impl Parser {
     // --- diagnostics & recovery ----------------------------------------------
 
     fn error(&mut self, span: Span, msg: impl Into<String>, label: impl Into<String>) {
-        self.diags
-            .push(Diagnostic::error(msg).with_code("E0100").primary(span, label));
+        self.diags.push(
+            Diagnostic::error(msg)
+                .with_code("E0100")
+                .primary(span, label),
+        );
     }
 
     fn err_expected(&mut self, what: &str) {
         let found = self.kind().describe();
         let span = self.cur_span();
-        self.error(span, format!("expected {what}, found {found}"), format!("expected {what}"));
+        self.error(
+            span,
+            format!("expected {what}, found {found}"),
+            format!("expected {what}"),
+        );
     }
 
     /// Skip tokens until a likely synchronization point: a top-level item
@@ -220,8 +236,19 @@ impl Parser {
         use Keyword::*;
         matches!(
             self.kind(),
-            TokenKind::Kw(Fn | Struct | Enum | Component | System | Trait | Impl | Pipeline
-                | Use | Mod | Pub | Comptime)
+            TokenKind::Kw(
+                Fn | Struct
+                    | Enum
+                    | Component
+                    | System
+                    | Trait
+                    | Impl
+                    | Pipeline
+                    | Use
+                    | Mod
+                    | Pub
+                    | Comptime
+            )
         ) || matches!(self.kind(), TokenKind::At)
     }
 

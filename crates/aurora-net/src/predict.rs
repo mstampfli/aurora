@@ -56,7 +56,11 @@ impl<'a> Predictor<'a> {
 
     /// Run `step(state, input)` once via the interpreter.
     fn apply(&self, state: i128, input: i128) -> i128 {
-        match call_fn(self.module, &self.step, vec![Value::Int(state), Value::Int(input)]) {
+        match call_fn(
+            self.module,
+            &self.step,
+            vec![Value::Int(state), Value::Int(input)],
+        ) {
             Ok(Value::Int(n)) => n,
             _ => state, // non-int / error: leave unchanged (lenient)
         }
@@ -66,7 +70,11 @@ impl<'a> Predictor<'a> {
     pub fn predict(&mut self, input: i128) -> i128 {
         self.tick += 1;
         let next = self.apply(self.state, input);
-        self.history.push(Frame { tick: self.tick, input, predicted: next });
+        self.history.push(Frame {
+            tick: self.tick,
+            input,
+            predicted: next,
+        });
         self.state = next;
         next
     }
@@ -82,7 +90,11 @@ impl<'a> Predictor<'a> {
             return false;
         }
         self.last_acked = confirmed_tick;
-        let predicted_at = self.history.iter().find(|f| f.tick == confirmed_tick).map(|f| f.predicted);
+        let predicted_at = self
+            .history
+            .iter()
+            .find(|f| f.tick == confirmed_tick)
+            .map(|f| f.predicted);
 
         let mispredicted = predicted_at != Some(authoritative);
 
@@ -91,13 +103,17 @@ impl<'a> Predictor<'a> {
             // (tick > confirmed_tick) through the SAME step function.
             let mut s = authoritative;
             for f in self.history.iter_mut().filter(|f| f.tick > confirmed_tick) {
-                s = call_fn(self.module, &self.step, vec![Value::Int(s), Value::Int(f.input)])
-                    .ok()
-                    .and_then(|v| match v {
-                        Value::Int(n) => Some(n),
-                        _ => None,
-                    })
-                    .unwrap_or(s);
+                s = call_fn(
+                    self.module,
+                    &self.step,
+                    vec![Value::Int(s), Value::Int(f.input)],
+                )
+                .ok()
+                .and_then(|v| match v {
+                    Value::Int(n) => Some(n),
+                    _ => None,
+                })
+                .unwrap_or(s);
                 f.predicted = s;
             }
             self.state = s;
@@ -159,7 +175,10 @@ mod predict_tests {
         }
 
         let corrected = client.reconcile(2, 10);
-        assert!(corrected, "divergent server state must trigger a correction");
+        assert!(
+            corrected,
+            "divergent server state must trigger a correction"
+        );
         // Snap to 10, then replay the unacked tick-3 input (+3) -> 13.
         assert_eq!(client.state(), 13);
     }

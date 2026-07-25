@@ -19,8 +19,8 @@
 use std::collections::{HashMap, HashSet};
 
 use aurora_ast::{
-    BinOp, Block, Expr, ExprKind, FieldAccess, ItemKind, Module as AstModule, Pat, PatKind, Stmt, StructBody,
-    TypeKind, UnOp,
+    BinOp, Block, Expr, ExprKind, FieldAccess, ItemKind, Module as AstModule, Pat, PatKind, Stmt,
+    StructBody, TypeKind, UnOp,
 };
 use aurora_lexer::FloatTy;
 
@@ -150,9 +150,7 @@ fn from_i64_bits(b: &mut FunctionBuilder, raw: Value, cty: &Cty) -> Value {
 /// holds the closure's captures/outer variables (not the parameter itself).
 /// Returns `None` when the use doesn't pin it (caller defaults to `i64`).
 fn infer_param_cty(name: &str, e: &Expr, scope: &HashMap<String, Cty>, env: &Env) -> Option<Cty> {
-    let is_p = |x: &Expr| {
-        matches!(&x.kind, ExprKind::Path(p) if p.segments.len() == 1 && p.segments[0].ident.name == name)
-    };
+    let is_p = |x: &Expr| matches!(&x.kind, ExprKind::Path(p) if p.segments.len() == 1 && p.segments[0].ident.name == name);
     match &e.kind {
         ExprKind::Binary(_, a, c) => {
             if is_p(a) {
@@ -187,7 +185,8 @@ fn infer_param_cty(name: &str, e: &Expr, scope: &HashMap<String, Cty>, env: &Env
                     }
                 }
             }
-            args.iter().find_map(|a| infer_param_cty(name, &a.value, scope, env))
+            args.iter()
+                .find_map(|a| infer_param_cty(name, &a.value, scope, env))
         }
         ExprKind::Paren(x)
         | ExprKind::Unary(_, x)
@@ -202,19 +201,37 @@ fn infer_param_cty(name: &str, e: &Expr, scope: &HashMap<String, Cty>, env: &Env
             infer_param_cty(name, a, scope, env).or_else(|| infer_param_cty(name, c, scope, env))
         }
         ExprKind::If(ifx) => infer_param_cty(name, &ifx.cond, scope, env)
-            .or_else(|| ifx.then_branch.tail.as_ref().and_then(|t| infer_param_cty(name, t, scope, env)))
-            .or_else(|| ifx.else_branch.as_ref().and_then(|e| infer_param_cty(name, e, scope, env))),
-        ExprKind::Block(blk) | ExprKind::Unsafe(blk) | ExprKind::Loop(blk) => {
-            blk.stmts
-                .iter()
-                .find_map(|s| match s {
-                    Stmt::Expr(e) | Stmt::Defer(e) => infer_param_cty(name, e, scope, env),
-                    Stmt::Let(l) => l.init.as_ref().and_then(|e| infer_param_cty(name, e, scope, env)),
-                })
-                .or_else(|| blk.tail.as_ref().and_then(|t| infer_param_cty(name, t, scope, env)))
-        }
+            .or_else(|| {
+                ifx.then_branch
+                    .tail
+                    .as_ref()
+                    .and_then(|t| infer_param_cty(name, t, scope, env))
+            })
+            .or_else(|| {
+                ifx.else_branch
+                    .as_ref()
+                    .and_then(|e| infer_param_cty(name, e, scope, env))
+            }),
+        ExprKind::Block(blk) | ExprKind::Unsafe(blk) | ExprKind::Loop(blk) => blk
+            .stmts
+            .iter()
+            .find_map(|s| match s {
+                Stmt::Expr(e) | Stmt::Defer(e) => infer_param_cty(name, e, scope, env),
+                Stmt::Let(l) => l
+                    .init
+                    .as_ref()
+                    .and_then(|e| infer_param_cty(name, e, scope, env)),
+            })
+            .or_else(|| {
+                blk.tail
+                    .as_ref()
+                    .and_then(|t| infer_param_cty(name, t, scope, env))
+            }),
         ExprKind::Match { scrutinee, arms } => infer_param_cty(name, scrutinee, scope, env)
-            .or_else(|| arms.iter().find_map(|a| infer_param_cty(name, &a.body, scope, env))),
+            .or_else(|| {
+                arms.iter()
+                    .find_map(|a| infer_param_cty(name, &a.body, scope, env))
+            }),
         _ => None,
     }
 }
@@ -230,13 +247,17 @@ fn infer_cty(e: &Expr, scope: &HashMap<String, Cty>, env: &Env) -> Option<Cty> {
         ExprKind::Str(_) => Some(Cty::Str),
         ExprKind::Paren(x) => infer_cty(x, scope, env),
         ExprKind::Cast(_, ty) => Some(ty_to_cty(&ty.kind)),
-        ExprKind::Path(p) if p.segments.len() == 1 => {
-            scope.get(&p.segments[0].ident.name).cloned()
-        }
+        ExprKind::Path(p) if p.segments.len() == 1 => scope.get(&p.segments[0].ident.name).cloned(),
         ExprKind::Unary(_, x) => infer_cty(x, scope, env),
         ExprKind::Binary(op, a, c) => match op {
-            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
-            | BinOp::And | BinOp::Or => Some(Cty::I64),
+            BinOp::Eq
+            | BinOp::Ne
+            | BinOp::Lt
+            | BinOp::Le
+            | BinOp::Gt
+            | BinOp::Ge
+            | BinOp::And
+            | BinOp::Or => Some(Cty::I64),
             _ => match (infer_cty(a, scope, env), infer_cty(c, scope, env)) {
                 (Some(Cty::F64), _) | (_, Some(Cty::F64)) => Some(Cty::F64),
                 (Some(Cty::F32), _) | (_, Some(Cty::F32)) => Some(Cty::F32),
@@ -253,14 +274,24 @@ fn infer_cty(e: &Expr, scope: &HashMap<String, Cty>, env: &Env) -> Option<Cty> {
             }
             None
         }
-        ExprKind::Field { base, field: FieldAccess::Named(f) } => {
+        ExprKind::Field {
+            base,
+            field: FieldAccess::Named(f),
+        } => {
             if let Cty::Struct(sname) = infer_cty(base, scope, env)? {
                 let fields = env.structs.get(&sname)?;
-                return fields.iter().find(|(n, _)| n == &f.name).map(|(_, c)| c.clone());
+                return fields
+                    .iter()
+                    .find(|(n, _)| n == &f.name)
+                    .map(|(_, c)| c.clone());
             }
             None
         }
-        ExprKind::If(ifx) => ifx.then_branch.tail.as_ref().and_then(|t| infer_cty(t, scope, env)),
+        ExprKind::If(ifx) => ifx
+            .then_branch
+            .tail
+            .as_ref()
+            .and_then(|t| infer_cty(t, scope, env)),
         ExprKind::Block(blk) | ExprKind::Unsafe(blk) => {
             blk.tail.as_ref().and_then(|t| infer_cty(t, scope, env))
         }
@@ -415,7 +446,11 @@ impl Env {
             return None;
         }
         let (var_seg, enum_segs) = path.segments.split_last()?;
-        let enm = enum_segs.iter().map(|s| s.ident.name.as_str()).collect::<Vec<_>>().join("::");
+        let enm = enum_segs
+            .iter()
+            .map(|s| s.ident.name.as_str())
+            .collect::<Vec<_>>()
+            .join("::");
         let var = &var_seg.ident.name;
         let layout = self.enums.get(&enm)?;
         let idx = layout.variants.iter().position(|v| &v.name == var)?;
@@ -473,15 +508,22 @@ fn build_inner(
     let mut jmod = JITModule::new(builder);
     let module = monomorphized(module)?;
     let (env, failed) = lower(&module, &mut jmod, false, debug, profile, line_starts)?;
-    jmod.finalize_definitions().map_err(|e| format!("finalize: {e}"))?;
-    Ok(Jit { module: jmod, env, failed })
+    jmod.finalize_definitions()
+        .map_err(|e| format!("finalize: {e}"))?;
+    Ok(Jit {
+        module: jmod,
+        env,
+        failed,
+    })
 }
 
 /// Specialize generic functions for the concrete types they're called with,
 /// so the backend only sees concrete functions. (Runs after type-checking, so
 /// generic mismatches are still reported by the type checker.)
 fn monomorphized(module: &AstModule) -> Result<AstModule, String> {
-    Ok(AstModule { items: aurora_ast::monomorphize(module.items.clone())? })
+    Ok(AstModule {
+        items: aurora_ast::monomorphize(module.items.clone())?,
+    })
 }
 
 /// Byte offsets of each source line start (line 1 begins at offset 0).
@@ -707,7 +749,10 @@ fn lower(
             if let StructBody::Named(fields) = &s.body {
                 let mut layout = Vec::new();
                 for f in fields {
-                    layout.push((f.name.name.clone(), fix_enums(ty_to_cty(&f.ty.kind), &enum_names)));
+                    layout.push((
+                        f.name.name.clone(),
+                        fix_enums(ty_to_cty(&f.ty.kind), &enum_names),
+                    ));
                 }
                 structs.insert(s.name.name.clone(), layout);
             }
@@ -731,15 +776,27 @@ fn lower(
                         aurora_ast::VariantData::Struct(fs) => fs
                             .iter()
                             .map(|f| {
-                                (Some(f.name.name.clone()), fix_enums(ty_to_cty(&f.ty.kind), &enum_names))
+                                (
+                                    Some(f.name.name.clone()),
+                                    fix_enums(ty_to_cty(&f.ty.kind), &enum_names),
+                                )
                             })
                             .collect(),
                     };
-                    EnumVariant { name: v.name.name.clone(), fields }
+                    EnumVariant {
+                        name: v.name.name.clone(),
+                        fields,
+                    }
                 })
                 .collect();
             let max_arity = variants.iter().map(|v| v.fields.len()).max().unwrap_or(0);
-            enums.insert(en.name.name.clone(), EnumLayout { variants, slots: 1 + max_arity });
+            enums.insert(
+                en.name.name.clone(),
+                EnumLayout {
+                    variants,
+                    slots: 1 + max_arity,
+                },
+            );
         }
     }
 
@@ -774,15 +831,30 @@ fn lower(
         for c in &param_ctys {
             sig.params.push(AbiParam::new(c.clif(ptr_ty)));
         }
-        sig.returns
-            .push(AbiParam::new(if sret { ptr_ty } else { ret_cty.clif(ptr_ty) }));
+        sig.returns.push(AbiParam::new(if sret {
+            ptr_ty
+        } else {
+            ret_cty.clif(ptr_ty)
+        }));
         // For AOT, expose `main` as `aurora_user_main` so the entry shim wraps
         // it instead of clashing with the C runtime's `main`.
-        let sym = if aot && key == "main" { "aurora_user_main" } else { key };
+        let sym = if aot && key == "main" {
+            "aurora_user_main"
+        } else {
+            key
+        };
         let id = jmod
             .declare_function(sym, Linkage::Export, &sig)
             .map_err(|e| format!("declare `{key}`: {e}"))?;
-        fns.insert(key.to_string(), FnInfo { id, params: param_ctys, ret: ret_cty, sret });
+        fns.insert(
+            key.to_string(),
+            FnInfo {
+                id,
+                params: param_ctys,
+                ret: ret_cty,
+                sret,
+            },
+        );
         Ok(())
     };
 
@@ -803,14 +875,26 @@ fn lower(
         for c in &param_ctys {
             // Scalars pass by value; structs/arrays pass as a pointer to their
             // (C-layout-compatible) storage — `const Foo*` / buffer parameters.
-            let ct = if is_aggregate(c) { ptr_ty } else { c.clif(ptr_ty) };
+            let ct = if is_aggregate(c) {
+                ptr_ty
+            } else {
+                c.clif(ptr_ty)
+            };
             sig.params.push(AbiParam::new(ct));
         }
         sig.returns.push(AbiParam::new(ret_cty.clif(ptr_ty)));
         let id = jmod
             .declare_function(sym, Linkage::Import, &sig)
             .map_err(|e| format!("declare extern `{sym}`: {e}"))?;
-        fns.insert(key.to_string(), FnInfo { id, params: param_ctys, ret: ret_cty, sret: false });
+        fns.insert(
+            key.to_string(),
+            FnInfo {
+                id,
+                params: param_ctys,
+                ret: ret_cty,
+                sret: false,
+            },
+        );
         Ok(())
     };
 
@@ -865,16 +949,27 @@ fn lower(
                 compile_list.push((f, f.name.name.clone(), None));
             }
             ItemKind::Impl(im) => {
-                let TypeKind::Path(p) = &im.self_ty.kind else { continue };
-                let recv = p.segments.last().map(|s| s.ident.name.clone()).unwrap_or_default();
+                let TypeKind::Path(p) = &im.self_ty.kind else {
+                    continue;
+                };
+                let recv = p
+                    .segments
+                    .last()
+                    .map(|s| s.ident.name.clone())
+                    .unwrap_or_default();
                 if !structs.contains_key(&recv) && !enums.contains_key(&recv) {
                     continue; // receiver must be a known struct or enum
                 }
                 let recv_is_enum = enums.contains_key(&recv);
-                let self_cty =
-                    if recv_is_enum { Cty::Enum(recv.clone()) } else { Cty::Struct(recv.clone()) };
+                let self_cty = if recv_is_enum {
+                    Cty::Enum(recv.clone())
+                } else {
+                    Cty::Struct(recv.clone())
+                };
                 for it in &im.items {
-                    let aurora_ast::AssocItem::Fn(f) = it else { continue };
+                    let aurora_ast::AssocItem::Fn(f) = it else {
+                        continue;
+                    };
                     if !matches!(f.params.first(), Some(aurora_ast::Param::SelfParam { .. }))
                         || f.body.is_none()
                     {
@@ -906,8 +1001,16 @@ fn lower(
     for item in &module.items {
         if let ItemKind::Impl(im) = &item.kind {
             if let (Some(tr), TypeKind::Path(p)) = (&im.trait_, &im.self_ty.kind) {
-                let trait_name = tr.segments.last().map(|s| s.ident.name.clone()).unwrap_or_default();
-                let ty = p.segments.last().map(|s| s.ident.name.clone()).unwrap_or_default();
+                let trait_name = tr
+                    .segments
+                    .last()
+                    .map(|s| s.ident.name.clone())
+                    .unwrap_or_default();
+                let ty = p
+                    .segments
+                    .last()
+                    .map(|s| s.ident.name.clone())
+                    .unwrap_or_default();
                 trait_types.entry(trait_name).or_default().push(ty);
             }
         }
@@ -1019,7 +1122,8 @@ fn lower(
             failed.insert(key.clone(), e);
         }
         let id = env.fns[key].id;
-        jmod.define_function(id, &mut ctx).map_err(|e| format!("define `{key}`: {e}"))?;
+        jmod.define_function(id, &mut ctx)
+            .map_err(|e| format!("define `{key}`: {e}"))?;
         jmod.clear_context(&mut ctx);
     }
 
@@ -1035,7 +1139,8 @@ fn lower(
             failed.insert(name.clone(), e);
         }
         let id = env.fns[name].id;
-        jmod.define_function(id, &mut ctx).map_err(|e| format!("define `{name}`: {e}"))?;
+        jmod.define_function(id, &mut ctx)
+            .map_err(|e| format!("define `{name}`: {e}"))?;
         jmod.clear_context(&mut ctx);
     }
 
@@ -1050,7 +1155,8 @@ fn lower(
             failed.insert(key.clone(), e);
         }
         let id = env.fns[key].id;
-        jmod.define_function(id, &mut ctx).map_err(|e| format!("define `{key}`: {e}"))?;
+        jmod.define_function(id, &mut ctx)
+            .map_err(|e| format!("define `{key}`: {e}"))?;
         jmod.clear_context(&mut ctx);
     }
 
@@ -1065,7 +1171,8 @@ fn import(jmod: &mut dyn Module, name: &str, params: &[Type], ret: Option<Type>)
     if let Some(r) = ret {
         sig.returns.push(AbiParam::new(r));
     }
-    jmod.declare_function(name, Linkage::Import, &sig).expect("declare host import")
+    jmod.declare_function(name, Linkage::Import, &sig)
+        .expect("declare host import")
 }
 
 fn set_sig(ctx: &mut codegen::Context, jmod: &dyn Module, params: &[Cty], ret: &Cty, ptr: Type) {
@@ -1098,13 +1205,17 @@ fn compile_body(
     b.append_block_params_for_function_params(entry);
     b.switch_to_block(entry);
 
-    let mut locals = Locals { scope: HashMap::new(), sret: None, loops: Vec::new() };
+    let mut locals = Locals {
+        scope: HashMap::new(),
+        sret: None,
+        loops: Vec::new(),
+    };
     if sret {
         // Record the caller's result slot so early returns can copy into it.
         locals.sret = Some((b.block_params(entry)[0], ret_cty.clone()));
     }
     let mut pi = if sret { 1 } else { 0 }; // leading sret pointer if aggregate return
-    // Method receiver: bind `self` (a pointer to the aggregate) as first param.
+                                           // Method receiver: bind `self` (a pointer to the aggregate) as first param.
     if let Some(cty) = self_cty {
         let var = b.declare_var(cty.clif(env.ptr_ty));
         b.def_var(var, b.block_params(entry)[pi]);
@@ -1177,11 +1288,18 @@ fn compile_lambda(
     let entry = b.create_block();
     b.append_block_params_for_function_params(entry);
     b.switch_to_block(entry);
-    let mut locals = Locals { scope: HashMap::new(), sret: None, loops: Vec::new() };
+    let mut locals = Locals {
+        scope: HashMap::new(),
+        sret: None,
+        loops: Vec::new(),
+    };
     // Param 0 is the env pointer; load each captured value from it.
     let env_ptr = b.block_params(entry)[0];
     for (i, cap) in captures.iter().enumerate() {
-        let cty = sig.as_ref().map(|s| s.captures[i].clone()).unwrap_or(Cty::I64);
+        let cty = sig
+            .as_ref()
+            .map(|s| s.captures[i].clone())
+            .unwrap_or(Cty::I64);
         let raw = load_at(&mut b, env_ptr, i, types::I64);
         let v = from_i64_bits(&mut b, raw, &cty);
         let var = b.declare_var(cty.clif(env.ptr_ty));
@@ -1189,7 +1307,10 @@ fn compile_lambda(
         locals.scope.insert(cap.clone(), (var, cty));
     }
     for (i, pn) in pnames.iter().enumerate() {
-        let cty = sig.as_ref().map(|s| s.params[i].clone()).unwrap_or(Cty::I64);
+        let cty = sig
+            .as_ref()
+            .map(|s| s.params[i].clone())
+            .unwrap_or(Cty::I64);
         let raw = b.block_params(entry)[1 + i];
         let v = from_i64_bits(&mut b, raw, &cty);
         let var = b.declare_var(cty.clif(env.ptr_ty));
@@ -1222,7 +1343,11 @@ fn compile_system(
     let entry = b.create_block();
     b.switch_to_block(entry);
     b.seal_block(entry);
-    let mut locals = Locals { scope: HashMap::new(), sret: None, loops: Vec::new() };
+    let mut locals = Locals {
+        scope: HashMap::new(),
+        sret: None,
+        loops: Vec::new(),
+    };
     for pn in pnames {
         let var = b.declare_var(types::I64);
         let zero = b.ins().iconst(types::I64, 0);
@@ -1253,7 +1378,8 @@ fn stub_body(ctx: &mut codegen::Context, sret: bool, ret_cty: &Cty, ptr: Type) {
     } else if *ret_cty == Cty::F64 {
         b.ins().f64const(0.0)
     } else {
-        b.ins().iconst(if ret_cty.is_scalar() { types::I64 } else { ptr }, 0)
+        b.ins()
+            .iconst(if ret_cty.is_scalar() { types::I64 } else { ptr }, 0)
     };
     b.ins().return_(&[ret]);
     b.finalize();
@@ -1281,9 +1407,14 @@ impl Jit {
             info.ret == Cty::F64 && info.params.iter().all(|t| *t == Cty::F64)
         };
         if !ok {
-            return Err(format!("`{name}` is not callable through this entry helper"));
+            return Err(format!(
+                "`{name}` is not callable through this entry helper"
+            ));
         }
-        Ok((self.module.get_finalized_function(info.id), info.params.len()))
+        Ok((
+            self.module.get_finalized_function(info.id),
+            info.params.len(),
+        ))
     }
 
     pub fn call_i64(&self, name: &str, args: &[i64]) -> Result<i64, String> {
@@ -1376,11 +1507,13 @@ fn alloc(b: &mut FunctionBuilder, env: &Env, slots: usize) -> Value {
 }
 
 fn store_at(b: &mut FunctionBuilder, ptr: Value, index: usize, v: Value) {
-    b.ins().store(MemFlags::new(), v, ptr, (index as i32) * SLOT as i32);
+    b.ins()
+        .store(MemFlags::new(), v, ptr, (index as i32) * SLOT as i32);
 }
 
 fn load_at(b: &mut FunctionBuilder, ptr: Value, index: usize, ty: Type) -> Value {
-    b.ins().load(ty, MemFlags::new(), ptr, (index as i32) * SLOT as i32)
+    b.ins()
+        .load(ty, MemFlags::new(), ptr, (index as i32) * SLOT as i32)
 }
 
 fn store_b(b: &mut FunctionBuilder, ptr: Value, off: u32, v: Value) {
@@ -1466,7 +1599,14 @@ fn emit_dbg_stmt(m: &mut dyn Module, b: &mut FunctionBuilder, env: &Env, line: u
 /// Report a local `name` of type `cty` (value `val`) to the debugger. Scalars
 /// are reported directly; aggregates are reported leaf-by-leaf with dotted /
 /// indexed names (`v.x`, `t.0`, `a[2]`), so floats and nested data are visible.
-fn emit_dbg_value(m: &mut dyn Module, b: &mut FunctionBuilder, env: &Env, name: &str, val: Value, cty: &Cty) {
+fn emit_dbg_value(
+    m: &mut dyn Module,
+    b: &mut FunctionBuilder,
+    env: &Env,
+    name: &str,
+    val: Value,
+    cty: &Cty,
+) {
     if !env.debug {
         return;
     }
@@ -1478,7 +1618,11 @@ fn emit_dbg_value(m: &mut dyn Module, b: &mut FunctionBuilder, env: &Env, name: 
             }
         }
         Cty::F32 | Cty::F64 => {
-            let v = if *cty == Cty::F32 { b.ins().fpromote(types::F64, val) } else { val };
+            let v = if *cty == Cty::F32 {
+                b.ins().fpromote(types::F64, val)
+            } else {
+                val
+            };
             if let Ok((ptr, len)) = emit_str_data(m, b, env, name) {
                 let f = m.declare_func_in_func(env.hosts["dbg_var_f64"], b.func);
                 b.ins().call(f, &[ptr, len, v]);
@@ -1503,7 +1647,15 @@ fn emit_dbg_value(m: &mut dyn Module, b: &mut FunctionBuilder, env: &Env, name: 
         Cty::Array(elem, n) => {
             let stride = byte_size(env, elem);
             for idx in 0..*n {
-                emit_dbg_field(m, b, env, &format!("{name}[{idx}]"), val, idx as u32 * stride, elem);
+                emit_dbg_field(
+                    m,
+                    b,
+                    env,
+                    &format!("{name}[{idx}]"),
+                    val,
+                    idx as u32 * stride,
+                    elem,
+                );
             }
         }
         // Report an enum's active variant tag (slot 0) as an integer.
@@ -1529,7 +1681,15 @@ fn emit_dbg_value(m: &mut dyn Module, b: &mut FunctionBuilder, env: &Env, name: 
 }
 
 /// Report one field/element at byte offset `off` from aggregate pointer `base`.
-fn emit_dbg_field(m: &mut dyn Module, b: &mut FunctionBuilder, env: &Env, name: &str, base: Value, off: u32, cty: &Cty) {
+fn emit_dbg_field(
+    m: &mut dyn Module,
+    b: &mut FunctionBuilder,
+    env: &Env,
+    name: &str,
+    base: Value,
+    off: u32,
+    cty: &Cty,
+) {
     if cty.is_scalar() {
         let v = load_b(b, base, off, cty.clif(env.ptr_ty));
         emit_dbg_value(m, b, env, name, v, cty);
@@ -1664,7 +1824,11 @@ fn tr_stmt_if(
     let (cond, _) = val(m, b, l, env, &ifx.cond)?;
     let then_b = b.create_block();
     let cont_b = b.create_block();
-    let else_b = if ifx.else_branch.is_some() { Some(b.create_block()) } else { None };
+    let else_b = if ifx.else_branch.is_some() {
+        Some(b.create_block())
+    } else {
+        None
+    };
     let false_target = else_b.unwrap_or(cont_b);
     b.ins().brif(cond, then_b, &[], false_target, &[]);
 
@@ -1735,7 +1899,11 @@ fn tr_expr(
         }
         ExprKind::Paren(inner) => return tr_expr(m, b, l, env, inner),
         ExprKind::SelfExpr => {
-            let (var, cty) = l.scope.get("self").cloned().ok_or("`self` not bound in JIT")?;
+            let (var, cty) = l
+                .scope
+                .get("self")
+                .cloned()
+                .ok_or("`self` not bound in JIT")?;
             (b.use_var(var), cty)
         }
         ExprKind::Path(p) if p.is_single() => {
@@ -1751,8 +1919,12 @@ fn tr_expr(
             // Enum unit-variant `Enum::Variant`, or a const reached through a
             // module path (`m::NAME`) from outside that module.
             let Some((enm, idx)) = env.enum_variant(p) else {
-                let joined =
-                    p.segments.iter().map(|s| s.ident.name.as_str()).collect::<Vec<_>>().join("::");
+                let joined = p
+                    .segments
+                    .iter()
+                    .map(|s| s.ident.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join("::");
                 if env.consts.contains_key(&joined) {
                     return tr_const(m, b, l, env, &joined);
                 }
@@ -1767,7 +1939,11 @@ fn tr_expr(
         ExprKind::Closure { params, body } => {
             // The closure was lambda-lifted. Build an env holding captured values,
             // then a [fn_ptr, env_ptr] closure pair; yield a pointer to it.
-            let name = env.closures.get(&e.span).ok_or("closure not lifted (JIT)")?.clone();
+            let name = env
+                .closures
+                .get(&e.span)
+                .ok_or("closure not lifted (JIT)")?
+                .clone();
             let captures = env.lambda_captures.get(&name).cloned().unwrap_or_default();
             let arity = env.fns[&name].params.len().saturating_sub(1); // minus env param
             let id = env.fns[&name].id;
@@ -1790,16 +1966,21 @@ fn tr_expr(
             // how the body uses the parameter (e.g. `|x| x * scale` ⇒ `x: f64`
             // when `scale` is an f64 capture). Falls back to `i64` when the use
             // doesn't pin it — same as before, so never a miscompile.
-            let outer_scope: HashMap<String, Cty> =
-                l.scope.iter().map(|(k, (_, c))| (k.clone(), c.clone())).collect();
+            let outer_scope: HashMap<String, Cty> = l
+                .scope
+                .iter()
+                .map(|(k, (_, c))| (k.clone(), c.clone()))
+                .collect();
             let param_ctys: Vec<Cty> = params
                 .iter()
                 .filter_map(|p| match p {
-                    aurora_ast::Param::Normal { name, ty, .. } => Some(if matches!(ty.kind, TypeKind::Infer) {
-                        infer_param_cty(&name.name, body, &outer_scope, env).unwrap_or(Cty::I64)
-                    } else {
-                        ty_to_cty(&ty.kind)
-                    }),
+                    aurora_ast::Param::Normal { name, ty, .. } => {
+                        Some(if matches!(ty.kind, TypeKind::Infer) {
+                            infer_param_cty(&name.name, body, &outer_scope, env).unwrap_or(Cty::I64)
+                        } else {
+                            ty_to_cty(&ty.kind)
+                        })
+                    }
                     _ => None,
                 })
                 .collect();
@@ -1817,7 +1998,10 @@ fn tr_expr(
             // and captures consistently with how the call site passes them.
             env.closure_sigs.borrow_mut().insert(
                 name.clone(),
-                ClosureSig { params: param_ctys.clone(), captures: capture_ctys.clone() },
+                ClosureSig {
+                    params: param_ctys.clone(),
+                    captures: capture_ctys.clone(),
+                },
             );
 
             let env_ptr = alloc(b, env, captures.len().max(1));
@@ -1842,10 +2026,17 @@ fn tr_expr(
                 ExprKind::Call { callee, args, .. } => ((**callee).clone(), args.clone()),
                 _ => ((**func).clone(), Vec::new()),
             };
-            let mut args = vec![aurora_ast::Arg { name: None, value: (**value).clone() }];
+            let mut args = vec![aurora_ast::Arg {
+                name: None,
+                value: (**value).clone(),
+            }];
             args.extend(extra);
             let call = Expr {
-                kind: ExprKind::Call { callee: Box::new(callee), type_args: Vec::new(), args },
+                kind: ExprKind::Call {
+                    callee: Box::new(callee),
+                    type_args: Vec::new(),
+                    args,
+                },
                 span: e.span,
             };
             return tr_expr(m, b, l, env, &call);
@@ -1952,7 +2143,9 @@ fn tr_expr(
         ExprKind::Struct { path, fields, .. } => return tr_struct(m, b, l, env, path, fields),
         ExprKind::Tuple(items) => return tr_tuple(m, b, l, env, items),
         ExprKind::Array(items) => return tr_array(m, b, l, env, items),
-        ExprKind::ArrayRepeat { value, count } => return tr_array_repeat(m, b, l, env, value, count),
+        ExprKind::ArrayRepeat { value, count } => {
+            return tr_array_repeat(m, b, l, env, value, count)
+        }
         ExprKind::Field { base, field } => return tr_field(m, b, l, env, base, field),
         ExprKind::Index { base, index } => return tr_index(m, b, l, env, base, index),
         ExprKind::Return(opt) => {
@@ -1998,7 +2191,9 @@ fn tr_struct(
         let tag = b.ins().iconst(types::I64, idx as i64);
         store_at(b, ptr, 0, tag);
         for (i, (fname, _)) in var_fields.iter().enumerate() {
-            let init = fields.iter().find(|fi| Some(&fi.name.name) == fname.as_ref());
+            let init = fields
+                .iter()
+                .find(|fi| Some(&fi.name.name) == fname.as_ref());
             let v = match init.and_then(|fi| fi.value.as_ref()) {
                 Some(e) => val(m, b, l, env, e)?.0,
                 None => b.ins().iconst(types::I64, 0),
@@ -2013,9 +2208,16 @@ fn tr_struct(
     // last segment dropped the module prefix, so a struct defined in one module could not be
     // constructed from another ("unknown struct").
     let name = if path.segments.len() > 1 {
-        path.segments.iter().map(|s| s.ident.name.as_str()).collect::<Vec<_>>().join("::")
+        path.segments
+            .iter()
+            .map(|s| s.ident.name.as_str())
+            .collect::<Vec<_>>()
+            .join("::")
     } else {
-        path.segments.first().map(|s| s.ident.name.clone()).unwrap_or_default()
+        path.segments
+            .first()
+            .map(|s| s.ident.name.clone())
+            .unwrap_or_default()
     };
     let layout = env
         .structs
@@ -2168,7 +2370,13 @@ fn tr_field(
 /// Emit an array bounds check: if `iv` (unsigned, so negatives wrap huge) is
 /// `>= len`, call the runtime's `aurora_oob` to print a clear panic and exit;
 /// otherwise fall through. `len` is the static array length.
-fn emit_bounds_check(m: &mut dyn Module, b: &mut FunctionBuilder, env: &Env, iv: Value, len: usize) {
+fn emit_bounds_check(
+    m: &mut dyn Module,
+    b: &mut FunctionBuilder,
+    env: &Env,
+    iv: Value,
+    len: usize,
+) {
     let n = b.ins().iconst(types::I64, len as i64);
     let oob = b.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, iv, n);
     let fail = b.create_block();
@@ -2206,7 +2414,9 @@ fn tr_index(
     let off = b.ins().imul(iv, stridev);
     let addr = b.ins().iadd(ptr, off);
     if elem.is_scalar() {
-        let v = b.ins().load(elem.clif(env.ptr_ty), MemFlags::new(), addr, 0);
+        let v = b
+            .ins()
+            .load(elem.clif(env.ptr_ty), MemFlags::new(), addr, 0);
         Ok(Term::Val(v, elem))
     } else {
         Ok(Term::Val(addr, elem)) // pointer to the element
@@ -2231,7 +2441,12 @@ fn tr_for(
     let name = binding_name(pat).ok_or("JIT for-loop needs a simple binding")?;
 
     // Integer range form.
-    if let ExprKind::Range { start: Some(s), end: Some(e), inclusive } = &iter.kind {
+    if let ExprKind::Range {
+        start: Some(s),
+        end: Some(e),
+        inclusive,
+    } = &iter.kind
+    {
         let (sv, _) = val(m, b, l, env, s)?;
         let (ev, _) = val(m, b, l, env, e)?;
         let var = b.declare_var(types::I64);
@@ -2239,7 +2454,11 @@ fn tr_for(
         l.scope.insert(name, (var, Cty::I64));
         let end_var = b.declare_var(types::I64);
         b.def_var(end_var, ev);
-        let cc = if *inclusive { IntCC::SignedLessThanOrEqual } else { IntCC::SignedLessThan };
+        let cc = if *inclusive {
+            IntCC::SignedLessThanOrEqual
+        } else {
+            IntCC::SignedLessThan
+        };
         loop_count(m, b, l, env, var, |b| b.use_var(end_var), cc, body)?;
         return Ok(Term::Val(b.ins().iconst(types::I64, 0), Cty::I64));
     }
@@ -2276,14 +2495,19 @@ fn tr_for(
     let off = b.ins().imul(i, stride);
     let addr = b.ins().iadd(ptr, off);
     let ev = if elem.is_scalar() {
-        b.ins().load(elem.clif(env.ptr_ty), MemFlags::new(), addr, 0)
+        b.ins()
+            .load(elem.clif(env.ptr_ty), MemFlags::new(), addr, 0)
     } else {
         addr
     };
     b.def_var(elem_var, ev);
     // `continue` advances the index via the step block; `break` exits.
     let cont_used = std::rc::Rc::new(std::cell::Cell::new(false));
-    l.loops.push(LoopFrame { continue_to: step, break_to: exit, cont_used: cont_used.clone() });
+    l.loops.push(LoopFrame {
+        continue_to: step,
+        break_to: exit,
+        cont_used: cont_used.clone(),
+    });
     let term = tr_block(m, b, l, env, body)?;
     l.loops.pop();
     let body_falls = matches!(term, Term::Val(..));
@@ -2448,10 +2672,10 @@ fn pattern_test(
             b.ins().jump(body, &[]);
             Ok(())
         }
-        PatKind::Path(path)
-        | PatKind::TupleStruct { path, .. }
-        | PatKind::Struct { path, .. } => {
-            let (_, idx) = env.enum_variant(path).ok_or("non-enum variant pattern in JIT match")?;
+        PatKind::Path(path) | PatKind::TupleStruct { path, .. } | PatKind::Struct { path, .. } => {
+            let (_, idx) = env
+                .enum_variant(path)
+                .ok_or("non-enum variant pattern in JIT match")?;
             let tag = load_at(b, sv, 0, types::I64);
             let want = b.ins().iconst(types::I64, idx as i64);
             let c = b.ins().icmp(IntCC::Equal, tag, want);
@@ -2499,12 +2723,17 @@ fn bind_pattern(
             }
             Ok(())
         }
-        PatKind::Struct { path, fields: fpats, .. } => {
+        PatKind::Struct {
+            path,
+            fields: fpats,
+            ..
+        } => {
             let (enm, idx) = env.enum_variant(path).ok_or("not an enum variant")?;
             let vfields = env.enums[&enm].variants[idx].fields.clone();
             for fp in fpats {
-                if let Some(pos) =
-                    vfields.iter().position(|(n, _)| n.as_deref() == Some(fp.name.name.as_str()))
+                if let Some(pos) = vfields
+                    .iter()
+                    .position(|(n, _)| n.as_deref() == Some(fp.name.name.as_str()))
                 {
                     let fcty = vfields[pos].1.clone();
                     let pv = load_at(b, sv, 1 + pos, fcty.clif(env.ptr_ty));
@@ -2545,7 +2774,10 @@ fn tr_query_loop(
 ) -> Result<Term, String> {
     use aurora_ast::QTerm;
     let comp_name_of = |p: &aurora_ast::Path| {
-        p.segments.last().map(|s| s.ident.name.clone()).unwrap_or_default()
+        p.segments
+            .last()
+            .map(|s| s.ident.name.clone())
+            .unwrap_or_default()
     };
     let mut required: Vec<String> = Vec::new();
     let mut data: Vec<Option<String>> = Vec::new(); // Some(comp) or None=Entity
@@ -2663,7 +2895,11 @@ fn loop_count(
     b.seal_block(body_b);
     // `continue` advances the counter via the step block; `break` exits.
     let cont_used = std::rc::Rc::new(std::cell::Cell::new(false));
-    l.loops.push(LoopFrame { continue_to: step, break_to: exit, cont_used: cont_used.clone() });
+    l.loops.push(LoopFrame {
+        continue_to: step,
+        break_to: exit,
+        cont_used: cont_used.clone(),
+    });
     let term = tr_block(m, b, l, env, body)?;
     l.loops.pop();
     let body_falls = matches!(term, Term::Val(..));
@@ -2718,7 +2954,9 @@ fn tr_dyn_call(
     }
     let types = env.trait_types.get(trait_name).cloned().unwrap_or_default();
     if types.is_empty() {
-        return Err(format!("no impls of trait `{trait_name}` for dynamic dispatch"));
+        return Err(format!(
+            "no impls of trait `{trait_name}` for dynamic dispatch"
+        ));
     }
     // Return type from the first impl's method (all impls share the signature).
     let ret = env
@@ -2730,7 +2968,9 @@ fn tr_dyn_call(
     let cont = b.create_block();
 
     for tn in &types {
-        let Some(key) = env.methods.get(&(tn.clone(), method.to_string())) else { continue };
+        let Some(key) = env.methods.get(&(tn.clone(), method.to_string())) else {
+            continue;
+        };
         let id = env.fns[key].id;
         let want = b.ins().iconst(types::I64, comp_id(tn));
         let is_t = b.ins().icmp(IntCC::Equal, type_id, want);
@@ -2771,7 +3011,11 @@ fn tr_call(
     args: &[aurora_ast::Arg],
 ) -> Result<Term, String> {
     // Method call `recv.method(args)` -> compiled `Type#method(self, args)`.
-    if let ExprKind::Field { base, field: FieldAccess::Named(mname) } = &callee.kind {
+    if let ExprKind::Field {
+        base,
+        field: FieldAccess::Named(mname),
+    } = &callee.kind
+    {
         let (recv, cty) = val(m, b, l, env, base)?;
         // `dyn Trait` receiver: dispatch dynamically on the runtime type id.
         if let Cty::Dyn(trait_name) = &cty {
@@ -2788,7 +3032,11 @@ fn tr_call(
             let info = &env.fns[key];
             (info.id, info.ret.clone(), info.sret)
         };
-        let sret_ptr = if sret { Some(alloc(b, env, agg_slots(env, &ret))) } else { None };
+        let sret_ptr = if sret {
+            Some(alloc(b, env, agg_slots(env, &ret)))
+        } else {
+            None
+        };
         let mut argv = Vec::new();
         if let Some(sp) = sret_ptr {
             argv.push(sp);
@@ -2824,9 +3072,16 @@ fn tr_call(
     // segments with `::` to match the flattened, mangled function name. A single
     // segment is a plain name (and the only form builtins/print take).
     let name = if p.segments.len() > 1 {
-        p.segments.iter().map(|s| s.ident.name.as_str()).collect::<Vec<_>>().join("::")
+        p.segments
+            .iter()
+            .map(|s| s.ident.name.as_str())
+            .collect::<Vec<_>>()
+            .join("::")
     } else {
-        p.segments.first().map(|s| s.ident.name.to_string()).unwrap_or_default()
+        p.segments
+            .first()
+            .map(|s| s.ident.name.to_string())
+            .unwrap_or_default()
     };
 
     if name == "print" || name == "println" {
@@ -2839,7 +3094,10 @@ fn tr_call(
     }
 
     // Builtin graphics — native calls into the host rasterizer.
-    if matches!(name.as_str(), "framebuffer" | "clear" | "pixel" | "triangle" | "fb_get") {
+    if matches!(
+        name.as_str(),
+        "framebuffer" | "clear" | "pixel" | "triangle" | "fb_get"
+    ) {
         let mut argv = Vec::with_capacity(args.len());
         for a in args {
             let (v, t) = val(m, b, l, env, &a.value)?;
@@ -2888,7 +3146,10 @@ fn tr_call(
     }
     // `file_exists(path)` / `json_parse(text)` / `json_load(path)` /
     // `r3d_capture(path)` -> i64.
-    if matches!(name.as_str(), "file_exists" | "json_parse" | "json_load" | "r3d_capture" | "audio_capture_save") {
+    if matches!(
+        name.as_str(),
+        "file_exists" | "json_parse" | "json_load" | "r3d_capture" | "audio_capture_save"
+    ) {
         let (pp, pl) = str_arg(m, b, l, env, &args[0].value)?;
         let f = m.declare_func_in_func(env.hosts[name.as_str()], b.func);
         let call = b.ins().call(f, &[pp, pl]);
@@ -3009,7 +3270,17 @@ fn tr_call(
         }
         return Ok(Term::Val(b.ins().iconst(types::I64, 0), Cty::I64));
     }
-    if matches!(name.as_str(), "load_ppm" | "load_image" | "load_font" | "play_wav" | "load_sound" | "scene_save" | "scene_load" | "r3d_load_model") {
+    if matches!(
+        name.as_str(),
+        "load_ppm"
+            | "load_image"
+            | "load_font"
+            | "play_wav"
+            | "load_sound"
+            | "scene_save"
+            | "scene_load"
+            | "r3d_load_model"
+    ) {
         let result = if let Some(a) = args.first() {
             let (ptr, len) = str_arg(m, b, l, env, &a.value)?;
             let f = m.declare_func_in_func(env.hosts[name.as_str()], b.func);
@@ -3365,7 +3636,14 @@ fn tr_call(
         let call = b.ins().call(f, &argv);
         let returns_int = matches!(
             name.as_str(),
-            "window_present" | "surface_w" | "surface_h" | "key_down" | "input_char" | "mouse_x" | "mouse_y" | "mouse_down"
+            "window_present"
+                | "surface_w"
+                | "surface_h"
+                | "key_down"
+                | "input_char"
+                | "mouse_x"
+                | "mouse_y"
+                | "mouse_down"
         );
         let result = if returns_int {
             b.inst_results(call)[0]
@@ -3474,13 +3752,24 @@ fn tr_call(
     // instruction, so these are host calls into libm. Args are coerced to f64;
     // the result is demoted back to f32 if the (first) argument was f32, so the
     // builtin is float-width-preserving like the native ones.
-    if matches!(name.as_str(), "sin" | "cos" | "tan" | "pow" | "log" | "exp" | "atan2") {
-        let want = if matches!(name.as_str(), "pow" | "atan2") { 2 } else { 1 };
+    if matches!(
+        name.as_str(),
+        "sin" | "cos" | "tan" | "pow" | "log" | "exp" | "atan2"
+    ) {
+        let want = if matches!(name.as_str(), "pow" | "atan2") {
+            2
+        } else {
+            1
+        };
         if typed.len() == want && typed.iter().all(|(_, t)| *t == Cty::F32 || *t == Cty::F64) {
             let was_f32 = typed[0].1 == Cty::F32;
             let mut argv = Vec::with_capacity(want);
             for (v, t) in &typed {
-                argv.push(if *t == Cty::F32 { b.ins().fpromote(types::F64, *v) } else { *v });
+                argv.push(if *t == Cty::F32 {
+                    b.ins().fpromote(types::F64, *v)
+                } else {
+                    *v
+                });
             }
             let f = m.declare_func_in_func(env.hosts[name.as_str()], b.func);
             let call = b.ins().call(f, &argv);
@@ -3513,7 +3802,11 @@ fn tr_call(
             }
             let out = alloc(b, env, 2);
             if t == Cty::F32 || t == Cty::F64 {
-                let v64 = if t == Cty::F32 { b.ins().fpromote(types::F64, v) } else { v };
+                let v64 = if t == Cty::F32 {
+                    b.ins().fpromote(types::F64, v)
+                } else {
+                    v
+                };
                 let f = m.declare_func_in_func(env.hosts["float_to_str"], b.func);
                 b.ins().call(f, &[out, v64]);
             } else {
@@ -3535,7 +3828,11 @@ fn tr_call(
         return Err(format!("`{name}` arity mismatch in JIT"));
     }
     // Aggregate return uses a caller-allocated sret slot (leading argument).
-    let sret_ptr = if sret { Some(alloc(b, env, agg_slots(env, &ret))) } else { None };
+    let sret_ptr = if sret {
+        Some(alloc(b, env, agg_slots(env, &ret)))
+    } else {
+        None
+    };
     let mut argv: Vec<Value> = Vec::new();
     if let Some(sp) = sret_ptr {
         argv.push(sp);
@@ -3639,7 +3936,9 @@ fn assign(
             let newv = match op {
                 None => rv,
                 Some(binop) => {
-                    let cur = b.ins().load(elem.clif(env.ptr_ty), MemFlags::new(), addr, 0);
+                    let cur = b
+                        .ins()
+                        .load(elem.clif(env.ptr_ty), MemFlags::new(), addr, 0);
                     apply_bin(b, *binop, cur, elem, rv, rt)?.0
                 }
             };
@@ -3653,9 +3952,8 @@ fn assign(
 /// Byte offset + type of a struct field or tuple element.
 fn field_offset(env: &Env, cty: &Cty, field: &FieldAccess) -> Result<(u32, Cty), String> {
     match (cty, field) {
-        (Cty::Struct(name), FieldAccess::Named(id)) => {
-            struct_field(env, name, &id.name).ok_or_else(|| format!("no field `{}` in JIT", id.name))
-        }
+        (Cty::Struct(name), FieldAccess::Named(id)) => struct_field(env, name, &id.name)
+            .ok_or_else(|| format!("no field `{}` in JIT", id.name)),
         (Cty::Tuple(tys), FieldAccess::Index(i)) => {
             let i = *i as usize;
             if i >= tys.len() {
@@ -3695,7 +3993,11 @@ fn emit_print(
                 let f = m.declare_func_in_func(env.hosts["print_str"], b.func);
                 b.ins().call(f, &[dptr, len]);
             } else if t == Cty::F32 || t == Cty::F64 {
-                let v64 = if t == Cty::F32 { b.ins().fpromote(types::F64, v) } else { v };
+                let v64 = if t == Cty::F32 {
+                    b.ins().fpromote(types::F64, v)
+                } else {
+                    v
+                };
                 let f = m.declare_func_in_func(env.hosts["print_f64"], b.func);
                 b.ins().call(f, &[v64]);
             } else {
@@ -3714,10 +4016,13 @@ fn emit_str_data(
     env: &Env,
     s: &str,
 ) -> Result<(Value, Value), String> {
-    let data_id = m.declare_anonymous_data(false, false).map_err(|e| format!("data: {e}"))?;
+    let data_id = m
+        .declare_anonymous_data(false, false)
+        .map_err(|e| format!("data: {e}"))?;
     let mut desc = DataDescription::new();
     desc.define(s.to_string().into_bytes().into_boxed_slice());
-    m.define_data(data_id, &desc).map_err(|e| format!("data: {e}"))?;
+    m.define_data(data_id, &desc)
+        .map_err(|e| format!("data: {e}"))?;
     let gv = m.declare_data_in_func(data_id, b.func);
     let ptr = b.ins().global_value(env.ptr_ty, gv);
     let len = b.ins().iconst(types::I64, s.len() as i64);
@@ -3778,7 +4083,9 @@ fn tr_binary(
         b.ins().jump(merge, &[]);
         b.switch_to_block(short_b);
         b.seal_block(short_b);
-        let short_val = b.ins().iconst(types::I64, if op == BinOp::And { 0 } else { 1 });
+        let short_val = b
+            .ins()
+            .iconst(types::I64, if op == BinOp::And { 0 } else { 1 });
         b.def_var(result, short_val);
         b.ins().jump(merge, &[]);
         b.switch_to_block(merge);
@@ -3820,7 +4127,10 @@ fn tr_binary(
         let is_float = at == Cty::F32 || at == Cty::F64;
         if is_float && op == BinOp::Rem {
             let (a64, c64) = if at == Cty::F32 {
-                (b.ins().fpromote(types::F64, av), b.ins().fpromote(types::F64, cv))
+                (
+                    b.ins().fpromote(types::F64, av),
+                    b.ins().fpromote(types::F64, cv),
+                )
             } else {
                 (av, cv)
             };
@@ -3906,7 +4216,11 @@ fn apply_bin(
     Ok((v, at))
 }
 
-fn math_builtin(b: &mut FunctionBuilder, name: &str, args: &[(Value, Cty)]) -> Option<(Value, Cty)> {
+fn math_builtin(
+    b: &mut FunctionBuilder,
+    name: &str,
+    args: &[(Value, Cty)],
+) -> Option<(Value, Cty)> {
     let is_float = |t: &Cty| *t == Cty::F32 || *t == Cty::F64;
     match (name, args) {
         ("sqrt", [(v, t)]) if is_float(t) => Some((b.ins().sqrt(*v), t.clone())),
@@ -4047,7 +4361,12 @@ fn zero_scalar(b: &mut FunctionBuilder, cty: &Cty) -> Value {
 /// AST type -> codegen type (scalars; named types become struct/agg descriptors).
 fn ty_to_cty(kind: &TypeKind) -> Cty {
     match kind {
-        TypeKind::Path(p) => match p.segments.last().map(|s| s.ident.name.as_str()).unwrap_or("") {
+        TypeKind::Path(p) => match p
+            .segments
+            .last()
+            .map(|s| s.ident.name.as_str())
+            .unwrap_or("")
+        {
             "f32" => Cty::F32,
             "f64" => Cty::F64,
             "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "bool" => Cty::I64,
@@ -4057,19 +4376,30 @@ fn ty_to_cty(kind: &TypeKind) -> Cty {
             // always unqualified, so they're matched on the last segment above.
             _ => {
                 let joined = if p.segments.len() > 1 {
-                    p.segments.iter().map(|s| s.ident.name.as_str()).collect::<Vec<_>>().join("::")
+                    p.segments
+                        .iter()
+                        .map(|s| s.ident.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join("::")
                 } else {
-                    p.segments.last().map(|s| s.ident.name.clone()).unwrap_or_default()
+                    p.segments
+                        .last()
+                        .map(|s| s.ident.name.clone())
+                        .unwrap_or_default()
                 };
                 Cty::Struct(joined)
             }
         },
-        TypeKind::Dyn(p) => {
-            Cty::Dyn(p.segments.last().map(|s| s.ident.name.clone()).unwrap_or_default())
-        }
-        TypeKind::Fn { params, ret } => {
-            Cty::Fn(params.iter().map(|t| ty_to_cty(&t.kind)).collect(), Box::new(ty_to_cty(&ret.kind)))
-        }
+        TypeKind::Dyn(p) => Cty::Dyn(
+            p.segments
+                .last()
+                .map(|s| s.ident.name.clone())
+                .unwrap_or_default(),
+        ),
+        TypeKind::Fn { params, ret } => Cty::Fn(
+            params.iter().map(|t| ty_to_cty(&t.kind)).collect(),
+            Box::new(ty_to_cty(&ret.kind)),
+        ),
         TypeKind::Tuple(ts) => Cty::Tuple(ts.iter().map(|t| ty_to_cty(&t.kind)).collect()),
         TypeKind::Array { elem, len } => {
             let n = match len.as_ref().map(|e| &e.kind) {
@@ -4129,9 +4459,10 @@ fn ffi_layout_ok(c: &Cty, structs: &HashMap<String, Vec<(String, Cty)>>) -> bool
         // `f32` leaves are allowed too: the aggregate is marshaled to C's packed
         // layout at the call site (see `marshal_to_c`).
         Cty::I64 | Cty::F64 | Cty::F32 => true,
-        Cty::Struct(n) => {
-            structs.get(n).map(|fs| fs.iter().all(|(_, t)| ffi_layout_ok(t, structs))).unwrap_or(false)
-        }
+        Cty::Struct(n) => structs
+            .get(n)
+            .map(|fs| fs.iter().all(|(_, t)| ffi_layout_ok(t, structs)))
+            .unwrap_or(false),
         Cty::Array(e, _) => ffi_layout_ok(e, structs),
         Cty::Tuple(ts) => ts.iter().all(|t| ffi_layout_ok(t, structs)),
         _ => false,
@@ -4144,9 +4475,10 @@ fn ffi_layout_ok(c: &Cty, structs: &HashMap<String, Vec<(String, Cty)>>) -> bool
 fn ffi_needs_marshal(c: &Cty, structs: &HashMap<String, Vec<(String, Cty)>>) -> bool {
     match c {
         Cty::F32 => true,
-        Cty::Struct(n) => {
-            structs.get(n).map(|fs| fs.iter().any(|(_, t)| ffi_needs_marshal(t, structs))).unwrap_or(false)
-        }
+        Cty::Struct(n) => structs
+            .get(n)
+            .map(|fs| fs.iter().any(|(_, t)| ffi_needs_marshal(t, structs)))
+            .unwrap_or(false),
         Cty::Array(e, _) => ffi_needs_marshal(e, structs),
         Cty::Tuple(ts) => ts.iter().any(|t| ffi_needs_marshal(t, structs)),
         _ => false,
@@ -4210,12 +4542,21 @@ fn flatten_ffi(
 fn marshal_to_c(b: &mut FunctionBuilder, env: &Env, aurora_ptr: Value, cty: &Cty) -> Value {
     let mut leaves = Vec::new();
     let (mut a_off, mut c_off, mut c_align) = (0u32, 0u32, 1u32);
-    flatten_ffi(cty, &env.structs, &mut a_off, &mut c_off, &mut c_align, &mut leaves);
+    flatten_ffi(
+        cty,
+        &env.structs,
+        &mut a_off,
+        &mut c_off,
+        &mut c_align,
+        &mut leaves,
+    );
     let size = align_up(c_off.max(1), c_align);
     let slot = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, 3));
     let buf = b.ins().stack_addr(env.ptr_ty, slot, 0);
     for (ao, co, lt) in leaves {
-        let v = b.ins().load(lt.clif(env.ptr_ty), MemFlags::new(), aurora_ptr, ao as i32);
+        let v = b
+            .ins()
+            .load(lt.clif(env.ptr_ty), MemFlags::new(), aurora_ptr, ao as i32);
         b.ins().store(MemFlags::new(), v, buf, co as i32);
     }
     buf

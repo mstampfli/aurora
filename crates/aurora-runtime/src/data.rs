@@ -90,7 +90,10 @@ fn env_fixed_dt() -> Option<f64> {
     use std::sync::OnceLock;
     static E: OnceLock<Option<f64>> = OnceLock::new();
     *E.get_or_init(|| {
-        std::env::var("AURORA_FIXED_DT").ok().and_then(|v| v.parse::<f64>().ok()).filter(|d| *d > 0.0)
+        std::env::var("AURORA_FIXED_DT")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .filter(|d| *d > 0.0)
     })
 }
 
@@ -168,7 +171,11 @@ pub extern "C" fn aurora_sys_argc() -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn aurora_sys_arg(out: *mut i64, i: i64) {
     let args = program_args();
-    let s = usize::try_from(i).ok().and_then(|i| args.get(i)).map(|s| s.as_str()).unwrap_or("");
+    let s = usize::try_from(i)
+        .ok()
+        .and_then(|i| args.get(i))
+        .map(|s| s.as_str())
+        .unwrap_or("");
     unsafe { crate::write_str(out, s.as_bytes().to_vec()) };
 }
 
@@ -277,7 +284,10 @@ fn child_handle(h: i64, pick: impl Fn(&Value) -> Option<&Value>) -> i64 {
             let j = j.borrow();
             match j.get((h - 1).max(0) as usize) {
                 Some(Some(JNode::Parsed { root, node })) if h > 0 => {
-                    pick(unsafe { &**node }).map(|c| JNode::Parsed { root: root.clone(), node: c })
+                    pick(unsafe { &**node }).map(|c| JNode::Parsed {
+                        root: root.clone(),
+                        node: c,
+                    })
                 }
                 Some(Some(JNode::Owned(v))) if h > 0 => pick(v).map(|c| JNode::Owned(c.clone())),
                 _ => None,
@@ -378,7 +388,11 @@ pub extern "C" fn aurora_json_num(h: i64) -> f64 {
 /// `json_int(h) -> i64` (truncates fractional numbers).
 #[no_mangle]
 pub extern "C" fn aurora_json_int(h: i64) -> i64 {
-    with_value(h, |v| v.as_i64().unwrap_or_else(|| v.as_f64().unwrap_or(0.0) as i64)).unwrap_or(0)
+    with_value(h, |v| {
+        v.as_i64()
+            .unwrap_or_else(|| v.as_f64().unwrap_or(0.0) as i64)
+    })
+    .unwrap_or(0)
 }
 
 /// `json_bool(h) -> 1|0`.
@@ -504,7 +518,13 @@ pub unsafe extern "C" fn aurora_json_set_num(h: i64, kp: *const u8, kl: i64, x: 
 /// # Safety
 /// `kp` must point to `kl` initialized bytes and `sp` to `sl`.
 #[no_mangle]
-pub unsafe extern "C" fn aurora_json_set_str(h: i64, kp: *const u8, kl: i64, sp: *const u8, sl: i64) {
+pub unsafe extern "C" fn aurora_json_set_str(
+    h: i64,
+    kp: *const u8,
+    kl: i64,
+    sp: *const u8,
+    sl: i64,
+) {
     let key = arg_str(kp, kl);
     let s = arg_str(sp, sl);
     with_owned(h, |o| {
@@ -569,7 +589,9 @@ fn num_value(x: f64) -> Value {
     if x.is_finite() && x == x.trunc() && x.abs() < 9.0e15 {
         Value::Number((x as i64).into())
     } else {
-        serde_json::Number::from_f64(x).map(Value::Number).unwrap_or(Value::Null)
+        serde_json::Number::from_f64(x)
+            .map(Value::Number)
+            .unwrap_or(Value::Null)
     }
 }
 
@@ -579,8 +601,8 @@ fn num_value(x: f64) -> Value {
 /// `out` must be valid for writes of two `i64`s.
 #[no_mangle]
 pub unsafe extern "C" fn aurora_json_to_str(out: *mut i64, h: i64) {
-    let s = with_value(h, |v| serde_json::to_string_pretty(v).unwrap_or_default())
-        .unwrap_or_default();
+    let s =
+        with_value(h, |v| serde_json::to_string_pretty(v).unwrap_or_default()).unwrap_or_default();
     unsafe { crate::write_str(out, s.into_bytes()) };
 }
 
@@ -650,7 +672,8 @@ mod tests {
         // `String`, and every length is that value's real length; `o` is a live
         // 2-slot `[i64; 2]` owned by `str_of`.
         unsafe {
-            let text = br#"{"name":"grunt","hp":40,"fast":true,"tags":["melee","dumb"],"pos":{"x":1.5}}"#;
+            let text =
+                br#"{"name":"grunt","hp":40,"fast":true,"tags":["melee","dumb"],"pos":{"x":1.5}}"#;
             let h = aurora_json_parse(text.as_ptr(), text.len() as i64);
             assert!(h > 0);
             assert_eq!(aurora_json_kind(h), 5);

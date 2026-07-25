@@ -37,7 +37,10 @@ fn schema_excludes_noreplicate_and_marks_quantize() {
     assert!(names.contains(&"health"));
     assert!(names.contains(&"ammo"));
     assert!(names.contains(&"alive"));
-    assert!(!names.contains(&"fx_timer"), "noreplicate field must be excluded");
+    assert!(
+        !names.contains(&"fx_timer"),
+        "noreplicate field must be excluded"
+    );
 
     let ammo = s.fields.iter().find(|f| f.name == "ammo").unwrap();
     assert_eq!(ammo.kind, FieldKind::Float);
@@ -104,10 +107,17 @@ fn delta_only_sends_changed_fields_and_applies() {
 
     let delta = s.delta(&baseline, &current);
     let full = s.serialize(&current);
-    assert!(delta.len() < full.len(), "delta ({}) should be smaller than full ({})", delta.len(), full.len());
+    assert!(
+        delta.len() < full.len(),
+        "delta ({}) should be smaller than full ({})",
+        delta.len(),
+        full.len()
+    );
 
     let rebuilt = s.apply_delta(&baseline, &delta).unwrap();
-    let Value::Struct(_, m) = rebuilt else { panic!() };
+    let Value::Struct(_, m) = rebuilt else {
+        panic!()
+    };
     assert_eq!(m.get("health"), Some(&Value::Float(80.0)));
     assert_eq!(m.get("ammo"), Some(&Value::Float(5.0)));
 }
@@ -117,7 +127,11 @@ fn empty_delta_when_nothing_changed() {
     let s = schema(AVATAR, "Avatar");
     let v = strukt(
         "Avatar",
-        &[("health", Value::Float(50.0)), ("ammo", Value::Float(1.0)), ("alive", Value::Bool(false))],
+        &[
+            ("health", Value::Float(50.0)),
+            ("ammo", Value::Float(1.0)),
+            ("alive", Value::Bool(false)),
+        ],
     );
     let delta = s.delta(&v, &v);
     // Just the (all-zero) dirty mask, no payload.

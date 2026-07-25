@@ -174,7 +174,7 @@ mod bit_tests {
     #[test]
     fn quaternion_smallest_three_round_trips_closely() {
         let cases = [
-            [0.0, 0.0, 0.0, 1.0],          // identity
+            [0.0, 0.0, 0.0, 1.0], // identity
             normalize([0.3, -0.5, 0.2, 0.78]),
             normalize([-0.6, 0.1, 0.7, -0.3]),
             normalize([0.5, 0.5, 0.5, 0.5]),

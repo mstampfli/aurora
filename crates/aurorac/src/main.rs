@@ -66,7 +66,10 @@ fn run_cli() -> ExitCode {
         Some("run") => {
             // First positional arg may be the file, or omitted to use the
             // manifest; everything after it belongs to the PROGRAM, not to us.
-            let explicit = args.get(1).filter(|a| !a.starts_with('-')).map(String::as_str);
+            let explicit = args
+                .get(1)
+                .filter(|a| !a.starts_with('-'))
+                .map(String::as_str);
             let rest_start = if explicit.is_some() { 2 } else { 1 };
             match resolve_entry(explicit) {
                 Ok(path) => cmd_run(&path, &args[rest_start..]),
@@ -92,7 +95,10 @@ fn run_cli() -> ExitCode {
         },
         Some("build") => {
             // First positional arg may be a file, or omitted to use the manifest.
-            let explicit = args.get(1).filter(|a| !a.starts_with('-')).map(String::as_str);
+            let explicit = args
+                .get(1)
+                .filter(|a| !a.starts_with('-'))
+                .map(String::as_str);
             let rest_start = if explicit.is_some() { 2 } else { 1 };
             match resolve_entry(explicit) {
                 Ok(path) => cmd_build(&path, &args[rest_start..]),
@@ -165,22 +171,36 @@ fn run_cli() -> ExitCode {
         Some("--help") | Some("-h") | None => {
             println!("aurorac — the Aurora compiler\n");
             println!("usage:");
-            println!("  aurorac new <name>      scaffold a new Aurora project (aurora.toml + src/)");
+            println!(
+                "  aurorac new <name>      scaffold a new Aurora project (aurora.toml + src/)"
+            );
             println!("  aurorac lex <file>      tokenize a source file");
             println!("  aurorac parse <file>    parse a source file to an AST");
             println!("  aurorac check <file>    parse and run static checks");
             println!("  aurorac run <file> [args...]  check, compile `main` to native code & run");
             println!("                          (args after the file go to the PROGRAM: sys_arg)");
-            println!("  aurorac native <file>   compile `main` to native code & run (no interpreter)");
+            println!(
+                "  aurorac native <file>   compile `main` to native code & run (no interpreter)"
+            );
             println!("  aurorac build <file> [-o <out>] compile to a standalone native executable");
             println!("  aurorac jit <file> <fn> [args]  compile a fn to native code & run");
             println!("  aurorac render <out.ppm>        render a demo scene (CPU rasterizer)");
             println!("  aurorac wgsl <file>             lower @vertex/@fragment fns to WGSL");
-            println!("  aurorac gpu <file> [-o out.ppm]  run an Aurora @fragment shader on the GPU");
-            println!("  aurorac window                  open a live real-time window (interactive demo)");
-            println!("  aurorac debug <file> [--break L] native debugger (breakpoints, step, locals)");
-            println!("  aurorac sound                   play a demo melody (synthesis + audio output)");
-            println!("  aurorac profile <file>          run with the native profiler (per-fn time)");
+            println!(
+                "  aurorac gpu <file> [-o out.ppm]  run an Aurora @fragment shader on the GPU"
+            );
+            println!(
+                "  aurorac window                  open a live real-time window (interactive demo)"
+            );
+            println!(
+                "  aurorac debug <file> [--break L] native debugger (breakpoints, step, locals)"
+            );
+            println!(
+                "  aurorac sound                   play a demo melody (synthesis + audio output)"
+            );
+            println!(
+                "  aurorac profile <file>          run with the native profiler (per-fn time)"
+            );
             println!("  aurorac watch <file>            re-run on file change (hot reload)");
             ExitCode::SUCCESS
         }
@@ -307,7 +327,9 @@ fn locate_dep(
     base: &std::path::Path,
 ) -> Result<(std::path::PathBuf, String), String> {
     let dir = if let Some(url) = spec.strip_prefix("git:") {
-        let dest = std::path::PathBuf::from("target").join("aurora-deps").join(name);
+        let dest = std::path::PathBuf::from("target")
+            .join("aurora-deps")
+            .join(name);
         if !dest.exists() {
             let _ = std::fs::create_dir_all(dest.parent().unwrap());
             let status = std::process::Command::new("git")
@@ -330,8 +352,8 @@ fn locate_dep(
         .or_else(|| manifest_value(&manifest, "entry"))
         .ok_or("dependency manifest has no `lib`/`entry`")?;
     let lib_path = dir.join(&lib);
-    let src = std::fs::read_to_string(&lib_path)
-        .map_err(|e| format!("cannot read `{lib}`: {e}"))?;
+    let src =
+        std::fs::read_to_string(&lib_path).map_err(|e| format!("cannot read `{lib}`: {e}"))?;
     // A dependency's library may itself be split across files with `mod NAME;`.
     // Loading them here means they land inside the `mod <dep> { .. }` wrapper the
     // caller adds, so they stay namespaced under the dependency.
@@ -380,7 +402,10 @@ fn report_stub_failures(failed: &std::collections::HashMap<String, String>, verb
     }
     let mut names: Vec<&String> = failed.keys().collect();
     names.sort();
-    eprintln!("error: {} function(s) failed to compile to native code:", failed.len());
+    eprintln!(
+        "error: {} function(s) failed to compile to native code:",
+        failed.len()
+    );
     for n in names {
         eprintln!("  - {n}: {}", failed[n]);
     }
@@ -466,7 +491,9 @@ fn cmd_lex(path: &str) -> ExitCode {
 }
 
 fn cmd_wgsl(path: &str) -> ExitCode {
-    let Some(src) = read_program(path) else { return ExitCode::FAILURE };
+    let Some(src) = read_program(path) else {
+        return ExitCode::FAILURE;
+    };
     let file = SourceFile::new(path, src);
     let (module, diags) = aurora_parser::parse_str(&file.src);
     if diags.iter().any(|d| d.is_error()) {
@@ -505,7 +532,9 @@ fn cmd_gpu(path: &str, rest: &[String]) -> ExitCode {
         }
     }
 
-    let Some(src) = read_program(path) else { return ExitCode::FAILURE };
+    let Some(src) = read_program(path) else {
+        return ExitCode::FAILURE;
+    };
     let file = SourceFile::new(path, src);
     let (module, diags) = aurora_parser::parse_str(&file.src);
     if diags.iter().any(|d| d.is_error()) {
@@ -524,7 +553,8 @@ fn cmd_gpu(path: &str, rest: &[String]) -> ExitCode {
     };
     let fs_wgsl = aurora_shader::lower_module(&module);
     // Fullscreen triangle, so the fragment shader covers every pixel.
-    let vs = "@vertex fn vs_main(@builtin(vertex_index) idx: u32) -> @builtin(position) vec4<f32> {\n\
+    let vs =
+        "@vertex fn vs_main(@builtin(vertex_index) idx: u32) -> @builtin(position) vec4<f32> {\n\
         var p = array<vec2<f32>, 3>(vec2(-1.0, -3.0), vec2(-1.0, 1.0), vec2(3.0, 1.0));\n\
         return vec4<f32>(p[idx], 0.0, 1.0);\n}\n";
     let wgsl = format!("{vs}\n{fs_wgsl}");
@@ -547,7 +577,10 @@ fn cmd_gpu(path: &str, rest: &[String]) -> ExitCode {
 
     // Encode RGBA8 pixels as a binary PPM (P6, dropping alpha).
     let out_path = out.unwrap_or_else(|| {
-        let stem = std::path::Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("shader");
+        let stem = std::path::Path::new(path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("shader");
         format!("{stem}.ppm")
     });
     let mut ppm = format!("P6\n{w} {h}\n255\n").into_bytes();
@@ -556,7 +589,10 @@ fn cmd_gpu(path: &str, rest: &[String]) -> ExitCode {
     }
     match std::fs::write(&out_path, &ppm) {
         Ok(()) => {
-            println!("ran `{frag}` on {} → {out_path} ({w}x{h})", gpu.adapter_name());
+            println!(
+                "ran `{frag}` on {} → {out_path} ({w}x{h})",
+                gpu.adapter_name()
+            );
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -573,7 +609,11 @@ fn cmd_render(out: &str) -> ExitCode {
     // A Gouraud-shaded triangle (per-vertex RGB).
     fb.triangle(
         [[128.0, 20.0], [20.0, 230.0], [236.0, 230.0]],
-        [Color::rgb(255, 40, 40), Color::rgb(40, 255, 40), Color::rgb(40, 40, 255)],
+        [
+            Color::rgb(255, 40, 40),
+            Color::rgb(40, 255, 40),
+            Color::rgb(40, 40, 255),
+        ],
     );
     // A white outline.
     fb.line([128.0, 20.0], [20.0, 230.0], Color::WHITE);
@@ -594,7 +634,9 @@ fn cmd_render(out: &str) -> ExitCode {
 
 fn cmd_native(path: &str, args: &[String]) -> ExitCode {
     set_program_args(path, args);
-    let Some(src) = read_program(path) else { return ExitCode::FAILURE };
+    let Some(src) = read_program(path) else {
+        return ExitCode::FAILURE;
+    };
     let file = SourceFile::new(path, aurora_std::with_std(&src));
     let (module, mut diags) = aurora_parser::parse_str(&file.src);
     diags.extend(aurora_check::check(&module));
@@ -665,8 +707,13 @@ fn cmd_build(path: &str, rest: &[String]) -> ExitCode {
         }
     }
 
-    let Some(src) = read_program(path) else { return ExitCode::FAILURE };
-    let file = SourceFile::new(path, aurora_std::with_std(&format!("{src}{}", collect_dep_sources())));
+    let Some(src) = read_program(path) else {
+        return ExitCode::FAILURE;
+    };
+    let file = SourceFile::new(
+        path,
+        aurora_std::with_std(&format!("{src}{}", collect_dep_sources())),
+    );
     let (module, mut diags) = aurora_parser::parse_str(&file.src);
     diags.extend(aurora_check::check(&module));
     diags.extend(aurora_typeck::check_types(&module));
@@ -693,7 +740,10 @@ fn cmd_build(path: &str, rest: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let stem = Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("a");
+    let stem = Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("a");
     // Workspace root, relative to this crate's manifest (crates/aurorac).
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -730,13 +780,24 @@ fn cmd_build(path: &str, rest: &[String]) -> ExitCode {
         }
     }
 
-    let exe_name = if cfg!(windows) { "aurora-exe.exe" } else { "aurora-exe" };
+    let exe_name = if cfg!(windows) {
+        "aurora-exe.exe"
+    } else {
+        "aurora-exe"
+    };
     let built = root.join("target").join("release").join(exe_name);
     let out_path = out.unwrap_or_else(|| {
-        if cfg!(windows) { format!("{stem}.exe") } else { stem.to_string() }
+        if cfg!(windows) {
+            format!("{stem}.exe")
+        } else {
+            stem.to_string()
+        }
     });
     if let Err(e) = std::fs::copy(&built, &out_path) {
-        eprintln!("build error: cannot copy {} -> {out_path}: {e}", built.display());
+        eprintln!(
+            "build error: cannot copy {} -> {out_path}: {e}",
+            built.display()
+        );
         return ExitCode::FAILURE;
     }
     println!("wrote native executable `{out_path}`");
@@ -781,7 +842,9 @@ fn cmd_debug(path: &str, rest: &[String]) -> ExitCode {
         }
     }
 
-    let Some(src) = read_program(path) else { return ExitCode::FAILURE };
+    let Some(src) = read_program(path) else {
+        return ExitCode::FAILURE;
+    };
 
     // Include the standard library, like the other execution paths.
     let src = aurora_std::with_std(&src);
@@ -808,7 +871,11 @@ fn cmd_debug(path: &str, rest: &[String]) -> ExitCode {
                 let vars = if s.vars.is_empty() {
                     "(no locals)".to_string()
                 } else {
-                    s.vars.iter().map(|(n, v)| format!("{n}={v}")).collect::<Vec<_>>().join(", ")
+                    s.vars
+                        .iter()
+                        .map(|(n, v)| format!("{n}={v}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 };
                 let frame = s.stack.last().map(String::as_str).unwrap_or("?");
                 let indent = "  ".repeat(s.stack.len().saturating_sub(1));
@@ -827,7 +894,9 @@ fn cmd_debug(path: &str, rest: &[String]) -> ExitCode {
 /// (call counts + wall-clock time), sorted by time.
 fn cmd_profile(path: &str) -> ExitCode {
     set_program_args(path, &[]);
-    let Some(src) = read_program(path) else { return ExitCode::FAILURE };
+    let Some(src) = read_program(path) else {
+        return ExitCode::FAILURE;
+    };
     let file = SourceFile::new(path, aurora_std::with_std(&src));
     let (module, mut diags) = aurora_parser::parse_str(&file.src);
     diags.extend(aurora_check::check(&module));
@@ -865,7 +934,12 @@ fn cmd_profile(path: &str) -> ExitCode {
     println!("\n=== profile (by total time) ===");
     println!("{:>10}  {:>14}  function", "calls", "total (µs)");
     for r in rows {
-        println!("{:>10}  {:>14.3}  {}", r.calls, r.nanos as f64 / 1000.0, r.func);
+        println!(
+            "{:>10}  {:>14.3}  {}",
+            r.calls,
+            r.nanos as f64 / 1000.0,
+            r.func
+        );
     }
     ExitCode::SUCCESS
 }
@@ -886,7 +960,10 @@ fn cmd_watch(path: &str) -> ExitCode {
             // Run in a child process so a crash doesn't kill the watcher, and so
             // the program's `process::exit` doesn't end the loop.
             let exe = std::env::current_exe().unwrap_or_else(|_| "aurorac".into());
-            let _ = std::process::Command::new(exe).arg("run").arg(path).status();
+            let _ = std::process::Command::new(exe)
+                .arg("run")
+                .arg(path)
+                .status();
         }
         std::thread::sleep(Duration::from_millis(300));
     }
@@ -903,7 +980,9 @@ fn cmd_jit(path: &str, rest: &[String]) -> ExitCode {
     let raw = &rest[1..];
     let is_float = raw.iter().any(|a| a.contains('.'));
 
-    let Some(src) = read_program(path) else { return ExitCode::FAILURE };
+    let Some(src) = read_program(path) else {
+        return ExitCode::FAILURE;
+    };
     let file = SourceFile::new(path, src);
     let (module, diags) = aurora_parser::parse_str(&file.src);
     if diags.iter().any(|d| d.is_error()) {
@@ -915,12 +994,20 @@ fn cmd_jit(path: &str, rest: &[String]) -> ExitCode {
 
     // Float entries take/return f64; integer entries take/return i64.
     let result = if is_float {
-        match raw.iter().map(|a| a.parse::<f64>()).collect::<Result<Vec<_>, _>>() {
+        match raw
+            .iter()
+            .map(|a| a.parse::<f64>())
+            .collect::<Result<Vec<_>, _>>()
+        {
             Ok(args) => aurora_codegen::jit_call_f64(&module, func, &args).map(|r| r.to_string()),
             Err(_) => Err("jit arguments must be numbers".into()),
         }
     } else {
-        match raw.iter().map(|a| a.parse::<i64>()).collect::<Result<Vec<_>, _>>() {
+        match raw
+            .iter()
+            .map(|a| a.parse::<i64>())
+            .collect::<Result<Vec<_>, _>>()
+        {
             Ok(args) => aurora_codegen::jit_call(&module, func, &args).map(|r| r.to_string()),
             Err(_) => Err("jit arguments must be integers".into()),
         }
@@ -940,7 +1027,9 @@ fn cmd_jit(path: &str, rest: &[String]) -> ExitCode {
 
 fn cmd_run(path: &str, args: &[String]) -> ExitCode {
     set_program_args(path, args);
-    let Some(src) = read_program(path) else { return ExitCode::FAILURE };
+    let Some(src) = read_program(path) else {
+        return ExitCode::FAILURE;
+    };
     let deps = collect_dep_sources();
     let file = SourceFile::new(path, aurora_std::with_std(&format!("{src}{deps}")));
     let (module, mut diags) = aurora_parser::parse_str(&file.src);
@@ -994,7 +1083,9 @@ fn cmd_run(path: &str, args: &[String]) -> ExitCode {
 }
 
 fn cmd_check(path: &str) -> ExitCode {
-    let Some(src) = read_program(path) else { return ExitCode::FAILURE };
+    let Some(src) = read_program(path) else {
+        return ExitCode::FAILURE;
+    };
     // Check exactly the program `run` and `build` compile: the user's source,
     // its dependencies, and the standard prelude. Checking a different program
     // than the one that runs is how `check` could pass a call to `lerp` in one
@@ -1014,7 +1105,11 @@ fn cmd_check(path: &str) -> ExitCode {
         // The prelude is appended after the user's source, so an item that
         // starts beyond the boundary belongs to the standard library. Report the
         // user's item count: that number is about their program.
-        let items = module.items.iter().filter(|it| it.span.lo < boundary).count();
+        let items = module
+            .items
+            .iter()
+            .filter(|it| it.span.lo < boundary)
+            .count();
         println!("ok: checked {items} item(s), no errors");
         ExitCode::SUCCESS
     } else {
@@ -1024,7 +1119,9 @@ fn cmd_check(path: &str) -> ExitCode {
 }
 
 fn cmd_parse(path: &str) -> ExitCode {
-    let Some(src) = read_program(path) else { return ExitCode::FAILURE };
+    let Some(src) = read_program(path) else {
+        return ExitCode::FAILURE;
+    };
     let file = SourceFile::new(path, src);
     let (module, diags) = aurora_parser::parse_str(&file.src);
 

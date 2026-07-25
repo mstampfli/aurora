@@ -50,7 +50,11 @@ pub struct LagComp {
 
 impl LagComp {
     pub fn new(window: u64) -> LagComp {
-        LagComp { window, latest_tick: 0, hist: HashMap::new() }
+        LagComp {
+            window,
+            latest_tick: 0,
+            hist: HashMap::new(),
+        }
     }
 
     /// Record an entity's collider position for `tick`. `half_h` is the capsule
@@ -58,7 +62,12 @@ impl LagComp {
     pub fn record(&mut self, tick: u64, entity: u64, pos: V3, radius: f32, half_h: f32) {
         self.latest_tick = self.latest_tick.max(tick);
         let ring = self.hist.entry(entity).or_default();
-        ring.push(Snapshot { tick, pos, radius, half_h });
+        ring.push(Snapshot {
+            tick,
+            pos,
+            radius,
+            half_h,
+        });
         // Evict snapshots older than the retention window.
         let cutoff = self.latest_tick.saturating_sub(self.window);
         ring.retain(|s| s.tick >= cutoff);
@@ -72,7 +81,10 @@ impl LagComp {
 
     fn snapshot_at(&self, entity: u64, tick: u64) -> Option<Snapshot> {
         let ring = self.hist.get(&entity)?;
-        ring.iter().filter(|s| s.tick <= tick).max_by_key(|s| s.tick).copied()
+        ring.iter()
+            .filter(|s| s.tick <= tick)
+            .max_by_key(|s| s.tick)
+            .copied()
     }
 
     /// Cast a ray from `origin` along (normalized) `dir`, rewinding all colliders
@@ -211,7 +223,9 @@ mod lag_tests {
         let mut lag = LagComp::new(64);
         lag.record(0, 1, [0.0, 0.0, 5.0], 1.0, 0.0);
         lag.record(0, 2, [0.0, 0.0, 20.0], 1.0, 0.0);
-        let hit = lag.raycast_at_tick([0.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0, 99).unwrap();
+        let hit = lag
+            .raycast_at_tick([0.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0, 99)
+            .unwrap();
         assert_eq!(hit.entity, 1); // the closer one
     }
 
@@ -234,7 +248,10 @@ mod lag_tests {
 
         // Side graze at x=0.8, flying +Z past the target: misses the 0.6-wide capsule.
         let graze = lag.raycast_at_tick([0.8, 0.9, -5.0], [0.0, 0.0, 1.0], 0, 99);
-        assert!(graze.is_none(), "a 0.8 m side graze must miss the 0.6 capsule");
+        assert!(
+            graze.is_none(),
+            "a 0.8 m side graze must miss the 0.6 capsule"
+        );
 
         // Dead-centre torso shot: hits.
         let torso = lag.raycast_at_tick([0.0, 0.9, -5.0], [0.0, 0.0, 1.0], 0, 99);

@@ -77,18 +77,29 @@ type MovedSnapshot = HashMap<String, Option<Span>>;
 
 impl<'d> MoveChk<'d> {
     fn new(diags: &'d mut Vec<Diagnostic>) -> MoveChk<'d> {
-        MoveChk { vars: HashMap::new(), diags, loop_depth: 0 }
+        MoveChk {
+            vars: HashMap::new(),
+            diags,
+            loop_depth: 0,
+        }
     }
 
     fn declare(&mut self, name: &str, owned: bool) {
         self.vars.insert(
             name.to_string(),
-            VarInfo { owned, moved: None, decl_loop_depth: self.loop_depth },
+            VarInfo {
+                owned,
+                moved: None,
+                decl_loop_depth: self.loop_depth,
+            },
         );
     }
 
     fn snapshot(&self) -> MovedSnapshot {
-        self.vars.iter().map(|(k, v)| (k.clone(), v.moved)).collect()
+        self.vars
+            .iter()
+            .map(|(k, v)| (k.clone(), v.moved))
+            .collect()
     }
 
     fn restore(&mut self, snap: &MovedSnapshot) {
@@ -115,12 +126,11 @@ impl<'d> MoveChk<'d> {
                     if let Some(init) = &l.init {
                         self.expr(init, Ctx::Move);
                     }
-                    let owned = l
-                        .ty
-                        .as_ref()
-                        .map(|t| is_owned_type(&t.kind))
-                        .unwrap_or(false)
-                        || l.init.as_ref().is_some_and(|e| self.produces_owned(e));
+                    let owned =
+                        l.ty.as_ref()
+                            .map(|t| is_owned_type(&t.kind))
+                            .unwrap_or(false)
+                            || l.init.as_ref().is_some_and(|e| self.produces_owned(e));
                     if let Some(name) = binding_name(&l.pat) {
                         self.declare(&name, owned);
                     }
@@ -270,7 +280,9 @@ impl<'d> MoveChk<'d> {
 
     fn use_var(&mut self, name: &str, ctx: Ctx, span: Span) {
         let loop_depth = self.loop_depth;
-        let Some(v) = self.vars.get_mut(name) else { return };
+        let Some(v) = self.vars.get_mut(name) else {
+            return;
+        };
         if !v.owned {
             return;
         }
@@ -314,9 +326,10 @@ impl<'d> MoveChk<'d> {
             ExprKind::Paren(inner) | ExprKind::Region { value: inner, .. } => {
                 self.produces_owned(inner)
             }
-            ExprKind::Path(p) if p.is_single() => {
-                self.vars.get(&p.segments[0].ident.name).is_some_and(|v| v.owned)
-            }
+            ExprKind::Path(p) if p.is_single() => self
+                .vars
+                .get(&p.segments[0].ident.name)
+                .is_some_and(|v| v.owned),
             _ => false,
         }
     }

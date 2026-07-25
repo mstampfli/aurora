@@ -62,7 +62,12 @@ fn flatten_mod(prefix: &str, items: Vec<Item>) -> Vec<Item> {
 
     // Rewrite references inside each own item, then mangle its defined name.
     for mut item in own {
-        let cx = Cx { prefix, locals: &locals, submods: &submods, bound: HashSet::new() };
+        let cx = Cx {
+            prefix,
+            locals: &locals,
+            submods: &submods,
+            bound: HashSet::new(),
+        };
         rewrite_item(&mut item, &cx);
         mangle_item(&mut item, prefix);
         flat.push(item);
@@ -86,7 +91,12 @@ impl<'a> Cx<'a> {
     fn with_bound(&self, extra: impl IntoIterator<Item = String>) -> Cx<'a> {
         let mut bound = self.bound.clone();
         bound.extend(extra);
-        Cx { prefix: self.prefix, locals: self.locals, submods: self.submods, bound }
+        Cx {
+            prefix: self.prefix,
+            locals: self.locals,
+            submods: self.submods,
+            bound,
+        }
     }
 }
 
@@ -242,8 +252,12 @@ fn rewrite_path(p: &mut aurora_ast::Path, cx: &Cx) {
             p.segments[0].ident.name = format!("{}::{}", cx.prefix, n);
         }
     } else if cx.submods.contains(&p.segments[0].ident.name) {
-        let joined =
-            p.segments.iter().map(|s| s.ident.name.as_str()).collect::<Vec<_>>().join("::");
+        let joined = p
+            .segments
+            .iter()
+            .map(|s| s.ident.name.as_str())
+            .collect::<Vec<_>>()
+            .join("::");
         p.segments[0].ident.name = format!("{}::{}", cx.prefix, joined);
         p.segments.truncate(1);
     } else if cx.locals.contains(&p.segments[0].ident.name)
@@ -335,7 +349,9 @@ fn rewrite_expr(e: &mut Expr, cx: &Cx) {
             rewrite_expr(x, cx);
             rewrite_type(t, cx);
         }
-        ExprKind::Binary(_, a, b) | ExprKind::Assign(_, a, b) | ExprKind::Index { base: a, index: b } => {
+        ExprKind::Binary(_, a, b)
+        | ExprKind::Assign(_, a, b)
+        | ExprKind::Index { base: a, index: b } => {
             rewrite_expr(a, cx);
             rewrite_expr(b, cx);
         }
@@ -343,7 +359,11 @@ fn rewrite_expr(e: &mut Expr, cx: &Cx) {
             rewrite_expr(value, cx);
             rewrite_expr(func, cx);
         }
-        ExprKind::Call { callee, type_args, args } => {
+        ExprKind::Call {
+            callee,
+            type_args,
+            args,
+        } => {
             rewrite_expr(callee, cx);
             for t in type_args {
                 rewrite_type(t, cx);
@@ -453,9 +473,13 @@ mod tests {
     /// function instead (regression: boss::pick(phase: ...) beside fn phase()).
     #[test]
     fn param_shadowing_a_module_fn_is_not_qualified() {
-        let src = "mod m {\n  fn phase(x: i64) -> i64 { x }\n  fn pick(phase: i64) -> i64 { phase }\n}";
+        let src =
+            "mod m {\n  fn phase(x: i64) -> i64 { x }\n  fn pick(phase: i64) -> i64 { phase }\n}";
         let (module, diags) = crate::parse_str(src);
-        assert!(!diags.iter().any(|d| d.is_error()), "parse errors: {diags:?}");
+        assert!(
+            !diags.iter().any(|d| d.is_error()),
+            "parse errors: {diags:?}"
+        );
         let flat = flatten_modules(module.items);
         // The body of m::pick must still reference the bare local `phase`,
         // not the qualified `m::phase`.
@@ -471,8 +495,11 @@ mod tests {
         let calls_qualified = flat2.iter().any(|it| {
             if let ItemKind::Fn(f) = &it.kind {
                 if f.name.name == "m::caller" {
-                    if let Some(ExprKind::Call { callee, .. }) =
-                        f.body.as_ref().and_then(|b| b.tail.as_ref()).map(|t| &t.kind)
+                    if let Some(ExprKind::Call { callee, .. }) = f
+                        .body
+                        .as_ref()
+                        .and_then(|b| b.tail.as_ref())
+                        .map(|t| &t.kind)
                     {
                         if let ExprKind::Path(p) = &callee.kind {
                             return p.segments[0].ident.name == "m::phase";
@@ -482,6 +509,9 @@ mod tests {
             }
             false
         });
-        assert!(calls_qualified, "a real sibling-fn call must stay qualified");
+        assert!(
+            calls_qualified,
+            "a real sibling-fn call must stay qualified"
+        );
     }
 }

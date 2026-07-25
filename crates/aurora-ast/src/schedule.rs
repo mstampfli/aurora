@@ -10,7 +10,9 @@
 
 use std::collections::BTreeSet;
 
-use crate::{Block, Expr, ExprKind, ItemKind, Module, Path, QTerm, QueryExpr, Stmt, SysSched, SystemDecl};
+use crate::{
+    Block, Expr, ExprKind, ItemKind, Module, Path, QTerm, QueryExpr, Stmt, SysSched, SystemDecl,
+};
 
 #[derive(Default)]
 struct Access {
@@ -71,8 +73,12 @@ fn ordering_of(sys: &SystemDecl) -> BTreeSet<String> {
 
 /// Two systems conflict when one writes a component the other reads or writes.
 fn conflict(a: &Access, b: &Access) -> bool {
-    a.writes.iter().any(|c| b.reads.contains(c) || b.writes.contains(c))
-        || b.writes.iter().any(|c| a.reads.contains(c) || a.writes.contains(c))
+    a.writes
+        .iter()
+        .any(|c| b.reads.contains(c) || b.writes.contains(c))
+        || b.writes
+            .iter()
+            .any(|c| a.reads.contains(c) || a.writes.contains(c))
 }
 
 /// Group the module's systems (declaration order) into ordered parallel layers.

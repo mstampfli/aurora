@@ -7,10 +7,21 @@ use std::collections::HashSet;
 /// A keyboard key Aurora games can query. A useful subset of physical keys.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Key {
-    W, A, S, D,
-    Up, Down, Left, Right,
-    Space, Enter, Escape,
-    Q, E, R, F,
+    W,
+    A,
+    S,
+    D,
+    Up,
+    Down,
+    Left,
+    Right,
+    Space,
+    Enter,
+    Escape,
+    Q,
+    E,
+    R,
+    F,
 }
 
 /// Snapshot of input for the current frame.
@@ -99,7 +110,10 @@ mod tests {
         i.set_key(Key::D, true);
         i.end_frame();
         i.set_key(Key::D, true); // OS key-repeat
-        assert!(!i.just_pressed(Key::D), "repeat must not count as a fresh press");
+        assert!(
+            !i.just_pressed(Key::D),
+            "repeat must not count as a fresh press"
+        );
     }
 
     #[test]

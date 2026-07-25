@@ -10,7 +10,11 @@ impl Parser {
         let start = self.cur_span();
         if !self.eat(&TokenKind::LBrace) {
             self.err_expected("`{`");
-            return Block { stmts: Vec::new(), tail: None, span: self.finish(start) };
+            return Block {
+                stmts: Vec::new(),
+                tail: None,
+                span: self.finish(start),
+            };
         }
         // Struct literals are allowed again inside a fresh block scope.
         let saved = self.restrict_struct;
@@ -63,7 +67,11 @@ impl Parser {
 
         self.restrict_struct = saved;
         self.expect(&TokenKind::RBrace);
-        Block { stmts, tail, span: self.finish(start) }
+        Block {
+            stmts,
+            tail,
+            span: self.finish(start),
+        }
     }
 
     fn parse_let(&mut self) -> Stmt {
@@ -80,7 +88,12 @@ impl Parser {
         } else {
             None
         };
-        Stmt::Let(LetStmt { mutable, pat, ty, init })
+        Stmt::Let(LetStmt {
+            mutable,
+            pat,
+            ty,
+            init,
+        })
     }
 
     /// Consume a statement separator: an explicit `;`, or — per the ASI rule —

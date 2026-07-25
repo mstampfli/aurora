@@ -33,7 +33,10 @@ impl Span {
     /// The smallest span covering both `self` and `other`.
     #[inline]
     pub fn to(self, other: Span) -> Span {
-        Span { lo: self.lo.min(other.lo), hi: self.hi.max(other.hi) }
+        Span {
+            lo: self.lo.min(other.lo),
+            hi: self.hi.max(other.hi),
+        }
     }
 
     #[inline]
@@ -84,7 +87,11 @@ impl SourceFile {
                 line_starts.push((i + 1) as u32);
             }
         }
-        SourceFile { name: name.into(), src, line_starts }
+        SourceFile {
+            name: name.into(),
+            src,
+            line_starts,
+        }
     }
 
     /// The text covered by `span`.
@@ -102,7 +109,10 @@ impl SourceFile {
         let line_start = self.line_starts[line_idx] as usize;
         let off = (offset as usize).min(self.src.len());
         let col = self.src[line_start..off].chars().count() as u32 + 1;
-        LineCol { line: line_idx as u32 + 1, col }
+        LineCol {
+            line: line_idx as u32 + 1,
+            col,
+        }
     }
 
     /// The text of a 1-based line, without its trailing newline.

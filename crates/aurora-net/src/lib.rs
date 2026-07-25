@@ -24,14 +24,14 @@ mod snapshot;
 mod transport;
 pub use bitpack::{read_quat, write_quat, BitReader, BitWriter};
 pub use channel::Reliable;
-pub use transport::UdpEndpoint;
-pub use fixed::{Fixed, FVec3};
-pub use lockstep::Body;
+pub use fixed::{FVec3, Fixed};
 pub use interest::{interest_delta, InterestGrid};
 pub use lagcomp::{Hit, LagComp, V3};
+pub use lockstep::Body;
 pub use predict::{server_advance, Predictor};
 pub use rng::Rng;
 pub use snapshot::InterpBuffer;
+pub use transport::UdpEndpoint;
 
 use std::collections::BTreeMap;
 
@@ -65,10 +65,17 @@ pub struct CompSchema {
 impl CompSchema {
     /// Build a schema from a `component` item, honoring `@noreplicate`/`@quantize`.
     pub fn from_item(item: &Item) -> Option<CompSchema> {
-        let ItemKind::Component(decl) = &item.kind else { return None };
-        let StructBody::Named(fields) = &decl.body else { return None };
+        let ItemKind::Component(decl) = &item.kind else {
+            return None;
+        };
+        let StructBody::Named(fields) = &decl.body else {
+            return None;
+        };
         let fields = fields.iter().filter_map(field_schema).collect();
-        Some(CompSchema { name: decl.name.name.clone(), fields })
+        Some(CompSchema {
+            name: decl.name.name.clone(),
+            fields,
+        })
     }
 
     /// Find and build the schema for the named component in a module.
@@ -164,21 +171,36 @@ fn field_schema(f: &Field) -> Option<FieldSchema> {
     if f.attrs.iter().any(|a| a.name.name == "noreplicate") {
         return None;
     }
-    let quantize = f.attrs.iter().find(|a| a.name.name == "quantize").and_then(|a| {
-        a.args.first().and_then(|arg| match arg {
-            AttrArg::Positional(e) | AttrArg::Named(_, e) => match &e.kind {
-                ExprKind::Float(v, _) => Some(*v),
-                ExprKind::Int(v, _) => Some(*v as f64),
-                _ => None,
-            },
-        })
-    });
-    Some(FieldSchema { name: f.name.name.clone(), kind: type_kind(&f.ty.kind), quantize })
+    let quantize = f
+        .attrs
+        .iter()
+        .find(|a| a.name.name == "quantize")
+        .and_then(|a| {
+            a.args.first().and_then(|arg| match arg {
+                AttrArg::Positional(e) | AttrArg::Named(_, e) => match &e.kind {
+                    ExprKind::Float(v, _) => Some(*v),
+                    ExprKind::Int(v, _) => Some(*v as f64),
+                    _ => None,
+                },
+            })
+        });
+    Some(FieldSchema {
+        name: f.name.name.clone(),
+        kind: type_kind(&f.ty.kind),
+        quantize,
+    })
 }
 
 fn type_kind(t: &TypeKind) -> FieldKind {
-    let TypeKind::Path(p) = t else { return FieldKind::Opaque };
-    match p.segments.last().map(|s| s.ident.name.as_str()).unwrap_or("") {
+    let TypeKind::Path(p) = t else {
+        return FieldKind::Opaque;
+    };
+    match p
+        .segments
+        .last()
+        .map(|s| s.ident.name.as_str())
+        .unwrap_or("")
+    {
         "bool" => FieldKind::Bool,
         "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" => FieldKind::Int,
         "f32" | "f64" => FieldKind::Float,

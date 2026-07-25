@@ -108,7 +108,11 @@ impl MeshData {
             } else {
                 tangent
             };
-            let w = if nrm.cross(tangent).dot(bit[i]) < 0.0 { -1.0 } else { 1.0 };
+            let w = if nrm.cross(tangent).dot(bit[i]) < 0.0 {
+                -1.0
+            } else {
+                1.0
+            };
             self.vertices[i].tangent = [tangent.x, tangent.y, tangent.z, w];
         }
     }
@@ -125,12 +129,60 @@ impl MeshData {
         let mut m = MeshData::default();
         // (normal, four corners ccw) per face, on the unit cube.
         let faces: [([f32; 3], [[f32; 3]; 4]); 6] = [
-            ([0.0, 0.0, 1.0], [[-1.0, -1.0, 1.0], [1.0, -1.0, 1.0], [1.0, 1.0, 1.0], [-1.0, 1.0, 1.0]]),
-            ([0.0, 0.0, -1.0], [[1.0, -1.0, -1.0], [-1.0, -1.0, -1.0], [-1.0, 1.0, -1.0], [1.0, 1.0, -1.0]]),
-            ([1.0, 0.0, 0.0], [[1.0, -1.0, 1.0], [1.0, -1.0, -1.0], [1.0, 1.0, -1.0], [1.0, 1.0, 1.0]]),
-            ([-1.0, 0.0, 0.0], [[-1.0, -1.0, -1.0], [-1.0, -1.0, 1.0], [-1.0, 1.0, 1.0], [-1.0, 1.0, -1.0]]),
-            ([0.0, 1.0, 0.0], [[-1.0, 1.0, 1.0], [1.0, 1.0, 1.0], [1.0, 1.0, -1.0], [-1.0, 1.0, -1.0]]),
-            ([0.0, -1.0, 0.0], [[-1.0, -1.0, -1.0], [1.0, -1.0, -1.0], [1.0, -1.0, 1.0], [-1.0, -1.0, 1.0]]),
+            (
+                [0.0, 0.0, 1.0],
+                [
+                    [-1.0, -1.0, 1.0],
+                    [1.0, -1.0, 1.0],
+                    [1.0, 1.0, 1.0],
+                    [-1.0, 1.0, 1.0],
+                ],
+            ),
+            (
+                [0.0, 0.0, -1.0],
+                [
+                    [1.0, -1.0, -1.0],
+                    [-1.0, -1.0, -1.0],
+                    [-1.0, 1.0, -1.0],
+                    [1.0, 1.0, -1.0],
+                ],
+            ),
+            (
+                [1.0, 0.0, 0.0],
+                [
+                    [1.0, -1.0, 1.0],
+                    [1.0, -1.0, -1.0],
+                    [1.0, 1.0, -1.0],
+                    [1.0, 1.0, 1.0],
+                ],
+            ),
+            (
+                [-1.0, 0.0, 0.0],
+                [
+                    [-1.0, -1.0, -1.0],
+                    [-1.0, -1.0, 1.0],
+                    [-1.0, 1.0, 1.0],
+                    [-1.0, 1.0, -1.0],
+                ],
+            ),
+            (
+                [0.0, 1.0, 0.0],
+                [
+                    [-1.0, 1.0, 1.0],
+                    [1.0, 1.0, 1.0],
+                    [1.0, 1.0, -1.0],
+                    [-1.0, 1.0, -1.0],
+                ],
+            ),
+            (
+                [0.0, -1.0, 0.0],
+                [
+                    [-1.0, -1.0, -1.0],
+                    [1.0, -1.0, -1.0],
+                    [1.0, -1.0, 1.0],
+                    [-1.0, -1.0, 1.0],
+                ],
+            ),
         ];
         for (normal, corners) in faces {
             let base = m.vertices.len() as u32;
@@ -139,7 +191,8 @@ impl MeshData {
                 let p = [corner[0] * hx, corner[1] * hy, corner[2] * hz];
                 m.vertices.push(Vertex::new(p, normal, uv));
             }
-            m.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+            m.indices
+                .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
         }
         m.compute_tangents();
         m
@@ -200,10 +253,13 @@ impl MeshData {
     pub fn quad() -> MeshData {
         let n = [0.0, 0.0, 1.0];
         let mut m = MeshData::default();
-        m.vertices.push(Vertex::new([-0.5, -0.5, 0.0], n, [0.0, 1.0]));
-        m.vertices.push(Vertex::new([0.5, -0.5, 0.0], n, [1.0, 1.0]));
+        m.vertices
+            .push(Vertex::new([-0.5, -0.5, 0.0], n, [0.0, 1.0]));
+        m.vertices
+            .push(Vertex::new([0.5, -0.5, 0.0], n, [1.0, 1.0]));
         m.vertices.push(Vertex::new([0.5, 0.5, 0.0], n, [1.0, 0.0]));
-        m.vertices.push(Vertex::new([-0.5, 0.5, 0.0], n, [0.0, 0.0]));
+        m.vertices
+            .push(Vertex::new([-0.5, 0.5, 0.0], n, [0.0, 0.0]));
         m.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
         m.compute_tangents();
         m
@@ -229,6 +285,10 @@ impl GpuMesh {
             contents: bytemuck::cast_slice(&mesh.indices),
             usage: wgpu::BufferUsages::INDEX,
         });
-        GpuMesh { vbuf, ibuf, index_count: mesh.indices.len() as u32 }
+        GpuMesh {
+            vbuf,
+            ibuf,
+            index_count: mesh.indices.len() as u32,
+        }
     }
 }

@@ -28,7 +28,9 @@ pub(crate) fn check_queries_and_schedule(module: &Module, diags: &mut Vec<Diagno
     let mut systems = Vec::new();
 
     for item in &module.items {
-        let ItemKind::System(sys) = &item.kind else { continue };
+        let ItemKind::System(sys) = &item.kind else {
+            continue;
+        };
 
         // Collect every query in the system body.
         let queries = queries_in_block(&sys.body);
@@ -112,7 +114,9 @@ fn check_query_aliasing(q: &QueryExpr, diags: &mut Vec<Diagnostic>) {
             QTerm::Write(p) | QTerm::OptWrite(p) => (true, p),
             _ => continue,
         };
-        let Some(name) = comp_name(path) else { continue };
+        let Some(name) = comp_name(path) else {
+            continue;
+        };
 
         let conflict = writes.contains(&name) || (set_is_write && reads.contains(&name));
         if conflict {
@@ -122,7 +126,9 @@ fn check_query_aliasing(q: &QueryExpr, diags: &mut Vec<Diagnostic>) {
                 ))
                 .with_code("E0201")
                 .primary(path.span, "conflicting borrow here")
-                .note("a query may have any number of `&T`, or exactly one `&mut T`, per component"),
+                .note(
+                    "a query may have any number of `&T`, or exactly one `&mut T`, per component",
+                ),
             );
         }
         if set_is_write {
@@ -150,8 +156,7 @@ fn check_schedule(systems: &[SysInfo], diags: &mut Vec<Diagnostic>) {
                 continue;
             };
 
-            let ordered =
-                a.ordered_with.contains(&b.name) || b.ordered_with.contains(&a.name);
+            let ordered = a.ordered_with.contains(&b.name) || b.ordered_with.contains(&a.name);
             if ordered {
                 continue;
             }
@@ -179,6 +184,10 @@ fn conflicting_component(a: &Access, b: &Access) -> Option<String> {
     a.writes
         .iter()
         .find(|c| b.reads.contains(*c) || b.writes.contains(*c))
-        .or_else(|| b.writes.iter().find(|c| a.reads.contains(*c) || a.writes.contains(*c)))
+        .or_else(|| {
+            b.writes
+                .iter()
+                .find(|c| a.reads.contains(*c) || a.writes.contains(*c))
+        })
         .cloned()
 }

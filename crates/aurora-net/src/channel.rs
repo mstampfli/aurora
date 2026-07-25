@@ -139,6 +139,9 @@ mod channel_tests {
         }
 
         assert!(a.fully_acked(), "should converge within the round budget");
-        assert_eq!(delivered, msgs, "every message delivered exactly once, in order");
+        assert_eq!(
+            delivered, msgs,
+            "every message delivered exactly once, in order"
+        );
     }
 }

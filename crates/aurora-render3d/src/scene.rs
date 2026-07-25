@@ -69,7 +69,8 @@ impl Scene {
             clear: [0.05, 0.06, 0.09, 1.0],
         };
         s.update_camera();
-        s.renderer.set_light(Vec3::new(0.4, 1.0, 0.3), Vec3::ONE, 0.25);
+        s.renderer
+            .set_light(Vec3::new(0.4, 1.0, 0.3), Vec3::ONE, 0.25);
         s
     }
 
@@ -105,7 +106,9 @@ impl Scene {
     pub fn set_camera(&mut self, eye: Vec3, target: Vec3, fov_deg: f32) {
         self.cam.eye = eye;
         self.cam.target = target;
-        self.cam.fov_y = fov_deg.to_radians().clamp(0.05, std::f32::consts::PI - 0.05);
+        self.cam.fov_y = fov_deg
+            .to_radians()
+            .clamp(0.05, std::f32::consts::PI - 0.05);
         self.update_camera();
     }
 
@@ -167,15 +170,27 @@ impl Scene {
                 roughness: p.roughness,
                 emissive: p.emissive,
                 base_tex: p.texture.as_ref().map(|(px, w, h)| (px.as_slice(), *w, *h)),
-                normal_tex: p.normal_tex.as_ref().map(|(px, w, h)| (px.as_slice(), *w, *h)),
+                normal_tex: p
+                    .normal_tex
+                    .as_ref()
+                    .map(|(px, w, h)| (px.as_slice(), *w, *h)),
                 mr_tex: p.mr_tex.as_ref().map(|(px, w, h)| (px.as_slice(), *w, *h)),
-                emissive_tex: p.emissive_tex.as_ref().map(|(px, w, h)| (px.as_slice(), *w, *h)),
+                emissive_tex: p
+                    .emissive_tex
+                    .as_ref()
+                    .map(|(px, w, h)| (px.as_slice(), *w, *h)),
             };
             let mat = self.renderer.add_material(device, queue, &desc);
             prims.push((mesh, mat));
             skinned |= p.skinned;
         }
-        self.items.push(Renderable { prims, model: Some(model), player: AnimPlayer::new(), skinned, hidden_joints: 0 });
+        self.items.push(Renderable {
+            prims,
+            model: Some(model),
+            player: AnimPlayer::new(),
+            skinned,
+            hidden_joints: 0,
+        });
         (self.items.len() - 1) as i64
     }
 
@@ -188,7 +203,9 @@ impl Scene {
         color: [f32; 4],
     ) -> i64 {
         let m = self.renderer.add_mesh(device, mesh);
-        let mat = self.renderer.add_material(device, queue, &MaterialDesc::flat(color));
+        let mat = self
+            .renderer
+            .add_material(device, queue, &MaterialDesc::flat(color));
         self.items.push(Renderable {
             prims: vec![(m, mat)],
             model: None,
@@ -223,7 +240,9 @@ impl Scene {
         hz: f32,
         color: [f32; 3],
     ) -> i64 {
-        let m = self.renderer.add_mesh(device, &MeshData::box_dims(hx, hy, hz));
+        let m = self
+            .renderer
+            .add_mesh(device, &MeshData::box_dims(hx, hy, hz));
         let desc = MaterialDesc {
             base_color: [0.0, 0.0, 0.0, 1.0],
             metallic: 0.0,
@@ -279,7 +298,12 @@ impl Scene {
 
     /// A camera-facing sprite: a quad with an unlit (emissive) color. Draw it
     /// with `draw_billboard`. Good for particles, muzzle flashes, and markers.
-    pub fn make_sprite(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, color: [f32; 3]) -> i64 {
+    pub fn make_sprite(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        color: [f32; 3],
+    ) -> i64 {
         let m = self.renderer.add_mesh(device, &MeshData::quad());
         let desc = MaterialDesc {
             base_color: [0.0, 0.0, 0.0, 1.0],
@@ -328,8 +352,10 @@ impl Scene {
             None => return,
         };
         let prims = self.items[idx].prims.clone();
-        let insts: Vec<crate::render::InstanceRaw> =
-            transforms.iter().map(|&t| crate::render::InstanceRaw::new(t, [1.0; 4])).collect();
+        let insts: Vec<crate::render::InstanceRaw> = transforms
+            .iter()
+            .map(|&t| crate::render::InstanceRaw::new(t, [1.0; 4]))
+            .collect();
         for (mesh, mat) in prims {
             self.renderer.draw_instanced(mesh, mat, insts.clone());
         }
@@ -337,7 +363,10 @@ impl Scene {
 
     /// Number of animation clips on a model handle.
     pub fn clip_count(&self, handle: i64) -> i64 {
-        self.item(handle).and_then(|r| r.model.as_ref()).map(|m| m.clips.len() as i64).unwrap_or(0)
+        self.item(handle)
+            .and_then(|r| r.model.as_ref())
+            .map(|m| m.clips.len() as i64)
+            .unwrap_or(0)
     }
 
     /// Start (or crossfade to) an animation clip on a model handle, blending from
@@ -360,27 +389,71 @@ impl Scene {
 
     /// Start an upper-body overlay clip on a model, masked to joint `mask_root` and its
     /// descendants (so the legs keep the base clip). Fades in over `fade` seconds.
-    pub fn anim_play_upper(&mut self, handle: i64, clip: i64, looping: bool, speed: f32, fade: f32, mask_root: i64) {
+    pub fn anim_play_upper(
+        &mut self,
+        handle: i64,
+        clip: i64,
+        looping: bool,
+        speed: f32,
+        fade: f32,
+        mask_root: i64,
+    ) {
         if let Some(r) = self.item_mut(handle) {
-            r.player.play_upper(clip.max(0) as usize, looping, speed, fade, mask_root.max(0) as usize);
+            r.player.play_upper(
+                clip.max(0) as usize,
+                looping,
+                speed,
+                fade,
+                mask_root.max(0) as usize,
+            );
         }
     }
 
     /// Drive the FULL-BODY base as a sustained weighted blend of two clips (`clip_a` at weight 0,
     /// `clip_b` at weight 1) - e.g. idle <-> run by speed. Call every frame to update the weight; the
     /// first call crossfades in over `fade` so jump->land and similar transitions stay smooth.
-    pub fn anim_blend(&mut self, handle: i64, clip_a: i64, clip_b: i64, weight: f32, speed: f32, fade: f32) {
+    pub fn anim_blend(
+        &mut self,
+        handle: i64,
+        clip_a: i64,
+        clip_b: i64,
+        weight: f32,
+        speed: f32,
+        fade: f32,
+    ) {
         if let Some(r) = self.item_mut(handle) {
-            r.player.blend(clip_a.max(0) as usize, clip_b.max(0) as usize, weight, speed, fade);
+            r.player.blend(
+                clip_a.max(0) as usize,
+                clip_b.max(0) as usize,
+                weight,
+                speed,
+                fade,
+            );
         }
     }
 
     /// Drive the upper-body overlay as a weighted BLEND of two clips (`clip_a` at weight 0, `clip_b`
     /// at weight 1), masked to `mask_root`. Call every frame to track a continuous value such as aim
     /// pitch (look down -> up); only the first call fades in, so per-frame weight updates stay smooth.
-    pub fn anim_aim_upper(&mut self, handle: i64, clip_a: i64, clip_b: i64, weight: f32, speed: f32, fade: f32, mask_root: i64) {
+    pub fn anim_aim_upper(
+        &mut self,
+        handle: i64,
+        clip_a: i64,
+        clip_b: i64,
+        weight: f32,
+        speed: f32,
+        fade: f32,
+        mask_root: i64,
+    ) {
         if let Some(r) = self.item_mut(handle) {
-            r.player.aim_upper(clip_a.max(0) as usize, clip_b.max(0) as usize, weight, speed, fade, mask_root.max(0) as usize);
+            r.player.aim_upper(
+                clip_a.max(0) as usize,
+                clip_b.max(0) as usize,
+                weight,
+                speed,
+                fade,
+                mask_root.max(0) as usize,
+            );
         }
     }
 
@@ -448,7 +521,11 @@ impl Scene {
         let joints = {
             let r = &self.items[idx];
             if r.skinned {
-                r.model.as_ref().map(|m| r.player.matrices(m, mask)).filter(|v| !v.is_empty()).map(Arc::new)
+                r.model
+                    .as_ref()
+                    .map(|m| r.player.matrices(m, mask))
+                    .filter(|v| !v.is_empty())
+                    .map(Arc::new)
             } else {
                 None
             }
@@ -469,14 +546,19 @@ impl Scene {
         let joints = {
             let r = &self.items[idx];
             if r.skinned {
-                r.model.as_ref().map(|m| r.player.matrices(m, mask)).filter(|v| !v.is_empty()).map(Arc::new)
+                r.model
+                    .as_ref()
+                    .map(|m| r.player.matrices(m, mask))
+                    .filter(|v| !v.is_empty())
+                    .map(Arc::new)
             } else {
                 None
             }
         };
         let prims = self.items[idx].prims.clone();
         for (mesh, mat) in prims {
-            self.renderer.draw_tint(mesh, mat, transform, joints.clone(), tint);
+            self.renderer
+                .draw_tint(mesh, mat, transform, joints.clone(), tint);
         }
     }
 
@@ -491,14 +573,19 @@ impl Scene {
         let joints = {
             let r = &self.items[idx];
             if r.skinned {
-                r.model.as_ref().map(|m| r.player.matrices(m, mask)).filter(|v| !v.is_empty()).map(Arc::new)
+                r.model
+                    .as_ref()
+                    .map(|m| r.player.matrices(m, mask))
+                    .filter(|v| !v.is_empty())
+                    .map(Arc::new)
             } else {
                 None
             }
         };
         let prims = self.items[idx].prims.clone();
         for (mesh, mat) in prims {
-            self.renderer.draw_shield(mesh, mat, transform, joints.clone(), strength, time);
+            self.renderer
+                .draw_shield(mesh, mat, transform, joints.clone(), strength, time);
         }
     }
 
@@ -506,12 +593,21 @@ impl Scene {
     /// weapon's own `local` offset relative to that bone:
     ///   weapon_world = host_xform * joint_global(host pose) * local.
     /// Falls back to host_xform * local if the joint/skeleton is missing.
-    pub fn draw_on_joint(&mut self, weapon: i64, host: i64, joint: i64, host_xform: Mat4, local: Mat4) {
+    pub fn draw_on_joint(
+        &mut self,
+        weapon: i64,
+        host: i64,
+        joint: i64,
+        host_xform: Mat4,
+        local: Mat4,
+    ) {
         let g = self
             .resolve(host)
             .and_then(|idx| {
                 let r = &self.items[idx];
-                r.model.as_ref().and_then(|m| r.player.joint_global(m, joint.max(0) as usize))
+                r.model
+                    .as_ref()
+                    .and_then(|m| r.player.joint_global(m, joint.max(0) as usize))
             })
             .unwrap_or(Mat4::IDENTITY);
         self.draw(weapon, host_xform * g * local);
@@ -523,7 +619,9 @@ impl Scene {
     pub fn joint_global_mat(&self, host: i64, joint: i64) -> Option<Mat4> {
         let idx = self.resolve(host)?;
         let r = &self.items[idx];
-        r.model.as_ref().and_then(|m| r.player.joint_global(m, joint.max(0) as usize))
+        r.model
+            .as_ref()
+            .and_then(|m| r.player.joint_global(m, joint.max(0) as usize))
     }
 
     /// The model-space position of `joint` in the host's CURRENT pose (the translation of its
@@ -532,7 +630,10 @@ impl Scene {
     pub fn joint_pos(&self, host: i64, joint: i64) -> Option<[f32; 3]> {
         let idx = self.resolve(host)?;
         let r = &self.items[idx];
-        let g = r.model.as_ref().and_then(|m| r.player.joint_global(m, joint.max(0) as usize))?;
+        let g = r
+            .model
+            .as_ref()
+            .and_then(|m| r.player.joint_global(m, joint.max(0) as usize))?;
         let t = g.w_axis;
         Some([t.x, t.y, t.z])
     }
@@ -541,19 +642,26 @@ impl Scene {
     /// given world transform, for headless rig/hitbox visual audits. Uses the
     /// current animation pose. No-op if the model has no skeleton.
     pub fn debug_skeleton(&mut self, host: i64, host_xform: Mat4, color: Vec3) {
-        let Some(idx) = self.resolve(host) else { return };
+        let Some(idx) = self.resolve(host) else {
+            return;
+        };
         // Collect (parent_world, child_world) segments first (immutable borrow),
         // then draw (mutable borrow of the renderer).
         let mut segs: Vec<(Vec3, Vec3)> = Vec::new();
         {
             let r = &self.items[idx];
-            let Some(model) = r.model.as_ref() else { return };
-            let Some(skel) = model.skeleton.as_ref() else { return };
+            let Some(model) = r.model.as_ref() else {
+                return;
+            };
+            let Some(skel) = model.skeleton.as_ref() else {
+                return;
+            };
             for (ji, joint) in skel.joints.iter().enumerate() {
                 let Some(parent) = joint.parent else { continue };
-                let (Some(cg), Some(pg)) =
-                    (r.player.joint_global(model, ji), r.player.joint_global(model, parent))
-                else {
+                let (Some(cg), Some(pg)) = (
+                    r.player.joint_global(model, ji),
+                    r.player.joint_global(model, parent),
+                ) else {
                     continue;
                 };
                 let cp = host_xform.transform_point3(cg.w_axis.truncate());
@@ -593,7 +701,8 @@ impl Scene {
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
     ) {
-        self.renderer.render(device, queue, encoder, view, self.clear);
+        self.renderer
+            .render(device, queue, encoder, view, self.clear);
     }
 
     fn resolve(&self, handle: i64) -> Option<usize> {

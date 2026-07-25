@@ -80,9 +80,12 @@ pub const SHADER_STAGE_ATTRS: &[&str] = &["vertex", "fragment", "compute"];
 
 /// The shader-stage attribute on an item, if it carries one.
 pub fn shader_stage_attr(attrs: &[Attr]) -> Option<&'static str> {
-    attrs
-        .iter()
-        .find_map(|a| SHADER_STAGE_ATTRS.iter().copied().find(|s| *s == a.name.name))
+    attrs.iter().find_map(|a| {
+        SHADER_STAGE_ATTRS
+            .iter()
+            .copied()
+            .find(|s| *s == a.name.name)
+    })
 }
 
 /// Is this item a GPU shader stage rather than CPU code?
@@ -154,7 +157,11 @@ pub struct FnDecl {
 pub enum Param {
     /// `self`, `&self`, `&mut self`
     SelfParam { by_ref: bool, mutable: bool },
-    Normal { mutable: bool, name: Ident, ty: Type },
+    Normal {
+        mutable: bool,
+        name: Ident,
+        ty: Type,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -295,14 +302,23 @@ pub enum TypeKind {
     /// `~T`
     Owned(Box<Type>),
     /// `&T` / `&mut T`
-    Ref { mutable: bool, inner: Box<Type> },
+    Ref {
+        mutable: bool,
+        inner: Box<Type>,
+    },
     /// `[T]` (slice) or `[T; N]` (array)
-    Array { elem: Box<Type>, len: Option<Box<Expr>> },
+    Array {
+        elem: Box<Type>,
+        len: Option<Box<Expr>>,
+    },
     Tuple(Vec<Type>),
     /// `dyn Trait`
     Dyn(Path),
     /// `fn(A, B) -> C`
-    Fn { params: Vec<Type>, ret: Box<Type> },
+    Fn {
+        params: Vec<Type>,
+        ret: Box<Type>,
+    },
     /// A region-annotated type — `#frame T` / `#level T` / `#perm T` — used on
     /// function parameters and returns to declare a region contract at a
     /// boundary (trait signatures, `@extern`), where the body can't be inferred.
@@ -371,34 +387,74 @@ pub enum ExprKind {
     Assign(Option<BinOp>, Box<Expr>, Box<Expr>),
     Cast(Box<Expr>, Type),
 
-    Call { callee: Box<Expr>, type_args: Vec<Type>, args: Vec<Arg> },
-    Index { base: Box<Expr>, index: Box<Expr> },
-    Field { base: Box<Expr>, field: FieldAccess },
+    Call {
+        callee: Box<Expr>,
+        type_args: Vec<Type>,
+        args: Vec<Arg>,
+    },
+    Index {
+        base: Box<Expr>,
+        index: Box<Expr>,
+    },
+    Field {
+        base: Box<Expr>,
+        field: FieldAccess,
+    },
 
-    Range { start: Option<Box<Expr>>, end: Option<Box<Expr>>, inclusive: bool },
+    Range {
+        start: Option<Box<Expr>>,
+        end: Option<Box<Expr>>,
+        inclusive: bool,
+    },
     /// `x |> f(a)`  (kept explicit; desugared during lowering)
-    Pipe { value: Box<Expr>, func: Box<Expr> },
+    Pipe {
+        value: Box<Expr>,
+        func: Box<Expr>,
+    },
 
-    Struct { path: Path, fields: Vec<FieldInit>, base: Option<Box<Expr>> },
+    Struct {
+        path: Path,
+        fields: Vec<FieldInit>,
+        base: Option<Box<Expr>>,
+    },
     Array(Vec<Expr>),
-    ArrayRepeat { value: Box<Expr>, count: Box<Expr> },
+    ArrayRepeat {
+        value: Box<Expr>,
+        count: Box<Expr>,
+    },
     Tuple(Vec<Expr>),
     Paren(Box<Expr>),
 
     If(IfExpr),
-    Match { scrutinee: Box<Expr>, arms: Vec<MatchArm> },
-    For { pat: Pat, iter: Box<Expr>, body: Block },
-    While { cond: Box<Expr>, body: Block },
+    Match {
+        scrutinee: Box<Expr>,
+        arms: Vec<MatchArm>,
+    },
+    For {
+        pat: Pat,
+        iter: Box<Expr>,
+        body: Block,
+    },
+    While {
+        cond: Box<Expr>,
+        body: Block,
+    },
     Loop(Block),
     Block(Block),
     Unsafe(Block),
-    Closure { params: Vec<Param>, body: Box<Expr> },
+    Closure {
+        params: Vec<Param>,
+        body: Box<Expr>,
+    },
 
     Query(QueryExpr),
     Spawn(Vec<Arg>),
     Despawn(Box<Expr>),
     /// `#frame e`, `#level e`, `#perm e`
-    Region { region: RegionKind, value: Box<Expr> },
+    Region {
+        region: RegionKind,
+        value: Box<Expr>,
+    },
 
     Return(Option<Box<Expr>>),
     Break(Option<Box<Expr>>),
@@ -512,11 +568,21 @@ pub enum PatKind {
     Wild,
     Lit(Box<Expr>),
     /// `name` or `name @ subpat`
-    Binding { name: Ident, sub: Option<Box<Pat>> },
+    Binding {
+        name: Ident,
+        sub: Option<Box<Pat>>,
+    },
     /// A path to a unit variant / constant.
     Path(Path),
-    TupleStruct { path: Path, elems: Vec<Pat> },
-    Struct { path: Path, fields: Vec<FieldPat>, rest: bool },
+    TupleStruct {
+        path: Path,
+        elems: Vec<Pat>,
+    },
+    Struct {
+        path: Path,
+        fields: Vec<FieldPat>,
+        rest: bool,
+    },
     Tuple(Vec<Pat>),
     /// `..`
     Rest,

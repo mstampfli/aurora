@@ -140,7 +140,12 @@ pub extern "C" fn aurora_sleep_ms(ms: i64) {
 #[no_mangle]
 pub unsafe extern "C" fn aurora_ffi_dot(a: *const f64, b: *const f64, n: i64) -> f64 {
     let n = n.max(0) as usize;
-    let (a, b) = unsafe { (std::slice::from_raw_parts(a, n), std::slice::from_raw_parts(b, n)) };
+    let (a, b) = unsafe {
+        (
+            std::slice::from_raw_parts(a, n),
+            std::slice::from_raw_parts(b, n),
+        )
+    };
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
@@ -152,7 +157,12 @@ pub unsafe extern "C" fn aurora_ffi_dot(a: *const f64, b: *const f64, n: i64) ->
 #[no_mangle]
 pub unsafe extern "C" fn aurora_ffi_dotf(a: *const f32, b: *const f32, n: i64) -> f32 {
     let n = n.max(0) as usize;
-    let (a, b) = unsafe { (std::slice::from_raw_parts(a, n), std::slice::from_raw_parts(b, n)) };
+    let (a, b) = unsafe {
+        (
+            std::slice::from_raw_parts(a, n),
+            std::slice::from_raw_parts(b, n),
+        )
+    };
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
@@ -205,7 +215,10 @@ thread_local! {
 #[no_mangle]
 pub extern "C" fn aurora_framebuffer(w: i64, h: i64) {
     FB.with(|fb| {
-        *fb.borrow_mut() = Some(aurora_gfx::Framebuffer::new(w.max(0) as u32, h.max(0) as u32))
+        *fb.borrow_mut() = Some(aurora_gfx::Framebuffer::new(
+            w.max(0) as u32,
+            h.max(0) as u32,
+        ))
     });
 }
 fn color(r: i64, g: i64, b: i64) -> aurora_gfx::Color {
@@ -231,13 +244,25 @@ pub extern "C" fn aurora_pixel(x: i64, y: i64, r: i64, g: i64, b: i64) {
 #[allow(clippy::too_many_arguments)]
 #[no_mangle]
 pub extern "C" fn aurora_triangle(
-    x0: i64, y0: i64, x1: i64, y1: i64, x2: i64, y2: i64, r: i64, g: i64, b: i64,
+    x0: i64,
+    y0: i64,
+    x1: i64,
+    y1: i64,
+    x2: i64,
+    y2: i64,
+    r: i64,
+    g: i64,
+    b: i64,
 ) {
     FB.with(|fb| {
         if let Some(f) = fb.borrow_mut().as_mut() {
             let c = color(r, g, b);
             f.triangle(
-                [[x0 as f32, y0 as f32], [x1 as f32, y1 as f32], [x2 as f32, y2 as f32]],
+                [
+                    [x0 as f32, y0 as f32],
+                    [x1 as f32, y1 as f32],
+                    [x2 as f32, y2 as f32],
+                ],
                 [c, c, c],
             );
         }
@@ -294,8 +319,7 @@ pub unsafe extern "C" fn aurora_save_png(ptr: *const u8, len: i64) {
                     let _ = std::fs::create_dir_all(parent);
                 }
             }
-            if let Err(e) =
-                image::save_buffer(&path, &rgba, w, h, image::ExtendedColorType::Rgba8)
+            if let Err(e) = image::save_buffer(&path, &rgba, w, h, image::ExtendedColorType::Rgba8)
             {
                 eprintln!("aurora: save_png {path}: {e}");
             }
@@ -322,7 +346,11 @@ struct Arena {
 }
 impl Arena {
     fn new() -> Arena {
-        Arena { chunks: vec![vec![0u8; CHUNK]], cur: 0, used: 0 }
+        Arena {
+            chunks: vec![vec![0u8; CHUNK]],
+            cur: 0,
+            used: 0,
+        }
     }
     /// Bump-allocate `n` 8-aligned bytes; returns a stable pointer (chunks never
     /// move once allocated). Oversized requests get their own chunk.
@@ -400,7 +428,11 @@ pub(crate) unsafe fn write_str(out: *mut i64, bytes: Vec<u8>) {
 /// be valid for writes of two `i64`s.
 #[no_mangle]
 pub unsafe extern "C" fn aurora_str_concat(
-    out: *mut i64, ap: *const u8, al: i64, bp: *const u8, bl: i64,
+    out: *mut i64,
+    ap: *const u8,
+    al: i64,
+    bp: *const u8,
+    bl: i64,
 ) {
     let a = unsafe { std::slice::from_raw_parts(ap, al.max(0) as usize) };
     let b = unsafe { std::slice::from_raw_parts(bp, bl.max(0) as usize) };
@@ -445,7 +477,13 @@ pub unsafe extern "C" fn aurora_str_char_at(ptr: *const u8, len: i64, i: i64) ->
 /// `ptr` must point to `len` initialized bytes. `out` must be valid for
 /// writes of two `i64`s.
 #[no_mangle]
-pub unsafe extern "C" fn aurora_str_substr(out: *mut i64, ptr: *const u8, len: i64, start: i64, n: i64) {
+pub unsafe extern "C" fn aurora_str_substr(
+    out: *mut i64,
+    ptr: *const u8,
+    len: i64,
+    start: i64,
+    n: i64,
+) {
     let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
     let start = start.clamp(0, len) as usize;
     let end = (start + n.max(0) as usize).min(len.max(0) as usize);
@@ -458,7 +496,10 @@ pub unsafe extern "C" fn aurora_str_substr(out: *mut i64, ptr: *const u8, len: i
 /// `hp` must point to `hl` initialized bytes and `np` to `nl`.
 #[no_mangle]
 pub unsafe extern "C" fn aurora_str_starts_with(
-    hp: *const u8, hl: i64, np: *const u8, nl: i64,
+    hp: *const u8,
+    hl: i64,
+    np: *const u8,
+    nl: i64,
 ) -> i64 {
     let hay = unsafe { std::slice::from_raw_parts(hp, hl.max(0) as usize) };
     let needle = unsafe { std::slice::from_raw_parts(np, nl.max(0) as usize) };
@@ -485,7 +526,10 @@ pub unsafe extern "C" fn aurora_load_ppm(ptr: *const u8, len: i64) -> i64 {
         let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
         String::from_utf8_lossy(s).into_owned()
     };
-    match std::fs::read(&path).ok().and_then(|b| aurora_gfx::Framebuffer::from_ppm(&b)) {
+    match std::fs::read(&path)
+        .ok()
+        .and_then(|b| aurora_gfx::Framebuffer::from_ppm(&b))
+    {
         Some(fb) => {
             FB.with(|f| *f.borrow_mut() = Some(fb));
             1
@@ -535,7 +579,9 @@ pub unsafe extern "C" fn aurora_load_font(ptr: *const u8, len: i64) -> i64 {
         let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
         String::from_utf8_lossy(s).into_owned()
     };
-    let Ok(bytes) = std::fs::read(&path) else { return 0 };
+    let Ok(bytes) = std::fs::read(&path) else {
+        return 0;
+    };
     match fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()) {
         Ok(f) => {
             FONT.with(|x| *x.borrow_mut() = Some(f));
@@ -552,7 +598,11 @@ pub unsafe extern "C" fn aurora_load_font(ptr: *const u8, len: i64) -> i64 {
 #[no_mangle]
 fn render_text(x: i64, y: i64, text: &str, px: i64, color: i64) {
     let px = px.max(1) as f32;
-    let (cr, cg, cb) = (((color >> 16) & 255) as u8, ((color >> 8) & 255) as u8, (color & 255) as u8);
+    let (cr, cg, cb) = (
+        ((color >> 16) & 255) as u8,
+        ((color >> 8) & 255) as u8,
+        (color & 255) as u8,
+    );
     FONT.with(|font| {
         let font = font.borrow();
         let Some(font) = font.as_ref() else { return };
@@ -577,8 +627,13 @@ fn render_text(x: i64, y: i64, text: &str, px: i64, color: i64) {
                             continue;
                         }
                         let bg = fb.get(sx as u32, sy as u32);
-                        let blend = |b: u8, f: u8| ((b as u32 * (255 - cov) + f as u32 * cov) / 255) as u8;
-                        let out = aurora_gfx::Color::rgb(blend(bg.r, cr), blend(bg.g, cg), blend(bg.b, cb));
+                        let blend =
+                            |b: u8, f: u8| ((b as u32 * (255 - cov) + f as u32 * cov) / 255) as u8;
+                        let out = aurora_gfx::Color::rgb(
+                            blend(bg.r, cr),
+                            blend(bg.g, cg),
+                            blend(bg.b, cb),
+                        );
                         fb.set(sx, sy, out);
                     }
                 }
@@ -591,7 +646,14 @@ fn render_text(x: i64, y: i64, text: &str, px: i64, color: i64) {
 /// # Safety
 /// `ptr` must point to `len` initialized bytes.
 #[no_mangle]
-pub unsafe extern "C" fn aurora_draw_text(x: i64, y: i64, ptr: *const u8, len: i64, px: i64, color: i64) {
+pub unsafe extern "C" fn aurora_draw_text(
+    x: i64,
+    y: i64,
+    ptr: *const u8,
+    len: i64,
+    px: i64,
+    color: i64,
+) {
     let text = {
         let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
         String::from_utf8_lossy(s).into_owned()
@@ -686,9 +748,13 @@ pub extern "C" fn aurora_phys_add(x: f64, y: f64, hw: f64, hh: f64, dynamic: i64
         let mut p = p.borrow_mut();
         let Some(p) = p.as_mut() else { return -1 };
         let rb = if dynamic != 0 {
-            RigidBodyBuilder::dynamic().translation(vector![x as Real, y as Real]).build()
+            RigidBodyBuilder::dynamic()
+                .translation(vector![x as Real, y as Real])
+                .build()
         } else {
-            RigidBodyBuilder::fixed().translation(vector![x as Real, y as Real]).build()
+            RigidBodyBuilder::fixed()
+                .translation(vector![x as Real, y as Real])
+                .build()
         };
         let h = p.bodies.insert(rb);
         let col = ColliderBuilder::cuboid(hw as Real, hh as Real).build();
@@ -708,9 +774,19 @@ pub extern "C" fn aurora_phys_step(dt: f64) {
         p.params.dt = dt as Real;
         let g = p.gravity;
         p.pipeline.step(
-            &g, &p.params, &mut p.islands, &mut p.broad, &mut p.narrow,
-            &mut p.bodies, &mut p.colliders, &mut p.impulse, &mut p.multibody,
-            &mut p.ccd, Some(&mut p.query), &(), &(),
+            &g,
+            &p.params,
+            &mut p.islands,
+            &mut p.broad,
+            &mut p.narrow,
+            &mut p.bodies,
+            &mut p.colliders,
+            &mut p.impulse,
+            &mut p.multibody,
+            &mut p.ccd,
+            Some(&mut p.query),
+            &(),
+            &(),
         );
     });
 }
@@ -719,16 +795,24 @@ fn phys_pos(h: i64, axis: usize) -> f64 {
     PHYS.with(|p| {
         let p = p.borrow();
         let Some(p) = p.as_ref() else { return 0.0 };
-        match p.handles.get(h.max(0) as usize).and_then(|&hd| p.bodies.get(hd)) {
+        match p
+            .handles
+            .get(h.max(0) as usize)
+            .and_then(|&hd| p.bodies.get(hd))
+        {
             Some(b) => b.translation()[axis] as f64,
             None => 0.0,
         }
     })
 }
 #[no_mangle]
-pub extern "C" fn aurora_phys_x(h: i64) -> f64 { phys_pos(h, 0) }
+pub extern "C" fn aurora_phys_x(h: i64) -> f64 {
+    phys_pos(h, 0)
+}
 #[no_mangle]
-pub extern "C" fn aurora_phys_y(h: i64) -> f64 { phys_pos(h, 1) }
+pub extern "C" fn aurora_phys_y(h: i64) -> f64 {
+    phys_pos(h, 1)
+}
 
 /// Set a body's linear velocity.
 #[no_mangle]
@@ -737,7 +821,12 @@ pub extern "C" fn aurora_phys_set_vel(h: i64, vx: f64, vy: f64) {
     PHYS.with(|p| {
         let mut p = p.borrow_mut();
         let Some(p) = p.as_mut() else { return };
-        if let Some(b) = p.handles.get(h.max(0) as usize).copied().and_then(|hd| p.bodies.get_mut(hd)) {
+        if let Some(b) = p
+            .handles
+            .get(h.max(0) as usize)
+            .copied()
+            .and_then(|hd| p.bodies.get_mut(hd))
+        {
             b.set_linvel(vector![vx as Real, vy as Real], true);
         }
     });
@@ -746,16 +835,24 @@ pub extern "C" fn aurora_phys_set_vel(h: i64, vx: f64, vy: f64) {
 fn phys_vel(h: i64, axis: usize) -> f64 {
     PHYS.with(|p| {
         let p = p.borrow();
-        match p.as_ref().and_then(|p| p.handles.get(h.max(0) as usize).and_then(|&hd| p.bodies.get(hd))) {
+        match p.as_ref().and_then(|p| {
+            p.handles
+                .get(h.max(0) as usize)
+                .and_then(|&hd| p.bodies.get(hd))
+        }) {
             Some(b) => b.linvel()[axis] as f64,
             None => 0.0,
         }
     })
 }
 #[no_mangle]
-pub extern "C" fn aurora_phys_vel_x(h: i64) -> f64 { phys_vel(h, 0) }
+pub extern "C" fn aurora_phys_vel_x(h: i64) -> f64 {
+    phys_vel(h, 0)
+}
 #[no_mangle]
-pub extern "C" fn aurora_phys_vel_y(h: i64) -> f64 { phys_vel(h, 1) }
+pub extern "C" fn aurora_phys_vel_y(h: i64) -> f64 {
+    phys_vel(h, 1)
+}
 
 /// Apply an instantaneous impulse (e.g. a jump or knockback) to a body.
 #[no_mangle]
@@ -764,7 +861,12 @@ pub extern "C" fn aurora_phys_apply_impulse(h: i64, ix: f64, iy: f64) {
     PHYS.with(|p| {
         let mut p = p.borrow_mut();
         let Some(p) = p.as_mut() else { return };
-        if let Some(b) = p.handles.get(h.max(0) as usize).copied().and_then(|hd| p.bodies.get_mut(hd)) {
+        if let Some(b) = p
+            .handles
+            .get(h.max(0) as usize)
+            .copied()
+            .and_then(|hd| p.bodies.get_mut(hd))
+        {
             b.apply_impulse(vector![ix as Real, iy as Real], true);
         }
     });
@@ -777,7 +879,12 @@ pub extern "C" fn aurora_phys_apply_force(h: i64, fx: f64, fy: f64) {
     PHYS.with(|p| {
         let mut p = p.borrow_mut();
         let Some(p) = p.as_mut() else { return };
-        if let Some(b) = p.handles.get(h.max(0) as usize).copied().and_then(|hd| p.bodies.get_mut(hd)) {
+        if let Some(b) = p
+            .handles
+            .get(h.max(0) as usize)
+            .copied()
+            .and_then(|hd| p.bodies.get_mut(hd))
+        {
             b.add_force(vector![fx as Real, fy as Real], true);
         }
     });
@@ -790,7 +897,12 @@ pub extern "C" fn aurora_phys_set_pos(h: i64, x: f64, y: f64) {
     PHYS.with(|p| {
         let mut p = p.borrow_mut();
         let Some(p) = p.as_mut() else { return };
-        if let Some(b) = p.handles.get(h.max(0) as usize).copied().and_then(|hd| p.bodies.get_mut(hd)) {
+        if let Some(b) = p
+            .handles
+            .get(h.max(0) as usize)
+            .copied()
+            .and_then(|hd| p.bodies.get_mut(hd))
+        {
             b.set_translation(vector![x as Real, y as Real], true);
         }
     });
@@ -805,8 +917,18 @@ pub extern "C" fn aurora_phys_raycast(x: f64, y: f64, dx: f64, dy: f64, max: f64
     PHYS.with(|p| {
         let p = p.borrow();
         let Some(p) = p.as_ref() else { return -1.0 };
-        let ray = Ray::new(point![x as Real, y as Real], vector![dx as Real, dy as Real]);
-        match p.query.cast_ray(&p.bodies, &p.colliders, &ray, max as Real, true, QueryFilter::default()) {
+        let ray = Ray::new(
+            point![x as Real, y as Real],
+            vector![dx as Real, dy as Real],
+        );
+        match p.query.cast_ray(
+            &p.bodies,
+            &p.colliders,
+            &ray,
+            max as Real,
+            true,
+            QueryFilter::default(),
+        ) {
             Some((_, toi)) => toi as f64,
             None => -1.0,
         }
@@ -831,7 +953,12 @@ thread_local! {
 #[no_mangle]
 pub extern "C" fn aurora_nav_init(w: i64, h: i64) {
     let (w, h) = (w.max(0) as i32, h.max(0) as i32);
-    let n = Nav { w, h, walls: vec![false; (w * h).max(0) as usize], path: Vec::new() };
+    let n = Nav {
+        w,
+        h,
+        walls: vec![false; (w * h).max(0) as usize],
+        path: Vec::new(),
+    };
     NAV.with(|x| *x.borrow_mut() = Some(n));
 }
 #[no_mangle]
@@ -884,11 +1011,23 @@ pub extern "C" fn aurora_nav_find(sx: i64, sy: i64, gx: i64, gy: i64) -> i64 {
 }
 #[no_mangle]
 pub extern "C" fn aurora_nav_x(i: i64) -> i64 {
-    NAV.with(|n| n.borrow().as_ref().and_then(|n| n.path.get(i.max(0) as usize)).map(|&(x, _)| x as i64).unwrap_or(-1))
+    NAV.with(|n| {
+        n.borrow()
+            .as_ref()
+            .and_then(|n| n.path.get(i.max(0) as usize))
+            .map(|&(x, _)| x as i64)
+            .unwrap_or(-1)
+    })
 }
 #[no_mangle]
 pub extern "C" fn aurora_nav_y(i: i64) -> i64 {
-    NAV.with(|n| n.borrow().as_ref().and_then(|n| n.path.get(i.max(0) as usize)).map(|&(_, y)| y as i64).unwrap_or(-1))
+    NAV.with(|n| {
+        n.borrow()
+            .as_ref()
+            .and_then(|n| n.path.get(i.max(0) as usize))
+            .map(|&(_, y)| y as i64)
+            .unwrap_or(-1)
+    })
 }
 
 // --- networking (reliable UDP) as a language feature ------------------------
@@ -959,7 +1098,9 @@ pub unsafe extern "C" fn aurora_net_recv(out: *mut i64) {
             NET_INBOX.with(|q| q.borrow_mut().extend(delivered));
         }
     });
-    let msg = NET_INBOX.with(|q| q.borrow_mut().pop_front()).unwrap_or_default();
+    let msg = NET_INBOX
+        .with(|q| q.borrow_mut().pop_front())
+        .unwrap_or_default();
     unsafe { write_str(out, msg) };
 }
 
@@ -977,7 +1118,12 @@ pub unsafe extern "C" fn aurora_net_recv(out: *mut i64) {
 /// `env_ptr` its matching environment. both must stay valid for the whole
 /// call, which runs the closure on several threads at once.
 #[no_mangle]
-pub unsafe extern "C" fn aurora_par_for(out: *mut i64, n: i64, fn_ptr: *const u8, env_ptr: *const u8) {
+pub unsafe extern "C" fn aurora_par_for(
+    out: *mut i64,
+    n: i64,
+    fn_ptr: *const u8,
+    env_ptr: *const u8,
+) {
     let n = n.max(0) as usize;
     if n == 0 {
         return;
@@ -986,7 +1132,10 @@ pub unsafe extern "C" fn aurora_par_for(out: *mut i64, n: i64, fn_ptr: *const u8
     let out_addr = out as usize;
     let fn_addr = fn_ptr as usize;
     let env_addr = env_ptr as usize;
-    let threads = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(4).min(n);
+    let threads = std::thread::available_parallelism()
+        .map(|x| x.get())
+        .unwrap_or(4)
+        .min(n);
     let chunk = n.div_ceil(threads);
 
     std::thread::scope(|scope| {
@@ -1189,7 +1338,10 @@ pub unsafe extern "C" fn aurora_run_parallel(fns: *const usize, n: i64) {
         // `as_ptr` yields `*mut World` without taking a RefCell borrow, so the
         // worker threads (which route through `PAR_WORLD` + lock) are the only
         // accessors during the scope; this thread just blocks in the join.
-        let par = ParWorld { lock: std::sync::Mutex::new(()), world: w.as_ptr() };
+        let par = ParWorld {
+            lock: std::sync::Mutex::new(()),
+            world: w.as_ptr(),
+        };
         run_batch(ParWorldPtr(&par), &addrs);
     });
 }
@@ -1272,7 +1424,9 @@ pub unsafe extern "C" fn aurora_scene_load(ptr: *const u8, len: i64) -> i64 {
         let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
         String::from_utf8_lossy(s).into_owned()
     };
-    let Ok(b) = std::fs::read(&path) else { return 0 };
+    let Ok(b) = std::fs::read(&path) else {
+        return 0;
+    };
     if b.len() < 4 || &b[0..4] != b"ASCN" {
         return 0;
     }
@@ -1343,7 +1497,11 @@ pub fn prof_report() -> Vec<ProfRow> {
             .borrow()
             .totals
             .iter()
-            .map(|(f, &(calls, nanos))| ProfRow { func: f.clone(), calls, nanos })
+            .map(|(f, &(calls, nanos))| ProfRow {
+                func: f.clone(),
+                calls,
+                nanos,
+            })
             .collect();
         rows.sort_by(|a, b| b.nanos.cmp(&a.nanos));
         rows
@@ -1386,7 +1544,11 @@ pub extern "C" fn aurora_prof_exit() {
 pub(crate) fn headless_audio() -> bool {
     use std::sync::OnceLock;
     static H: OnceLock<bool> = OnceLock::new();
-    *H.get_or_init(|| std::env::var("AURORA_HEADLESS").map(|v| v == "1").unwrap_or(false))
+    *H.get_or_init(|| {
+        std::env::var("AURORA_HEADLESS")
+            .map(|v| v == "1")
+            .unwrap_or(false)
+    })
 }
 
 // Offline audio capture: under headless, play_note/play_sound record the note
@@ -1400,7 +1562,10 @@ thread_local! {
 
 fn audio_capture_note(semitone: i64, dur_ms: i64) {
     let t = crate::data::virtual_time_seconds();
-    AUDIO_CAP.with(|c| c.borrow_mut().push((semitone as i32, (dur_ms.max(0) as f32) / 1000.0, t)));
+    AUDIO_CAP.with(|c| {
+        c.borrow_mut()
+            .push((semitone as i32, (dur_ms.max(0) as f32) / 1000.0, t))
+    });
 }
 
 /// Render the captured note events into a 16-bit mono WAV at 44.1 kHz, placing
@@ -1420,7 +1585,10 @@ pub unsafe extern "C" fn aurora_audio_capture_save(ptr: *const u8, len: i64) -> 
         return 0;
     }
     // Buffer spans from 0 to the latest note end.
-    let end_s = events.iter().map(|(_, d, t)| t + *d as f64).fold(0.0, f64::max);
+    let end_s = events
+        .iter()
+        .map(|(_, d, t)| t + *d as f64)
+        .fold(0.0, f64::max);
     let total = ((end_s * sr as f64).ceil() as usize).max(1) + sr as usize / 10;
     let mut buf = vec![0.0f32; total];
     for (semi, dur, t) in &events {
@@ -1447,7 +1615,9 @@ pub unsafe extern "C" fn aurora_audio_capture_save(ptr: *const u8, len: i64) -> 
             let _ = std::fs::create_dir_all(parent);
         }
     }
-    let Ok(mut w) = hound::WavWriter::create(&path, spec) else { return 0 };
+    let Ok(mut w) = hound::WavWriter::create(&path, spec) else {
+        return 0;
+    };
     for s in &buf {
         let v = (s.clamp(-1.0, 1.0) * 32767.0) as i16;
         if w.write_sample(v).is_err() {
@@ -1603,16 +1773,30 @@ pub extern "C" fn aurora_r3d_make_box(r: f64, g: f64, b: f64) -> i64 {
 /// A box mesh sized by half-extents (matching a physics box collider), colored.
 #[no_mangle]
 pub extern "C" fn aurora_r3d_make_box_sized(
-    hx: f64, hy: f64, hz: f64, r: f64, g: f64, b: f64,
+    hx: f64,
+    hy: f64,
+    hz: f64,
+    r: f64,
+    g: f64,
+    b: f64,
 ) -> i64 {
-    aurora_window::imm_r3d_make_box_sized(hx as f32, hy as f32, hz as f32, r as f32, g as f32, b as f32)
+    aurora_window::imm_r3d_make_box_sized(
+        hx as f32, hy as f32, hz as f32, r as f32, g as f32, b as f32,
+    )
 }
 /// An emissive (self-lit, glowing) box mesh. Color is the emissive RGB.
 #[no_mangle]
 pub extern "C" fn aurora_r3d_make_box_emissive(
-    hx: f64, hy: f64, hz: f64, r: f64, g: f64, b: f64,
+    hx: f64,
+    hy: f64,
+    hz: f64,
+    r: f64,
+    g: f64,
+    b: f64,
 ) -> i64 {
-    aurora_window::imm_r3d_make_box_emissive(hx as f32, hy as f32, hz as f32, r as f32, g as f32, b as f32)
+    aurora_window::imm_r3d_make_box_emissive(
+        hx as f32, hy as f32, hz as f32, r as f32, g as f32, b as f32,
+    )
 }
 #[no_mangle]
 pub extern "C" fn aurora_r3d_make_sphere(segments: i64, r: f64, g: f64, b: f64) -> i64 {
@@ -1624,7 +1808,15 @@ pub extern "C" fn aurora_r3d_make_plane(size: f64, tiles: f64, r: f64, g: f64, b
 }
 #[allow(clippy::too_many_arguments)]
 #[no_mangle]
-pub extern "C" fn aurora_r3d_camera(ex: f64, ey: f64, ez: f64, tx: f64, ty: f64, tz: f64, fov: f64) {
+pub extern "C" fn aurora_r3d_camera(
+    ex: f64,
+    ey: f64,
+    ez: f64,
+    tx: f64,
+    ty: f64,
+    tz: f64,
+    fov: f64,
+) {
     aurora_window::imm_r3d_camera(
         ex as f32, ey as f32, ez as f32, tx as f32, ty as f32, tz as f32, fov as f32,
     );
@@ -1636,9 +1828,23 @@ pub extern "C" fn aurora_r3d_camera_roll(roll: f64) {
 }
 #[allow(clippy::too_many_arguments)]
 #[no_mangle]
-pub extern "C" fn aurora_r3d_light(dx: f64, dy: f64, dz: f64, r: f64, g: f64, b: f64, ambient: f64) {
+pub extern "C" fn aurora_r3d_light(
+    dx: f64,
+    dy: f64,
+    dz: f64,
+    r: f64,
+    g: f64,
+    b: f64,
+    ambient: f64,
+) {
     aurora_window::imm_r3d_light(
-        dx as f32, dy as f32, dz as f32, r as f32, g as f32, b as f32, ambient as f32,
+        dx as f32,
+        dy as f32,
+        dz as f32,
+        r as f32,
+        g as f32,
+        b as f32,
+        ambient as f32,
     );
 }
 #[no_mangle]
@@ -1652,51 +1858,145 @@ pub extern "C" fn aurora_r3d_begin() {
 #[allow(clippy::too_many_arguments)]
 #[no_mangle]
 pub extern "C" fn aurora_r3d_draw(
-    h: i64, px: f64, py: f64, pz: f64, yaw: f64, pitch: f64, roll: f64, scale: f64,
+    h: i64,
+    px: f64,
+    py: f64,
+    pz: f64,
+    yaw: f64,
+    pitch: f64,
+    roll: f64,
+    scale: f64,
 ) {
     aurora_window::imm_r3d_draw(
-        h, px as f32, py as f32, pz as f32, yaw as f32, pitch as f32, roll as f32, scale as f32,
+        h,
+        px as f32,
+        py as f32,
+        pz as f32,
+        yaw as f32,
+        pitch as f32,
+        roll as f32,
+        scale as f32,
     );
 }
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub extern "C" fn aurora_r3d_draw_quat(
-    h: i64, px: f64, py: f64, pz: f64, qx: f64, qy: f64, qz: f64, qw: f64, scale: f64,
+    h: i64,
+    px: f64,
+    py: f64,
+    pz: f64,
+    qx: f64,
+    qy: f64,
+    qz: f64,
+    qw: f64,
+    scale: f64,
 ) {
     aurora_window::imm_r3d_draw_quat(
-        h, px as f32, py as f32, pz as f32, qx as f32, qy as f32, qz as f32, qw as f32, scale as f32,
+        h,
+        px as f32,
+        py as f32,
+        pz as f32,
+        qx as f32,
+        qy as f32,
+        qz as f32,
+        qw as f32,
+        scale as f32,
     );
 }
 #[no_mangle]
 pub extern "C" fn aurora_r3d_draw_tint(
-    h: i64, px: f64, py: f64, pz: f64, yaw: f64, pitch: f64, roll: f64, scale: f64, r: f64, g: f64, b: f64,
+    h: i64,
+    px: f64,
+    py: f64,
+    pz: f64,
+    yaw: f64,
+    pitch: f64,
+    roll: f64,
+    scale: f64,
+    r: f64,
+    g: f64,
+    b: f64,
 ) {
     aurora_window::imm_r3d_draw_tint(
-        h, px as f32, py as f32, pz as f32, yaw as f32, pitch as f32, roll as f32, scale as f32,
-        r as f32, g as f32, b as f32,
+        h,
+        px as f32,
+        py as f32,
+        pz as f32,
+        yaw as f32,
+        pitch as f32,
+        roll as f32,
+        scale as f32,
+        r as f32,
+        g as f32,
+        b as f32,
     );
 }
 #[allow(clippy::too_many_arguments)]
 #[no_mangle]
 pub extern "C" fn aurora_r3d_draw_shield(
-    h: i64, px: f64, py: f64, pz: f64, yaw: f64, pitch: f64, roll: f64, scale: f64, strength: f64, time: f64,
+    h: i64,
+    px: f64,
+    py: f64,
+    pz: f64,
+    yaw: f64,
+    pitch: f64,
+    roll: f64,
+    scale: f64,
+    strength: f64,
+    time: f64,
 ) {
     aurora_window::imm_r3d_draw_shield(
-        h, px as f32, py as f32, pz as f32, yaw as f32, pitch as f32, roll as f32, scale as f32,
-        strength as f32, time as f32,
+        h,
+        px as f32,
+        py as f32,
+        pz as f32,
+        yaw as f32,
+        pitch as f32,
+        roll as f32,
+        scale as f32,
+        strength as f32,
+        time as f32,
     );
 }
 #[allow(clippy::too_many_arguments)]
 #[no_mangle]
 pub extern "C" fn aurora_r3d_draw_on_joint(
-    weapon: i64, host: i64, joint: i64,
-    hx: f64, hy: f64, hz: f64, hyaw: f64, hpitch: f64, hroll: f64, hscale: f64,
-    ox: f64, oy: f64, oz: f64, oyaw: f64, opitch: f64, oroll: f64, oscale: f64,
+    weapon: i64,
+    host: i64,
+    joint: i64,
+    hx: f64,
+    hy: f64,
+    hz: f64,
+    hyaw: f64,
+    hpitch: f64,
+    hroll: f64,
+    hscale: f64,
+    ox: f64,
+    oy: f64,
+    oz: f64,
+    oyaw: f64,
+    opitch: f64,
+    oroll: f64,
+    oscale: f64,
 ) {
     aurora_window::imm_r3d_draw_on_joint(
-        weapon, host, joint,
-        hx as f32, hy as f32, hz as f32, hyaw as f32, hpitch as f32, hroll as f32, hscale as f32,
-        ox as f32, oy as f32, oz as f32, oyaw as f32, opitch as f32, oroll as f32, oscale as f32,
+        weapon,
+        host,
+        joint,
+        hx as f32,
+        hy as f32,
+        hz as f32,
+        hyaw as f32,
+        hpitch as f32,
+        hroll as f32,
+        hscale as f32,
+        ox as f32,
+        oy as f32,
+        oz as f32,
+        oyaw as f32,
+        opitch as f32,
+        oroll as f32,
+        oscale as f32,
     );
 }
 #[no_mangle]
@@ -1717,15 +2017,45 @@ pub extern "C" fn aurora_r3d_anim_update(h: i64, dt: f64) {
     aurora_window::imm_r3d_anim_update(h, dt as f32);
 }
 #[no_mangle]
-pub extern "C" fn aurora_r3d_anim_play_upper(h: i64, clip: i64, looping: i64, speed: f64, fade: f64, mask_root: i64) {
+pub extern "C" fn aurora_r3d_anim_play_upper(
+    h: i64,
+    clip: i64,
+    looping: i64,
+    speed: f64,
+    fade: f64,
+    mask_root: i64,
+) {
     aurora_window::imm_r3d_anim_play_upper(h, clip, looping, speed as f32, fade as f32, mask_root);
 }
 #[no_mangle]
-pub extern "C" fn aurora_r3d_anim_aim_upper(h: i64, clip_a: i64, clip_b: i64, weight: f64, speed: f64, fade: f64, mask_root: i64) {
-    aurora_window::imm_r3d_anim_aim_upper(h, clip_a, clip_b, weight as f32, speed as f32, fade as f32, mask_root);
+pub extern "C" fn aurora_r3d_anim_aim_upper(
+    h: i64,
+    clip_a: i64,
+    clip_b: i64,
+    weight: f64,
+    speed: f64,
+    fade: f64,
+    mask_root: i64,
+) {
+    aurora_window::imm_r3d_anim_aim_upper(
+        h,
+        clip_a,
+        clip_b,
+        weight as f32,
+        speed as f32,
+        fade as f32,
+        mask_root,
+    );
 }
 #[no_mangle]
-pub extern "C" fn aurora_r3d_anim_blend(h: i64, clip_a: i64, clip_b: i64, weight: f64, speed: f64, fade: f64) {
+pub extern "C" fn aurora_r3d_anim_blend(
+    h: i64,
+    clip_a: i64,
+    clip_b: i64,
+    weight: f64,
+    speed: f64,
+    fade: f64,
+) {
     aurora_window::imm_r3d_anim_blend(h, clip_a, clip_b, weight as f32, speed as f32, fade as f32);
 }
 #[no_mangle]
@@ -1797,7 +2127,12 @@ pub unsafe extern "C" fn aurora_r3d_capture(ptr: *const u8, len: i64) -> i64 {
 /// # Safety
 /// `ptr` must point to `len` initialized bytes.
 #[no_mangle]
-pub unsafe extern "C" fn aurora_r3d_capture_size(ptr: *const u8, len: i64, ow: i64, oh: i64) -> i64 {
+pub unsafe extern "C" fn aurora_r3d_capture_size(
+    ptr: *const u8,
+    len: i64,
+    ow: i64,
+    oh: i64,
+) -> i64 {
     let path = {
         let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
         String::from_utf8_lossy(s).into_owned()
@@ -1869,7 +2204,9 @@ pub extern "C" fn aurora_r3d_blur(radius: f64) {
 #[allow(clippy::too_many_arguments)]
 #[no_mangle]
 pub extern "C" fn aurora_r3d_sky(on: i64, tr: f64, tg: f64, tb: f64, hr: f64, hg: f64, hb: f64) {
-    aurora_window::imm_r3d_sky(on, tr as f32, tg as f32, tb as f32, hr as f32, hg as f32, hb as f32);
+    aurora_window::imm_r3d_sky(
+        on, tr as f32, tg as f32, tb as f32, hr as f32, hg as f32, hb as f32,
+    );
 }
 #[no_mangle]
 pub extern "C" fn aurora_r3d_shadows(on: i64) {
@@ -1893,9 +2230,25 @@ pub extern "C" fn aurora_r3d_clear_lights() {
 }
 #[allow(clippy::too_many_arguments)]
 #[no_mangle]
-pub extern "C" fn aurora_r3d_point_light(x: f64, y: f64, z: f64, r: f64, g: f64, b: f64, range: f64, intensity: f64) {
+pub extern "C" fn aurora_r3d_point_light(
+    x: f64,
+    y: f64,
+    z: f64,
+    r: f64,
+    g: f64,
+    b: f64,
+    range: f64,
+    intensity: f64,
+) {
     aurora_window::imm_r3d_point_light(
-        x as f32, y as f32, z as f32, r as f32, g as f32, b as f32, range as f32, intensity as f32,
+        x as f32,
+        y as f32,
+        z as f32,
+        r as f32,
+        g as f32,
+        b as f32,
+        range as f32,
+        intensity as f32,
     );
 }
 #[no_mangle]
@@ -1908,19 +2261,46 @@ pub extern "C" fn aurora_r3d_draw_billboard(h: i64, x: f64, y: f64, z: f64, size
 }
 #[allow(clippy::too_many_arguments)]
 #[no_mangle]
-pub extern "C" fn aurora_r3d_debug_line(ax: f64, ay: f64, az: f64, bx: f64, by: f64, bz: f64, r: f64, g: f64, b: f64) {
+pub extern "C" fn aurora_r3d_debug_line(
+    ax: f64,
+    ay: f64,
+    az: f64,
+    bx: f64,
+    by: f64,
+    bz: f64,
+    r: f64,
+    g: f64,
+    b: f64,
+) {
     aurora_window::imm_r3d_debug_line(
-        ax as f32, ay as f32, az as f32, bx as f32, by as f32, bz as f32, r as f32, g as f32, b as f32,
+        ax as f32, ay as f32, az as f32, bx as f32, by as f32, bz as f32, r as f32, g as f32,
+        b as f32,
     );
 }
 /// Draw a model's skeleton as debug bone lines (headless rig/hitbox audits).
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub extern "C" fn aurora_r3d_debug_skeleton(
-    handle: i64, px: f64, py: f64, pz: f64, yaw: f64, scale: f64, r: f64, g: f64, b: f64,
+    handle: i64,
+    px: f64,
+    py: f64,
+    pz: f64,
+    yaw: f64,
+    scale: f64,
+    r: f64,
+    g: f64,
+    b: f64,
 ) {
     aurora_window::imm_r3d_debug_skeleton(
-        handle, px as f32, py as f32, pz as f32, yaw as f32, scale as f32, r as f32, g as f32, b as f32,
+        handle,
+        px as f32,
+        py as f32,
+        pz as f32,
+        yaw as f32,
+        scale as f32,
+        r as f32,
+        g as f32,
+        b as f32,
     );
 }
 #[no_mangle]
@@ -1930,12 +2310,20 @@ pub extern "C" fn aurora_r3d_frustum_cull(on: i64) {
 #[no_mangle]
 pub extern "C" fn aurora_r3d_screen_x(wx: f64, wy: f64, wz: f64) -> f64 {
     let (x, _, vis) = aurora_window::imm_r3d_world_to_screen(wx as f32, wy as f32, wz as f32);
-    if vis { x as f64 } else { -1.0 }
+    if vis {
+        x as f64
+    } else {
+        -1.0
+    }
 }
 #[no_mangle]
 pub extern "C" fn aurora_r3d_screen_y(wx: f64, wy: f64, wz: f64) -> f64 {
     let (_, y, vis) = aurora_window::imm_r3d_world_to_screen(wx as f32, wy as f32, wz as f32);
-    if vis { y as f64 } else { -1.0 }
+    if vis {
+        y as f64
+    } else {
+        -1.0
+    }
 }
 
 // --- FPS input ---
@@ -2135,8 +2523,9 @@ pub extern "C" fn aurora_play_noise(dur_ms: i64, gain_pct: i64) {
     let sr = 44_100;
     let dur = (dur_ms.max(1) as f32) / 1000.0;
     let g = (gain_pct.clamp(0, 200) as f32) / 100.0;
-    let mut note =
-        aurora_audio::Note::new(440.0, dur).wave(aurora_audio::Wave::Noise).gain(g);
+    let mut note = aurora_audio::Note::new(440.0, dur)
+        .wave(aurora_audio::Wave::Noise)
+        .gain(g);
     note.adsr = aurora_audio::Adsr {
         attack: 0.003,                  // soft attack (no click) for a smooth onset
         decay: (dur * 0.85).max(0.004), // long gentle fade
@@ -2185,8 +2574,13 @@ fn spatialize(pos: [f64; 3]) -> (f32, f32) {
         // which mirrored the stereo image (sounds on your right played on the left).
         let f = norm3(fwd);
         let right = norm3([-f[2], 0.0, f[0]]);
-        let dir = if dist > 1e-4 { [to[0] / dist, to[1] / dist, to[2] / dist] } else { [0.0; 3] };
-        let pan = (right[0] * dir[0] + right[1] * dir[1] + right[2] * dir[2]).clamp(-1.0, 1.0) as f32;
+        let dir = if dist > 1e-4 {
+            [to[0] / dist, to[1] / dist, to[2] / dist]
+        } else {
+            [0.0; 3]
+        };
+        let pan =
+            (right[0] * dir[0] + right[1] * dir[1] + right[2] * dir[2]).clamp(-1.0, 1.0) as f32;
         (gain, pan)
     })
 }
@@ -2203,7 +2597,12 @@ fn norm3(v: [f64; 3]) -> [f64; 3] {
 /// Play a synthesized note at a world position, spatialized by distance + pan.
 #[no_mangle]
 pub extern "C" fn aurora_play_sound_at(
-    semitone: i64, dur_ms: i64, gain_pct: i64, x: f64, y: f64, z: f64,
+    semitone: i64,
+    dur_ms: i64,
+    gain_pct: i64,
+    x: f64,
+    y: f64,
+    z: f64,
 ) {
     if headless_audio() {
         return;
@@ -2287,20 +2686,28 @@ pub unsafe extern "C" fn aurora_play_wav(ptr: *const u8, len: i64) -> i64 {
     if headless_audio() {
         return std::path::Path::new(&path).exists() as i64;
     }
-    let Ok(mut reader) = hound::WavReader::open(&path) else { return 0 };
+    let Ok(mut reader) = hound::WavReader::open(&path) else {
+        return 0;
+    };
     let spec = reader.spec();
     let ch = spec.channels.max(1) as usize;
     let raw: Vec<f32> = match spec.sample_format {
         hound::SampleFormat::Float => reader.samples::<f32>().filter_map(|s| s.ok()).collect(),
         hound::SampleFormat::Int => {
             let max = (1i64 << (spec.bits_per_sample - 1).max(1)) as f32;
-            reader.samples::<i32>().filter_map(|s| s.ok()).map(|s| s as f32 / max).collect()
+            reader
+                .samples::<i32>()
+                .filter_map(|s| s.ok())
+                .map(|s| s as f32 / max)
+                .collect()
         }
     };
     let mono: Vec<f32> = if ch <= 1 {
         raw
     } else {
-        raw.chunks(ch).map(|c| c.iter().sum::<f32>() / ch as f32).collect()
+        raw.chunks(ch)
+            .map(|c| c.iter().sum::<f32>() / ch as f32)
+            .collect()
     };
     if mono.is_empty() {
         return 0;
@@ -2346,20 +2753,28 @@ pub unsafe extern "C" fn aurora_load_sound(ptr: *const u8, len: i64) -> i64 {
         let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
         String::from_utf8_lossy(s).into_owned()
     };
-    let Ok(mut reader) = hound::WavReader::open(&path) else { return -1 };
+    let Ok(mut reader) = hound::WavReader::open(&path) else {
+        return -1;
+    };
     let spec = reader.spec();
     let ch = spec.channels.max(1) as usize;
     let raw: Vec<f32> = match spec.sample_format {
         hound::SampleFormat::Float => reader.samples::<f32>().filter_map(|s| s.ok()).collect(),
         hound::SampleFormat::Int => {
             let max = (1i64 << (spec.bits_per_sample - 1).max(1)) as f32;
-            reader.samples::<i32>().filter_map(|s| s.ok()).map(|s| s as f32 / max).collect()
+            reader
+                .samples::<i32>()
+                .filter_map(|s| s.ok())
+                .map(|s| s as f32 / max)
+                .collect()
         }
     };
     let mono: Vec<f32> = if ch <= 1 {
         raw
     } else {
-        raw.chunks(ch).map(|c| c.iter().sum::<f32>() / ch as f32).collect()
+        raw.chunks(ch)
+            .map(|c| c.iter().sum::<f32>() / ch as f32)
+            .collect()
     };
     if mono.is_empty() {
         return -1;
@@ -2568,7 +2983,12 @@ pub unsafe extern "C" fn aurora_dbg_enter(name_ptr: *const u8, name_len: i64) {
         let s = unsafe { std::slice::from_raw_parts(name_ptr, name_len.max(0) as usize) };
         String::from_utf8_lossy(s).into_owned()
     };
-    DEBUG.with(|d| d.borrow_mut().frames.push(Frame { func, vars: Vec::new() }));
+    DEBUG.with(|d| {
+        d.borrow_mut().frames.push(Frame {
+            func,
+            vars: Vec::new(),
+        })
+    });
 }
 
 #[no_mangle]
@@ -2740,10 +3160,16 @@ mod arena_tests {
         aurora_audio_listener(0.0, 0.0, 0.0, 0.0, 0.0, -1.0);
         // A sound to the player's RIGHT (+X when looking -Z) must pan RIGHT (pan > 0), not left.
         let (_, pan_right) = spatialize([10.0, 0.0, 0.0]);
-        assert!(pan_right > 0.9, "sound on the right should pan right, got {pan_right}");
+        assert!(
+            pan_right > 0.9,
+            "sound on the right should pan right, got {pan_right}"
+        );
         // ...and a sound to the LEFT (-X) must pan LEFT.
         let (_, pan_left) = spatialize([-10.0, 0.0, 0.0]);
-        assert!(pan_left < -0.9, "sound on the left should pan left, got {pan_left}");
+        assert!(
+            pan_left < -0.9,
+            "sound on the left should pan left, got {pan_left}"
+        );
     }
 
     #[test]
@@ -2819,7 +3245,9 @@ mod par_world_tests {
     /// Announce arrival, then park inside the batch so the window stays open.
     extern "C" fn hold_open() {
         HELD.fetch_add(1, Ordering::SeqCst);
-        wait_for("the test to release the batch", || RELEASE.load(Ordering::SeqCst) != 0);
+        wait_for("the test to release the batch", || {
+            RELEASE.load(Ordering::SeqCst) != 0
+        });
     }
 
     #[test]
@@ -2835,10 +3263,14 @@ mod par_world_tests {
             let fns = [hold_open as usize, hold_open as usize];
             // SAFETY: `fns` points to a live local array of addresses of `extern "C" fn`s
             // that outlive the call.
-            unsafe { aurora_run_parallel(fns.as_ptr(), 2); }
+            unsafe {
+                aurora_run_parallel(fns.as_ptr(), 2);
+            }
             aurora_entity_count()
         });
-        wait_for("both systems to enter the batch", || HELD.load(Ordering::SeqCst) == 2);
+        wait_for("both systems to enter the batch", || {
+            HELD.load(Ordering::SeqCst) == 2
+        });
 
         let b = std::thread::spawn(|| {
             for _ in 0..3 {
@@ -2852,8 +3284,14 @@ mod par_world_tests {
         RELEASE.store(1, Ordering::SeqCst);
         let a_count = a.join().expect("batch owner thread panicked");
 
-        assert_eq!(b_count, 3, "a thread outside the batch must see only its own entities");
-        assert_eq!(a_count, 5, "the batch's world must not absorb another thread's entities");
+        assert_eq!(
+            b_count, 3,
+            "a thread outside the batch must see only its own entities"
+        );
+        assert_eq!(
+            a_count, 5,
+            "the batch's world must not absorb another thread's entities"
+        );
     }
 
     static GATE: std::sync::OnceLock<std::sync::Barrier> = std::sync::OnceLock::new();
@@ -2877,7 +3315,9 @@ mod par_world_tests {
                 let fns = [spawn_two as usize, spawn_two as usize];
                 // SAFETY: `fns` points to a live local array of addresses of `extern "C" fn`s
                 // that outlive the call.
-                unsafe { aurora_run_parallel(fns.as_ptr(), 2); }
+                unsafe {
+                    aurora_run_parallel(fns.as_ptr(), 2);
+                }
                 aurora_entity_count()
             })
         };
@@ -2902,7 +3342,9 @@ mod par_world_tests {
         let fns = [spawn_one as usize, spawn_one as usize];
         // SAFETY: `fns` points to a live local array of addresses of `extern "C" fn`s
         // that outlive the call.
-        unsafe { aurora_run_parallel(fns.as_ptr(), 2); }
+        unsafe {
+            aurora_run_parallel(fns.as_ptr(), 2);
+        }
     }
 
     #[test]
@@ -2915,10 +3357,15 @@ mod par_world_tests {
             let fns = [nested_batch as usize, nested_batch as usize];
             // SAFETY: `fns` points to a live local array of addresses of `extern "C" fn`s
             // that outlive the call.
-            unsafe { aurora_run_parallel(fns.as_ptr(), 2); }
+            unsafe {
+                aurora_run_parallel(fns.as_ptr(), 2);
+            }
             aurora_entity_count()
         });
         let count = owner.join().expect("nested batch owner panicked");
-        assert_eq!(count, 4, "nested batch writes must land in the outer owner's world");
+        assert_eq!(
+            count, 4,
+            "nested batch writes must land in the outer owner's world"
+        );
     }
 }

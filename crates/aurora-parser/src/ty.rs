@@ -18,12 +18,18 @@ impl Parser {
             TokenKind::Kw(Keyword::UpperSelf) => {
                 let span = self.cur_span();
                 self.bump();
-                Ident { name: "Self".into(), span }
+                Ident {
+                    name: "Self".into(),
+                    span,
+                }
             }
             TokenKind::Kw(Keyword::LowerSelf) => {
                 let span = self.cur_span();
                 self.bump();
-                Ident { name: "self".into(), span }
+                Ident {
+                    name: "self".into(),
+                    span,
+                }
             }
             _ => self.ident(),
         }
@@ -35,7 +41,10 @@ impl Parser {
         if self.depth >= crate::MAX_PARSE_DEPTH {
             let span = self.cur_span();
             self.error(span, "type nests too deeply", "simplify this type");
-            return Type { kind: TypeKind::Error, span };
+            return Type {
+                kind: TypeKind::Error,
+                span,
+            };
         }
         self.depth += 1;
         let t = self.parse_type_inner();
@@ -71,7 +80,10 @@ impl Parser {
             TokenKind::Amp => {
                 self.bump();
                 let mutable = self.eat_kw(Keyword::Mut);
-                TypeKind::Ref { mutable, inner: Box::new(self.parse_type()) }
+                TypeKind::Ref {
+                    mutable,
+                    inner: Box::new(self.parse_type()),
+                }
             }
             TokenKind::LBracket => {
                 self.bump();
@@ -135,7 +147,10 @@ impl Parser {
                 TypeKind::Error
             }
         };
-        Type { kind, span: self.finish(start) }
+        Type {
+            kind,
+            span: self.finish(start),
+        }
     }
 
     /// Parse a `::`-separated path in **expression/value position**: a bare `<`
@@ -163,7 +178,10 @@ impl Parser {
             self.bump(); // ::
             segments.push(self.parse_path_seg(allow_generics));
         }
-        Path { segments, span: self.finish(start) }
+        Path {
+            segments,
+            span: self.finish(start),
+        }
     }
 
     fn parse_path_seg(&mut self, allow_generics: bool) -> PathSeg {

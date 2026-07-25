@@ -39,8 +39,14 @@ fn nested_program(tag: &str) -> PathBuf {
     program(
         tag,
         &[
-            ("main.aur", "mod mid;\nfn main() { println(mid::doubled()) }"),
-            ("mid.aur", "mod leaf;\nfn doubled() -> i64 { leaf::base() * 2 }"),
+            (
+                "main.aur",
+                "mod mid;\nfn main() { println(mid::doubled()) }",
+            ),
+            (
+                "mid.aur",
+                "mod leaf;\nfn doubled() -> i64 { leaf::base() * 2 }",
+            ),
             ("leaf.aur", "fn base() -> i64 { 10 }"),
         ],
     )
@@ -53,7 +59,11 @@ fn nested_program(tag: &str) -> PathBuf {
 fn check_counts_items_pulled_in_from_file_modules() {
     let out = aurorac("check", &nested_program("count"));
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "check failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "check failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     // main + mid::doubled + leaf::base
     assert!(
         stdout.contains("checked 3 item(s)"),
@@ -65,14 +75,29 @@ fn check_counts_items_pulled_in_from_file_modules() {
 /// could not be resolved. It has to fail, and say which path it looked for.
 #[test]
 fn check_fails_on_an_unresolvable_module() {
-    let entry = program("badmod", &[("main.aur", "mod nope;\nfn main() { println(1) }")]);
+    let entry = program(
+        "badmod",
+        &[("main.aur", "mod nope;\nfn main() { println(1) }")],
+    );
     let out = aurorac("check", &entry);
     let stderr = String::from_utf8_lossy(&out.stderr);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(!out.status.success(), "check passed an unresolvable module: {stdout}");
-    assert!(!stdout.contains("no errors"), "check reported a false green: {stdout}");
-    assert!(stderr.contains("E0110"), "expected an E0110 error, got: {stderr}");
-    assert!(stderr.contains("nope.aur"), "error must name the path looked for: {stderr}");
+    assert!(
+        !out.status.success(),
+        "check passed an unresolvable module: {stdout}"
+    );
+    assert!(
+        !stdout.contains("no errors"),
+        "check reported a false green: {stdout}"
+    );
+    assert!(
+        stderr.contains("E0110"),
+        "expected an E0110 error, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("nope.aur"),
+        "error must name the path looked for: {stderr}"
+    );
 }
 
 /// Items inside a file module are really checked, not merely loaded: a type error
@@ -88,8 +113,14 @@ fn check_reports_a_type_error_inside_a_file_module() {
     );
     let out = aurorac("check", &entry);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(!out.status.success(), "a type error in a module file was not reported");
-    assert!(stderr.contains("expected `i64`"), "expected a type error, got: {stderr}");
+    assert!(
+        !out.status.success(),
+        "a type error in a module file was not reported"
+    );
+    assert!(
+        stderr.contains("expected `i64`"),
+        "expected a type error, got: {stderr}"
+    );
 }
 
 /// End-to-end through the driver: a multi-file program compiles to native code
@@ -98,16 +129,26 @@ fn check_reports_a_type_error_inside_a_file_module() {
 fn run_executes_a_nested_multi_file_program() {
     let out = aurorac("run", &nested_program("run"));
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "run failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "run failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert_eq!(stdout.trim(), "20", "unexpected program output: {stdout}");
 }
 
 /// `run` must not execute a program with an unresolvable module either.
 #[test]
 fn run_fails_on_an_unresolvable_module() {
-    let entry = program("runbad", &[("main.aur", "mod nope;\nfn main() { println(1) }")]);
+    let entry = program(
+        "runbad",
+        &[("main.aur", "mod nope;\nfn main() { println(1) }")],
+    );
     let out = aurorac("run", &entry);
-    assert!(!out.status.success(), "run executed a program with an unresolved module");
+    assert!(
+        !out.status.success(),
+        "run executed a program with an unresolved module"
+    );
     assert!(
         String::from_utf8_lossy(&out.stderr).contains("E0110"),
         "expected an E0110 error, got: {}",
@@ -138,16 +179,25 @@ const HELPER_THE_BACKEND_CANNOT_LOWER: &str = "struct C { v: i64 }\n\
 /// evaluate to nothing.
 #[test]
 fn run_refuses_a_program_whose_helper_failed_to_compile() {
-    let entry = program("stubhelper", &[("main.aur", HELPER_THE_BACKEND_CANNOT_LOWER)]);
+    let entry = program(
+        "stubhelper",
+        &[("main.aur", HELPER_THE_BACKEND_CANNOT_LOWER)],
+    );
     let out = aurorac("run", &entry);
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(!out.status.success(), "run executed a program with a stubbed function: {stdout}");
+    assert!(
+        !out.status.success(),
+        "run executed a program with a stubbed function: {stdout}"
+    );
     assert!(
         !stdout.contains("main ran"),
         "the program must not run at all when a helper was stubbed: {stdout}"
     );
-    assert!(stderr.contains("helper"), "the error must name the function: {stderr}");
+    assert!(
+        stderr.contains("helper"),
+        "the error must name the function: {stderr}"
+    );
     assert!(
         stderr.contains("C::make"),
         "the error must say why the function failed: {stderr}"
@@ -158,12 +208,24 @@ fn run_refuses_a_program_whose_helper_failed_to_compile() {
 /// refusing, and for the same stated reason.
 #[test]
 fn build_refuses_a_program_whose_helper_failed_to_compile() {
-    let entry = program("stubhelperaot", &[("main.aur", HELPER_THE_BACKEND_CANNOT_LOWER)]);
+    let entry = program(
+        "stubhelperaot",
+        &[("main.aur", HELPER_THE_BACKEND_CANNOT_LOWER)],
+    );
     let out = aurorac("build", &entry);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(!out.status.success(), "build emitted a binary with a stubbed function");
-    assert!(stderr.contains("helper"), "the error must name the function: {stderr}");
-    assert!(stderr.contains("C::make"), "the error must say why: {stderr}");
+    assert!(
+        !out.status.success(),
+        "build emitted a binary with a stubbed function"
+    );
+    assert!(
+        stderr.contains("helper"),
+        "the error must name the function: {stderr}"
+    );
+    assert!(
+        stderr.contains("C::make"),
+        "the error must say why: {stderr}"
+    );
 }
 
 /// The unresolved-name form of the same bug reaches the type checker first, so
@@ -171,12 +233,24 @@ fn build_refuses_a_program_whose_helper_failed_to_compile() {
 #[test]
 fn run_and_build_reject_an_unknown_callee_in_a_helper() {
     for cmd in ["run", "build"] {
-        let entry = program(&format!("unknown_{cmd}"), &[("main.aur", UNKNOWN_CALLEE_IN_HELPER)]);
+        let entry = program(
+            &format!("unknown_{cmd}"),
+            &[("main.aur", UNKNOWN_CALLEE_IN_HELPER)],
+        );
         let out = aurorac(cmd, &entry);
         let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(!out.status.success(), "`{cmd}` accepted a call to a function that does not exist");
-        assert!(stderr.contains("E0313"), "`{cmd}`: expected E0313, got: {stderr}");
-        assert!(stderr.contains("no_such_fn"), "`{cmd}`: must name the callee: {stderr}");
+        assert!(
+            !out.status.success(),
+            "`{cmd}` accepted a call to a function that does not exist"
+        );
+        assert!(
+            stderr.contains("E0313"),
+            "`{cmd}`: expected E0313, got: {stderr}"
+        );
+        assert!(
+            stderr.contains("no_such_fn"),
+            "`{cmd}`: must name the callee: {stderr}"
+        );
     }
 }
 
@@ -188,22 +262,45 @@ fn check_rejects_an_unknown_function_called_from_a_helper() {
     let out = aurorac("check", &entry);
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(!out.status.success(), "check passed an unknown function: {stdout}");
-    assert!(!stdout.contains("no errors"), "check reported a false green: {stdout}");
-    assert!(stderr.contains("E0313"), "expected an E0313 error, got: {stderr}");
-    assert!(stderr.contains("no_such_fn"), "the error must name the callee: {stderr}");
+    assert!(
+        !out.status.success(),
+        "check passed an unknown function: {stdout}"
+    );
+    assert!(
+        !stdout.contains("no errors"),
+        "check reported a false green: {stdout}"
+    );
+    assert!(
+        stderr.contains("E0313"),
+        "expected an E0313 error, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("no_such_fn"),
+        "the error must name the callee: {stderr}"
+    );
 }
 
 /// The same unknown call directly in `main`.
 #[test]
 fn check_rejects_an_unknown_function_called_from_main() {
-    let entry =
-        program("checkmain", &[("main.aur", "fn main() { println(no_such_function_anywhere(1)) }")]);
+    let entry = program(
+        "checkmain",
+        &[(
+            "main.aur",
+            "fn main() { println(no_such_function_anywhere(1)) }",
+        )],
+    );
     let out = aurorac("check", &entry);
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(!out.status.success(), "check passed an unknown function in main: {stdout}");
-    assert!(!stdout.contains("no errors"), "check reported a false green: {stdout}");
+    assert!(
+        !out.status.success(),
+        "check passed an unknown function in main: {stdout}"
+    );
+    assert!(
+        !stdout.contains("no errors"),
+        "check reported a false green: {stdout}"
+    );
     assert!(
         stderr.contains("no_such_function_anywhere"),
         "the error must name the callee: {stderr}"
@@ -213,10 +310,18 @@ fn check_rejects_an_unknown_function_called_from_main() {
 /// `run` must reject it too, and agree with `check`: one program, one meaning.
 #[test]
 fn run_rejects_an_unknown_function_called_from_main() {
-    let entry =
-        program("runmain", &[("main.aur", "fn main() { println(no_such_function_anywhere(1)) }")]);
+    let entry = program(
+        "runmain",
+        &[(
+            "main.aur",
+            "fn main() { println(no_such_function_anywhere(1)) }",
+        )],
+    );
     let out = aurorac("run", &entry);
-    assert!(!out.status.success(), "run executed a call to a function that does not exist");
+    assert!(
+        !out.status.success(),
+        "run executed a call to a function that does not exist"
+    );
     assert!(
         String::from_utf8_lossy(&out.stderr).contains("no_such_function_anywhere"),
         "the error must name the callee: {}",
@@ -282,8 +387,14 @@ fn an_extern_declaration_still_checks_and_runs() {
 /// be accepted by both, and a program calling nothing real rejected by both.
 #[test]
 fn check_and_run_agree_on_the_same_program() {
-    let good = program("parity_ok", &[("main.aur", "fn main() { println(str(clamp01(2.0))) }")]);
-    let bad = program("parity_bad", &[("main.aur", "fn main() { println(str(clamp01x(2.0))) }")]);
+    let good = program(
+        "parity_ok",
+        &[("main.aur", "fn main() { println(str(clamp01(2.0))) }")],
+    );
+    let bad = program(
+        "parity_bad",
+        &[("main.aur", "fn main() { println(str(clamp01x(2.0))) }")],
+    );
     for (entry, want_ok, label) in [(&good, true, "prelude call"), (&bad, false, "typo'd call")] {
         let check = aurorac("check", entry);
         let run = aurorac("run", entry);
@@ -308,11 +419,24 @@ fn check_and_run_agree_on_the_same_program() {
 /// number is about the user's program, not the standard library.
 #[test]
 fn check_counts_only_the_users_items_not_the_prelude() {
-    let entry = program("countuser", &[("main.aur", "fn helper() -> i64 { 1 }\nfn main() { println(helper()) }")]);
+    let entry = program(
+        "countuser",
+        &[(
+            "main.aur",
+            "fn helper() -> i64 { 1 }\nfn main() { println(helper()) }",
+        )],
+    );
     let out = aurorac("check", &entry);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "check failed: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(stdout.contains("checked 2 item(s)"), "expected 2 checked items, got: {stdout}");
+    assert!(
+        out.status.success(),
+        "check failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("checked 2 item(s)"),
+        "expected 2 checked items, got: {stdout}"
+    );
 }
 
 /// `sys_arg` must mean the same thing whichever way a program was compiled, or
@@ -329,8 +453,15 @@ fn run_passes_the_programs_own_arguments() {
         .output()
         .expect("run aurorac");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "run failed: {}", String::from_utf8_lossy(&out.stderr));
-    assert_eq!(stdout.replace('\r', ""), expected_echo(entry.to_str().unwrap()));
+    assert!(
+        out.status.success(),
+        "run failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        stdout.replace('\r', ""),
+        expected_echo(entry.to_str().unwrap())
+    );
 }
 
 /// The same program built as a standalone executable, run with the same
@@ -340,7 +471,12 @@ fn a_built_executable_echoes_its_own_arguments() {
     let entry = program("sysargsaot", &[("main.aur", ECHO_ARGS)]);
     let exe = entry.with_file_name(if cfg!(windows) { "echo.exe" } else { "echo" });
     let build = Command::new(env!("CARGO_BIN_EXE_aurorac"))
-        .args(["build", entry.to_str().unwrap(), "-o", exe.to_str().unwrap()])
+        .args([
+            "build",
+            entry.to_str().unwrap(),
+            "-o",
+            exe.to_str().unwrap(),
+        ])
         .env("AURORA_HEADLESS", "1")
         .output()
         .expect("run aurorac build");
@@ -357,8 +493,15 @@ fn a_built_executable_echoes_its_own_arguments() {
         .output()
         .expect("run the built executable");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "exe failed: {}", String::from_utf8_lossy(&out.stderr));
-    assert_eq!(stdout.replace('\r', ""), expected_echo(exe.to_str().unwrap()));
+    assert!(
+        out.status.success(),
+        "exe failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        stdout.replace('\r', ""),
+        expected_echo(exe.to_str().unwrap())
+    );
 }
 
 /// Prints its whole argument vector, both out-of-range ends, and three env

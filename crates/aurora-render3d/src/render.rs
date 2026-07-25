@@ -24,25 +24,25 @@ pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct PointLightU {
-    pos_range: [f32; 4],  // xyz position, w range
-    color_int: [f32; 4],  // rgb color, w intensity
+    pos_range: [f32; 4], // xyz position, w range
+    color_int: [f32; 4], // rgb color, w intensity
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct GlobalsU {
     view_proj: [[f32; 4]; 4],
-    csm_vp: [[[f32; 4]; 4]; 4],   // per-cascade light view-projection (3 used)
+    csm_vp: [[[f32; 4]; 4]; 4], // per-cascade light view-projection (3 used)
     inv_view_proj: [[f32; 4]; 4], // for reconstructing skybox view rays
-    csm_splits: [f32; 4],         // cascade radii (x,y,z); selection by distance
+    csm_splits: [f32; 4],       // cascade radii (x,y,z); selection by distance
     cam_pos: [f32; 4],
-    dir_dir: [f32; 4],    // xyz direction toward the light, w intensity
-    dir_color: [f32; 4],  // rgb color, w ambient
-    fog_color: [f32; 4],  // rgb, w density (0 = no fog)
-    sky_top: [f32; 4],    // zenith color
+    dir_dir: [f32; 4],     // xyz direction toward the light, w intensity
+    dir_color: [f32; 4],   // rgb color, w ambient
+    fog_color: [f32; 4],   // rgb, w density (0 = no fog)
+    sky_top: [f32; 4],     // zenith color
     sky_horizon: [f32; 4], // horizon color
-    counts: [f32; 4],     // x = point light count, y = shadows on, z = sky on
-    screen: [f32; 4],     // x = width, y = height, z = ssao on
+    counts: [f32; 4],      // x = point light count, y = shadows on, z = sky on
+    screen: [f32; 4],      // x = width, y = height, z = ssao on
     lights: [PointLightU; MAX_LIGHTS],
 }
 
@@ -135,7 +135,10 @@ pub struct InstanceRaw {
 }
 impl InstanceRaw {
     pub fn new(model: Mat4, tint: [f32; 4]) -> InstanceRaw {
-        InstanceRaw { model: model.to_cols_array_2d(), tint }
+        InstanceRaw {
+            model: model.to_cols_array_2d(),
+            tint,
+        }
     }
     const LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
         array_stride: 80,
@@ -264,11 +267,21 @@ impl Renderer3D {
         let obj_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("object"),
             entries: &[
-                uniform_entry(0, wgpu::ShaderStages::VERTEX_FRAGMENT, true, Some(std::mem::size_of::<ObjU>() as u64)),
+                uniform_entry(
+                    0,
+                    wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    true,
+                    Some(std::mem::size_of::<ObjU>() as u64),
+                ),
                 uniform_entry(1, wgpu::ShaderStages::VERTEX, true, Some(JOINT_BYTES)),
             ],
         });
-        let mut mat_entries = vec![uniform_entry(0, wgpu::ShaderStages::FRAGMENT, false, Some(std::mem::size_of::<MatU>() as u64))];
+        let mut mat_entries = vec![uniform_entry(
+            0,
+            wgpu::ShaderStages::FRAGMENT,
+            false,
+            Some(std::mem::size_of::<MatU>() as u64),
+        )];
         for b in 1..=4 {
             mat_entries.push(wgpu::BindGroupLayoutEntry {
                 binding: b,
@@ -345,7 +358,12 @@ impl Renderer3D {
         });
         let pshadow_g_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("pshadow-face"),
-            entries: &[uniform_entry(5, wgpu::ShaderStages::VERTEX_FRAGMENT, true, Some(80))],
+            entries: &[uniform_entry(
+                5,
+                wgpu::ShaderStages::VERTEX_FRAGMENT,
+                true,
+                Some(80),
+            )],
         });
 
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -358,7 +376,13 @@ impl Renderer3D {
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("render3d"),
-            bind_group_layouts: &[&globals_layout, &obj_layout, &mat_layout, &ao_layout, &pshadow_layout],
+            bind_group_layouts: &[
+                &globals_layout,
+                &obj_layout,
+                &mat_layout,
+                &ao_layout,
+                &pshadow_layout,
+            ],
             push_constant_ranges: &[],
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -393,7 +417,10 @@ impl Renderer3D {
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
-            multisample: wgpu::MultisampleState { count: sample_count, ..Default::default() },
+            multisample: wgpu::MultisampleState {
+                count: sample_count,
+                ..Default::default()
+            },
             multiview: None,
             cache: None,
         });
@@ -457,9 +484,18 @@ impl Renderer3D {
             label: Some("globals"),
             layout: &globals_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: globals_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&shadow_array_view) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&shadow_cmp_sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: globals_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&shadow_array_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&shadow_cmp_sampler),
+                },
             ],
         });
         let shadow_globals_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -502,7 +538,11 @@ impl Renderer3D {
                 depth_write_enabled: true,
                 depth_compare: wgpu::CompareFunction::Less,
                 stencil: Default::default(),
-                bias: wgpu::DepthBiasState { constant: 2, slope_scale: 2.0, clamp: 0.0 },
+                bias: wgpu::DepthBiasState {
+                    constant: 2,
+                    slope_scale: 2.0,
+                    clamp: 0.0,
+                },
             }),
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
@@ -542,7 +582,10 @@ impl Renderer3D {
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
-            multisample: wgpu::MultisampleState { count: sample_count, ..Default::default() },
+            multisample: wgpu::MultisampleState {
+                count: sample_count,
+                ..Default::default()
+            },
             multiview: None,
             cache: None,
         });
@@ -583,7 +626,10 @@ impl Renderer3D {
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
-            multisample: wgpu::MultisampleState { count: sample_count, ..Default::default() },
+            multisample: wgpu::MultisampleState {
+                count: sample_count,
+                ..Default::default()
+            },
             multiview: None,
             cache: None,
         });
@@ -601,7 +647,13 @@ impl Renderer3D {
             label: Some("inst"),
             // Same group indices as the main pipeline (globals=0, object=1 unused,
             // material=2, ao=3, point-shadow=4) so shared bindings keep their @group.
-            bind_group_layouts: &[&globals_layout, &obj_layout, &mat_layout, &ao_layout, &pshadow_layout],
+            bind_group_layouts: &[
+                &globals_layout,
+                &obj_layout,
+                &mat_layout,
+                &ao_layout,
+                &pshadow_layout,
+            ],
             push_constant_ranges: &[],
         });
         let inst_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -636,7 +688,10 @@ impl Renderer3D {
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
-            multisample: wgpu::MultisampleState { count: sample_count, ..Default::default() },
+            multisample: wgpu::MultisampleState {
+                count: sample_count,
+                ..Default::default()
+            },
             multiview: None,
             cache: None,
         });
@@ -666,7 +721,11 @@ impl Renderer3D {
                 depth_write_enabled: true,
                 depth_compare: wgpu::CompareFunction::Less,
                 stencil: Default::default(),
-                bias: wgpu::DepthBiasState { constant: 2, slope_scale: 2.0, clamp: 0.0 },
+                bias: wgpu::DepthBiasState {
+                    constant: 2,
+                    slope_scale: 2.0,
+                    clamp: 0.0,
+                },
             }),
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
@@ -694,7 +753,13 @@ impl Renderer3D {
         let (obj_buf, joint_buf, obj_bg) = make_ring(device, &obj_layout, obj_cap, joint_cap);
         let depth = make_depth(device, w.max(1), h.max(1), sample_count);
         let msaa_color = if sample_count > 1 {
-            Some(make_msaa_color(device, color_format, w.max(1), h.max(1), sample_count))
+            Some(make_msaa_color(
+                device,
+                color_format,
+                w.max(1),
+                h.max(1),
+                sample_count,
+            ))
         } else {
             None
         };
@@ -709,15 +774,35 @@ impl Renderer3D {
         let prepass_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("prepass"),
             layout: Some(&prepass_pl),
-            vertex: wgpu::VertexState { module: &module, entry_point: "vs", compilation_options: Default::default(), buffers: &[Vertex::LAYOUT] },
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: "vs",
+                compilation_options: Default::default(),
+                buffers: &[Vertex::LAYOUT],
+            },
             fragment: Some(wgpu::FragmentState {
                 module: &module,
                 entry_point: "fs_prepass",
                 compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba16Float, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba16Float,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
             }),
-            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: Some(wgpu::Face::Back), front_face: wgpu::FrontFace::Ccw, ..Default::default() },
-            depth_stencil: Some(wgpu::DepthStencilState { format: DEPTH_FORMAT, depth_write_enabled: true, depth_compare: wgpu::CompareFunction::Less, stencil: Default::default(), bias: Default::default() }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: Some(wgpu::Face::Back),
+                front_face: wgpu::FrontFace::Ccw,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
             cache: None,
@@ -727,32 +812,62 @@ impl Renderer3D {
             bind_group_layouts: &[&globals_layout],
             push_constant_ranges: &[],
         });
-        let prepass_inst_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("prepass-inst"),
-            layout: Some(&prepass_inst_pl),
-            vertex: wgpu::VertexState { module: &module, entry_point: "vs_inst", compilation_options: Default::default(), buffers: &[Vertex::LAYOUT, InstanceRaw::LAYOUT] },
-            fragment: Some(wgpu::FragmentState {
-                module: &module,
-                entry_point: "fs_prepass_inst",
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba16Float, blend: None, write_mask: wgpu::ColorWrites::ALL })],
-            }),
-            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: Some(wgpu::Face::Back), front_face: wgpu::FrontFace::Ccw, ..Default::default() },
-            depth_stencil: Some(wgpu::DepthStencilState { format: DEPTH_FORMAT, depth_write_enabled: true, depth_compare: wgpu::CompareFunction::Less, stencil: Default::default(), bias: Default::default() }),
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
+        let prepass_inst_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("prepass-inst"),
+                layout: Some(&prepass_inst_pl),
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: "vs_inst",
+                    compilation_options: Default::default(),
+                    buffers: &[Vertex::LAYOUT, InstanceRaw::LAYOUT],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: "fs_prepass_inst",
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba16Float,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    cull_mode: Some(wgpu::Face::Back),
+                    front_face: wgpu::FrontFace::Ccw,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: true,
+                    depth_compare: wgpu::CompareFunction::Less,
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            });
         let fullscreen_pipe = |layout: &wgpu::PipelineLayout, fs: &str| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("ssao-pass"),
                 layout: Some(layout),
-                vertex: wgpu::VertexState { module: &ssao_module, entry_point: "vs_fs", compilation_options: Default::default(), buffers: &[] },
+                vertex: wgpu::VertexState {
+                    module: &ssao_module,
+                    entry_point: "vs_fs",
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
                 fragment: Some(wgpu::FragmentState {
                     module: &ssao_module,
                     entry_point: fs,
                     compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::R8Unorm, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::R8Unorm,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
                 }),
                 primitive: wgpu::PrimitiveState::default(),
                 depth_stencil: None,
@@ -761,8 +876,16 @@ impl Renderer3D {
                 cache: None,
             })
         };
-        let ssao_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("ssao"), bind_group_layouts: &[&ssao_layout], push_constant_ranges: &[] });
-        let blur_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("blur"), bind_group_layouts: &[&blur_layout], push_constant_ranges: &[] });
+        let ssao_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("ssao"),
+            bind_group_layouts: &[&ssao_layout],
+            push_constant_ranges: &[],
+        });
+        let blur_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("blur"),
+            bind_group_layouts: &[&blur_layout],
+            push_constant_ranges: &[],
+        });
         let ssao_pipeline = fullscreen_pipe(&ssao_pl, "fs_ssao");
         let blur_pipeline = fullscreen_pipe(&blur_pl, "fs_blur");
 
@@ -772,18 +895,37 @@ impl Renderer3D {
             label: Some("ao-white"),
             layout: &ao_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&white_ao) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&white_ao),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
             ],
         });
         // SSAO runs at HALF resolution (AO is low-frequency; fs_ssao samples by UV with a world-space
         // radius, so it's resolution-independent). Quarters the SSAO prepass+occlusion+blur fillrate.
-        let ssao = build_ssao(device, &ssao_layout, &blur_layout, &ao_layout, &globals_buf, &sampler, (w / 2).max(1), (h / 2).max(1));
+        let ssao = build_ssao(
+            device,
+            &ssao_layout,
+            &blur_layout,
+            &ao_layout,
+            &globals_buf,
+            &sampler,
+            (w / 2).max(1),
+            (h / 2).max(1),
+        );
 
         // Point-light shadow cube: 6 faces of distance-to-light (R16Float).
         let pcube_tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("pcube"),
-            size: wgpu::Extent3d { width: PCUBE_SIZE, height: PCUBE_SIZE, depth_or_array_layers: 6 },
+            size: wgpu::Extent3d {
+                width: PCUBE_SIZE,
+                height: PCUBE_SIZE,
+                depth_or_array_layers: 6,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -810,7 +952,11 @@ impl Renderer3D {
         let pshadow_depth = device
             .create_texture(&wgpu::TextureDescriptor {
                 label: Some("pcube-depth"),
-                size: wgpu::Extent3d { width: PCUBE_SIZE, height: PCUBE_SIZE, depth_or_array_layers: 1 },
+                size: wgpu::Extent3d {
+                    width: PCUBE_SIZE,
+                    height: PCUBE_SIZE,
+                    depth_or_array_layers: 1,
+                },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
@@ -841,8 +987,14 @@ impl Renderer3D {
             label: Some("pcube"),
             layout: &pshadow_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&pcube_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&pcube_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
             ],
         });
         let pshadow_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -853,15 +1005,35 @@ impl Renderer3D {
         let pshadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("pshadow"),
             layout: Some(&pshadow_pl),
-            vertex: wgpu::VertexState { module: &module, entry_point: "vs_pshadow", compilation_options: Default::default(), buffers: &[Vertex::LAYOUT] },
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: "vs_pshadow",
+                compilation_options: Default::default(),
+                buffers: &[Vertex::LAYOUT],
+            },
             fragment: Some(wgpu::FragmentState {
                 module: &module,
                 entry_point: "fs_pshadow",
                 compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::R16Float, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::R16Float,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
             }),
-            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, front_face: wgpu::FrontFace::Ccw, ..Default::default() },
-            depth_stencil: Some(wgpu::DepthStencilState { format: DEPTH_FORMAT, depth_write_enabled: true, depth_compare: wgpu::CompareFunction::Less, stencil: Default::default(), bias: Default::default() }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                front_face: wgpu::FrontFace::Ccw,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
             cache: None,
@@ -880,7 +1052,10 @@ impl Renderer3D {
             sky_horizon: [0.70, 0.80, 0.92, 1.0],
             counts: [0.0, 1.0, 0.0, 0.0],
             screen: [w.max(1) as f32, h.max(1) as f32, 1.0, 0.0],
-            lights: [PointLightU { pos_range: [0.0; 4], color_int: [0.0; 4] }; MAX_LIGHTS],
+            lights: [PointLightU {
+                pos_range: [0.0; 4],
+                color_int: [0.0; 4],
+            }; MAX_LIGHTS],
         };
 
         let mut r = Renderer3D {
@@ -955,11 +1130,23 @@ impl Renderer3D {
         if (w, h) != self.depth_size && w > 0 && h > 0 {
             self.depth = make_depth(device, w, h, self.sample_count);
             if self.sample_count > 1 {
-                self.msaa_color = Some(make_msaa_color(device, self.color_format, w, h, self.sample_count));
+                self.msaa_color = Some(make_msaa_color(
+                    device,
+                    self.color_format,
+                    w,
+                    h,
+                    self.sample_count,
+                ));
             }
             self.ssao = build_ssao(
-                device, &self.ssao_layout, &self.blur_layout, &self.ao_layout, &self.globals_buf,
-                &self.sampler, (w / 2).max(1), (h / 2).max(1),
+                device,
+                &self.ssao_layout,
+                &self.blur_layout,
+                &self.ao_layout,
+                &self.globals_buf,
+                &self.sampler,
+                (w / 2).max(1),
+                (h / 2).max(1),
             );
             self.depth_size = (w, h);
         }
@@ -1047,8 +1234,14 @@ impl Renderer3D {
 
     /// Queue a world-space debug line segment.
     pub fn debug_line(&mut self, a: Vec3, b: Vec3, color: Vec3) {
-        self.line_verts.push(LineVert { pos: a.into(), color: color.into() });
-        self.line_verts.push(LineVert { pos: b.into(), color: color.into() });
+        self.line_verts.push(LineVert {
+            pos: a.into(),
+            color: color.into(),
+        });
+        self.line_verts.push(LineVert {
+            pos: b.into(),
+            color: color.into(),
+        });
     }
 
     pub fn add_material(
@@ -1110,15 +1303,36 @@ impl Renderer3D {
             label: Some("material"),
             layout: &self.mat_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: ubuf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&base_v) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&normal_v) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&mr_v) },
-                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&em_v) },
-                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: ubuf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&base_v),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&normal_v),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&mr_v),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&em_v),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
             ],
         });
-        Material { bind_group, transparent: desc.base_color[3] < 0.999 }
+        Material {
+            bind_group,
+            transparent: desc.base_color[3] < 0.999,
+        }
     }
 
     /// The current camera view-projection matrix.
@@ -1139,31 +1353,80 @@ impl Renderer3D {
         self.inst_cmds.clear();
     }
 
-    pub fn draw(&mut self, mesh: usize, material: usize, model: Mat4, joints: Option<Arc<Vec<Mat4>>>) {
+    pub fn draw(
+        &mut self,
+        mesh: usize,
+        material: usize,
+        model: Mat4,
+        joints: Option<Arc<Vec<Mat4>>>,
+    ) {
         self.draw_tint(mesh, material, model, joints, [0.0, 0.0, 0.0]);
     }
 
     /// Like [`draw`] but adds a per-draw RGB `tint` OFFSET to the albedo (identity (0,0,0)).
-    pub fn draw_tint(&mut self, mesh: usize, material: usize, model: Mat4, joints: Option<Arc<Vec<Mat4>>>, tint: [f32; 3]) {
+    pub fn draw_tint(
+        &mut self,
+        mesh: usize,
+        material: usize,
+        model: Mat4,
+        joints: Option<Arc<Vec<Mat4>>>,
+        tint: [f32; 3],
+    ) {
         if mesh < self.meshes.len() {
-            let material = if material < self.materials.len() { material } else { 0 };
-            self.queue_cmds.push(DrawCmd { mesh, material, model, joints, tint, shield: [0.0, 0.0], viewmodel: self.vm_mode });
+            let material = if material < self.materials.len() {
+                material
+            } else {
+                0
+            };
+            self.queue_cmds.push(DrawCmd {
+                mesh,
+                material,
+                model,
+                joints,
+                tint,
+                shield: [0.0, 0.0],
+                viewmodel: self.vm_mode,
+            });
         }
     }
 
     /// Like [`draw`] but adds an energy-shield Fresnel rim (cyan crackle, `strength` 0..1,
     /// animated by `time`). Tint stays neutral.
-    pub fn draw_shield(&mut self, mesh: usize, material: usize, model: Mat4, joints: Option<Arc<Vec<Mat4>>>, strength: f32, time: f32) {
+    pub fn draw_shield(
+        &mut self,
+        mesh: usize,
+        material: usize,
+        model: Mat4,
+        joints: Option<Arc<Vec<Mat4>>>,
+        strength: f32,
+        time: f32,
+    ) {
         if mesh < self.meshes.len() {
-            let material = if material < self.materials.len() { material } else { 0 };
-            self.queue_cmds.push(DrawCmd { mesh, material, model, joints, tint: [0.0, 0.0, 0.0], shield: [strength, time], viewmodel: self.vm_mode });
+            let material = if material < self.materials.len() {
+                material
+            } else {
+                0
+            };
+            self.queue_cmds.push(DrawCmd {
+                mesh,
+                material,
+                model,
+                joints,
+                tint: [0.0, 0.0, 0.0],
+                shield: [strength, time],
+                viewmodel: self.vm_mode,
+            });
         }
     }
 
     /// Draw `mesh`/`material` once per instance in a single instanced draw call.
     pub fn draw_instanced(&mut self, mesh: usize, material: usize, instances: Vec<InstanceRaw>) {
         if mesh < self.meshes.len() && !instances.is_empty() {
-            let material = if material < self.materials.len() { material } else { 0 };
+            let material = if material < self.materials.len() {
+                material
+            } else {
+                0
+            };
             self.inst_cmds.push((mesh, material, instances));
         }
     }
@@ -1178,19 +1441,29 @@ impl Renderer3D {
     ) {
         // Cascaded shadow maps: concentric orthographic boxes of increasing size
         // centered on the camera, each crisper near and coarser far.
-        let d = Vec3::new(self.globals.dir_dir[0], self.globals.dir_dir[1], self.globals.dir_dir[2])
-            .normalize_or_zero();
-        let center = Vec3::new(self.globals.cam_pos[0], self.globals.cam_pos[1], self.globals.cam_pos[2]);
+        let d = Vec3::new(
+            self.globals.dir_dir[0],
+            self.globals.dir_dir[1],
+            self.globals.dir_dir[2],
+        )
+        .normalize_or_zero();
+        let center = Vec3::new(
+            self.globals.cam_pos[0],
+            self.globals.cam_pos[1],
+            self.globals.cam_pos[2],
+        );
         let up = if d.y.abs() > 0.95 { Vec3::Z } else { Vec3::Y };
         let factors = [0.12f32, 0.4, 1.0];
         let mut csm_bytes = vec![0u8; NUM_CASCADES * 256];
         for i in 0..NUM_CASCADES {
             let e = self.shadow_extent * factors[i];
             let eye = center + d * (e * 2.0);
-            let vp = Mat4::orthographic_rh(-e, e, -e, e, 0.1, e * 4.5) * Mat4::look_at_rh(eye, center, up);
+            let vp = Mat4::orthographic_rh(-e, e, -e, e, 0.1, e * 4.5)
+                * Mat4::look_at_rh(eye, center, up);
             self.globals.csm_vp[i] = vp.to_cols_array_2d();
             self.globals.csm_splits[i] = e;
-            csm_bytes[i * 256..i * 256 + 64].copy_from_slice(bytemuck::bytes_of(&vp.to_cols_array()));
+            csm_bytes[i * 256..i * 256 + 64]
+                .copy_from_slice(bytemuck::bytes_of(&vp.to_cols_array()));
         }
         self.globals.counts[1] = if self.shadows_on { 1.0 } else { 0.0 };
         let do_pshadow = self.point_shadows_on && self.globals.counts[0] >= 1.0;
@@ -1207,7 +1480,11 @@ impl Renderer3D {
 
         let stride = OBJ_ALIGN;
         let n = self.queue_cmds.len() as u64;
-        let skinned: u64 = self.queue_cmds.iter().filter(|c| c.joints.is_some()).count() as u64;
+        let skinned: u64 = self
+            .queue_cmds
+            .iter()
+            .filter(|c| c.joints.is_some())
+            .count() as u64;
         let joint_blocks = skinned + 1;
         if n > self.obj_cap || joint_blocks > self.joint_cap {
             self.obj_cap = n.max(1).next_power_of_two().max(self.obj_cap);
@@ -1313,8 +1590,17 @@ impl Renderer3D {
         // matrix (selected by dynamic offset into the per-cascade buffer). Each object is drawn
         // ONLY into the cascades its bounding sphere actually reaches (per-cascade cull below), so
         // near objects no longer get rasterized into all three concentric cascades.
-        let shadow_light = Vec3::new(self.globals.dir_dir[0], self.globals.dir_dir[1], self.globals.dir_dir[2]).normalize_or_zero();
-        let shadow_cam = Vec3::new(self.globals.cam_pos[0], self.globals.cam_pos[1], self.globals.cam_pos[2]);
+        let shadow_light = Vec3::new(
+            self.globals.dir_dir[0],
+            self.globals.dir_dir[1],
+            self.globals.dir_dir[2],
+        )
+        .normalize_or_zero();
+        let shadow_cam = Vec3::new(
+            self.globals.cam_pos[0],
+            self.globals.cam_pos[1],
+            self.globals.cam_pos[2],
+        );
         if self.shadows_on {
             for cascade in 0..NUM_CASCADES {
                 let off = (cascade * 256) as u32;
@@ -1337,9 +1623,11 @@ impl Renderer3D {
                 sp.set_bind_group(0, &self.shadow_globals_bg, &[off]);
                 for (ci, &(obj_off, joint_off)) in offsets.iter().enumerate() {
                     let cmd = &self.queue_cmds[ci];
-                    if cmd.viewmodel { continue; }   // viewmodels never cast world shadows
-                    // Skip objects whose shadow can't land in this cascade's footprint (kept for
-                    // every cascade they DO reach, so no shadow is lost - see caster_in_cascade).
+                    if cmd.viewmodel {
+                        continue;
+                    } // viewmodels never cast world shadows
+                      // Skip objects whose shadow can't land in this cascade's footprint (kept for
+                      // every cascade they DO reach, so no shadow is lost - see caster_in_cascade).
                     if self.frustum_cull {
                         let (center, radius) = cull_bounds(&cmd.model, self.mesh_radius[cmd.mesh]);
                         if !caster_in_cascade(center, radius, shadow_cam, shadow_light, e) {
@@ -1374,11 +1662,17 @@ impl Renderer3D {
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: &self.ssao.prepass_color,
                         resolve_target: None,
-                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
                     })],
                     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                         view: &self.ssao.prepass_depth,
-                        depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
                         stencil_ops: None,
                     }),
                     timestamp_writes: None,
@@ -1388,11 +1682,15 @@ impl Renderer3D {
                 pp.set_bind_group(0, &self.globals_bg, &[]);
                 for (ci, &(obj_off, joint_off)) in offsets.iter().enumerate() {
                     let cmd = &self.queue_cmds[ci];
-                    if cmd.viewmodel { continue; }   // viewmodels don't belong in the AO geometry
-                    // SSAO only affects on-screen pixels - cull to the camera frustum like the main pass.
+                    if cmd.viewmodel {
+                        continue;
+                    } // viewmodels don't belong in the AO geometry
+                      // SSAO only affects on-screen pixels - cull to the camera frustum like the main pass.
                     if self.frustum_cull {
                         let (center, radius) = cull_bounds(&cmd.model, self.mesh_radius[cmd.mesh]);
-                        if !sphere_in_frustum(&cam_planes, center, radius) { continue; }
+                        if !sphere_in_frustum(&cam_planes, center, radius) {
+                            continue;
+                        }
                     }
                     let m = &self.meshes[cmd.mesh];
                     pp.set_bind_group(1, &self.obj_bg, &[obj_off, joint_off]);
@@ -1414,15 +1712,26 @@ impl Renderer3D {
             }
             // Occlusion + blur (fullscreen).
             for (pipe, bg, target) in [
-                (&self.ssao_pipeline, &self.ssao.ssao_input_bg, &self.ssao.ssao_view),
-                (&self.blur_pipeline, &self.ssao.blur_input_bg, &self.ssao.blur_view),
+                (
+                    &self.ssao_pipeline,
+                    &self.ssao.ssao_input_bg,
+                    &self.ssao.ssao_view,
+                ),
+                (
+                    &self.blur_pipeline,
+                    &self.ssao.blur_input_bg,
+                    &self.ssao.blur_view,
+                ),
             ] {
                 let mut fp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("ssao-fs"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: target,
                         resolve_target: None,
-                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::WHITE), store: wgpu::StoreOp::Store },
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                            store: wgpu::StoreOp::Store,
+                        },
                     })],
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
@@ -1455,7 +1764,8 @@ impl Renderer3D {
             let mut pf_bytes = vec![0u8; 6 * 256];
             for (i, (dir, up)) in faces.iter().enumerate() {
                 let vp = proj * Mat4::look_at_rh(lp, lp + *dir, *up);
-                pf_bytes[i * 256..i * 256 + 64].copy_from_slice(bytemuck::bytes_of(&vp.to_cols_array()));
+                pf_bytes[i * 256..i * 256 + 64]
+                    .copy_from_slice(bytemuck::bytes_of(&vp.to_cols_array()));
                 pf_bytes[i * 256 + 64..i * 256 + 80]
                     .copy_from_slice(bytemuck::bytes_of(&[lp.x, lp.y, lp.z, 1.0f32]));
             }
@@ -1468,13 +1778,21 @@ impl Renderer3D {
                         view: &self.pshadow_face_views[face],
                         resolve_target: None,
                         ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color { r: far as f64, g: far as f64, b: far as f64, a: far as f64 }),
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: far as f64,
+                                g: far as f64,
+                                b: far as f64,
+                                a: far as f64,
+                            }),
                             store: wgpu::StoreOp::Store,
                         },
                     })],
                     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                         view: &self.pshadow_depth,
-                        depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
                         stencil_ops: None,
                     }),
                     timestamp_writes: None,
@@ -1529,7 +1847,11 @@ impl Renderer3D {
             pass.set_bind_group(0, &self.globals_bg, &[]);
             pass.draw(0..3, 0..1);
         }
-        let ao_bg = if self.ssao_on { &self.ssao.ao_bg } else { &self.ao_bg_white };
+        let ao_bg = if self.ssao_on {
+            &self.ssao.ao_bg
+        } else {
+            &self.ao_bg_white
+        };
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.globals_bg, &[]);
         pass.set_bind_group(3, ao_bg, &[]);
@@ -1614,7 +1936,10 @@ fn caster_in_cascade(center: Vec3, radius: f32, cam: Vec3, light: Vec3, e: f32) 
 /// frustum cull (single source of truth so the camera and main passes test identical bounds).
 fn cull_bounds(model: &Mat4, mesh_radius: f32) -> (Vec3, f32) {
     let center = model.w_axis.truncate();
-    let scale = model.x_axis.truncate().length()
+    let scale = model
+        .x_axis
+        .truncate()
+        .length()
         .max(model.y_axis.truncate().length())
         .max(model.z_axis.truncate().length());
     (center, mesh_radius * scale)
@@ -1682,7 +2007,9 @@ fn make_ring(
                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                     buffer: &obj_buf,
                     offset: 0,
-                    size: Some(std::num::NonZeroU64::new(std::mem::size_of::<ObjU>() as u64).unwrap()),
+                    size: Some(
+                        std::num::NonZeroU64::new(std::mem::size_of::<ObjU>() as u64).unwrap(),
+                    ),
                 }),
             },
             wgpu::BindGroupEntry {
@@ -1701,7 +2028,11 @@ fn make_ring(
 fn make_depth(device: &wgpu::Device, w: u32, h: u32, samples: u32) -> wgpu::TextureView {
     let tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("depth"),
-        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: samples,
         dimension: wgpu::TextureDimension::D2,
@@ -1738,12 +2069,17 @@ fn build_ssao(
         device
             .create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
-                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                size: wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             })
             .create_view(&wgpu::TextureViewDescriptor::default())
@@ -1756,34 +2092,73 @@ fn build_ssao(
         label: Some("ssao-in"),
         layout: ssao_layout,
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: globals_buf.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&prepass_color) },
-            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(sampler) },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: globals_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&prepass_color),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
         ],
     });
     let blur_input_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("blur-in"),
         layout: blur_layout,
         entries: &[
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&ssao_view) },
-            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(sampler) },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&ssao_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
         ],
     });
     let ao_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("ao"),
         layout: ao_layout,
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&blur_view) },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&blur_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
         ],
     });
-    Ssao { prepass_color, prepass_depth, ssao_view, blur_view, ssao_input_bg, blur_input_bg, ao_bg }
+    Ssao {
+        prepass_color,
+        prepass_depth,
+        ssao_view,
+        blur_view,
+        ssao_input_bg,
+        blur_input_bg,
+        ao_bg,
+    }
 }
 
-fn make_msaa_color(device: &wgpu::Device, format: wgpu::TextureFormat, w: u32, h: u32, samples: u32) -> wgpu::TextureView {
+fn make_msaa_color(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    w: u32,
+    h: u32,
+    samples: u32,
+) -> wgpu::TextureView {
     let tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("msaa-color"),
-        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: samples,
         dimension: wgpu::TextureDimension::D2,
@@ -1794,11 +2169,26 @@ fn make_msaa_color(device: &wgpu::Device, format: wgpu::TextureFormat, w: u32, h
     tex.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
-fn make_tex(device: &wgpu::Device, queue: &wgpu::Queue, px: &[u8], w: u32, h: u32, srgb: bool) -> wgpu::TextureView {
-    let format = if srgb { wgpu::TextureFormat::Rgba8UnormSrgb } else { wgpu::TextureFormat::Rgba8Unorm };
+fn make_tex(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    px: &[u8],
+    w: u32,
+    h: u32,
+    srgb: bool,
+) -> wgpu::TextureView {
+    let format = if srgb {
+        wgpu::TextureFormat::Rgba8UnormSrgb
+    } else {
+        wgpu::TextureFormat::Rgba8Unorm
+    };
     let tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("tex"),
-        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -1807,15 +2197,33 @@ fn make_tex(device: &wgpu::Device, queue: &wgpu::Queue, px: &[u8], w: u32, h: u3
         view_formats: &[],
     });
     queue.write_texture(
-        wgpu::ImageCopyTexture { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+        wgpu::ImageCopyTexture {
+            texture: &tex,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
         px,
-        wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(h) },
-        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        wgpu::ImageDataLayout {
+            offset: 0,
+            bytes_per_row: Some(w * 4),
+            rows_per_image: Some(h),
+        },
+        wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
     );
     tex.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
-fn make_pixel_tex(device: &wgpu::Device, queue: &wgpu::Queue, rgba: [u8; 4], srgb: bool) -> wgpu::TextureView {
+fn make_pixel_tex(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    rgba: [u8; 4],
+    srgb: bool,
+) -> wgpu::TextureView {
     make_tex(device, queue, &rgba, 1, 1, srgb)
 }
 

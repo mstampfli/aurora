@@ -9,10 +9,9 @@
 mod engine;
 mod synth;
 pub use engine::{
-    active_voices, device_rate, leak as leak_audio, play as play_mixed,
-    play_ambience, play_music, play_spatial as play_mixed_spatial, play_spatial_arc as play_mixed_arc,
-    set_ambience_gain, set_music_gain, set_volume, start as start_engine, stop_all, stop_ambience,
-    stop_music,
+    active_voices, device_rate, leak as leak_audio, play as play_mixed, play_ambience, play_music,
+    play_spatial as play_mixed_spatial, play_spatial_arc as play_mixed_arc, set_ambience_gain,
+    set_music_gain, set_volume, start as start_engine, stop_all, stop_ambience, stop_music,
 };
 pub use synth::{mix, pitch, render_sequence, Adsr, Note, Wave};
 
@@ -29,7 +28,9 @@ pub fn play(samples: &[f32], sample_rate: u32) -> Result<(), String> {
         return Ok(());
     }
     let host = cpal::default_host();
-    let device = host.default_output_device().ok_or("no audio output device")?;
+    let device = host
+        .default_output_device()
+        .ok_or("no audio output device")?;
     let config = device
         .default_output_config()
         .map_err(|e| format!("default output config: {e}"))?;
@@ -113,9 +114,14 @@ fn build_stream(
 
     match config.sample_format() {
         cpal::SampleFormat::F32 => make!(f32, |s: f32| s),
-        cpal::SampleFormat::I16 => make!(i16, |s: f32| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16),
+        cpal::SampleFormat::I16 => {
+            make!(i16, |s: f32| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
+        }
         cpal::SampleFormat::U16 => {
-            make!(u16, |s: f32| (((s.clamp(-1.0, 1.0) + 1.0) * 0.5) * u16::MAX as f32) as u16)
+            make!(
+                u16,
+                |s: f32| (((s.clamp(-1.0, 1.0) + 1.0) * 0.5) * u16::MAX as f32) as u16
+            )
         }
         other => Err(format!("unsupported sample format: {other:?}")),
     }
@@ -125,7 +131,9 @@ fn build_stream(
 pub fn demo_melody(sample_rate: u32) -> Vec<f32> {
     // C major arpeggio: C4 E4 G4 C5 (semitones from A4).
     let steps = [-9, -5, -2, 3];
-    let notes: Vec<Note> =
-        steps.iter().map(|&s| Note::new(pitch(s), 0.22).wave(Wave::Triangle).gain(0.6)).collect();
+    let notes: Vec<Note> = steps
+        .iter()
+        .map(|&s| Note::new(pitch(s), 0.22).wave(Wave::Triangle).gain(0.6))
+        .collect();
     render_sequence(&notes, sample_rate)
 }

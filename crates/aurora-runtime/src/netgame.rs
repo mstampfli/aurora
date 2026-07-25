@@ -29,10 +29,10 @@ const TAG_PROJECTILE: u8 = 8; // client -> host: I LAUNCHED a rocket/grenade (in
 const TAG_FX: u8 = 9; // host -> clients: transient visuals (loot drops + in-flight projectiles)
 const TAG_SHOTFX: u8 = 10; // host -> clients: a shot was fired (shooter, origin, endpoint, weapon)
                            // so every machine can draw the tracer + play the fire sound.
-const TAG_LEAVE: u8 = 11;  // client -> host: I'm leaving the lobby (remove me now, don't wait for timeout)
-const TAG_BOOM: u8 = 12;   // host -> clients: an explosion detonated (source, point, intensity) so every
-                           // machine renders the blast flash + sparks + boom sound. The machine that
-                           // CAUSED it (source == my id) skips its own (it predicted the blast locally).
+const TAG_LEAVE: u8 = 11; // client -> host: I'm leaving the lobby (remove me now, don't wait for timeout)
+const TAG_BOOM: u8 = 12; // host -> clients: an explosion detonated (source, point, intensity) so every
+                         // machine renders the blast flash + sparks + boom sound. The machine that
+                         // CAUSED it (source == my id) skips its own (it predicted the blast locally).
 
 /// Reserved id range for host-controlled bots. They ride the SAME player
 /// replication channel as humans (state + meta + name), so a guest receives and
@@ -53,7 +53,7 @@ const META_LEN: usize = 24; // per-player metadata floats (hp/shield/oc/respawn/
                             // shield-up channel active (holding the blue cube); 17 = melee-swing
                             // counter (server applies katana dmg); 18 = ammo-pickup counter (server
                             // confirms ammo collection); 19 = spare) -
-                           // replicated SEPARATELY from the sim state, so never touch reconciliation.
+                            // replicated SEPARATELY from the sim state, so never touch reconciliation.
 const NAME_MAX: usize = 20; // per-player display name: a fixed byte field (NOT chars packed into
                             // floats), re-sent on the input/snapshot stream so UDP loss self-heals.
 /// Remote interpolation delay (seconds) and the MATCHING lag-comp rewind in server ticks (~62.5 Hz,
@@ -79,7 +79,11 @@ struct Player {
 }
 impl Player {
     fn spawn() -> Player {
-        Player { s: [0.0; STATE_MAX], meta: [0.0; META_LEN], name: [0u8; NAME_MAX] }
+        Player {
+            s: [0.0; STATE_MAX],
+            meta: [0.0; META_LEN],
+            name: [0u8; NAME_MAX],
+        }
     }
 }
 
@@ -288,7 +292,11 @@ fn run_sim(sim_fn: usize, sim_env: usize, state: &mut [f32; STATE_MAX], input: &
     // SAFETY: `sim_fn` is finalized JIT/AOT Aurora code; we pass pointers to our
     // own buffers, which the sim reads/writes in place.
     let f: SimFn = unsafe { std::mem::transmute(sim_fn) };
-    f(sim_env as i64, state.as_mut_ptr() as i64, input.as_ptr() as i64);
+    f(
+        sim_env as i64,
+        state.as_mut_ptr() as i64,
+        input.as_ptr() as i64,
+    );
 }
 
 impl Session {
@@ -418,7 +426,11 @@ impl Session {
         // Set the local player's starting position, and remember it as the spawn
         // for any clients that join (so the server doesn't place them at origin).
         self.spawn = [x, y, z];
-        let p = if self.is_server { &mut self.host } else { &mut self.pred };
+        let p = if self.is_server {
+            &mut self.host
+        } else {
+            &mut self.pred
+        };
         p.s[0] = x;
         p.s[1] = y;
         p.s[2] = z;
@@ -450,7 +462,15 @@ impl Session {
             self.pending.push_back((seq, blob));
             if let Some(addr) = self.server_addr {
                 let _ = self.sock.send_to(
-                    &encode_input(seq, &blob, self.input_len, &self.local_meta, &self.local_name, &self.pred.s, self.state_len),
+                    &encode_input(
+                        seq,
+                        &blob,
+                        self.input_len,
+                        &self.local_meta,
+                        &self.local_name,
+                        &self.pred.s,
+                        self.state_len,
+                    ),
                     addr,
                 );
             }
@@ -467,7 +487,14 @@ impl Session {
             // The host's own shot resolves immediately against the live world (it IS the
             // authority); its game applies that damage locally, so we don't enqueue it.
             self.last_hit = match self.lag.raycast_at_tick(o, d, self.server_tick, 0) {
-                Some(h) => (h.entity as i64, [o[0] + d[0] * h.distance, o[1] + d[1] * h.distance, o[2] + d[2] * h.distance]),
+                Some(h) => (
+                    h.entity as i64,
+                    [
+                        o[0] + d[0] * h.distance,
+                        o[1] + d[1] * h.distance,
+                        o[2] + d[2] * h.distance,
+                    ],
+                ),
                 None => (-1, [0.0; 3]),
             };
         } else if let Some(addr) = self.server_addr {
@@ -592,25 +619,49 @@ impl Session {
             let r = self.hit_radius;
             let hh = self.hit_half;
             if !self.dedicated {
-                self.lag.record(st, 0, [self.host.s[0], self.host.s[1], self.host.s[2]], r, hh);
+                self.lag.record(
+                    st,
+                    0,
+                    [self.host.s[0], self.host.s[1], self.host.s[2]],
+                    r,
+                    hh,
+                );
             }
             // Lag-comp record EVERY actor (networked players + local bots - they're all in `clients`).
             for c in &self.clients {
-                self.lag.record(st, c.id as u64, [c.state.s[0], c.state.s[1], c.state.s[2]], r, hh);
+                self.lag.record(
+                    st,
+                    c.id as u64,
+                    [c.state.s[0], c.state.s[1], c.state.s[2]],
+                    r,
+                    hh,
+                );
             }
             // Record world objects (crates) so a rewound shot is blocked by where a box WAS.
             // A crate is a plain sphere (half_h 0), not a capsule.
             for (i, o) in self.objects.iter().enumerate() {
-                self.lag.record(st, OBJ_ID_BASE + i as u64, [o[0], o[1], o[2]], OBJ_RADIUS, 0.0);
+                self.lag.record(
+                    st,
+                    OBJ_ID_BASE + i as u64,
+                    [o[0], o[1], o[2]],
+                    OBJ_RADIUS,
+                    0.0,
+                );
             }
             self.tick += dt;
             self.broadcast();
             // player_count / player_id_at expose only the NETWORKED players (the game uses them to
             // count humans). Local bots are in `clients` too but are NOT players in this sense.
             self.ids = if self.dedicated {
-                self.clients.iter().filter(|c| !c.local).map(|c| c.id).collect()
+                self.clients
+                    .iter()
+                    .filter(|c| !c.local)
+                    .map(|c| c.id)
+                    .collect()
             } else {
-                std::iter::once(0u32).chain(self.clients.iter().filter(|c| !c.local).map(|c| c.id)).collect()
+                std::iter::once(0u32)
+                    .chain(self.clients.iter().filter(|c| !c.local).map(|c| c.id))
+                    .collect()
             };
         } else {
             self.tick += dt;
@@ -622,8 +673,11 @@ impl Session {
                 }
             }
             let now = self.last_server_tick;
-            self.remotes.retain(|(_, r)| now.saturating_sub(r.last_seen) <= 90);
-            self.ids = std::iter::once(self.my_id).chain(self.remotes.iter().map(|(id, _)| *id)).collect();
+            self.remotes
+                .retain(|(_, r)| now.saturating_sub(r.last_seen) <= 90);
+            self.ids = std::iter::once(self.my_id)
+                .chain(self.remotes.iter().map(|(id, _)| *id))
+                .collect();
         }
     }
 
@@ -644,7 +698,11 @@ impl Session {
         for ci in 0..self.clients.len() {
             let (cid, cpos, acked) = {
                 let c = &self.clients[ci];
-                (c.id, [c.state.s[0], c.state.s[1], c.state.s[2]], c.acked_seq)
+                (
+                    c.id,
+                    [c.state.s[0], c.state.s[1], c.state.s[2]],
+                    c.acked_seq,
+                )
             };
             let mut included: Vec<(u32, Player)> = Vec::new();
             for (id, st) in &all {
@@ -657,7 +715,11 @@ impl Session {
                 let changed = self.clients[ci]
                     .last_sent
                     .get(id)
-                    .map(|p| state_differs(&p.s, &st.s, slen) || meta_differs(&p.meta, &st.meta) || p.name != st.name)
+                    .map(|p| {
+                        state_differs(&p.s, &st.s, slen)
+                            || meta_differs(&p.meta, &st.meta)
+                            || p.name != st.name
+                    })
                     .unwrap_or(true);
                 if changed || keyframe {
                     included.push((*id, *st));
@@ -731,7 +793,11 @@ impl Session {
             last_sent: std::collections::HashMap::new(),
             meta_owned: [false; META_LEN],
             last_seen: self.server_tick,
-            respawn_pos: [self.spawn[0] + id as f32 * 2.0, self.spawn[1], self.spawn[2]],
+            respawn_pos: [
+                self.spawn[0] + id as f32 * 2.0,
+                self.spawn[1],
+                self.spawn[2],
+            ],
             impulse: [0.0; 3],
             respawn_pending: false,
         });
@@ -742,16 +808,18 @@ impl Session {
         match pkt.first().copied() {
             Some(TAG_INPUT) => {
                 let sl = self.state_len;
-                if let Some((seq, blob, meta, name, _cstate)) = decode_input(pkt, self.input_len, sl) {
+                if let Some((seq, blob, meta, name, _cstate)) =
+                    decode_input(pkt, self.input_len, sl)
+                {
                     let Some(idx) = self.ensure_client(from) else {
                         // Lobby full: tell the joiner clearly instead of silently dropping it.
                         let _ = self.sock.send_to(&[TAG_REJECT], from);
                         return;
                     };
                     self.clients[idx].last_seen = self.server_tick; // alive: reset the leave timer
-                    // HOST-AUTHORITATIVE movement: queue the input to be re-simulated on the host's
-                    // own copy of this client's state (in update()). The client's reported movement
-                    // state (_cstate) is NOT trusted - only its inputs are.
+                                                                    // HOST-AUTHORITATIVE movement: queue the input to be re-simulated on the host's
+                                                                    // own copy of this client's state (in update()). The client's reported movement
+                                                                    // state (_cstate) is NOT trusted - only its inputs are.
                     if seq > self.clients[idx].acked_seq {
                         self.clients[idx].inbox.push_back((seq, blob));
                     }
@@ -766,20 +834,35 @@ impl Session {
                 }
             }
             Some(TAG_FIRE) => {
-                let Some((vt, o, d, weapon)) = decode_fire(pkt) else { return };
-                let Some(shooter) = self.clients.iter().find(|c| c.addr == from).map(|c| c.id) else {
+                let Some((vt, o, d, weapon)) = decode_fire(pkt) else {
+                    return;
+                };
+                let Some(shooter) = self.clients.iter().find(|c| c.addr == from).map(|c| c.id)
+                else {
                     return;
                 };
                 let tick = (vt as u64).min(self.server_tick);
                 let (id, point) = match self.lag.raycast_at_tick(o, d, tick, shooter as u64) {
-                    Some(h) => (h.entity as i64, [o[0] + d[0] * h.distance, o[1] + d[1] * h.distance, o[2] + d[2] * h.distance]),
+                    Some(h) => (
+                        h.entity as i64,
+                        [
+                            o[0] + d[0] * h.distance,
+                            o[1] + d[1] * h.distance,
+                            o[2] + d[2] * h.distance,
+                        ],
+                    ),
                     None => (-1, [0.0; 3]),
                 };
                 // Echo the hit back so the shooter confirms its predicted hitmarker, AND queue
                 // it for the host's game to apply authoritative damage to the victim.
                 let _ = self.sock.send_to(&encode_hit(id, point), from);
                 if id >= 0 {
-                    self.server_hits.push(ServerHit { shooter, victim: id, point, weapon });
+                    self.server_hits.push(ServerHit {
+                        shooter,
+                        victim: id,
+                        point,
+                        weapon,
+                    });
                 }
                 // Announce the SHOT effect (tracer + fire sound) to every machine - hit OR miss,
                 // so a remote player's shots are always seen/heard. Endpoint = the hit point, else
@@ -787,16 +870,33 @@ impl Session {
                 let end = if id >= 0 {
                     point
                 } else {
-                    [o[0] + d[0] * 120.0, o[1] + d[1] * 120.0, o[2] + d[2] * 120.0]
+                    [
+                        o[0] + d[0] * 120.0,
+                        o[1] + d[1] * 120.0,
+                        o[2] + d[2] * 120.0,
+                    ]
                 };
-                self.shots_out.push(ShotFx { shooter, o, e: end, weapon });
+                self.shots_out.push(ShotFx {
+                    shooter,
+                    o,
+                    e: end,
+                    weapon,
+                });
             }
             Some(TAG_PROJECTILE) => {
-                let Some((kind, origin, vel)) = decode_projectile(pkt) else { return };
-                let Some(shooter) = self.clients.iter().find(|c| c.addr == from).map(|c| c.id) else {
+                let Some((kind, origin, vel)) = decode_projectile(pkt) else {
                     return;
                 };
-                self.server_projectiles.push(ServerProjectile { shooter, kind, origin, vel });
+                let Some(shooter) = self.clients.iter().find(|c| c.addr == from).map(|c| c.id)
+                else {
+                    return;
+                };
+                self.server_projectiles.push(ServerProjectile {
+                    shooter,
+                    kind,
+                    origin,
+                    vel,
+                });
             }
             Some(TAG_LEAVE) => {
                 // The client quit: remove it immediately so its slot frees (a bot returns) and it
@@ -853,7 +953,9 @@ impl Session {
             }
             return;
         }
-        let Some((your_id, acked, tick, stick, players)) = decode_snapshot(pkt) else { return };
+        let Some((your_id, acked, tick, stick, players)) = decode_snapshot(pkt) else {
+            return;
+        };
         self.got_snap = true;
         self.last_snap_tick = self.tick; // freshness for net_connected()
         self.my_id = your_id;
@@ -881,7 +983,12 @@ impl Session {
                 self.pred.name = st.name;
                 // Drop acked inputs, then REPLAY the still-unacked ones on top of the authoritative
                 // base so local prediction stays ahead of the last server snapshot.
-                while self.pending.front().map(|(s, _)| *s <= acked).unwrap_or(false) {
+                while self
+                    .pending
+                    .front()
+                    .map(|(s, _)| *s <= acked)
+                    .unwrap_or(false)
+                {
                     self.pending.pop_front();
                 }
                 let pend: Vec<(u32, InputBlob)> = self.pending.iter().copied().collect();
@@ -904,7 +1011,14 @@ impl Session {
                 let slot = match self.remotes.iter_mut().find(|(rid, _)| *rid == id) {
                     Some((_, r)) => r,
                     None => {
-                        self.remotes.push((id, Remote { interp: InterpBuffer::new(INTERP_DELAY), last: st, last_seen: stick }));
+                        self.remotes.push((
+                            id,
+                            Remote {
+                                interp: InterpBuffer::new(INTERP_DELAY),
+                                last: st,
+                                last_seen: stick,
+                            },
+                        ));
                         &mut self.remotes.last_mut().unwrap().1
                     }
                 };
@@ -1032,7 +1146,8 @@ impl Session {
     /// `n` (ids BOT_ID_BASE+0..n) alongside the networked clients in the one array.
     pub fn set_bot_count(&mut self, n: usize) {
         self.bot_count = n;
-        self.clients.retain(|c| !c.local || ((c.id - BOT_ID_BASE) as usize) < n);
+        self.clients
+            .retain(|c| !c.local || ((c.id - BOT_ID_BASE) as usize) < n);
         for i in 0..n {
             let id = BOT_ID_BASE + i as u32;
             if !self.clients.iter().any(|c| c.local && c.id == id) {
@@ -1114,7 +1229,8 @@ impl Session {
         if n > self.objects.len() {
             // default pose: identity quaternion (qw = 1) so an object that never sets a rotation
             // still renders upright rather than collapsed to a zero quaternion.
-            self.objects.resize(n, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]);
+            self.objects
+                .resize(n, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]);
         } else {
             self.objects.truncate(n);
         }
@@ -1145,13 +1261,19 @@ impl Session {
         }
     }
     pub fn object_vel(&self, i: usize, axis: usize) -> f64 {
-        self.objects.get(i).map(|o| o[7 + axis.min(2)] as f64).unwrap_or(0.0)
+        self.objects
+            .get(i)
+            .map(|o| o[7 + axis.min(2)] as f64)
+            .unwrap_or(0.0)
     }
     pub fn object_count(&self) -> usize {
         self.objects.len()
     }
     pub fn object_pos(&self, i: usize, axis: usize) -> f64 {
-        self.objects.get(i).map(|o| o[axis.min(2)] as f64).unwrap_or(0.0)
+        self.objects
+            .get(i)
+            .map(|o| o[axis.min(2)] as f64)
+            .unwrap_or(0.0)
     }
     /// Orientation component: comp 0..3 = qx,qy,qz,qw. Defaults to identity (qw = 1) if absent.
     pub fn object_rot(&self, i: usize, comp: usize) -> f64 {
@@ -1179,7 +1301,10 @@ impl Session {
         self.fx.len()
     }
     pub fn fx_field(&self, i: usize, field: usize) -> f64 {
-        self.fx.get(i).map(|f| f[field.min(3)] as f64).unwrap_or(0.0)
+        self.fx
+            .get(i)
+            .map(|f| f[field.min(3)] as f64)
+            .unwrap_or(0.0)
     }
 
     // --- host: validated client shots awaiting authoritative damage (drained per frame) ---
@@ -1187,22 +1312,37 @@ impl Session {
         self.server_hits.len()
     }
     pub fn server_hit_shooter(&self, i: usize) -> i64 {
-        self.server_hits.get(i).map(|h| h.shooter as i64).unwrap_or(-1)
+        self.server_hits
+            .get(i)
+            .map(|h| h.shooter as i64)
+            .unwrap_or(-1)
     }
     pub fn server_hit_victim(&self, i: usize) -> i64 {
         self.server_hits.get(i).map(|h| h.victim).unwrap_or(-1)
     }
     pub fn server_hit_weapon(&self, i: usize) -> i64 {
-        self.server_hits.get(i).map(|h| h.weapon as i64).unwrap_or(0)
+        self.server_hits
+            .get(i)
+            .map(|h| h.weapon as i64)
+            .unwrap_or(0)
     }
     pub fn server_hit_x(&self, i: usize) -> f64 {
-        self.server_hits.get(i).map(|h| h.point[0] as f64).unwrap_or(0.0)
+        self.server_hits
+            .get(i)
+            .map(|h| h.point[0] as f64)
+            .unwrap_or(0.0)
     }
     pub fn server_hit_y(&self, i: usize) -> f64 {
-        self.server_hits.get(i).map(|h| h.point[1] as f64).unwrap_or(0.0)
+        self.server_hits
+            .get(i)
+            .map(|h| h.point[1] as f64)
+            .unwrap_or(0.0)
     }
     pub fn server_hit_z(&self, i: usize) -> f64 {
-        self.server_hits.get(i).map(|h| h.point[2] as f64).unwrap_or(0.0)
+        self.server_hits
+            .get(i)
+            .map(|h| h.point[2] as f64)
+            .unwrap_or(0.0)
     }
     /// The host game calls this after draining the queue each frame.
     pub fn clear_server_hits(&mut self) {
@@ -1214,16 +1354,28 @@ impl Session {
         self.server_projectiles.len()
     }
     pub fn server_projectile_shooter(&self, i: usize) -> i64 {
-        self.server_projectiles.get(i).map(|p| p.shooter as i64).unwrap_or(-1)
+        self.server_projectiles
+            .get(i)
+            .map(|p| p.shooter as i64)
+            .unwrap_or(-1)
     }
     pub fn server_projectile_kind(&self, i: usize) -> i64 {
-        self.server_projectiles.get(i).map(|p| p.kind as i64).unwrap_or(0)
+        self.server_projectiles
+            .get(i)
+            .map(|p| p.kind as i64)
+            .unwrap_or(0)
     }
     pub fn server_projectile_origin(&self, i: usize, axis: usize) -> f64 {
-        self.server_projectiles.get(i).map(|p| p.origin[axis.min(2)] as f64).unwrap_or(0.0)
+        self.server_projectiles
+            .get(i)
+            .map(|p| p.origin[axis.min(2)] as f64)
+            .unwrap_or(0.0)
     }
     pub fn server_projectile_vel(&self, i: usize, axis: usize) -> f64 {
-        self.server_projectiles.get(i).map(|p| p.vel[axis.min(2)] as f64).unwrap_or(0.0)
+        self.server_projectiles
+            .get(i)
+            .map(|p| p.vel[axis.min(2)] as f64)
+            .unwrap_or(0.0)
     }
     pub fn clear_server_projectiles(&mut self) {
         self.server_projectiles.clear();
@@ -1251,7 +1403,17 @@ impl Session {
 
     // --- shot effects: host announces every shot; clients draw the tracer + play the sound ---
     /// Host: announce a shot (net-id shooter, origin, endpoint, weapon), broadcast this frame.
-    pub fn push_shot(&mut self, shooter: u32, ox: f64, oy: f64, oz: f64, ex: f64, ey: f64, ez: f64, weapon: i64) {
+    pub fn push_shot(
+        &mut self,
+        shooter: u32,
+        ox: f64,
+        oy: f64,
+        oz: f64,
+        ex: f64,
+        ey: f64,
+        ez: f64,
+        weapon: i64,
+    ) {
         self.shots_out.push(ShotFx {
             shooter,
             o: [ox as f32, oy as f32, oz as f32],
@@ -1263,14 +1425,21 @@ impl Session {
     // list) and shots_in on a CLIENT (it renders the received list) - so the game render code is
     // identical on both.
     fn shots_view(&self) -> &[ShotFx] {
-        if self.is_server { &self.shots_out } else { &self.shots_in }
+        if self.is_server {
+            &self.shots_out
+        } else {
+            &self.shots_in
+        }
     }
     /// How many shot effects to render this frame.
     pub fn shot_count(&self) -> usize {
         self.shots_view().len()
     }
     pub fn shot_shooter(&self, i: usize) -> i64 {
-        self.shots_view().get(i).map(|s| s.shooter as i64).unwrap_or(-1)
+        self.shots_view()
+            .get(i)
+            .map(|s| s.shooter as i64)
+            .unwrap_or(-1)
     }
     /// field 0-2 = origin x/y/z, 3-5 = endpoint x/y/z.
     pub fn shot_field(&self, i: usize, field: usize) -> f64 {
@@ -1280,7 +1449,10 @@ impl Session {
             .unwrap_or(0.0)
     }
     pub fn shot_weapon(&self, i: usize) -> i64 {
-        self.shots_view().get(i).map(|s| s.weapon as i64).unwrap_or(0)
+        self.shots_view()
+            .get(i)
+            .map(|s| s.weapon as i64)
+            .unwrap_or(0)
     }
     /// End of frame: the HOST broadcasts this frame's shots to clients then clears; a CLIENT just
     /// clears the rendered batch. Called once per frame after the game has drawn the shot effects.
@@ -1308,13 +1480,20 @@ impl Session {
         });
     }
     fn booms_view(&self) -> &[Boom] {
-        if self.is_server { &self.booms_out } else { &self.booms_in }
+        if self.is_server {
+            &self.booms_out
+        } else {
+            &self.booms_in
+        }
     }
     pub fn boom_count(&self) -> usize {
         self.booms_view().len()
     }
     pub fn boom_source(&self, i: usize) -> i64 {
-        self.booms_view().get(i).map(|b| b.source as i64).unwrap_or(-1)
+        self.booms_view()
+            .get(i)
+            .map(|b| b.source as i64)
+            .unwrap_or(-1)
     }
     /// field 0-2 = point x/y/z, 3 = intensity.
     pub fn boom_field(&self, i: usize, field: usize) -> f64 {
@@ -1361,7 +1540,15 @@ fn meta_differs(a: &[f32; META_LEN], b: &[f32; META_LEN]) -> bool {
     (0..META_LEN).any(|i| (a[i] - b[i]).abs() > 1e-3)
 }
 
-fn encode_input(seq: u32, blob: &InputBlob, len: usize, meta: &[f32; META_LEN], name: &[u8; NAME_MAX], state: &[f32; STATE_MAX], slen: usize) -> Vec<u8> {
+fn encode_input(
+    seq: u32,
+    blob: &InputBlob,
+    len: usize,
+    meta: &[f32; META_LEN],
+    name: &[u8; NAME_MAX],
+    state: &[f32; STATE_MAX],
+    slen: usize,
+) -> Vec<u8> {
     let mut b = Vec::with_capacity(5 + len * 4 + META_LEN * 4 + NAME_MAX + slen * 4);
     b.push(TAG_INPUT);
     put_u32(&mut b, seq);
@@ -1380,7 +1567,17 @@ fn encode_input(seq: u32, blob: &InputBlob, len: usize, meta: &[f32; META_LEN], 
     }
     b
 }
-fn decode_input(b: &[u8], len: usize, slen: usize) -> Option<(u32, InputBlob, [f32; META_LEN], [u8; NAME_MAX], [f32; STATE_MAX])> {
+fn decode_input(
+    b: &[u8],
+    len: usize,
+    slen: usize,
+) -> Option<(
+    u32,
+    InputBlob,
+    [f32; META_LEN],
+    [u8; NAME_MAX],
+    [f32; STATE_MAX],
+)> {
     if b.len() < 5 + len * 4 + META_LEN * 4 + NAME_MAX + slen * 4 || b[0] != TAG_INPUT {
         return None;
     }
@@ -1404,7 +1601,14 @@ fn decode_input(b: &[u8], len: usize, slen: usize) -> Option<(u32, InputBlob, [f
     Some((seq, blob, meta, name, state))
 }
 
-fn encode_snapshot(your_id: u32, acked: u32, tick: f32, stick: u32, slen: usize, players: &[(u32, Player)]) -> Vec<u8> {
+fn encode_snapshot(
+    your_id: u32,
+    acked: u32,
+    tick: f32,
+    stick: u32,
+    slen: usize,
+    players: &[(u32, Player)],
+) -> Vec<u8> {
     let mut b = Vec::with_capacity(19 + players.len() * (4 + (slen + META_LEN) * 4 + NAME_MAX));
     b.push(TAG_SNAPSHOT);
     put_u32(&mut b, your_id);
@@ -1480,7 +1684,12 @@ fn decode_fx(b: &[u8]) -> Option<Vec<[f32; 4]>> {
         if o + 16 > b.len() {
             break;
         }
-        fx.push([rd_f32(b, o), rd_f32(b, o + 4), rd_f32(b, o + 8), rd_f32(b, o + 12)]);
+        fx.push([
+            rd_f32(b, o),
+            rd_f32(b, o + 4),
+            rd_f32(b, o + 8),
+            rd_f32(b, o + 12),
+        ]);
         o += 16;
     }
     Some(fx)
@@ -1628,7 +1837,9 @@ fn objects_differ(a: &[[f32; 10]], b: &[[f32; 10]]) -> bool {
         return true;
     }
     // compare orientation too (a tumbling crate rotates even when its position barely moves)
-    a.iter().zip(b.iter()).any(|(x, y)| (0..7).any(|i| (x[i] - y[i]).abs() > 1e-3))
+    a.iter()
+        .zip(b.iter())
+        .any(|(x, y)| (0..7).any(|i| (x[i] - y[i]).abs() > 1e-3))
 }
 
 fn encode_fire(view_tick: u32, o: [f32; 3], d: [f32; 3], weapon: u8) -> Vec<u8> {
@@ -1729,8 +1940,20 @@ pub unsafe extern "C" fn aurora_net_join(ptr: *const u8, len: i64, port: i64) ->
 /// both are STORED and invoked on every later tick, so both must outlive
 /// the netcode session, not just this call.
 #[no_mangle]
-pub unsafe extern "C" fn aurora_net_sim(sim_fn: *const u8, sim_env: *const u8, state_len: i64, input_len: i64) {
-    with((), |s| s.set_sim(sim_fn as usize, sim_env as usize, state_len.max(4) as usize, input_len.max(1) as usize));
+pub unsafe extern "C" fn aurora_net_sim(
+    sim_fn: *const u8,
+    sim_env: *const u8,
+    state_len: i64,
+    input_len: i64,
+) {
+    with((), |s| {
+        s.set_sim(
+            sim_fn as usize,
+            sim_env as usize,
+            state_len.max(4) as usize,
+            input_len.max(1) as usize,
+        )
+    });
 }
 
 /// Run the authoritative SERVER loop on a dedicated thread. The thread gets its OWN thread-local
@@ -1939,7 +2162,9 @@ pub extern "C" fn aurora_net_set_meta(slot: i64, v: f64) {
 /// HOST: override a specific player's metadata slot (authoritative hp/shield the host owns).
 #[no_mangle]
 pub extern "C" fn aurora_net_set_player_meta(id: i64, slot: i64, v: f64) {
-    with((), |s| s.set_player_meta(id.max(0) as u32, slot.max(0) as usize, v))
+    with((), |s| {
+        s.set_player_meta(id.max(0) as u32, slot.max(0) as usize, v)
+    })
 }
 /// Read a player's replicated metadata slot (works on host AND clients).
 #[no_mangle]
@@ -2006,7 +2231,9 @@ pub extern "C" fn aurora_net_set_bot_alive(i: i64, alive: i64) {
 /// Host: set bot `i`'s metadata slot (hp/shield/oc), same channel humans use.
 #[no_mangle]
 pub extern "C" fn aurora_net_set_bot_meta(i: i64, slot: i64, v: f64) {
-    with((), |s| s.set_bot_meta(i.max(0) as usize, slot.max(0) as usize, v))
+    with((), |s| {
+        s.set_bot_meta(i.max(0) as usize, slot.max(0) as usize, v)
+    })
 }
 /// Host: set bot `i`'s display name.
 ///
@@ -2139,8 +2366,26 @@ pub extern "C" fn aurora_net_local_state(i: i64) -> f64 {
 
 #[allow(clippy::too_many_arguments)]
 #[no_mangle]
-pub extern "C" fn aurora_net_fire(ox: f64, oy: f64, oz: f64, dx: f64, dy: f64, dz: f64, weapon: i64) {
-    with((), |s| s.fire(ox as f32, oy as f32, oz as f32, dx as f32, dy as f32, dz as f32, weapon.max(0) as u8));
+pub extern "C" fn aurora_net_fire(
+    ox: f64,
+    oy: f64,
+    oz: f64,
+    dx: f64,
+    dy: f64,
+    dz: f64,
+    weapon: i64,
+) {
+    with((), |s| {
+        s.fire(
+            ox as f32,
+            oy as f32,
+            oz as f32,
+            dx as f32,
+            dy as f32,
+            dz as f32,
+            weapon.max(0) as u8,
+        )
+    });
 }
 // --- host: drain the validated-shot queue and apply authoritative damage game-side ---
 #[no_mangle]
@@ -2177,8 +2422,22 @@ pub extern "C" fn aurora_net_server_hits_clear() {
 }
 // --- projectiles: client announces a LAUNCH (intent); host drains, simulates, applies damage ---
 #[no_mangle]
-pub extern "C" fn aurora_net_projectile_intent(kind: i64, ox: f64, oy: f64, oz: f64, vx: f64, vy: f64, vz: f64) {
-    with((), |s| s.projectile_intent(kind.max(0) as u8, [ox as f32, oy as f32, oz as f32], [vx as f32, vy as f32, vz as f32]));
+pub extern "C" fn aurora_net_projectile_intent(
+    kind: i64,
+    ox: f64,
+    oy: f64,
+    oz: f64,
+    vx: f64,
+    vy: f64,
+    vz: f64,
+) {
+    with((), |s| {
+        s.projectile_intent(
+            kind.max(0) as u8,
+            [ox as f32, oy as f32, oz as f32],
+            [vx as f32, vy as f32, vz as f32],
+        )
+    });
 }
 #[no_mangle]
 pub extern "C" fn aurora_net_server_projectile_count() -> i64 {
@@ -2223,7 +2482,9 @@ pub extern "C" fn aurora_net_server_projectiles_clear() {
 // --- kill events: host announces (push), clients consume (count/killer/victim/clear) ---
 #[no_mangle]
 pub extern "C" fn aurora_net_push_kill(killer: i64, victim: i64) {
-    with((), |s| s.push_kill(killer.max(0) as u32, victim.max(0) as u32));
+    with((), |s| {
+        s.push_kill(killer.max(0) as u32, victim.max(0) as u32)
+    });
 }
 #[no_mangle]
 pub extern "C" fn aurora_net_kill_count() -> i64 {
@@ -2243,9 +2504,18 @@ pub extern "C" fn aurora_net_kills_clear() {
 }
 #[no_mangle]
 pub extern "C" fn aurora_net_push_shot(
-    shooter: i64, ox: f64, oy: f64, oz: f64, ex: f64, ey: f64, ez: f64, weapon: i64,
+    shooter: i64,
+    ox: f64,
+    oy: f64,
+    oz: f64,
+    ex: f64,
+    ey: f64,
+    ez: f64,
+    weapon: i64,
 ) {
-    with((), |s| s.push_shot(shooter.max(0) as u32, ox, oy, oz, ex, ey, ez, weapon));
+    with((), |s| {
+        s.push_shot(shooter.max(0) as u32, ox, oy, oz, ex, ey, ez, weapon)
+    });
 }
 #[no_mangle]
 pub extern "C" fn aurora_net_shot_count() -> i64 {
@@ -2257,7 +2527,9 @@ pub extern "C" fn aurora_net_shot_shooter(i: i64) -> i64 {
 }
 #[no_mangle]
 pub extern "C" fn aurora_net_shot_field(i: i64, field: i64) -> f64 {
-    read(0.0, |s| s.shot_field(i.max(0) as usize, field.max(0) as usize))
+    read(0.0, |s| {
+        s.shot_field(i.max(0) as usize, field.max(0) as usize)
+    })
 }
 #[no_mangle]
 pub extern "C" fn aurora_net_shot_weapon(i: i64) -> i64 {
@@ -2271,7 +2543,9 @@ pub extern "C" fn aurora_net_shots_clear() {
 // --- explosion events: host announces every detonation; all machines render others' blasts ---
 #[no_mangle]
 pub extern "C" fn aurora_net_push_boom(source: i64, x: f64, y: f64, z: f64, intensity: f64) {
-    with((), |s| s.push_boom(source.max(0) as u32, x, y, z, intensity));
+    with((), |s| {
+        s.push_boom(source.max(0) as u32, x, y, z, intensity)
+    });
 }
 #[no_mangle]
 pub extern "C" fn aurora_net_boom_count() -> i64 {
@@ -2283,7 +2557,9 @@ pub extern "C" fn aurora_net_boom_source(i: i64) -> i64 {
 }
 #[no_mangle]
 pub extern "C" fn aurora_net_boom_field(i: i64, field: i64) -> f64 {
-    read(0.0, |s| s.boom_field(i.max(0) as usize, field.max(0) as usize))
+    read(0.0, |s| {
+        s.boom_field(i.max(0) as usize, field.max(0) as usize)
+    })
 }
 #[no_mangle]
 pub extern "C" fn aurora_net_booms_clear() {
@@ -2352,7 +2628,11 @@ mod tests {
         assert!(cid >= 1);
         let sx = server.px(cid);
         assert!(sx > 1.0, "server moved the client, got {sx}");
-        assert!((client.px(cid) - sx).abs() < 0.5, "client {} converges to server {sx}", client.px(cid));
+        assert!(
+            (client.px(cid) - sx).abs() < 0.5,
+            "client {} converges to server {sx}",
+            client.px(cid)
+        );
     }
 
     #[test]
@@ -2455,10 +2735,20 @@ mod meta_replication_test {
         );
         // NAMES replicate both ways too (read char-by-char from the replicated byte field).
         let read_name = |s: &Session, id: u32| -> String {
-            (0..s.name_len(id)).map(|i| s.name_char(id, i as usize) as u8 as char).collect()
+            (0..s.name_len(id))
+                .map(|i| s.name_char(id, i as usize) as u8 as char)
+                .collect()
         };
-        assert_eq!(read_name(&client, 0), "REAPER", "client should see the host's name");
-        assert_eq!(read_name(&host, client_id), "NOVA", "host should see the client's name");
+        assert_eq!(
+            read_name(&client, 0),
+            "REAPER",
+            "client should see the host's name"
+        );
+        assert_eq!(
+            read_name(&host, client_id),
+            "NOVA",
+            "host should see the client's name"
+        );
     }
 
     // RECONCILE must not inflate the client's position. A trivial deterministic sim (fall 1
@@ -2490,7 +2780,10 @@ mod meta_replication_test {
             );
         }
         let cy = client.py(client.my_id());
-        assert!(cy < -10.0, "client should have fallen well below 0 after 25 steps, got {cy}");
+        assert!(
+            cy < -10.0,
+            "client should have fallen well below 0 after 25 steps, got {cy}"
+        );
     }
 
     // FAITHFUL repro: the reconcile REPLAYS each pending input through the REAL sim_step, which
@@ -2507,12 +2800,14 @@ mod meta_replication_test {
             let dt = 0.016f64;
             let mut player = s[21] as i64 - 1;
             if player < 0 {
-                player = aurora_phys3d_add_character(s[0] as f64, s[1] as f64, s[2] as f64, 0.6, 0.3);
+                player =
+                    aurora_phys3d_add_character(s[0] as f64, s[1] as f64, s[2] as f64, 0.6, 0.3);
                 s[21] = (player + 1) as f32;
             }
             let (px, py, pz) = (s[0] as f64, s[1] as f64, s[2] as f64);
             aurora_phys3d_set_pos(player, px, py, pz);
-            let grounded = aurora_phys3d_raycast_world(player, px, py, pz, 0.0, -1.0, 0.0, 1.2) >= 0;
+            let grounded =
+                aurora_phys3d_raycast_world(player, px, py, pz, 0.0, -1.0, 0.0, 1.2) >= 0;
             let mut vy = s[5];
             let jump = inp[3] > 0.5;
             let last_jump = s[10] > 0.5;
@@ -2552,11 +2847,18 @@ mod meta_replication_test {
             client.update(0.016);
             if f % 15 == 0 {
                 let cid = client.my_id();
-                eprintln!("frame {f}: client_pred_y={:.2} host_auth_y={:.2}", client.py(cid), host.py(cid));
+                eprintln!(
+                    "frame {f}: client_pred_y={:.2} host_auth_y={:.2}",
+                    client.py(cid),
+                    host.py(cid)
+                );
             }
         }
         let cy = client.py(client.my_id());
-        assert!(cy < 1.5 && cy > 0.4, "client should rest on the floor (~0.9), got {cy}");
+        assert!(
+            cy < 1.5 && cy > 0.4,
+            "client should rest on the floor (~0.9), got {cy}"
+        );
     }
 
     // A join past the host's cap is REJECTED with a clear signal (presized game arrays
@@ -2585,7 +2887,10 @@ mod meta_replication_test {
             c2.update(0.016);
         }
         assert!(!c1.rejected(), "the first client should be admitted");
-        assert!(c2.rejected(), "the second client should be rejected (lobby full)");
+        assert!(
+            c2.rejected(),
+            "the second client should be rejected (lobby full)"
+        );
     }
 
     // Host-controlled bots replicate to a client as ORDINARY players: the client reads
@@ -2615,17 +2920,44 @@ mod meta_replication_test {
         // The client sees the two bots as remote players at ids BOT_ID_BASE + i.
         let b0 = BOT_ID_BASE;
         let b1 = BOT_ID_BASE + 1;
-        assert!((client.px(b0) - 33.0).abs() < 0.5, "client saw bot0 x = {}", client.px(b0));
-        assert!((client.px(b1) - 44.0).abs() < 0.5, "client saw bot1 x = {}", client.px(b1));
-        assert!((client.meta(b0, 0) - 88.0).abs() < 0.01, "client saw bot0 hp = {}", client.meta(b0, 0));
-        assert!((client.meta(b1, 0) - 70.0).abs() < 0.01, "client saw bot1 hp = {}", client.meta(b1, 0));
+        assert!(
+            (client.px(b0) - 33.0).abs() < 0.5,
+            "client saw bot0 x = {}",
+            client.px(b0)
+        );
+        assert!(
+            (client.px(b1) - 44.0).abs() < 0.5,
+            "client saw bot1 x = {}",
+            client.px(b1)
+        );
+        assert!(
+            (client.meta(b0, 0) - 88.0).abs() < 0.01,
+            "client saw bot0 hp = {}",
+            client.meta(b0, 0)
+        );
+        assert!(
+            (client.meta(b1, 0) - 70.0).abs() < 0.01,
+            "client saw bot1 hp = {}",
+            client.meta(b1, 0)
+        );
         let read_name = |s: &Session, id: u32| -> String {
-            (0..s.name_len(id)).map(|i| s.name_char(id, i as usize) as u8 as char).collect()
+            (0..s.name_len(id))
+                .map(|i| s.name_char(id, i as usize) as u8 as char)
+                .collect()
         };
-        assert_eq!(read_name(&client, b0), "BOT-A", "client should read bot0's name");
+        assert_eq!(
+            read_name(&client, b0),
+            "BOT-A",
+            "client should read bot0's name"
+        );
         // And the client lists them among its players (self + host + 2 bots).
-        let ids: Vec<i64> = (0..client.player_count()).map(|i| client.player_id_at(i)).collect();
-        assert!(ids.contains(&(b0 as i64)) && ids.contains(&(b1 as i64)), "bots in player list: {ids:?}");
+        let ids: Vec<i64> = (0..client.player_count())
+            .map(|i| client.player_id_at(i))
+            .collect();
+        assert!(
+            ids.contains(&(b0 as i64)) && ids.contains(&(b1 as i64)),
+            "bots in player list: {ids:?}"
+        );
     }
 
     // A client's hitscan shot is VALIDATED by the host's lag-compensated raycast and queued
@@ -2660,12 +2992,24 @@ mod meta_replication_test {
             client.update(0.016);
         }
         assert!(host.server_hit_count() >= 1, "host queued no validated hit");
-        assert_eq!(host.server_hit_victim(0), BOT_ID_BASE as i64, "victim should be the bot");
+        assert_eq!(
+            host.server_hit_victim(0),
+            BOT_ID_BASE as i64,
+            "victim should be the bot"
+        );
         let cid = client.my_id();
-        assert_eq!(host.server_hit_shooter(0), cid as i64, "shooter should be the client");
+        assert_eq!(
+            host.server_hit_shooter(0),
+            cid as i64,
+            "shooter should be the client"
+        );
         assert_eq!(host.server_hit_weapon(0), 2, "weapon should round-trip");
         // The shooter also got its predicted hit echoed back (same bot).
-        assert_eq!(client.hit_player(), BOT_ID_BASE as i64, "client should confirm its hitmarker");
+        assert_eq!(
+            client.hit_player(),
+            BOT_ID_BASE as i64,
+            "client should confirm its hitmarker"
+        );
     }
 
     // World objects (crates) replicate host -> client: the host owns the authoritative
@@ -2688,9 +3032,17 @@ mod meta_replication_test {
             client.update(0.016);
         }
         assert_eq!(client.object_count(), 3, "client should see 3 crates");
-        assert!((client.object_pos(1, 0) - 11.0).abs() < 0.01, "crate 1 x = {}", client.object_pos(1, 0));
+        assert!(
+            (client.object_pos(1, 0) - 11.0).abs() < 0.01,
+            "crate 1 x = {}",
+            client.object_pos(1, 0)
+        );
         // an unrotated crate reports identity (qw = 1) so it renders upright by default
-        assert!((client.object_rot(1, 3) - 1.0).abs() < 0.01, "default crate qw = {}", client.object_rot(1, 3));
+        assert!(
+            (client.object_rot(1, 3) - 1.0).abs() < 0.01,
+            "default crate qw = {}",
+            client.object_rot(1, 3)
+        );
         // Move + TUMBLE crate 2 (as if shot) and confirm both position and orientation replicate.
         for _ in 0..20 {
             host.set_object_count(3);
@@ -2705,14 +3057,42 @@ mod meta_replication_test {
             host.update(0.016);
             client.update(0.016);
         }
-        assert!((client.object_pos(2, 0) - 18.0).abs() < 0.01, "moved crate 2 x = {}", client.object_pos(2, 0));
-        assert!((client.object_pos(2, 1) - 1.5).abs() < 0.01, "moved crate 2 y = {}", client.object_pos(2, 1));
-        assert!((client.object_rot(2, 1) - 0.70710677).abs() < 0.01, "tumbled crate 2 qy = {}", client.object_rot(2, 1));
-        assert!((client.object_rot(2, 3) - 0.70710677).abs() < 0.01, "tumbled crate 2 qw = {}", client.object_rot(2, 3));
+        assert!(
+            (client.object_pos(2, 0) - 18.0).abs() < 0.01,
+            "moved crate 2 x = {}",
+            client.object_pos(2, 0)
+        );
+        assert!(
+            (client.object_pos(2, 1) - 1.5).abs() < 0.01,
+            "moved crate 2 y = {}",
+            client.object_pos(2, 1)
+        );
+        assert!(
+            (client.object_rot(2, 1) - 0.70710677).abs() < 0.01,
+            "tumbled crate 2 qy = {}",
+            client.object_rot(2, 1)
+        );
+        assert!(
+            (client.object_rot(2, 3) - 0.70710677).abs() < 0.01,
+            "tumbled crate 2 qw = {}",
+            client.object_rot(2, 3)
+        );
         // The flung crate's VELOCITY replicates too, so the client drives its body at the host's speed.
-        assert!((client.object_vel(2, 0) - 4.0).abs() < 0.01, "crate 2 vx = {}", client.object_vel(2, 0));
-        assert!((client.object_vel(2, 1) - (-2.0)).abs() < 0.01, "crate 2 vy = {}", client.object_vel(2, 1));
-        assert!((client.object_vel(2, 2) - 1.5).abs() < 0.01, "crate 2 vz = {}", client.object_vel(2, 2));
+        assert!(
+            (client.object_vel(2, 0) - 4.0).abs() < 0.01,
+            "crate 2 vx = {}",
+            client.object_vel(2, 0)
+        );
+        assert!(
+            (client.object_vel(2, 1) - (-2.0)).abs() < 0.01,
+            "crate 2 vy = {}",
+            client.object_vel(2, 1)
+        );
+        assert!(
+            (client.object_vel(2, 2) - 1.5).abs() < 0.01,
+            "crate 2 vz = {}",
+            client.object_vel(2, 2)
+        );
     }
 
     // Kill events announced by the host reach the client (which drives its kill feed + the
@@ -2761,7 +3141,11 @@ mod meta_replication_test {
             host.update(0.016);
             client.update(0.016);
         }
-        assert_eq!(host.player_count(), 2, "host should count itself + 1 client, NOT the 3 bots");
+        assert_eq!(
+            host.player_count(),
+            2,
+            "host should count itself + 1 client, NOT the 3 bots"
+        );
     }
 
     // The host announces a SHOT effect (shooter, origin, endpoint, weapon); the client receives it
@@ -2795,7 +3179,11 @@ mod meta_replication_test {
         assert!(got >= 1, "client received no shot effect");
         // The HOST reads its own pushed shots (shots_out) so it can render them locally too.
         host.push_shot(7, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0);
-        assert_eq!(host.shot_count(), 1, "host should see its own queued shot for local render");
+        assert_eq!(
+            host.shot_count(),
+            1,
+            "host should see its own queued shot for local render"
+        );
         host.flush_shots();
         assert_eq!(host.shot_count(), 0, "flush clears the host list");
     }
@@ -2821,12 +3209,21 @@ mod meta_replication_test {
             client.update(0.016);
             host.update(0.016);
         }
-        assert!(host.server_projectile_count() >= 1, "host queued no projectile");
+        assert!(
+            host.server_projectile_count() >= 1,
+            "host queued no projectile"
+        );
         let cid = client.my_id();
         assert_eq!(host.server_projectile_shooter(0), cid as i64, "shooter id");
         assert_eq!(host.server_projectile_kind(0), 0, "kind = rocket");
-        assert!((host.server_projectile_origin(0, 0) - 2.0).abs() < 0.01, "origin x");
-        assert!((host.server_projectile_vel(0, 0) - 1.0).abs() < 0.01, "vel x");
+        assert!(
+            (host.server_projectile_origin(0, 0) - 2.0).abs() < 0.01,
+            "origin x"
+        );
+        assert!(
+            (host.server_projectile_vel(0, 0) - 1.0).abs() < 0.01,
+            "vel x"
+        );
     }
 
     // The host can OWN a client's hp: it overrides the client's replicated meta, and the
@@ -2849,7 +3246,11 @@ mod meta_replication_test {
             client.update(0.016);
         }
         // The client reads its OWN hp as the host's authoritative value, not its self-report.
-        assert!((client.meta(client.my_id(), 0) - 37.0).abs() < 0.01, "client hp = {}", client.meta(client.my_id(), 0));
+        assert!(
+            (client.meta(client.my_id(), 0) - 37.0).abs() < 0.01,
+            "client hp = {}",
+            client.meta(client.my_id(), 0)
+        );
     }
 
     // Transient visuals (loot drops + in-flight projectiles) replicate host -> client so a guest

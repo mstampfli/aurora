@@ -49,24 +49,54 @@ fn sys_builtins_read_the_process_environment() {
     let (module, diags) = parse_str(src);
     assert!(!diags.iter().any(|d| d.is_error()), "parse failed");
     let (_, failed) = build_object(&module).expect("object emission failed");
-    assert!(failed.is_empty(), "the sys_* builtins did not lower: {failed:?}");
+    assert!(
+        failed.is_empty(),
+        "the sys_* builtins did not lower: {failed:?}"
+    );
 
     // This test binary's own argv: at least the program name, which is not empty.
     let argc = compile_call(src, "argc", &[]);
     assert!(argc >= 1, "argc must count argv[0], got {argc}");
-    assert!(compile_call(src, "arg_len", &[0]) > 0, "argv[0] must not be empty");
+    assert!(
+        compile_call(src, "arg_len", &[0]) > 0,
+        "argv[0] must not be empty"
+    );
     // Out of range in both directions, including the extremes.
-    for i in [argc, argc + 1, 1_000_000, -1, -1_000_000, i64::MIN, i64::MAX] {
-        assert_eq!(compile_call(src, "arg_len", &[i]), 0, "sys_arg({i}) must be empty");
+    for i in [
+        argc,
+        argc + 1,
+        1_000_000,
+        -1,
+        -1_000_000,
+        i64::MIN,
+        i64::MAX,
+    ] {
+        assert_eq!(
+            compile_call(src, "arg_len", &[i]),
+            0,
+            "sys_arg({i}) must be empty"
+        );
     }
 
     std::env::set_var("AURORA_TEST_SET", "value");
     std::env::set_var("AURORA_TEST_EMPTY", "");
     std::env::remove_var("AURORA_TEST_MISSING_XYZ");
     assert_eq!(compile_call(src, "set_len", &[]), 5);
-    assert_eq!(compile_call(src, "empty_len", &[]), 0, "an empty value reads as \"\"");
-    assert_eq!(compile_call(src, "missing_len", &[]), 0, "an unset variable reads as \"\"");
-    assert_eq!(compile_call(src, "noname_len", &[]), 0, "an empty name reads as \"\"");
+    assert_eq!(
+        compile_call(src, "empty_len", &[]),
+        0,
+        "an empty value reads as \"\""
+    );
+    assert_eq!(
+        compile_call(src, "missing_len", &[]),
+        0,
+        "an unset variable reads as \"\""
+    );
+    assert_eq!(
+        compile_call(src, "noname_len", &[]),
+        0,
+        "an empty name reads as \"\""
+    );
 }
 
 #[test]
@@ -78,8 +108,15 @@ fn build_object_emits_aot_object_with_entry_symbol() {
     let (module, diags) = parse_str(src);
     assert!(!diags.iter().any(|d| d.is_error()), "parse failed");
     let (obj, failed) = build_object(&module).expect("object emission failed");
-    assert!(failed.is_empty(), "unexpected stubbed functions: {failed:?}");
-    assert!(obj.len() > 64, "object file implausibly small: {} bytes", obj.len());
+    assert!(
+        failed.is_empty(),
+        "unexpected stubbed functions: {failed:?}"
+    );
+    assert!(
+        obj.len() > 64,
+        "object file implausibly small: {} bytes",
+        obj.len()
+    );
     // The renamed entry symbol appears verbatim in the object's symbol table.
     let needle = b"aurora_user_main";
     assert!(
@@ -169,22 +206,64 @@ fn integer_min_max_abs_clamp_compile_and_run() {
     // no-op stub. They must compile and compute the right integer result.
     assert_eq!(compile_call("fn run() -> i64 { min(3, 7) }", "run", &[]), 3);
     assert_eq!(compile_call("fn run() -> i64 { max(3, 7) }", "run", &[]), 7);
-    assert_eq!(compile_call("fn run() -> i64 { min(0 - 2, 5) }", "run", &[]), -2);
-    assert_eq!(compile_call("fn run() -> i64 { abs(0 - 9) }", "run", &[]), 9);
+    assert_eq!(
+        compile_call("fn run() -> i64 { min(0 - 2, 5) }", "run", &[]),
+        -2
+    );
+    assert_eq!(
+        compile_call("fn run() -> i64 { abs(0 - 9) }", "run", &[]),
+        9
+    );
     assert_eq!(compile_call("fn run() -> i64 { abs(4) }", "run", &[]), 4);
-    assert_eq!(compile_call("fn run() -> i64 { clamp(12, 0, 10) }", "run", &[]), 10);
-    assert_eq!(compile_call("fn run() -> i64 { clamp(0 - 3, 0, 10) }", "run", &[]), 0);
-    assert_eq!(compile_call("fn run() -> i64 { clamp(5, 0, 10) }", "run", &[]), 5);
+    assert_eq!(
+        compile_call("fn run() -> i64 { clamp(12, 0, 10) }", "run", &[]),
+        10
+    );
+    assert_eq!(
+        compile_call("fn run() -> i64 { clamp(0 - 3, 0, 10) }", "run", &[]),
+        0
+    );
+    assert_eq!(
+        compile_call("fn run() -> i64 { clamp(5, 0, 10) }", "run", &[]),
+        5
+    );
 }
 
 #[test]
 fn logical_and_or_are_canonical_and_short_circuit() {
     // Was lowered to eager bitwise band/bor: `2 and 3` gave band(2,3)=2, not 1.
-    assert_eq!(compile_call("fn run() -> i64 { if 2 and 3 { 1 } else { 0 } }", "run", &[]), 1);
-    assert_eq!(compile_call("fn run() -> i64 { if 2 and 1 { 7 } else { 9 } }", "run", &[]), 7);
-    assert_eq!(compile_call("fn run() -> i64 { if 0 and 1 { 7 } else { 9 } }", "run", &[]), 9);
-    assert_eq!(compile_call("fn run() -> i64 { if 5 or 0 { 7 } else { 9 } }", "run", &[]), 7);
-    assert_eq!(compile_call("fn run() -> i64 { if 0 or 0 { 7 } else { 9 } }", "run", &[]), 9);
+    assert_eq!(
+        compile_call(
+            "fn run() -> i64 { if 2 and 3 { 1 } else { 0 } }",
+            "run",
+            &[]
+        ),
+        1
+    );
+    assert_eq!(
+        compile_call(
+            "fn run() -> i64 { if 2 and 1 { 7 } else { 9 } }",
+            "run",
+            &[]
+        ),
+        7
+    );
+    assert_eq!(
+        compile_call(
+            "fn run() -> i64 { if 0 and 1 { 7 } else { 9 } }",
+            "run",
+            &[]
+        ),
+        9
+    );
+    assert_eq!(
+        compile_call("fn run() -> i64 { if 5 or 0 { 7 } else { 9 } }", "run", &[]),
+        7
+    );
+    assert_eq!(
+        compile_call("fn run() -> i64 { if 0 or 0 { 7 } else { 9 } }", "run", &[]),
+        9
+    );
     // Short-circuit: the right side must NOT be evaluated when the left decides
     // it. If `and` evaluated `arr[i]` here (i=5, out of bounds) it would abort.
     let sc = "fn run() -> i64 {
@@ -209,9 +288,18 @@ fn transcendental_math_builtins_compile_and_run() {
         c + 41.0
     }";
     assert!((compile_call_f64(after, "run", &[]) - 42.0).abs() < 1e-9);
-    assert!((compile_call_f64("fn run() -> f64 { pow(2.0, 10.0) }", "run", &[]) - 1024.0).abs() < 1e-6);
-    assert!((compile_call_f64("fn run() -> f64 { clamp(5.0, 0.0, 1.0) }", "run", &[]) - 1.0).abs() < 1e-9);
-    assert!((compile_call_f64("fn run() -> f64 { clamp(0.0 - 5.0, 0.0, 1.0) }", "run", &[]) - 0.0).abs() < 1e-9);
+    assert!(
+        (compile_call_f64("fn run() -> f64 { pow(2.0, 10.0) }", "run", &[]) - 1024.0).abs() < 1e-6
+    );
+    assert!(
+        (compile_call_f64("fn run() -> f64 { clamp(5.0, 0.0, 1.0) }", "run", &[]) - 1.0).abs()
+            < 1e-9
+    );
+    assert!(
+        (compile_call_f64("fn run() -> f64 { clamp(0.0 - 5.0, 0.0, 1.0) }", "run", &[]) - 0.0)
+            .abs()
+            < 1e-9
+    );
     // In a loop (the OVERCLOCK mouse-look case): accumulate cos over iterations.
     let loopy = "fn run() -> f64 {
         let mut n = 0
@@ -351,7 +439,10 @@ fn main_with_native_print_compiles_and_runs() {
     }";
     let (m, _) = parse_str(src);
     let jit = crate::build(&m).unwrap();
-    assert!(jit.compiled("main"), "main should compile to native code, not be stubbed");
+    assert!(
+        jit.compiled("main"),
+        "main should compile to native code, not be stubbed"
+    );
     assert!(jit.compiled("fib"));
     // Executes native machine code (output goes to stdout).
     jit.call_i64("main", &[]).unwrap();
@@ -418,7 +509,10 @@ fn struct_main_runs_natively() {
     }";
     let (m, _) = parse_str(src);
     let jit = crate::build(&m).unwrap();
-    assert!(jit.compiled("main"), "struct/array main must compile natively");
+    assert!(
+        jit.compiled("main"),
+        "struct/array main must compile natively"
+    );
     jit.call_i64("main", &[]).unwrap();
 }
 
@@ -603,7 +697,10 @@ fn rapier_physics_impulse_and_raycast() {
     let jit = crate::build(&module).unwrap();
     let r = jit.call_i64("run", &[]).unwrap();
     let (moved, hit) = (r / 100, r % 100);
-    assert!((moved - 10).abs() <= 1, "impulse should move ~10, got {moved}");
+    assert!(
+        (moved - 10).abs() <= 1,
+        "impulse should move ~10, got {moved}"
+    );
     assert_eq!(hit, 45, "raycast distance to wall");
 }
 
@@ -627,7 +724,10 @@ fn rapier_physics_body_falls_and_rests_on_floor() {
     let jit = crate::build(&module).unwrap();
     let y = jit.call_i64("run", &[]).unwrap();
     // Floor top is at 190; the box (half-height 10) rests with centre near 180.
-    assert!((y - 180).abs() <= 2, "ball should rest on the floor, got y={y}");
+    assert!(
+        (y - 180).abs() <= 2,
+        "ball should rest on the floor, got y={y}"
+    );
 }
 
 #[test]
@@ -851,7 +951,9 @@ fn unresolvable_generic_enum_instantiation_errors_not_miscompiles() {
     fn run() -> i64 { mk(9) }";
     let (module, diags) = parse_str(src);
     assert!(!diags.iter().any(|d| d.is_error()));
-    let err = crate::build(&module).err().expect("must reject unresolvable instantiation");
+    let err = crate::build(&module)
+        .err()
+        .expect("must reject unresolvable instantiation");
     assert!(err.contains("instantiation of generic enum"), "got: {err}");
 }
 
@@ -904,7 +1006,11 @@ fn nonconflicting_systems_run_in_parallel() {
     assert!(!diags.iter().any(|d| d.is_error()));
     // The two independent systems must form a single concurrent layer.
     let layers = aurora_ast::parallel_layers(&module);
-    assert_eq!(layers, vec![vec![0, 1]], "independent systems fuse into one parallel layer");
+    assert_eq!(
+        layers,
+        vec![vec![0, 1]],
+        "independent systems fuse into one parallel layer"
+    );
     let jit = crate::build(&module).unwrap();
     assert_eq!(jit.call_i64("run", &[]).unwrap(), 66);
 }
@@ -968,7 +1074,11 @@ fn conflicting_systems_serialize_in_order() {
     let (module, diags) = parse_str(src);
     assert!(!diags.iter().any(|d| d.is_error()));
     let layers = aurora_ast::parallel_layers(&module);
-    assert_eq!(layers, vec![vec![0], vec![1]], "conflicting systems stay ordered in separate layers");
+    assert_eq!(
+        layers,
+        vec![vec![0], vec![1]],
+        "conflicting systems stay ordered in separate layers"
+    );
     let jit = crate::build(&module).unwrap();
     assert_eq!(jit.call_i64("run", &[]).unwrap(), 2);
 }
@@ -1191,7 +1301,10 @@ fn self_referential_const_is_reported_not_a_stack_overflow() {
     fn run() -> i64 { A }";
     let (module, _) = parse_str(src);
     let err = jit_call(&module, "run", &[]).expect_err("a const cycle must be rejected");
-    assert!(err.contains("defined in terms of itself"), "unexpected error: {err}");
+    assert!(
+        err.contains("defined in terms of itself"),
+        "unexpected error: {err}"
+    );
 }
 
 // --- file-based modules (`mod NAME;`) ---------------------------------------
@@ -1215,9 +1328,15 @@ fn file_program(tag: &str, files: &[(&str, &str)]) -> aurora_parser::ast::Module
     let entry = dir.join(files[0].0);
     let src = std::fs::read_to_string(&entry).expect("read entry file");
     let (expanded, diags) = aurora_parser::load_file_modules(&src, &entry);
-    assert!(!diags.iter().any(|d| d.is_error()), "module loading failed: {diags:?}");
+    assert!(
+        !diags.iter().any(|d| d.is_error()),
+        "module loading failed: {diags:?}"
+    );
     let (module, diags) = parse_str(&expanded);
-    assert!(!diags.iter().any(|d| d.is_error()), "parse failed: {diags:?}");
+    assert!(
+        !diags.iter().any(|d| d.is_error()),
+        "parse failed: {diags:?}"
+    );
     module
 }
 
@@ -1226,7 +1345,10 @@ fn cross_module_function_call_compiles_and_runs() {
     let module = file_program(
         "call",
         &[
-            ("main.aur", "mod helper;\nfn run() -> i64 { helper::add(2, 3) * 10 }"),
+            (
+                "main.aur",
+                "mod helper;\nfn run() -> i64 { helper::add(2, 3) * 10 }",
+            ),
             ("helper.aur", "fn add(a: i64, b: i64) -> i64 { a + b }"),
         ],
     );
@@ -1276,8 +1398,14 @@ fn cross_module_const_compiles_and_runs() {
     let module = file_program(
         "const",
         &[
-            ("main.aur", "mod cfg;\nfn run() -> i64 { cfg::LIMIT * 10 + cfg::doubled() }"),
-            ("cfg.aur", "const LIMIT: i64 = 7\nfn doubled() -> i64 { LIMIT * 2 }"),
+            (
+                "main.aur",
+                "mod cfg;\nfn run() -> i64 { cfg::LIMIT * 10 + cfg::doubled() }",
+            ),
+            (
+                "cfg.aur",
+                "const LIMIT: i64 = 7\nfn doubled() -> i64 { LIMIT * 2 }",
+            ),
         ],
     );
     assert_eq!(jit_call(&module, "run", &[]).expect("jit failed"), 84);
@@ -1306,7 +1434,10 @@ fn nested_file_modules_compile_and_run() {
         "nested",
         &[
             ("main.aur", "mod mid;\nfn run() -> i64 { mid::doubled() }"),
-            ("mid.aur", "mod leaf;\nfn doubled() -> i64 { leaf::base() * 2 }"),
+            (
+                "mid.aur",
+                "mod leaf;\nfn doubled() -> i64 { leaf::base() * 2 }",
+            ),
             ("leaf.aur", "fn base() -> i64 { 10 }"),
         ],
     );
@@ -1320,9 +1451,18 @@ fn diamond_file_modules_compile_and_run() {
     let module = file_program(
         "diamond",
         &[
-            ("main.aur", "mod l;\nmod r;\nfn run() -> i64 { l::lv() * 10 + r::rv() }"),
-            ("l.aur", "mod shared;\nfn lv() -> i64 { shared::base() + 1 }"),
-            ("r.aur", "mod shared;\nfn rv() -> i64 { shared::base() + 2 }"),
+            (
+                "main.aur",
+                "mod l;\nmod r;\nfn run() -> i64 { l::lv() * 10 + r::rv() }",
+            ),
+            (
+                "l.aur",
+                "mod shared;\nfn lv() -> i64 { shared::base() + 1 }",
+            ),
+            (
+                "r.aur",
+                "mod shared;\nfn rv() -> i64 { shared::base() + 2 }",
+            ),
             ("shared.aur", "fn base() -> i64 { 4 }"),
         ],
     );
@@ -1345,12 +1485,21 @@ fn file_modules_lower_to_an_aot_object_with_nothing_stubbed() {
                      println(str(p.x + p.y))
                  }",
             ),
-            ("helper.aur", "mod shape;\nfn add(a: i64, b: i64) -> i64 { a + b + shape::ZERO }"),
-            ("shape.aur", "struct P { x: f64, y: f64 }\nconst ZERO: i64 = 0"),
+            (
+                "helper.aur",
+                "mod shape;\nfn add(a: i64, b: i64) -> i64 { a + b + shape::ZERO }",
+            ),
+            (
+                "shape.aur",
+                "struct P { x: f64, y: f64 }\nconst ZERO: i64 = 0",
+            ),
         ],
     );
     let (obj, failed) = build_object(&module).expect("object emission failed");
-    assert!(failed.is_empty(), "file-module functions were stubbed, not compiled: {failed:?}");
+    assert!(
+        failed.is_empty(),
+        "file-module functions were stubbed, not compiled: {failed:?}"
+    );
     let needle = b"aurora_user_main";
     assert!(
         obj.windows(needle.len()).any(|w| w == needle),

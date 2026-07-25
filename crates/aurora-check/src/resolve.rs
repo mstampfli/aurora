@@ -18,9 +18,36 @@ use crate::walk::queries_in_block;
 
 /// Builtin type names from grammar spec §2.2 (primitives + math + ECS leaves).
 const BUILTIN_TYPES: &[&str] = &[
-    "f32", "f64", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "bool", "char", "str",
-    "void", "Vec2", "Vec3", "Vec4", "Mat2", "Mat3", "Mat4", "Quat", "Color", "Transform", "Time",
-    "Entity", "Handle", "Option", "Result", "rc", "weak",
+    "f32",
+    "f64",
+    "i8",
+    "i16",
+    "i32",
+    "i64",
+    "u8",
+    "u16",
+    "u32",
+    "u64",
+    "bool",
+    "char",
+    "str",
+    "void",
+    "Vec2",
+    "Vec3",
+    "Vec4",
+    "Mat2",
+    "Mat3",
+    "Mat4",
+    "Quat",
+    "Color",
+    "Transform",
+    "Time",
+    "Entity",
+    "Handle",
+    "Option",
+    "Result",
+    "rc",
+    "weak",
 ];
 
 struct Tables {
@@ -89,13 +116,17 @@ pub(crate) fn resolve(module: &Module, diags: &mut Vec<Diagnostic>) {
     let tables = Tables::collect(module);
 
     for item in &module.items {
-        let ItemKind::System(sys) = &item.kind else { continue };
+        let ItemKind::System(sys) = &item.kind else {
+            continue;
+        };
 
         // `after`/`before` must reference real systems.
         for sched in &sys.schedule {
             if let SysSched::After(paths) | SysSched::Before(paths) = sched {
                 for p in paths {
-                    let Some(seg) = p.segments.last() else { continue };
+                    let Some(seg) = p.segments.last() else {
+                        continue;
+                    };
                     if !tables.systems.contains(&seg.ident.name) {
                         diags.push(
                             Diagnostic::error(format!(
@@ -134,12 +165,12 @@ pub(crate) fn resolve(module: &Module, diags: &mut Vec<Diagnostic>) {
                 }
                 if tables.value_types.contains(name) {
                     diags.push(
-                        Diagnostic::error(format!(
-                            "`{name}` is a struct/enum, not a component"
-                        ))
-                        .with_code("E0211")
-                        .primary(path.span, "queries iterate components")
-                        .note(format!("declare it with `component {name} {{ ... }}` to query it")),
+                        Diagnostic::error(format!("`{name}` is a struct/enum, not a component"))
+                            .with_code("E0211")
+                            .primary(path.span, "queries iterate components")
+                            .note(format!(
+                                "declare it with `component {name} {{ ... }}` to query it"
+                            )),
                     );
                 } else {
                     diags.push(

@@ -86,7 +86,10 @@ mod lockstep_tests {
         // ...now restore the snapshot and replay the same tail — identical.
         let mut replayed = snapshot;
         replayed.run(&inputs[12..], dt);
-        assert_eq!(replayed, reference, "replay from a snapshot must reproduce exactly");
+        assert_eq!(
+            replayed, reference,
+            "replay from a snapshot must reproduce exactly"
+        );
     }
 
     #[test]

@@ -55,7 +55,10 @@ impl Parser {
                 self.bump();
                 let ty = self.parse_type();
                 let span = lhs.span.to(ty.span);
-                lhs = Expr { kind: ExprKind::Cast(Box::new(lhs), ty), span };
+                lhs = Expr {
+                    kind: ExprKind::Cast(Box::new(lhs), ty),
+                    span,
+                };
                 continue;
             }
 
@@ -74,7 +77,11 @@ impl Parser {
                 let hi = end.as_ref().map(|e| e.span).unwrap_or(lhs.span);
                 let span = lhs.span.to(hi);
                 lhs = Expr {
-                    kind: ExprKind::Range { start: Some(Box::new(lhs)), end, inclusive },
+                    kind: ExprKind::Range {
+                        start: Some(Box::new(lhs)),
+                        end,
+                        inclusive,
+                    },
                     span,
                 };
                 continue;
@@ -89,7 +96,10 @@ impl Parser {
                 let func = self.parse_expr_bp(bp::PIPE + 1);
                 let span = lhs.span.to(func.span);
                 lhs = Expr {
-                    kind: ExprKind::Pipe { value: Box::new(lhs), func: Box::new(func) },
+                    kind: ExprKind::Pipe {
+                        value: Box::new(lhs),
+                        func: Box::new(func),
+                    },
                     span,
                 };
                 continue;
@@ -159,8 +169,15 @@ impl Parser {
         // expression recursion and prevents a stack-overflow abort.
         if self.depth >= crate::MAX_PARSE_DEPTH {
             let span = self.cur_span();
-            self.error(span, "expression nests too deeply", "simplify this expression");
-            return Expr { kind: ExprKind::Error, span };
+            self.error(
+                span,
+                "expression nests too deeply",
+                "simplify this expression",
+            );
+            return Expr {
+                kind: ExprKind::Error,
+                span,
+            };
         }
         self.depth += 1;
         let e = self.parse_unary_inner();
@@ -180,8 +197,15 @@ impl Parser {
                 let mutable = self.eat_kw(Keyword::Mut);
                 let operand = self.parse_unary();
                 let span = self.finish(start);
-                let op = if mutable { UnOp::RefMut } else { UnOp::RefShared };
-                return Expr { kind: ExprKind::Unary(op, Box::new(operand)), span };
+                let op = if mutable {
+                    UnOp::RefMut
+                } else {
+                    UnOp::RefShared
+                };
+                return Expr {
+                    kind: ExprKind::Unary(op, Box::new(operand)),
+                    span,
+                };
             }
             _ => None,
         };
@@ -189,7 +213,10 @@ impl Parser {
             self.bump();
             let operand = self.parse_unary();
             let span = self.finish(start);
-            return Expr { kind: ExprKind::Unary(op, Box::new(operand)), span };
+            return Expr {
+                kind: ExprKind::Unary(op, Box::new(operand)),
+                span,
+            };
         }
         self.parse_postfix()
     }
@@ -226,7 +253,11 @@ impl Parser {
                     };
                     let span = self.finish(start);
                     expr = Expr {
-                        kind: ExprKind::Call { callee: Box::new(expr), type_args, args },
+                        kind: ExprKind::Call {
+                            callee: Box::new(expr),
+                            type_args,
+                            args,
+                        },
                         span,
                     };
                 }
@@ -244,7 +275,13 @@ impl Parser {
                         }
                     };
                     let span = self.finish(start);
-                    expr = Expr { kind: ExprKind::Field { base: Box::new(expr), field }, span };
+                    expr = Expr {
+                        kind: ExprKind::Field {
+                            base: Box::new(expr),
+                            field,
+                        },
+                        span,
+                    };
                 }
                 TokenKind::LBracket if !nl => {
                     self.bump();
@@ -252,7 +289,10 @@ impl Parser {
                     self.expect(&TokenKind::RBracket);
                     let span = self.finish(start);
                     expr = Expr {
-                        kind: ExprKind::Index { base: Box::new(expr), index: Box::new(index) },
+                        kind: ExprKind::Index {
+                            base: Box::new(expr),
+                            index: Box::new(index),
+                        },
                         span,
                     };
                 }
@@ -260,7 +300,10 @@ impl Parser {
                 TokenKind::Question => {
                     self.bump();
                     let span = self.finish(start);
-                    expr = Expr { kind: ExprKind::Try(Box::new(expr)), span };
+                    expr = Expr {
+                        kind: ExprKind::Try(Box::new(expr)),
+                        span,
+                    };
                 }
                 _ => break,
             }
@@ -390,7 +433,10 @@ impl Parser {
                 ExprKind::Error
             }
         };
-        Expr { kind, span: self.finish(start) }
+        Expr {
+            kind,
+            span: self.finish(start),
+        }
     }
 
     fn parse_paren_or_tuple(&mut self) -> Expr {
@@ -400,7 +446,10 @@ impl Parser {
         self.restrict_struct = false;
         if self.eat(&TokenKind::RParen) {
             self.restrict_struct = saved;
-            return Expr { kind: ExprKind::Tuple(Vec::new()), span: self.finish(start) };
+            return Expr {
+                kind: ExprKind::Tuple(Vec::new()),
+                span: self.finish(start),
+            };
         }
         let first = self.parse_expr();
         let kind = if self.at(&TokenKind::Comma) {
@@ -417,7 +466,10 @@ impl Parser {
         };
         self.restrict_struct = saved;
         self.expect(&TokenKind::RParen);
-        Expr { kind, span: self.finish(start) }
+        Expr {
+            kind,
+            span: self.finish(start),
+        }
     }
 
     fn parse_array(&mut self) -> Expr {
@@ -432,7 +484,10 @@ impl Parser {
             if self.eat(&TokenKind::Semi) {
                 let count = self.parse_expr();
                 self.expect(&TokenKind::RBracket);
-                ExprKind::ArrayRepeat { value: Box::new(first), count: Box::new(count) }
+                ExprKind::ArrayRepeat {
+                    value: Box::new(first),
+                    count: Box::new(count),
+                }
             } else {
                 let mut elems = vec![first];
                 while self.eat(&TokenKind::Comma) {
@@ -446,7 +501,10 @@ impl Parser {
             }
         };
         self.restrict_struct = saved;
-        Expr { kind, span: self.finish(start) }
+        Expr {
+            kind,
+            span: self.finish(start),
+        }
     }
 
     fn parse_struct_literal(&mut self, path: aurora_ast::Path, start: aurora_span::Span) -> Expr {
@@ -473,7 +531,10 @@ impl Parser {
         }
         self.restrict_struct = saved;
         self.expect(&TokenKind::RBrace);
-        Expr { kind: ExprKind::Struct { path, fields, base }, span: self.finish(start) }
+        Expr {
+            kind: ExprKind::Struct { path, fields, base },
+            span: self.finish(start),
+        }
     }
 
     fn parse_region(&mut self) -> Expr {
@@ -493,7 +554,10 @@ impl Parser {
         }
         let value = self.parse_unary();
         Expr {
-            kind: ExprKind::Region { region, value: Box::new(value) },
+            kind: ExprKind::Region {
+                region,
+                value: Box::new(value),
+            },
             span: self.finish(start),
         }
     }
@@ -508,7 +572,10 @@ impl Parser {
             let ty = if self.eat(&TokenKind::Colon) {
                 self.parse_type()
             } else {
-                Type { kind: TypeKind::Infer, span: name.span }
+                Type {
+                    kind: TypeKind::Infer,
+                    span: name.span,
+                }
             };
             params.push(Param::Normal { mutable, name, ty });
             if !self.eat(&TokenKind::Comma) {
@@ -518,7 +585,10 @@ impl Parser {
         self.expect(&TokenKind::Pipe);
         let body = self.parse_expr();
         Expr {
-            kind: ExprKind::Closure { params, body: Box::new(body) },
+            kind: ExprKind::Closure {
+                params,
+                body: Box::new(body),
+            },
             span: self.finish(start),
         }
     }
@@ -534,7 +604,10 @@ impl Parser {
             } else {
                 let bstart = self.cur_span();
                 let block = self.parse_block();
-                Some(Box::new(Expr { kind: ExprKind::Block(block), span: self.finish(bstart) }))
+                Some(Box::new(Expr {
+                    kind: ExprKind::Block(block),
+                    span: self.finish(bstart),
+                }))
             }
         } else {
             None
@@ -555,7 +628,10 @@ impl Parser {
         let cond = self.parse_cond();
         let body = self.parse_block();
         Expr {
-            kind: ExprKind::While { cond: Box::new(cond), body },
+            kind: ExprKind::While {
+                cond: Box::new(cond),
+                body,
+            },
             span: self.finish(start),
         }
     }
@@ -573,7 +649,11 @@ impl Parser {
         self.restrict_struct = saved;
         let body = self.parse_block();
         Expr {
-            kind: ExprKind::For { pat, iter: Box::new(iter), body },
+            kind: ExprKind::For {
+                pat,
+                iter: Box::new(iter),
+                body,
+            },
             span: self.finish(start),
         }
     }
@@ -598,7 +678,10 @@ impl Parser {
         }
         self.expect(&TokenKind::RBrace);
         Expr {
-            kind: ExprKind::Match { scrutinee: Box::new(scrutinee), arms },
+            kind: ExprKind::Match {
+                scrutinee: Box::new(scrutinee),
+                arms,
+            },
             span: self.finish(start),
         }
     }

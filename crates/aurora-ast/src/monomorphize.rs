@@ -35,7 +35,11 @@ struct Wanted {
 }
 
 pub fn monomorphize(items: Vec<Item>) -> Result<Vec<Item>, String> {
-    let mut gen = Gen { fns: HashMap::new(), structs: HashMap::new(), impls: HashMap::new() };
+    let mut gen = Gen {
+        fns: HashMap::new(),
+        structs: HashMap::new(),
+        impls: HashMap::new(),
+    };
     for it in &items {
         match &it.kind {
             ItemKind::Fn(f) if !f.generics.is_empty() => {
@@ -62,7 +66,6 @@ pub fn monomorphize(items: Vec<Item>) -> Result<Vec<Item>, String> {
         return monomorphize_enums(items);
     }
 
-
     let mut wanted = Wanted::default();
     let mut out: Vec<Item> = Vec::new();
 
@@ -72,9 +75,9 @@ pub fn monomorphize(items: Vec<Item>) -> Result<Vec<Item>, String> {
         let drop = match &it.kind {
             ItemKind::Fn(f) => !f.generics.is_empty(),
             ItemKind::Struct(s) => !s.generics.is_empty(),
-            ItemKind::Impl(im) => {
-                type_head(&im.self_ty).map(|n| gen.structs.contains_key(&n)).unwrap_or(false)
-            }
+            ItemKind::Impl(im) => type_head(&im.self_ty)
+                .map(|n| gen.structs.contains_key(&n))
+                .unwrap_or(false),
             _ => false,
         };
         if drop {
@@ -89,10 +92,18 @@ pub fn monomorphize(items: Vec<Item>) -> Result<Vec<Item>, String> {
     let mut done_fns: HashSet<(String, Vec<String>)> = HashSet::new();
     let mut done_structs: HashSet<(String, Vec<String>)> = HashSet::new();
     loop {
-        let pend_fns: Vec<_> =
-            wanted.fns.iter().filter(|k| !done_fns.contains(*k)).cloned().collect();
-        let pend_structs: Vec<_> =
-            wanted.structs.iter().filter(|k| !done_structs.contains(*k)).cloned().collect();
+        let pend_fns: Vec<_> = wanted
+            .fns
+            .iter()
+            .filter(|k| !done_fns.contains(*k))
+            .cloned()
+            .collect();
+        let pend_structs: Vec<_> = wanted
+            .structs
+            .iter()
+            .filter(|k| !done_structs.contains(*k))
+            .cloned()
+            .collect();
         if pend_fns.is_empty() && pend_structs.is_empty() {
             break;
         }
@@ -223,7 +234,11 @@ fn monomorphize_enums(items: Vec<Item>) -> Result<Vec<Item>, String> {
                 // Multi-instantiation: context-resolve each construction/match,
                 // then rewrite explicit-`<T>` type references.
                 if let Some(tables) = &tables {
-                    let mut r = Resolver { t: tables, cur_ret: None, errors: Vec::new() };
+                    let mut r = Resolver {
+                        t: tables,
+                        cur_ret: None,
+                        errors: Vec::new(),
+                    };
                     r.resolve_item(&mut it);
                     errors.extend(r.errors);
                     rewrite_item_multi_types(&mut it, &multi_names);
@@ -258,8 +273,12 @@ fn unresolved_msg(enum_name: &str) -> String {
 /// and rename to `mangled`.
 fn specialize_enum_decl(it: &Item, e: &crate::EnumDecl, mangled: &str, targs: &[String]) -> Item {
     use crate::VariantData;
-    let subst: HashMap<String, String> =
-        e.generics.iter().map(|g| g.name.name.clone()).zip(targs.iter().cloned()).collect();
+    let subst: HashMap<String, String> = e
+        .generics
+        .iter()
+        .map(|g| g.name.name.clone())
+        .zip(targs.iter().cloned())
+        .collect();
     let mut spec = e.clone();
     spec.name.name = mangled.to_string();
     spec.generics.clear();
@@ -278,7 +297,12 @@ fn specialize_enum_decl(it: &Item, e: &crate::EnumDecl, mangled: &str, targs: &[
             VariantData::Unit => {}
         }
     }
-    Item { attrs: it.attrs.clone(), vis: it.vis, kind: ItemKind::Enum(spec), span: it.span }
+    Item {
+        attrs: it.attrs.clone(),
+        vis: it.vis,
+        kind: ItemKind::Enum(spec),
+        span: it.span,
+    }
 }
 
 /// If `t` names a multi-instantiation generic enum with concrete args, return
@@ -312,19 +336,30 @@ fn infer_inst_from_construction(
     if edecl.generics.is_empty() {
         return None;
     }
-    let gnames: HashSet<&str> = edecl.generics.iter().map(|g| g.name.name.as_str()).collect();
+    let gnames: HashSet<&str> = edecl
+        .generics
+        .iter()
+        .map(|g| g.name.name.as_str())
+        .collect();
     let var = edecl.variants.iter().find(|v| v.name.name == variant)?;
     let mut map: HashMap<String, String> = HashMap::new();
     // Post-monomorphization there are no generic structs left, so `guess_type`
     // needs no generic context here; `vars` resolves variable payloads.
-    let cgen = Gen { fns: HashMap::new(), structs: HashMap::new(), impls: HashMap::new() };
+    let cgen = Gen {
+        fns: HashMap::new(),
+        structs: HashMap::new(),
+        impls: HashMap::new(),
+    };
     if let VariantData::Tuple(tys) = &var.data {
         for (ty, arg) in tys.iter().zip(args.iter()) {
             bind_generics(ty, arg, &gnames, &mut map, &cgen, vars);
         }
     }
-    let targs: Vec<String> =
-        edecl.generics.iter().map(|g| map.get(&g.name.name).cloned()).collect::<Option<_>>()?;
+    let targs: Vec<String> = edecl
+        .generics
+        .iter()
+        .map(|g| map.get(&g.name.name).cloned())
+        .collect::<Option<_>>()?;
     Some((edecl.name.name.clone(), targs))
 }
 
@@ -392,12 +427,16 @@ impl CtorCollect<'_> {
                     }
                     // Track the binding's type so later constructions can use it.
                     if let PatKind::Binding { name, sub: None } = &l.pat.kind {
-                        let cgen = Gen { fns: HashMap::new(), structs: HashMap::new(), impls: HashMap::new() };
-                        let t = l
-                            .ty
-                            .as_ref()
-                            .and_then(type_head)
-                            .or_else(|| l.init.as_ref().and_then(|e| guess_type(e, &cgen, &self.var_ty)));
+                        let cgen = Gen {
+                            fns: HashMap::new(),
+                            structs: HashMap::new(),
+                            impls: HashMap::new(),
+                        };
+                        let t = l.ty.as_ref().and_then(type_head).or_else(|| {
+                            l.init
+                                .as_ref()
+                                .and_then(|e| guess_type(e, &cgen, &self.var_ty))
+                        });
                         if let Some(t) = t {
                             self.var_ty.insert(name.name.clone(), t);
                         }
@@ -566,7 +605,12 @@ fn build_tables(
             _ => {}
         }
     }
-    Tables { multi: multi.clone(), fn_ret, fn_params, enums: genums.clone() }
+    Tables {
+        multi: multi.clone(),
+        fn_ret,
+        fn_params,
+        enums: genums.clone(),
+    }
 }
 
 /// Context resolver for multi-instantiation enums.
@@ -619,7 +663,12 @@ impl Resolver<'_> {
 
     /// Resolve a block; `tail_expected` is the expected instantiation of the
     /// block's value (tail expression). Variables are lexically scoped.
-    fn resolve_block(&mut self, b: &mut Block, tail_expected: Option<Inst>, vars: &mut HashMap<String, Inst>) {
+    fn resolve_block(
+        &mut self,
+        b: &mut Block,
+        tail_expected: Option<Inst>,
+        vars: &mut HashMap<String, Inst>,
+    ) {
         let saved = vars.clone();
         for stmt in &mut b.stmts {
             match stmt {
@@ -628,8 +677,9 @@ impl Resolver<'_> {
                     // Determine the binding's instantiation from the annotation
                     // or the *not-yet-rewritten* initializer (so a construction's
                     // payload is still visible), before resolving rewrites it.
-                    let bind_inst =
-                        ann.clone().or_else(|| l.init.as_ref().and_then(|e| self.expr_inst(e, vars)));
+                    let bind_inst = ann
+                        .clone()
+                        .or_else(|| l.init.as_ref().and_then(|e| self.expr_inst(e, vars)));
                     if let Some(init) = &mut l.init {
                         self.resolve_expr(init, bind_inst.clone(), vars);
                     }
@@ -662,7 +712,12 @@ impl Resolver<'_> {
                         let variant = &p.segments.last().unwrap().ident.name;
                         let edecl = self.t.enums.get(&p.segments[0].ident.name)?;
                         let argrefs: Vec<&Expr> = args.iter().map(|a| &a.value).collect();
-                        return infer_inst_from_construction(edecl, variant, &argrefs, &HashMap::new());
+                        return infer_inst_from_construction(
+                            edecl,
+                            variant,
+                            &argrefs,
+                            &HashMap::new(),
+                        );
                     }
                     if p.segments.len() == 1 {
                         return self.t.fn_ret.get(&p.segments[0].ident.name).cloned();
@@ -699,7 +754,12 @@ impl Resolver<'_> {
         p.segments.len() >= 2 && self.t.multi.contains(&p.segments[0].ident.name)
     }
 
-    fn resolve_expr(&mut self, e: &mut Expr, expected: Option<Inst>, vars: &mut HashMap<String, Inst>) {
+    fn resolve_expr(
+        &mut self,
+        e: &mut Expr,
+        expected: Option<Inst>,
+        vars: &mut HashMap<String, Inst>,
+    ) {
         match &mut e.kind {
             ExprKind::Call { callee, args, .. } => {
                 if let ExprKind::Path(p) = &mut callee.kind {
@@ -713,7 +773,8 @@ impl Resolver<'_> {
                         return;
                     }
                     if p.segments.len() == 1 {
-                        if let Some(params) = self.t.fn_params.get(&p.segments[0].ident.name).cloned()
+                        if let Some(params) =
+                            self.t.fn_params.get(&p.segments[0].ident.name).cloned()
                         {
                             for (i, a) in args.iter_mut().enumerate() {
                                 let exp = params.get(i).cloned().flatten();
@@ -763,7 +824,9 @@ impl Resolver<'_> {
                 let r = self.cur_ret.clone();
                 self.resolve_expr(inner, r, vars);
             }
-            ExprKind::Binary(_, a, b) | ExprKind::Assign(_, a, b) | ExprKind::Index { base: a, index: b } => {
+            ExprKind::Binary(_, a, b)
+            | ExprKind::Assign(_, a, b)
+            | ExprKind::Index { base: a, index: b } => {
                 self.resolve_expr(a, None, vars);
                 self.resolve_expr(b, None, vars);
             }
@@ -838,7 +901,9 @@ impl Resolver<'_> {
 
     fn resolve_pat(&mut self, pat: &mut Pat, sinst: Option<&Inst>) {
         let head = match &pat.kind {
-            PatKind::Path(p) | PatKind::TupleStruct { path: p, .. } | PatKind::Struct { path: p, .. }
+            PatKind::Path(p)
+            | PatKind::TupleStruct { path: p, .. }
+            | PatKind::Struct { path: p, .. }
                 if self.is_variant_path(p) =>
             {
                 Some(p.segments[0].ident.name.clone())
@@ -930,9 +995,9 @@ fn scan_type(t: &Type, multi: &HashSet<String>, found: &mut HashSet<String>) {
         }
     } else {
         match &t.kind {
-            TypeKind::Owned(i) | TypeKind::Ref { inner: i, .. } | TypeKind::Array { elem: i, .. } => {
-                scan_type(i, multi, found)
-            }
+            TypeKind::Owned(i)
+            | TypeKind::Ref { inner: i, .. }
+            | TypeKind::Array { elem: i, .. } => scan_type(i, multi, found),
             TypeKind::Tuple(ts) => {
                 for x in ts {
                     scan_type(x, multi, found);
@@ -1034,7 +1099,9 @@ fn walk_expr_types_mut(e: &mut Expr, f: &mut impl FnMut(&mut Type)) {
         | ExprKind::Despawn(x)
         | ExprKind::Region { value: x, .. }
         | ExprKind::Field { base: x, .. } => walk_expr_types_mut(x, f),
-        ExprKind::Binary(_, a, b) | ExprKind::Assign(_, a, b) | ExprKind::Index { base: a, index: b } => {
+        ExprKind::Binary(_, a, b)
+        | ExprKind::Assign(_, a, b)
+        | ExprKind::Index { base: a, index: b } => {
             walk_expr_types_mut(a, f);
             walk_expr_types_mut(b, f);
         }
@@ -1162,7 +1229,10 @@ fn collect_enum_insts_type(
         if let Some(seg) = p.segments.last() {
             if genums.contains_key(&seg.ident.name) && !seg.args.is_empty() {
                 if let Some(targs) = seg.args.iter().map(type_head).collect::<Option<Vec<_>>>() {
-                    insts.entry(seg.ident.name.clone()).or_default().insert(targs);
+                    insts
+                        .entry(seg.ident.name.clone())
+                        .or_default()
+                        .insert(targs);
                 }
             }
             for a in &seg.args {
@@ -1378,9 +1448,7 @@ fn guess_type(e: &Expr, gen: &Gen, vars: &HashMap<String, String>) -> Option<Str
         ExprKind::Paren(inner) => guess_type(inner, gen, vars),
         ExprKind::Cast(_, ty) => type_head(ty),
         // A variable whose type we've tracked (parameter / `let`).
-        ExprKind::Path(p) if p.segments.len() == 1 => {
-            vars.get(&p.segments[0].ident.name).cloned()
-        }
+        ExprKind::Path(p) if p.segments.len() == 1 => vars.get(&p.segments[0].ident.name).cloned(),
         ExprKind::Struct { path, fields, .. } => {
             let name = path.segments.last()?.ident.name.clone();
             // A *generic* struct construction's type is its specialized name,
@@ -1399,21 +1467,25 @@ fn guess_type(e: &Expr, gen: &Gen, vars: &HashMap<String, String>) -> Option<Str
 
 // --- specialization ---------------------------------------------------------
 
-fn specialize_fn(
-    inst: &(String, Vec<String>),
-    gen: &Gen,
-    wanted: &mut Wanted,
-) -> Option<Item> {
+fn specialize_fn(inst: &(String, Vec<String>), gen: &Gen, wanted: &mut Wanted) -> Option<Item> {
     let (fname, args) = inst;
     let decl = gen.fns.get(fname)?;
-    let subst: HashMap<String, String> =
-        decl.generics.iter().map(|g| g.name.name.clone()).zip(args.iter().cloned()).collect();
+    let subst: HashMap<String, String> = decl
+        .generics
+        .iter()
+        .map(|g| g.name.name.clone())
+        .zip(args.iter().cloned())
+        .collect();
     let mut spec = decl.clone();
     spec.name.name = mangle(fname, args);
     spec.generics.clear();
     subst_fn(&mut spec, &subst);
-    let mut item =
-        Item { attrs: Vec::new(), vis: Vis::Private, kind: ItemKind::Fn(spec), span: decl.name.span };
+    let mut item = Item {
+        attrs: Vec::new(),
+        vis: Vis::Private,
+        kind: ItemKind::Fn(spec),
+        span: decl.name.span,
+    };
     rewrite_item(&mut item, gen, wanted);
     Some(item)
 }
@@ -1425,10 +1497,16 @@ fn specialize_struct(
     out: &mut Vec<Item>,
 ) {
     let (sname, args) = inst;
-    let Some(decl) = gen.structs.get(sname) else { return };
+    let Some(decl) = gen.structs.get(sname) else {
+        return;
+    };
     let mangled = mangle(sname, args);
-    let subst: HashMap<String, String> =
-        decl.generics.iter().map(|g| g.name.name.clone()).zip(args.iter().cloned()).collect();
+    let subst: HashMap<String, String> = decl
+        .generics
+        .iter()
+        .map(|g| g.name.name.clone())
+        .zip(args.iter().cloned())
+        .collect();
 
     // Specialized struct.
     let mut sd = decl.clone();
@@ -1440,7 +1518,12 @@ fn specialize_struct(
         }
     }
     let span = decl.name.span;
-    out.push(Item { attrs: Vec::new(), vis: Vis::Private, kind: ItemKind::Struct(sd), span });
+    out.push(Item {
+        attrs: Vec::new(),
+        vis: Vis::Private,
+        kind: ItemKind::Struct(sd),
+        span,
+    });
 
     // Specialized impls. The impl's own generic params are bound by matching the
     // generic names in its `self_ty` args against this instantiation's args.
@@ -1449,20 +1532,30 @@ fn specialize_struct(
             let isubst = impl_subst(im, args);
             let mut spec = im.clone();
             spec.generics.clear();
-            spec.self_ty = Type { kind: TypeKind::Path(crate::Path {
-                segments: vec![crate::PathSeg {
-                    ident: crate::Ident { name: mangled.clone(), span },
-                    args: Vec::new(),
-                }],
+            spec.self_ty = Type {
+                kind: TypeKind::Path(crate::Path {
+                    segments: vec![crate::PathSeg {
+                        ident: crate::Ident {
+                            name: mangled.clone(),
+                            span,
+                        },
+                        args: Vec::new(),
+                    }],
+                    span,
+                }),
                 span,
-            }), span };
+            };
             for it in &mut spec.items {
                 if let AssocItem::Fn(f) = it {
                     subst_fn(f, &isubst);
                 }
             }
-            let mut item =
-                Item { attrs: Vec::new(), vis: Vis::Private, kind: ItemKind::Impl(spec), span };
+            let mut item = Item {
+                attrs: Vec::new(),
+                vis: Vis::Private,
+                kind: ItemKind::Impl(spec),
+                span,
+            };
             rewrite_item(&mut item, gen, wanted);
             out.push(item);
         }
@@ -1584,7 +1677,11 @@ fn subst_expr(e: &mut Expr, subst: &HashMap<String, String>) {
             subst_expr(value, subst);
             subst_expr(func, subst);
         }
-        ExprKind::Call { callee, type_args, args } => {
+        ExprKind::Call {
+            callee,
+            type_args,
+            args,
+        } => {
             subst_expr(callee, subst);
             for t in type_args {
                 subst_type(t, subst);
@@ -1823,12 +1920,10 @@ fn rewrite_expr(e: &mut Expr, gen: &Gen, w: &mut Wanted) {
     }
 }
 
-fn resolve_fn_call(
-    callee: &Expr,
-    args: &[crate::Arg],
-    gen: &Gen,
-) -> Option<(String, Vec<String>)> {
-    let ExprKind::Path(p) = &callee.kind else { return None };
+fn resolve_fn_call(callee: &Expr, args: &[crate::Arg], gen: &Gen) -> Option<(String, Vec<String>)> {
+    let ExprKind::Path(p) = &callee.kind else {
+        return None;
+    };
     if p.segments.len() != 1 {
         return None;
     }
@@ -1842,21 +1937,33 @@ fn resolve_fn_call(
             let arg = ai.next()?;
             if let TypeKind::Path(tp) = &ty.kind {
                 if tp.segments.len() == 1 && gnames.contains(tp.segments[0].ident.name.as_str()) {
-                    map.insert(tp.segments[0].ident.name.clone(), guess_type(&arg.value, gen, &HashMap::new())?);
+                    map.insert(
+                        tp.segments[0].ident.name.clone(),
+                        guess_type(&arg.value, gen, &HashMap::new())?,
+                    );
                 }
             }
         }
     }
-    let resolved: Option<Vec<String>> =
-        decl.generics.iter().map(|g| map.get(&g.name.name).cloned()).collect();
+    let resolved: Option<Vec<String>> = decl
+        .generics
+        .iter()
+        .map(|g| map.get(&g.name.name).cloned())
+        .collect();
     Some((name.clone(), resolved?))
 }
 
 /// Infer a generic struct's type args from a construction's field values,
 /// matching the declared field type structure against the value (handles bare
 /// `T` and `[T; N]` fields).
-fn infer_struct_args(sd: &StructDecl, fields: &[crate::FieldInit], gen: &Gen) -> Option<Vec<String>> {
-    let StructBody::Named(decl_fields) = &sd.body else { return None };
+fn infer_struct_args(
+    sd: &StructDecl,
+    fields: &[crate::FieldInit],
+    gen: &Gen,
+) -> Option<Vec<String>> {
+    let StructBody::Named(decl_fields) = &sd.body else {
+        return None;
+    };
     let gnames: HashSet<&str> = sd.generics.iter().map(|g| g.name.name.as_str()).collect();
     let mut map: HashMap<String, String> = HashMap::new();
     for df in decl_fields {
@@ -1866,7 +1973,10 @@ fn infer_struct_args(sd: &StructDecl, fields: &[crate::FieldInit], gen: &Gen) ->
             }
         }
     }
-    sd.generics.iter().map(|g| map.get(&g.name.name).cloned()).collect()
+    sd.generics
+        .iter()
+        .map(|g| map.get(&g.name.name).cloned())
+        .collect()
 }
 
 /// Bind generic params by matching a declared type's shape against a value
@@ -1880,13 +1990,17 @@ fn bind_generics(
     vars: &HashMap<String, String>,
 ) {
     match &ty.kind {
-        TypeKind::Path(p) if p.segments.len() == 1 && gnames.contains(p.segments[0].ident.name.as_str()) => {
+        TypeKind::Path(p)
+            if p.segments.len() == 1 && gnames.contains(p.segments[0].ident.name.as_str()) =>
+        {
             if let Some(c) = guess_type(val, gen, vars) {
                 map.insert(p.segments[0].ident.name.clone(), c);
             }
         }
         TypeKind::Array { elem, .. } => match &val.kind {
-            ExprKind::ArrayRepeat { value, .. } => bind_generics(elem, value, gnames, map, gen, vars),
+            ExprKind::ArrayRepeat { value, .. } => {
+                bind_generics(elem, value, gnames, map, gen, vars)
+            }
             ExprKind::Array(items) if !items.is_empty() => {
                 bind_generics(elem, &items[0], gnames, map, gen, vars)
             }

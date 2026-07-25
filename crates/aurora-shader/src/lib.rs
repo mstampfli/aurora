@@ -85,7 +85,10 @@ fn collect_structs(module: &Module) -> Structs {
     for item in &module.items {
         if let ItemKind::Struct(s) = &item.kind {
             if let StructBody::Named(fields) = &s.body {
-                m.insert(s.name.name.clone(), fields.iter().map(|f| f.name.name.clone()).collect());
+                m.insert(
+                    s.name.name.clone(),
+                    fields.iter().map(|f| f.name.name.clone()).collect(),
+                );
             }
         }
     }
@@ -135,12 +138,19 @@ fn lower_block(block: &Block, structs: &Structs, out: &mut String) {
                     aurora_ast::PatKind::Binding { name, .. } => name.name.clone(),
                     _ => "_".into(),
                 };
-                let init = l.init.as_ref().map(|e| lower_expr(e, structs)).unwrap_or_default();
+                let init = l
+                    .init
+                    .as_ref()
+                    .map(|e| lower_expr(e, structs))
+                    .unwrap_or_default();
                 out.push_str(&format!("    let {name} = {init};\n"));
             }
             Stmt::Expr(e) => {
                 if let ExprKind::Return(opt) = &e.kind {
-                    let v = opt.as_ref().map(|e| lower_expr(e, structs)).unwrap_or_default();
+                    let v = opt
+                        .as_ref()
+                        .map(|e| lower_expr(e, structs))
+                        .unwrap_or_default();
                     out.push_str(&format!("    return {v};\n"));
                 } else {
                     out.push_str(&format!("    {};\n", lower_expr(e, structs)));
@@ -159,9 +169,12 @@ fn lower_expr(e: &Expr, structs: &Structs) -> String {
         ExprKind::Int(n, _) => n.to_string(),
         ExprKind::Float(x, _) => fmt_float(*x),
         ExprKind::Bool(b) => b.to_string(),
-        ExprKind::Path(p) => {
-            p.segments.iter().map(|s| s.ident.name.clone()).collect::<Vec<_>>().join(".")
-        }
+        ExprKind::Path(p) => p
+            .segments
+            .iter()
+            .map(|s| s.ident.name.clone())
+            .collect::<Vec<_>>()
+            .join("."),
         ExprKind::Paren(inner) => format!("({})", lower_expr(inner, structs)),
         ExprKind::Field { base, field } => {
             let f = match field {
@@ -179,7 +192,12 @@ fn lower_expr(e: &Expr, structs: &Structs) -> String {
             }
         }
         ExprKind::Binary(op, a, b) => {
-            format!("({} {} {})", lower_expr(a, structs), bin_op(*op), lower_expr(b, structs))
+            format!(
+                "({} {} {})",
+                lower_expr(a, structs),
+                bin_op(*op),
+                lower_expr(b, structs)
+            )
         }
         ExprKind::Call { callee, args, .. } => lower_call(callee, args, structs),
         ExprKind::Struct { path, fields, .. } => lower_struct(path, fields, structs),
@@ -189,7 +207,11 @@ fn lower_expr(e: &Expr, structs: &Structs) -> String {
 
 fn lower_call(callee: &Expr, args: &[aurora_ast::Arg], structs: &Structs) -> String {
     let name = match &callee.kind {
-        ExprKind::Path(p) => p.segments.last().map(|s| s.ident.name.clone()).unwrap_or_default(),
+        ExprKind::Path(p) => p
+            .segments
+            .last()
+            .map(|s| s.ident.name.clone())
+            .unwrap_or_default(),
         _ => return "/* indirect call */".into(),
     };
     let a: Vec<String> = args.iter().map(|x| lower_expr(&x.value, structs)).collect();
@@ -207,12 +229,24 @@ fn lower_call(callee: &Expr, args: &[aurora_ast::Arg], structs: &Structs) -> Str
 
 /// Lower a struct literal to a WGSL positional constructor, reordering fields to
 /// the struct's declaration order when known.
-fn lower_struct(path: &aurora_ast::Path, fields: &[aurora_ast::FieldInit], structs: &Structs) -> String {
-    let name = path.segments.last().map(|s| s.ident.name.clone()).unwrap_or_default();
+fn lower_struct(
+    path: &aurora_ast::Path,
+    fields: &[aurora_ast::FieldInit],
+    structs: &Structs,
+) -> String {
+    let name = path
+        .segments
+        .last()
+        .map(|s| s.ident.name.clone())
+        .unwrap_or_default();
     let values: HashMap<&str, String> = fields
         .iter()
         .map(|f| {
-            let v = f.value.as_ref().map(|e| lower_expr(e, structs)).unwrap_or_else(|| f.name.name.clone());
+            let v = f
+                .value
+                .as_ref()
+                .map(|e| lower_expr(e, structs))
+                .unwrap_or_else(|| f.name.name.clone());
             (f.name.name.as_str(), v)
         })
         .collect();
@@ -220,12 +254,22 @@ fn lower_struct(path: &aurora_ast::Path, fields: &[aurora_ast::FieldInit], struc
     let ordered: Vec<String> = match structs.get(&name) {
         Some(order) => order
             .iter()
-            .map(|fname| values.get(fname.as_str()).cloned().unwrap_or_else(|| "0.0".into()))
+            .map(|fname| {
+                values
+                    .get(fname.as_str())
+                    .cloned()
+                    .unwrap_or_else(|| "0.0".into())
+            })
             .collect(),
         // Unknown struct: emit in written order.
         None => fields
             .iter()
-            .map(|f| values.get(f.name.name.as_str()).cloned().unwrap_or_default())
+            .map(|f| {
+                values
+                    .get(f.name.name.as_str())
+                    .cloned()
+                    .unwrap_or_default()
+            })
             .collect(),
     };
     format!("{name}({})", ordered.join(", "))
@@ -250,8 +294,15 @@ fn bin_op(op: BinOp) -> &'static str {
 }
 
 fn ty_to_wgsl(t: &Type) -> String {
-    let TypeKind::Path(p) = &t.kind else { return "f32".into() };
-    match p.segments.last().map(|s| s.ident.name.as_str()).unwrap_or("") {
+    let TypeKind::Path(p) = &t.kind else {
+        return "f32".into();
+    };
+    match p
+        .segments
+        .last()
+        .map(|s| s.ident.name.as_str())
+        .unwrap_or("")
+    {
         "f32" | "f64" => "f32".into(),
         "i32" | "i64" => "i32".into(),
         "u32" | "u64" => "u32".into(),

@@ -73,13 +73,21 @@ impl Diagnostic {
 
     /// Attach the primary label (the caret points here).
     pub fn primary(mut self, span: Span, message: impl Into<String>) -> Diagnostic {
-        self.labels.push(Label { span, message: message.into(), primary: true });
+        self.labels.push(Label {
+            span,
+            message: message.into(),
+            primary: true,
+        });
         self
     }
 
     /// Attach a supporting label.
     pub fn secondary(mut self, span: Span, message: impl Into<String>) -> Diagnostic {
-        self.labels.push(Label { span, message: message.into(), primary: false });
+        self.labels.push(Label {
+            span,
+            message: message.into(),
+            primary: false,
+        });
         self
     }
 
@@ -154,7 +162,14 @@ fn render_snippet(out: &mut String, file: &SourceFile, label: &Label, gutter: us
     // ` | `
     writeln!(out, "{:width$} |", "", width = gutter).unwrap();
     // `LL | source text`
-    writeln!(out, "{:>width$} | {}", start.line, line_text, width = gutter).unwrap();
+    writeln!(
+        out,
+        "{:>width$} | {}",
+        start.line,
+        line_text,
+        width = gutter
+    )
+    .unwrap();
 
     // Caret line. Column is 1-based; underline length is the span length on this
     // line (clamped so a multi-line span just underlines to end of line).
@@ -179,7 +194,15 @@ fn render_snippet(out: &mut String, file: &SourceFile, label: &Label, gutter: us
     if label.message.is_empty() {
         writeln!(out, "{:width$} | {}", "", caret_line, width = gutter).unwrap();
     } else {
-        writeln!(out, "{:width$} | {} {}", "", caret_line, label.message, width = gutter).unwrap();
+        writeln!(
+            out,
+            "{:width$} | {} {}",
+            "",
+            caret_line,
+            label.message,
+            width = gutter
+        )
+        .unwrap();
     }
 }
 

@@ -52,7 +52,12 @@ pub struct Adsr {
 
 impl Default for Adsr {
     fn default() -> Adsr {
-        Adsr { attack: 0.01, decay: 0.05, sustain: 0.7, release: 0.1 }
+        Adsr {
+            attack: 0.01,
+            decay: 0.05,
+            sustain: 0.7,
+            release: 0.1,
+        }
     }
 }
 
@@ -101,7 +106,13 @@ pub struct Note {
 
 impl Note {
     pub fn new(freq: f32, dur: f32) -> Note {
-        Note { freq, dur, wave: Wave::Sine, gain: 0.5, adsr: Adsr::default() }
+        Note {
+            freq,
+            dur,
+            wave: Wave::Sine,
+            gain: 0.5,
+            adsr: Adsr::default(),
+        }
     }
 
     pub fn wave(mut self, w: Wave) -> Note {
@@ -185,7 +196,11 @@ mod tests {
         assert!((pitch(12) - 880.0).abs() < 1e-3, "A5 = 880");
         assert!((pitch(-12) - 220.0).abs() < 1e-3, "A3 = 220");
         // Middle C (C4) is 9 semitones below A4 ≈ 261.63 Hz.
-        assert!((pitch(-9) - 261.63).abs() < 0.1, "C4 ≈ 261.63, got {}", pitch(-9));
+        assert!(
+            (pitch(-9) - 261.63).abs() < 0.1,
+            "C4 ≈ 261.63, got {}",
+            pitch(-9)
+        );
     }
 
     #[test]
@@ -198,18 +213,35 @@ mod tests {
         assert_eq!(buf.len(), expected);
         // Count zero crossings in the sustained middle second — ~2 per cycle.
         let mid = &buf[(sr as usize) / 4..(sr as usize) * 3 / 4]; // 0.25s..0.75s
-        let crossings = mid.windows(2).filter(|w| w[0].signum() != w[1].signum()).count();
+        let crossings = mid
+            .windows(2)
+            .filter(|w| w[0].signum() != w[1].signum())
+            .count();
         // 440 Hz over 0.5 s ≈ 220 cycles ≈ 440 crossings (allow tolerance).
-        assert!((420..=460).contains(&crossings), "≈440 crossings expected, got {crossings}");
+        assert!(
+            (420..=460).contains(&crossings),
+            "≈440 crossings expected, got {crossings}"
+        );
     }
 
     #[test]
     fn adsr_starts_silent_and_attacks() {
-        let env = Adsr { attack: 0.1, decay: 0.1, sustain: 0.5, release: 0.1 };
+        let env = Adsr {
+            attack: 0.1,
+            decay: 0.1,
+            sustain: 0.5,
+            release: 0.1,
+        };
         assert!(env.amplitude(0.0, 1.0).abs() < 1e-6, "silent at t=0");
         assert!(env.amplitude(0.05, 1.0) > 0.3, "rising during attack");
-        assert!((env.amplitude(0.1, 1.0) - 1.0).abs() < 0.05, "peak at end of attack");
-        assert!((env.amplitude(0.5, 1.0) - 0.5).abs() < 0.05, "sustain level");
+        assert!(
+            (env.amplitude(0.1, 1.0) - 1.0).abs() < 0.05,
+            "peak at end of attack"
+        );
+        assert!(
+            (env.amplitude(0.5, 1.0) - 0.5).abs() < 0.05,
+            "sustain level"
+        );
         assert!(env.amplitude(1.2, 1.0).abs() < 1e-6, "silent after release");
     }
 
