@@ -321,6 +321,7 @@ dependencies = [
  "aurora-gfx",
  "aurora-gpu",
  "aurora-net",
+ "aurora-render3d",
  "aurora-window",
  "fontdue",
  "hound",

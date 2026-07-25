@@ -743,6 +743,25 @@ pub fn r3d_begin() {
     });
 }
 
+/// Queue the heightmap terrain for this frame, at the level of detail the
+/// current camera calls for. Like `r3d_draw`, it belongs between `r3d_begin` and
+/// `r3d_present`.
+///
+/// The runtime hands its heightfield and albedo in on EVERY call rather than
+/// once at load: the scene does not exist until the window (or the headless
+/// device) does, so a program that loads its terrain before opening a window
+/// would otherwise hand it to nothing. Both installs are no-ops once the scene
+/// already holds that heightfield and color, so the steady-state cost is two
+/// comparisons.
+pub fn terrain_draw(field: Arc<aurora_render3d::Heightfield>, color: [f32; 3]) {
+    with_gfx((), |gf| {
+        let (d, q, s) = gf.scene_mut();
+        s.set_terrain(d, q, field);
+        s.set_terrain_color(d, q, color);
+        s.draw_terrain(d, q);
+    });
+}
+
 /// Queue a model at position (px,py,pz), Euler rotation (yaw,pitch,roll radians),
 /// and uniform `scale`.
 #[allow(clippy::too_many_arguments)]

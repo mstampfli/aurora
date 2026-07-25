@@ -14,6 +14,9 @@ aurora-abi.workspace = true
 aurora-gfx.workspace = true
 aurora-audio.workspace = true
 aurora-window.workspace = true
+# The heightfield type the terrain renderer, the terrain collider, and the
+# `terrain_height` query all read from.
+aurora-render3d.workspace = true
 aurora-gpu.workspace = true
 aurora-net.workspace = true
 # Image decoding for the asset pipeline (PNG/JPEG → RGBA), used by `load_image`.

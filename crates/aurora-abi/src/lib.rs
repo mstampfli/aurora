@@ -302,6 +302,20 @@ macro_rules! for_each_builtin {
         [scalar,   phys3d_grounded,               aurora_phys3d_grounded,                [I64],                                           I64]
         [scalar,   phys3d_raycast,                aurora_phys3d_raycast,                 [F64, F64, F64, F64, F64, F64, F64],             F64]
 
+        // Heightmap terrain: one heightfield behind the renderer, the physics
+        // collider, and the height query.
+        [scalar,   terrain_generate,              aurora_terrain_generate,               [I64, I64, F64, F64],                            I64]
+        [text,     terrain_load,                  aurora_terrain_load,                   [Ptr, I64],                                      I64]
+        [text,     terrain_save,                  aurora_terrain_save,                   [Ptr, I64],                                      I64]
+        [scalar,   terrain_color,                 aurora_terrain_color,                  [F64, F64, F64],                                 void]
+        [scalar,   terrain_draw,                  aurora_terrain_draw,                   [],                                              void]
+        [scalar,   terrain_height,                aurora_terrain_height,                 [F64, F64],                                      F64]
+        [scalar,   terrain_collider,              aurora_terrain_collider,               [],                                              I64]
+        [scalar,   terrain_size,                  aurora_terrain_size,                   [],                                              I64]
+        [scalar,   terrain_spacing,               aurora_terrain_spacing,                [],                                              F64]
+        [scalar,   terrain_origin_x,              aurora_terrain_origin_x,               [],                                              F64]
+        [scalar,   terrain_origin_z,              aurora_terrain_origin_z,               [],                                              F64]
+
         // 3D pathfinding.
         [scalar,   nav3d_init,                    aurora_nav3d_init,                     [I64, I64, I64],                                 void]
         [scalar,   nav3d_wall,                    aurora_nav3d_wall,                     [I64, I64, I64, I64],                            void]

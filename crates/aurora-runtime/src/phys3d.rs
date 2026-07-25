@@ -9,7 +9,7 @@
 use std::cell::RefCell;
 
 use rapier3d::control::{CharacterLength, KinematicCharacterController};
-use rapier3d::na::{Quaternion, UnitQuaternion};
+use rapier3d::na::{DMatrix, Quaternion, UnitQuaternion};
 use rapier3d::parry::query::ShapeCastOptions;
 use rapier3d::prelude::*;
 
@@ -336,6 +336,52 @@ pub unsafe extern "C" fn aurora_phys3d_add_trimesh(
         let Some(p) = p.as_mut() else { return -1 };
         let rb = RigidBodyBuilder::fixed().build();
         let col = ColliderBuilder::trimesh(points, tris).build();
+        push_body(p, rb, col)
+    })
+}
+
+/// Add the heightmap terrain as a static collider and return its body handle
+/// (or -1 if the physics world does not exist yet).
+///
+/// The shape is Rapier's own heightfield, whose triangulation is exactly the one
+/// [`aurora_render3d::Heightfield::height_at`] evaluates and the one the render
+/// mesh uses at full detail: what you see, what you walk on, and what a height
+/// query reports are one surface.
+///
+/// # Collision groups
+///
+/// Terrain is WORLD geometry, so it goes in group 1, exactly where a box added
+/// by `phys3d_add_box` sits. That is the group `phys3d_move_character` and
+/// `phys3d_raycast_world` filter to, so a character walks and ground-probes on
+/// terrain while character capsules (group 2) stay invisible to those probes.
+/// Getting this wrong is the bug where a player reads as "grounded" because
+/// another player's capsule happened to be underneath them, and floats.
+pub(crate) fn add_heightfield(field: &aurora_render3d::Heightfield) -> i64 {
+    // The heightfield stores `f32`, which is Rapier's `Real`, so the samples go
+    // across without a conversion that could round the surface away from the one
+    // `height_at` evaluates.
+    let dim = field.dim() as usize;
+    let extent: Real = field.extent();
+    let half = extent * 0.5;
+    // Rapier's heightfield is centred on its collider, indexed [row, col] with
+    // the row running along local +Z and the column along local +X, and scaled
+    // to `extent` on each horizontal axis (`scale.y = 1` keeps heights in
+    // metres). Translating by half an extent puts sample (0,0) back on the
+    // heightfield's own origin corner.
+    let heights = DMatrix::from_fn(dim, dim, |row, col| field.sample(row as i64, col as i64));
+    PHYS3.with(|p| {
+        let mut p = p.borrow_mut();
+        let Some(p) = p.as_mut() else { return -1 };
+        let rb = RigidBodyBuilder::fixed()
+            .translation(vector![
+                field.origin_x() + half,
+                0.0,
+                field.origin_z() + half
+            ])
+            .build();
+        let col = ColliderBuilder::heightfield(heights, vector![extent, 1.0, extent])
+            .collision_groups(InteractionGroups::new(Group::GROUP_1, Group::ALL))
+            .build();
         push_body(p, rb, col)
     })
 }

@@ -41,6 +41,11 @@ pub use netgame::*;
 mod data;
 pub use data::*;
 
+// Heightmap terrain: one heightfield behind the renderer, the collider, and the
+// height query.
+mod terrain;
+pub use terrain::*;
+
 // --- printing --------------------------------------------------------------
 
 #[no_mangle]

@@ -12,6 +12,21 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+/// Serializes the tests that run a REAL `aurorac build`.
+///
+/// `build` stages its object at `target/aurora-build/<stem>.obj` and links it by
+/// `cargo build -p aurora-exe`, whose output is the single
+/// `target/release/aurora-exe`. Both are shared, and both of these programs are
+/// called `main.aur`, so two builds at once overwrite each other's object and
+/// each other's binary: one test then runs the other test's program. That is a
+/// limitation of the driver, not of these tests - it would bite two developers
+/// building in one checkout too - so until `build` stages per-invocation
+/// artifacts, the suite takes them one at a time.
+fn build_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 /// Write a throwaway multi-file program to its own temp directory and return the
 /// path of its entry file. `files[0]` is the entry.
 fn program(tag: &str, files: &[(&str, &str)]) -> PathBuf {
@@ -468,6 +483,7 @@ fn run_passes_the_programs_own_arguments() {
 /// arguments: everything but argv[0] (the program as invoked) must match.
 #[test]
 fn a_built_executable_echoes_its_own_arguments() {
+    let _lock = build_lock();
     let entry = program("sysargsaot", &[("main.aur", ECHO_ARGS)]);
     let exe = entry.with_file_name(if cfg!(windows) { "echo.exe" } else { "echo" });
     let build = Command::new(env!("CARGO_BIN_EXE_aurorac"))
@@ -502,6 +518,152 @@ fn a_built_executable_echoes_its_own_arguments() {
         stdout.replace('\r', ""),
         expected_echo(exe.to_str().unwrap())
     );
+}
+
+// --- terrain end to end ------------------------------------------------------
+
+/// Exercises the terrain builtins that need no GPU: generate, the documented
+/// `.aterr` round trip, the height query against a physics raycast on the
+/// registered collider, the collision group a ground probe filters to, and the
+/// out-of-bounds contract. `terrain_draw` is called with no scene open, which
+/// has to be a silent no-op rather than a crash.
+///
+/// The output is a fixed set of lines, so `run` and `build` can each be compared
+/// against it AND against each other: a builtin that works under one and not the
+/// other is exactly the failure this guards.
+const TERRAIN_PROGRAM: &str = r#"
+fn f(i: i64) -> f64 { i as f64 }
+
+fn main() {
+    let dir = sys_arg(1)
+    if terrain_generate(20260726, 129, 1.5, 30.0) != 1 { println("generate failed"); return }
+    println("size=" + str(terrain_size()))
+    println("spacing=" + str(terrain_spacing()))
+
+    let path = dir + "/t.aterr"
+    let probe = terrain_height(4.25, 0.0 - 6.5)
+    if terrain_save(path) != 1 { println("save failed"); return }
+    if terrain_load(path) != 1 { println("load failed"); return }
+    println("roundtrip=" + str(terrain_height(4.25, 0.0 - 6.5) == probe))
+
+    phys3d_init(0.0, 0.0 - 20.0, 0.0)
+    let ground = terrain_collider()
+    if ground < 0 { println("collider failed"); return }
+    phys3d_step(0.016)
+    let mut worst = 0.0
+    let mut hits = 0
+    let mut i = 0
+    while i < 20 {
+        let mut j = 0
+        while j < 20 {
+            let x = 0.0 - 80.0 + 8.1 * f(i)
+            let z = 0.0 - 80.0 + 8.3 * f(j)
+            if phys3d_raycast_full(x, 200.0, z, 0.0, 0.0 - 1.0, 0.0, 500.0) == ground {
+                let d = abs(phys3d_hit_y() - terrain_height(x, z))
+                if d > worst { worst = d }
+                hits = hits + 1
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    println("rays=" + str(hits))
+    println("agree=" + str(worst < 0.001))
+
+    let prober = phys3d_add_character(0.0, 40.0, 0.0, 0.9, 0.4)
+    let blocker = phys3d_add_character(0.0, 30.0, 0.0, 0.9, 0.4)
+    phys3d_step(0.016)
+    let world = phys3d_raycast_world(prober, 0.0, 40.0, 0.0, 0.0, 0.0 - 1.0, 0.0, 300.0)
+    let any = phys3d_raycast_ex(prober, 0.0, 40.0, 0.0, 0.0, 0.0 - 1.0, 0.0, 300.0)
+    println("worldprobe=" + str(world == ground))
+    println("anyprobe=" + str(any == blocker))
+
+    let x0 = terrain_origin_x()
+    let z0 = terrain_origin_z()
+    println("oob=" + str(terrain_height(x0 - 1000000.0, z0 - 1000000.0) == terrain_height(x0, z0)))
+    terrain_draw()
+    println("done")
+}
+"#;
+
+/// What `TERRAIN_PROGRAM` prints when every check holds. A `bool` stringifies as
+/// `1`/`0`, so every `1` below is a passing comparison.
+const TERRAIN_EXPECTED: &[&str] = &[
+    "size=129",
+    "spacing=1.5",
+    "roundtrip=1",
+    "rays=400",
+    "agree=1",
+    "worldprobe=1",
+    "anyprobe=1",
+    "oob=1",
+    "done",
+];
+
+/// The terrain builtins have to behave identically through the JIT and through a
+/// standalone executable. Each is one table row, but the two paths resolve those
+/// symbols differently (JIT symbol registration vs the AOT link keeper), so only
+/// running both proves the row is complete.
+#[test]
+fn terrain_builtins_work_under_both_run_and_build() {
+    let _lock = build_lock();
+    let entry = program("terrain", &[("main.aur", TERRAIN_PROGRAM)]);
+    let dir = entry.parent().expect("temp dir").to_path_buf();
+
+    let jit = Command::new(env!("CARGO_BIN_EXE_aurorac"))
+        .args(["run", entry.to_str().unwrap(), dir.to_str().unwrap()])
+        .env("AURORA_HEADLESS", "1")
+        .output()
+        .expect("run aurorac");
+    assert!(
+        jit.status.success(),
+        "run failed: {}{}",
+        String::from_utf8_lossy(&jit.stdout),
+        String::from_utf8_lossy(&jit.stderr)
+    );
+    let jit_out = String::from_utf8_lossy(&jit.stdout).replace('\r', "");
+    assert_eq!(
+        jit_out.lines().collect::<Vec<_>>(),
+        TERRAIN_EXPECTED,
+        "JIT output"
+    );
+
+    let exe = dir.join(if cfg!(windows) { "terr.exe" } else { "terr" });
+    let build = Command::new(env!("CARGO_BIN_EXE_aurorac"))
+        .args([
+            "build",
+            entry.to_str().unwrap(),
+            "-o",
+            exe.to_str().unwrap(),
+        ])
+        .env("AURORA_HEADLESS", "1")
+        .output()
+        .expect("run aurorac build");
+    assert!(
+        build.status.success(),
+        "build failed: {}{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    assert!(exe.exists(), "build reported success but wrote no {exe:?}");
+
+    let aot = Command::new(&exe)
+        .arg(dir.to_str().unwrap())
+        .env("AURORA_HEADLESS", "1")
+        .output()
+        .expect("run the built executable");
+    assert!(
+        aot.status.success(),
+        "the built executable failed: {}",
+        String::from_utf8_lossy(&aot.stderr)
+    );
+    let aot_out = String::from_utf8_lossy(&aot.stdout).replace('\r', "");
+    assert_eq!(
+        aot_out.lines().collect::<Vec<_>>(),
+        TERRAIN_EXPECTED,
+        "AOT output"
+    );
+    assert_eq!(jit_out, aot_out, "JIT and AOT disagree about the terrain");
 }
 
 /// Prints its whole argument vector, both out-of-range ends, and three env

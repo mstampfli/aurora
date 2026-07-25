@@ -392,6 +392,86 @@ along walls (the core of a fluid movement shooter). Bodies are `i64` handles.
 | `phys3d_apply_force/apply_torque(h, x,y,z)` / `phys3d_set_angvel(h, x,y,z)` | dynamic forces | |
 | `phys3d_set_rot(h, qx,qy,qz,qw)` / `phys3d_rot_qx/qy/qz/qw(h) -> f64` | orientation quaternion | |
 
+## Heightmap terrain (`terrain_*`)
+
+An open-world ground surface: a heightfield that is rendered with distance-based
+level of detail, registered with the physics world as a Rapier heightfield
+collider, and sampled by a height query. All three read **one** heightfield, so
+the surface you see, the surface you walk on, and the number `terrain_height`
+returns are the same triangles. There is one terrain at a time.
+
+| Builtin | Signature | Notes |
+|---|---|---|
+| `terrain_generate(seed, dim, spacing, amplitude) -> i64` | build a procedural heightfield | value-noise fBm centred on the origin, heights in `[0, amplitude]`; deterministic; 1 on success, 0 on failure |
+| `terrain_load(path) -> i64` | read an `.aterr` file | 1 on success, 0 on failure (a failed load leaves the previous terrain alone) |
+| `terrain_save(path) -> i64` | write the loaded terrain as `.aterr` | 1/0; author a terrain once, ship it as an asset |
+| `terrain_color(r,g,b)` | terrain albedo, 0..1 | applies from the next `terrain_draw` |
+| `terrain_draw()` | queue the terrain for this frame | between `r3d_begin` and `r3d_present`, like `r3d_draw`; picks per-tile detail from the current camera |
+| `terrain_height(x,z) -> f64` | surface height at a world position | interpolated across the collider's own triangles |
+| `terrain_collider() -> i64` | register the terrain with 3D physics | call after `phys3d_init`; returns a `phys3d_*` body handle, or -1 |
+| `terrain_size() -> i64` | samples per side (`dim`) | 0 if no terrain is loaded |
+| `terrain_spacing() -> f64` | world units between samples | |
+| `terrain_origin_x/z() -> f64` | world position of sample (0,0) | the terrain's -X / -Z border |
+
+`dim` must be **`2^k + 1`** (5, 9, 17, 33, 65, 129, 257, 513, 1025, 2049, 4097) -
+the usual heightmap constraint - so the tile grid and every level of detail divide
+it exactly. Anything else is refused with a message rather than meshed wrong. The
+terrain occupies `x` in `[origin_x, origin_x + (dim-1)*spacing]`, and `z`
+likewise.
+
+**Out of bounds.** `terrain_height` outside the footprint CLAMPS to the nearest
+edge sample, so it is always defined and never returns garbage: the surface reads
+as if the border extended outward forever. A non-finite coordinate clamps to the
+`(origin_x, origin_z)` corner. With no terrain loaded it returns 0. Note that the
+COLLIDER stops at the footprint, so past the border that height has no collision
+behind it; compare against `terrain_origin_x/z()` and `terrain_size()` if your
+game needs to know it has left the map.
+
+**Collision groups.** The terrain collider is world geometry (group 1), the same
+group `phys3d_add_box` uses, so `phys3d_move_character` walks on it and
+`phys3d_raycast_world` ground probes hit it, while other players' character
+capsules (group 2) stay invisible to those probes.
+
+**Level of detail.** The field is cut into 32-cell tiles; each picks a sample step
+from its distance to the camera, so a distant tile costs a quarter of the
+triangles per level. Seams are edge-stitched, not skirted: a tile whose neighbour
+is coarser builds that edge at the neighbour's step, so both sides emit identical
+vertex positions and there is no crack and no T-junction. Normals come from the
+heightfield gradient at full resolution, so lighting does not pop across a level
+change.
+
+### The `.aterr` heightfield format
+
+Little-endian throughout, exactly `24 + dim*dim*4` bytes:
+
+| offset | size | field |
+|---|---|---|
+| 0 | 8 | magic: the ASCII bytes `AURTERR1` |
+| 8 | 4 | `u32` `dim`, samples per side (`2^k + 1`, 5..=4097) |
+| 12 | 4 | `f32` `spacing`, world units between samples (> 0) |
+| 16 | 4 | `f32` `origin_x`, world X of sample column 0 |
+| 20 | 4 | `f32` `origin_z`, world Z of sample row 0 |
+| 24 | `dim*dim*4` | `f32` heights, row-major: sample `(row, col)` at byte `24 + (row*dim + col)*4` |
+
+Column indices run along **+X**, row indices along **+Z**, and a height is a world
+**Y** in the same units as everything else, so sample `(row, col)` sits at
+`(origin_x + col*spacing, height, origin_z + row*spacing)`. A file whose magic,
+`dim`, or length does not check out is rejected with a message.
+
+```aurora
+fn main() {
+    terrain_generate(1234, 513, 1.0, 40.0)
+    phys3d_init(0.0, 0.0 - 20.0, 0.0)
+    terrain_collider()
+    let ground = terrain_height(0.0, 0.0)
+    while r3d_present() {
+        r3d_begin()
+        r3d_camera(0.0, ground + 30.0, 40.0, 0.0, ground, 0.0, 70.0)
+        terrain_draw()
+    }
+}
+```
+
 ## 3D pathfinding (`nav3d_*` grid, `navmesh_*` navmesh)
 
 A 26-connected voxel grid A*, and a polygon navmesh that runs A* over a triangle

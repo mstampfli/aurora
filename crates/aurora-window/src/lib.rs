@@ -49,7 +49,8 @@ pub use imm::{
     r3d_shadows as imm_r3d_shadows, r3d_sky as imm_r3d_sky, r3d_ssao as imm_r3d_ssao,
     r3d_viewmodel as imm_r3d_viewmodel, r3d_world_to_screen as imm_r3d_world_to_screen,
     scroll as imm_scroll, speedlines as imm_speedlines, surface_h as imm_surface_h,
-    surface_w as imm_surface_w, window_fullscreen as imm_window_fullscreen,
+    surface_w as imm_surface_w, terrain_draw as imm_terrain_draw,
+    window_fullscreen as imm_window_fullscreen,
 };
 pub use input::{Input, Key};
 
