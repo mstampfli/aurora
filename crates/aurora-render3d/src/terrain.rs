@@ -670,6 +670,23 @@ impl TerrainRender {
         }
     }
 
+    /// Release every GPU resource this terrain owns: each resident tile mesh and
+    /// the terrain material.
+    ///
+    /// A terrain is REPLACED, not mutated, when a game reloads or regenerates
+    /// one, and the renderer's stores outlive any single terrain - so the new
+    /// terrain installing itself is not enough, the old one has to hand its
+    /// buffers back. Idempotent: a second call frees nothing, because the
+    /// generation-tagged ids no longer resolve.
+    pub fn release(&mut self, renderer: &mut crate::render::Renderer3D) {
+        for tile in &mut self.tiles {
+            if let Some(id) = tile.mesh.take() {
+                renderer.free_mesh(id);
+            }
+        }
+        renderer.free_material(self.material);
+    }
+
     /// The heightfield this was built from.
     pub fn field(&self) -> &Arc<Heightfield> {
         &self.field
@@ -683,7 +700,9 @@ impl TerrainRender {
     }
 
     /// Replace the albedo. A new material is only created when the color
-    /// actually changes, so calling this every frame does not leak materials.
+    /// actually changes, so calling this every frame does not leak materials -
+    /// and the material it replaces is released, so calling it with a hundred
+    /// different colors does not either.
     pub fn set_color(
         &mut self,
         device: &wgpu::Device,
@@ -695,11 +714,13 @@ impl TerrainRender {
             return;
         }
         self.color = color;
+        let old = self.material;
         self.material = renderer.add_material(
             device,
             queue,
             &crate::render::MaterialDesc::flat([color[0], color[1], color[2], 1.0]),
         );
+        renderer.free_material(old);
     }
 
     /// The sample step every tile wants, from its distance to `eye`.

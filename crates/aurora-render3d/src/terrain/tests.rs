@@ -702,3 +702,148 @@ fn a_single_tile_terrain_still_meshes() {
         }
     }
 }
+
+// --- GPU lifetime -----------------------------------------------------------
+//
+// The terrain leaks, measured in the unit that actually matters: bytes of GPU
+// vertex + index buffer held by the renderer, not entry counts. Entry counts are
+// asserted too, because they localise a regression, but the byte figure is the
+// resource being bounded.
+
+/// Reloading a terrain must release the previous terrain's tile meshes and
+/// material.
+///
+/// `Scene::set_terrain` REPLACES the `TerrainRender`, whose tile meshes live in
+/// the renderer's store - and that store outlives any one terrain. Dropping the
+/// old `TerrainRender` drops only the bookkeeping, so without an explicit
+/// release each reload strands a whole terrain's worth of GPU buffers.
+#[test]
+fn reloading_terrain_releases_the_previous_terrains_meshes() {
+    let _g = crate::gpu_guard();
+    let Some((device, queue)) = crate::headless_device() else {
+        eprintln!("no GPU adapter - skipping the terrain reload leak test");
+        return;
+    };
+    let mut scene = crate::Scene::new(
+        &device,
+        &queue,
+        wgpu::TextureFormat::Rgba8Unorm,
+        128,
+        128,
+        1,
+    );
+    // Look straight down from high up so the whole terrain is in frustum and
+    // every tile really allocates a mesh: tiles that were never built cannot
+    // demonstrate a leak.
+    scene.set_camera(Vec3::new(0.0, 260.0, 0.0), Vec3::new(0.0, 0.0, 0.001), 90.0);
+
+    let load = |scene: &mut crate::Scene, seed: i64| {
+        let f = Heightfield::generate(seed, 129, 2.0, 25.0).expect("generate");
+        scene.set_terrain(&device, &queue, std::sync::Arc::new(f));
+        scene.begin();
+        scene.draw_terrain(&device, &queue);
+    };
+
+    load(&mut scene, 1);
+    let (first_meshes, first_bytes, first_mats) = (
+        scene.renderer.mesh_count(),
+        scene.renderer.mesh_bytes(),
+        scene.renderer.material_count(),
+    );
+    assert!(
+        first_meshes >= 16 && first_bytes > 0,
+        "the terrain built {first_meshes} meshes / {first_bytes} bytes; too few to leak"
+    );
+
+    for seed in 2..=50i64 {
+        load(&mut scene, seed);
+    }
+    let (last_meshes, last_bytes, last_mats) = (
+        scene.renderer.mesh_count(),
+        scene.renderer.mesh_bytes(),
+        scene.renderer.material_count(),
+    );
+    eprintln!(
+        "terrain reload x50: meshes {first_meshes} -> {last_meshes}, \
+         GPU mesh bytes {first_bytes} -> {last_bytes}, materials {first_mats} -> {last_mats}"
+    );
+
+    assert_eq!(
+        last_meshes, first_meshes,
+        "50 reloads grew the mesh store from {first_meshes} to {last_meshes} entries"
+    );
+    assert_eq!(
+        last_bytes, first_bytes,
+        "50 reloads grew resident GPU mesh memory from {first_bytes} to {last_bytes} bytes"
+    );
+    assert_eq!(
+        last_mats, first_mats,
+        "50 reloads grew the material store from {first_mats} to {last_mats} entries"
+    );
+    // Slots are reused, so the address space is bounded too, not just the live
+    // count: a store that never reused a slot would pass the counts above while
+    // still growing forever.
+    assert!(
+        scene.renderer.mesh_slot_count() <= first_meshes * 2,
+        "reloads allocated {} mesh slots for {first_meshes} live meshes",
+        scene.renderer.mesh_slot_count()
+    );
+}
+
+/// Recoloring the terrain must release the material it replaces.
+#[test]
+fn recoloring_terrain_releases_the_old_material() {
+    let _g = crate::gpu_guard();
+    let Some((device, queue)) = crate::headless_device() else {
+        return;
+    };
+    let mut scene = crate::Scene::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm, 64, 64, 1);
+    let f = Heightfield::generate(7, 33, 1.0, 10.0).expect("generate");
+    scene.set_terrain(&device, &queue, std::sync::Arc::new(f));
+    let before = scene.renderer.material_count();
+    for i in 0..200 {
+        let t = i as f32 / 200.0;
+        scene.set_terrain_color(&device, &queue, [t, 1.0 - t, 0.5]);
+    }
+    assert_eq!(
+        scene.renderer.material_count(),
+        before,
+        "200 color changes leaked {} materials",
+        scene.renderer.material_count() - before
+    );
+}
+
+/// The tile cache must also give its memory back when the terrain goes away.
+#[test]
+fn clearing_the_terrain_releases_every_tile() {
+    let _g = crate::gpu_guard();
+    let Some((device, queue)) = crate::headless_device() else {
+        return;
+    };
+    let mut scene = crate::Scene::new(
+        &device,
+        &queue,
+        wgpu::TextureFormat::Rgba8Unorm,
+        128,
+        128,
+        1,
+    );
+    let before_meshes = scene.renderer.mesh_count();
+    let before_bytes = scene.renderer.mesh_bytes();
+    let before_mats = scene.renderer.material_count();
+
+    let field = Heightfield::generate(11, 257, 1.0, 20.0).expect("generate");
+    scene.set_terrain(&device, &queue, std::sync::Arc::new(field));
+    scene.set_camera(Vec3::new(0.0, 300.0, 0.0), Vec3::new(0.0, 0.0, 0.001), 90.0);
+    scene.begin();
+    scene.draw_terrain(&device, &queue);
+    assert!(
+        scene.renderer.mesh_bytes() > before_bytes,
+        "the terrain built no tiles, so releasing them proves nothing"
+    );
+
+    scene.clear_terrain();
+    assert_eq!(scene.renderer.mesh_count(), before_meshes);
+    assert_eq!(scene.renderer.mesh_bytes(), before_bytes);
+    assert_eq!(scene.renderer.material_count(), before_mats);
+}

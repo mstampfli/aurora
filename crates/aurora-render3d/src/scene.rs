@@ -555,16 +555,23 @@ impl Scene {
     /// exist until the window (or the headless device) does, so a program that
     /// loads its terrain before opening a window would otherwise hand it to
     /// nothing and render an empty world.
+    ///
+    /// Installing a DIFFERENT heightfield releases the outgoing terrain's GPU
+    /// meshes and material first. Dropping the old [`TerrainRender`] is not
+    /// enough on its own: its tile meshes live in the renderer's store, which
+    /// outlives any single terrain, so the terrain has to hand them back
+    /// explicitly or every reload leaks a whole terrain's worth of geometry.
     pub fn set_terrain(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         field: Arc<crate::terrain::Heightfield>,
     ) {
-        if let Some(t) = self.terrain.as_ref() {
+        if let Some(t) = self.terrain.as_mut() {
             if Arc::ptr_eq(t.field(), &field) {
                 return;
             }
+            t.release(&mut self.renderer);
         }
         self.terrain = Some(crate::terrain::TerrainRender::new(
             device,
@@ -573,6 +580,13 @@ impl Scene {
             field,
             self.terrain_color,
         ));
+    }
+
+    /// Drop the terrain entirely, releasing its GPU meshes and material.
+    pub fn clear_terrain(&mut self) {
+        if let Some(mut t) = self.terrain.take() {
+            t.release(&mut self.renderer);
+        }
     }
 
     /// Set the terrain albedo. Safe to call before the terrain is loaded.

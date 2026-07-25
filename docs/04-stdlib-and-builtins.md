@@ -461,6 +461,12 @@ vertex positions and there is no crack and no T-junction. Normals come from the
 heightfield gradient at full resolution, so lighting does not pop across a level
 change.
 
+**Reloading.** `terrain_generate` / `terrain_load` REPLACE the terrain, and the
+outgoing one's tile meshes and material are released as the new one is
+installed, so reloading in a loop does not accumulate GPU memory. Note that
+`terrain_collider()` adds a physics body per call: call it once per terrain, not
+once per frame.
+
 ### The `.aterr` heightfield format
 
 Little-endian throughout, exactly `24 + dim*dim*4` bytes:
