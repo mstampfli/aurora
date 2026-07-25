@@ -299,12 +299,34 @@ fn run_sim(sim_fn: usize, sim_env: usize, state: &mut [f32; STATE_MAX], input: &
     );
 }
 
+/// The address a host binds to.
+///
+/// Defaults to the wildcard `0.0.0.0` so real LAN and Internet clients can reach
+/// the host. `AURORA_NET_BIND` overrides it, which exists for one specific case:
+/// binding the wildcard trips the OS firewall prompt every time a fresh binary
+/// hosts, and an automated test loop that hosts hundreds of times is unusable
+/// when each run raises a dialog. Setting `AURORA_NET_BIND=127.0.0.1` keeps a
+/// same-machine test entirely on loopback and silent.
+///
+/// The default is deliberately NOT loopback. A loopback-bound host is reachable
+/// only from its own machine, and the failure is silent: clients simply never
+/// arrive, which looks like a firewall or routing problem rather than a bind
+/// choice. That has cost real debugging time before, so the safe value is the
+/// default and the convenient one is opt-in.
+fn host_bind_addr() -> String {
+    match std::env::var("AURORA_NET_BIND") {
+        Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
+        _ => "0.0.0.0".to_string(),
+    }
+}
+
 impl Session {
     pub fn host(port: u16) -> std::io::Result<Session> {
-        // Bind ALL interfaces so real LAN / Internet clients can reach the host (not just
-        // loopback). Same-machine clients still connect via 127.0.0.1:port. NOTE: this trips the
-        // OS firewall prompt the first time you host - allow it (UDP) so joins get through.
-        let sock = UdpSocket::bind(("0.0.0.0", port))?;
+        // Bind ALL interfaces by default so real LAN / Internet clients can reach the host (not
+        // just loopback). Same-machine clients still connect via 127.0.0.1:port. NOTE: this trips
+        // the OS firewall prompt the first time you host - allow it (UDP) so joins get through, or
+        // set AURORA_NET_BIND=127.0.0.1 for a silent same-machine session.
+        let sock = UdpSocket::bind((host_bind_addr().as_str(), port))?;
         sock.set_nonblocking(true)?;
         Ok(Session::base(sock, true, None))
     }
