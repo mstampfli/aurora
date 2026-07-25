@@ -143,6 +143,26 @@ impl Parser {
             self.expect(&TokenKind::RBrace);
             ItemKind::Mod(name, Some(items))
         } else {
+            // `mod a::b;` used to parse as `mod a` followed by a junk item. A
+            // module name is a single segment (one file is one module, §3.1), so
+            // say so instead, and swallow the rest of the path so the following
+            // items still parse.
+            if self.at(&TokenKind::ColonColon) {
+                let span = self.cur_span();
+                self.error(
+                    span,
+                    "path modules (`mod a::b;`) are not supported: one file is one \
+                     module, so declare `mod b;` to load `b.aur`",
+                    "expected `;` or `{` after the module name",
+                );
+                while self.eat(&TokenKind::ColonColon) {
+                    if self.at_ident() {
+                        self.bump();
+                    } else {
+                        break;
+                    }
+                }
+            }
             self.eat(&TokenKind::Semi);
             ItemKind::Mod(name, None)
         }

@@ -8,6 +8,7 @@
 mod expr;
 mod flatten;
 mod item;
+mod modload;
 mod pat;
 mod stmt;
 mod ty;
@@ -18,6 +19,7 @@ use aurora_lexer::{lex, Keyword, Token, TokenKind};
 use aurora_span::Span;
 
 pub use aurora_ast as ast;
+pub use modload::load_file_modules;
 
 /// Lex and parse `src` into a [`Module`] plus all diagnostics from both phases.
 pub fn parse_str(src: &str) -> (Module, Vec<Diagnostic>) {

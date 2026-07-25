@@ -491,15 +491,22 @@ fn comp_id(name: &str) -> i64 {
 
 impl Env {
     /// If `path` is `Enum::Variant`, return (enum name, variant index).
+    ///
+    /// The enum may be reached through a module path (`m::E::Variant`, or
+    /// `a::b::E::Variant` for a nested module): module flattening mangles the
+    /// declaration's name to `m::E`, so every segment but the last joins back into
+    /// the enum name. A path that names no known enum yields `None`, which leaves
+    /// it to be resolved as an ordinary call/path.
     fn enum_variant(&self, path: &aurora_ast::Path) -> Option<(String, usize)> {
-        if path.segments.len() != 2 {
+        if path.segments.len() < 2 {
             return None;
         }
-        let enm = &path.segments[0].ident.name;
-        let var = &path.segments[1].ident.name;
-        let layout = self.enums.get(enm)?;
+        let (var_seg, enum_segs) = path.segments.split_last()?;
+        let enm = enum_segs.iter().map(|s| s.ident.name.as_str()).collect::<Vec<_>>().join("::");
+        let var = &var_seg.ident.name;
+        let layout = self.enums.get(&enm)?;
         let idx = layout.variants.iter().position(|v| &v.name == var)?;
-        Some((enm.clone(), idx))
+        Some((enm, idx))
     }
 }
 

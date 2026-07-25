@@ -24,7 +24,11 @@ pub fn flatten_modules(items: Vec<Item>) -> Vec<Item> {
     for item in items {
         match item.kind {
             ItemKind::Mod(name, Some(inner)) => out.extend(flatten_mod(&name.name, inner)),
-            ItemKind::Mod(_, None) => {} // external module declaration: nothing to inline
+            // A bodiless `mod NAME;` carries no items of its own: the file module
+            // loader (`modload.rs`) has already appended `NAME.aur` as an inline
+            // `mod NAME { .. }` block, which is flattened above. The declaration
+            // itself is therefore nothing left to inline.
+            ItemKind::Mod(_, None) => {}
             _ => out.push(item),
         }
     }
@@ -45,6 +49,7 @@ fn flatten_mod(prefix: &str, items: Vec<Item>) -> Vec<Item> {
                 submods.insert(sub.name.clone());
                 flat.extend(flatten_mod(&format!("{prefix}::{}", sub.name), inner));
             }
+            // Resolved by the file module loader into a top-level block (see above).
             ItemKind::Mod(_, None) => {}
             _ => {
                 if let Some(n) = item_name(&item) {
@@ -241,6 +246,15 @@ fn rewrite_path(p: &mut aurora_ast::Path, cx: &Cx) {
             p.segments.iter().map(|s| s.ident.name.as_str()).collect::<Vec<_>>().join("::");
         p.segments[0].ident.name = format!("{}::{}", cx.prefix, joined);
         p.segments.truncate(1);
+    } else if cx.locals.contains(&p.segments[0].ident.name)
+        && !cx.bound.contains(&p.segments[0].ident.name)
+    {
+        // A qualified reference THROUGH a module item: `E::Variant` for a sibling
+        // enum, or `T::assoc` for a sibling type's associated function. The
+        // definition was mangled to `prefix::E`, so only the first segment moves;
+        // the rest (the variant / method name) stays a separate segment.
+        let n = &p.segments[0].ident.name;
+        p.segments[0].ident.name = format!("{}::{}", cx.prefix, n);
     }
 }
 

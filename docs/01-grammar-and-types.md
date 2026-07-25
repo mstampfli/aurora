@@ -134,6 +134,34 @@ ConstDecl   ::= "const" ident ":" Type "=" Expr ";"
 ComptimeBlock ::= "comptime" Block
 ```
 
+A module lowers to top-level items with `NAME::`-prefixed names, so two modules may
+define same-named items without colliding, and nesting composes (`mod a { mod b {
+fn f } }` defines `a::b::f`). A reference from inside a module to a sibling item is
+resolved to the prefixed name; a name the module does not define itself resolves
+against the top level, so a module can use the entry file's items and the standard
+prelude unqualified.
+
+**File modules.** The bodiless form `mod NAME;` loads its items from `NAME.aur`:
+
+* `NAME.aur` is resolved **relative to the directory of the file that declares it**.
+  A module name is a single identifier, so it can hold no path separator: every
+  module of a program is therefore a sibling of the entry file, and module name and
+  file name are one-to-one.
+* **One file is one module**, and modules form a **flat** namespace under a
+  single-segment prefix: if `a.aur` declares `mod b;`, `b`'s items are `b::item`,
+  not `a::b::item`. A loaded file may declare file modules of its own.
+* A module is loaded **at most once**. Re-declaring an already-loaded module is a
+  no-op, so a diamond (two files that both declare a third) defines its items once,
+  and two files that declare each other terminate rather than recurse forever.
+* The entry file is the root module and is never re-loaded under a prefix.
+* A module whose file is missing is a hard error (`E0110`) naming the path that was
+  looked for; it never silently contributes nothing.
+* Not supported, and reported as errors rather than silently ignored: path modules
+  (`mod a::b;` - declare `mod b;` instead) and directory modules (`NAME/mod.aur`).
+
+Both module forms produce the same prefixed top-level items, so type checking, the
+JIT (`aurorac run`) and the AOT backend (`aurorac build`) all see them identically.
+
 A `const` has no runtime storage: each use is replaced by its initializer. That
 makes a const readable from every function with no initialization order to get
 wrong, including through a module path (`m::LIMIT`). A const defined in terms of

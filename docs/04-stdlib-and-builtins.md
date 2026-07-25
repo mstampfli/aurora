@@ -15,6 +15,11 @@ aurorac check  game.aur              # type + safety checks only
 `enum`, `trait`, `impl`, `const`, and `mod` are all items; statements end at a
 newline or `;` (block-form `if`/`while`/`for`/`match` need no separator).
 
+Split a program across files with `mod NAME;`, which loads `NAME.aur` from the
+declaring file's directory and namespaces its items as `NAME::item`. Only the entry
+file is passed to `aurorac`; see
+[`01-grammar-and-types.md`](01-grammar-and-types.md) §3.1 for the full rule.
+
 ---
 
 ## Core builtins

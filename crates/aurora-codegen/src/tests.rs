@@ -1140,3 +1140,167 @@ fn self_referential_const_is_reported_not_a_stack_overflow() {
     let err = jit_call(&module, "run", &[]).expect_err("a const cycle must be rejected");
     assert!(err.contains("defined in terms of itself"), "unexpected error: {err}");
 }
+
+// --- file-based modules (`mod NAME;`) ---------------------------------------
+//
+// The loader appends `NAME.aur` as an inline `mod NAME { .. }` block, so the
+// backend sees `NAME::`-prefixed top-level items. These tests pin that the whole
+// way down to native code, on BOTH lowering paths: the JIT (`jit_call`) and the
+// AOT object backend (`build_object`). The resolution rule itself is tested in
+// `aurora-parser`'s `tests/modules.rs`.
+
+/// Write a throwaway multi-file program to its own temp directory, expand its
+/// file modules, and parse it. `files[0]` is the entry file.
+fn file_program(tag: &str, files: &[(&str, &str)]) -> aurora_parser::ast::Module {
+    let dir = std::env::temp_dir().join(format!("aurora_modjit_{}_{tag}", std::process::id()));
+    // Fresh every run, so a stale file cannot mask a failure.
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    for (name, src) in files {
+        std::fs::write(dir.join(name), src).expect("write module file");
+    }
+    let entry = dir.join(files[0].0);
+    let src = std::fs::read_to_string(&entry).expect("read entry file");
+    let (expanded, diags) = aurora_parser::load_file_modules(&src, &entry);
+    assert!(!diags.iter().any(|d| d.is_error()), "module loading failed: {diags:?}");
+    let (module, diags) = parse_str(&expanded);
+    assert!(!diags.iter().any(|d| d.is_error()), "parse failed: {diags:?}");
+    module
+}
+
+#[test]
+fn cross_module_function_call_compiles_and_runs() {
+    let module = file_program(
+        "call",
+        &[
+            ("main.aur", "mod helper;\nfn run() -> i64 { helper::add(2, 3) * 10 }"),
+            ("helper.aur", "fn add(a: i64, b: i64) -> i64 { a + b }"),
+        ],
+    );
+    assert_eq!(jit_call(&module, "run", &[]).expect("jit failed"), 50);
+}
+
+#[test]
+fn cross_module_struct_construction_compiles_and_runs() {
+    let module = file_program(
+        "struct",
+        &[
+            (
+                "main.aur",
+                "mod shape;\nfn run() -> f64 { let p = shape::P { x: 4.0, y: 6.0 }\n p.x + p.y }",
+            ),
+            ("shape.aur", "struct P { x: f64, y: f64 }"),
+        ],
+    );
+    assert_eq!(jit_call_f64(&module, "run", &[]).expect("jit failed"), 10.0);
+}
+
+#[test]
+fn cross_module_enum_compiles_and_runs() {
+    // Both a variant named through the module (`k::Kind::Small`) and one produced
+    // inside the module then matched inside it.
+    let module = file_program(
+        "enum",
+        &[
+            (
+                "main.aur",
+                "mod k;\nfn run() -> i64 { k::code(k::classify(9)) * 10 + k::code(k::Kind::Small) }",
+            ),
+            (
+                "k.aur",
+                "enum Kind { Small, Big }
+                 fn classify(n: i64) -> Kind { if n > 5 { Kind::Big } else { Kind::Small } }
+                 fn code(x: Kind) -> i64 { match x { Kind::Small => 1, Kind::Big => 2 } }",
+            ),
+        ],
+    );
+    assert_eq!(jit_call(&module, "run", &[]).expect("jit failed"), 21);
+}
+
+#[test]
+fn cross_module_const_compiles_and_runs() {
+    // A module const, read both from inside the module and through its path.
+    let module = file_program(
+        "const",
+        &[
+            ("main.aur", "mod cfg;\nfn run() -> i64 { cfg::LIMIT * 10 + cfg::doubled() }"),
+            ("cfg.aur", "const LIMIT: i64 = 7\nfn doubled() -> i64 { LIMIT * 2 }"),
+        ],
+    );
+    assert_eq!(jit_call(&module, "run", &[]).expect("jit failed"), 84);
+}
+
+#[test]
+fn file_module_can_call_root_level_items_unqualified() {
+    // A name a module does not define itself resolves against the top level, so a
+    // module body can use the entry file's items (and the std prelude).
+    let module = file_program(
+        "rootref",
+        &[
+            (
+                "main.aur",
+                "mod m;\nfn triple(n: i64) -> i64 { n * 3 }\nfn run() -> i64 { m::via() }",
+            ),
+            ("m.aur", "fn via() -> i64 { triple(5) }"),
+        ],
+    );
+    assert_eq!(jit_call(&module, "run", &[]).expect("jit failed"), 15);
+}
+
+#[test]
+fn nested_file_modules_compile_and_run() {
+    let module = file_program(
+        "nested",
+        &[
+            ("main.aur", "mod mid;\nfn run() -> i64 { mid::doubled() }"),
+            ("mid.aur", "mod leaf;\nfn doubled() -> i64 { leaf::base() * 2 }"),
+            ("leaf.aur", "fn base() -> i64 { 10 }"),
+        ],
+    );
+    assert_eq!(jit_call(&module, "run", &[]).expect("jit failed"), 20);
+}
+
+#[test]
+fn diamond_file_modules_compile_and_run() {
+    // `shared` is declared twice but must be defined once, or the backend would
+    // see two identical function names.
+    let module = file_program(
+        "diamond",
+        &[
+            ("main.aur", "mod l;\nmod r;\nfn run() -> i64 { l::lv() * 10 + r::rv() }"),
+            ("l.aur", "mod shared;\nfn lv() -> i64 { shared::base() + 1 }"),
+            ("r.aur", "mod shared;\nfn rv() -> i64 { shared::base() + 2 }"),
+            ("shared.aur", "fn base() -> i64 { 4 }"),
+        ],
+    );
+    assert_eq!(jit_call(&module, "run", &[]).expect("jit failed"), 56);
+}
+
+#[test]
+fn file_modules_lower_to_an_aot_object_with_nothing_stubbed() {
+    // AOT path (`aurorac build`), not the JIT. A function the backend cannot
+    // compile is emitted as a stub, so `failed` being empty is what proves the
+    // module's items were really lowered rather than silently dropped.
+    let module = file_program(
+        "aot",
+        &[
+            (
+                "main.aur",
+                "mod helper;\nmod shape;\nfn main() {
+                     println(helper::add(2, 3))
+                     let p = shape::P { x: 4.0, y: 6.0 }
+                     println(str(p.x + p.y))
+                 }",
+            ),
+            ("helper.aur", "mod shape;\nfn add(a: i64, b: i64) -> i64 { a + b + shape::ZERO }"),
+            ("shape.aur", "struct P { x: f64, y: f64 }\nconst ZERO: i64 = 0"),
+        ],
+    );
+    let (obj, failed) = build_object(&module).expect("object emission failed");
+    assert!(failed.is_empty(), "file-module functions were stubbed, not compiled: {failed:?}");
+    let needle = b"aurora_user_main";
+    assert!(
+        obj.windows(needle.len()).any(|w| w == needle),
+        "emitted object is missing the `aurora_user_main` entry symbol"
+    );
+}
