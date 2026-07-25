@@ -2752,4 +2752,30 @@ mod par_world_tests {
             "each concurrent batch must stay inside its own owner's world"
         );
     }
+
+    /// Innermost system: one entity into whatever world it is routed to.
+    extern "C" fn spawn_one() {
+        aurora_spawn_entity();
+    }
+
+    /// A system that itself opens a batch, so the workers below are nested.
+    extern "C" fn nested_batch() {
+        let fns = [spawn_one as usize, spawn_one as usize];
+        aurora_run_parallel(fns.as_ptr(), 2);
+    }
+
+    #[test]
+    fn nested_batches_reach_the_owning_threads_world() {
+        // A batch started from inside a batch must keep writing to the world of
+        // the thread that opened the outer one, not to the empty thread-local
+        // world of the worker that happens to be running the outer system.
+        // 2 outer systems * 2 inner systems = 4 entities, all in the owner.
+        let owner = std::thread::spawn(|| {
+            let fns = [nested_batch as usize, nested_batch as usize];
+            aurora_run_parallel(fns.as_ptr(), 2);
+            aurora_entity_count()
+        });
+        let count = owner.join().expect("nested batch owner panicked");
+        assert_eq!(count, 4, "nested batch writes must land in the outer owner's world");
+    }
 }
