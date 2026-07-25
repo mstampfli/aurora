@@ -250,7 +250,7 @@ window. Colors are 0..1 floats; angles are radians; handles are `i64`.
 | `r3d_clear(r,g,b)` | background color | |
 | `r3d_begin()` | start a frame (clear the draw queue) | call once per frame |
 | `r3d_draw(h, px,py,pz, yaw,pitch,roll, scale)` | queue a model at a transform | Euler radians, uniform scale |
-| `r3d_anim_play(h, clip, looping, speed)` | start an animation clip | `looping`/`speed` |
+| `r3d_anim_play(h, clip, looping, speed, fade)` | start an animation clip | `looping`/`speed`; `fade` crossfades from the current clip over that many seconds (0 = snap) |
 | `r3d_anim_update(h, dt)` | advance the current clip | per frame |
 | `r3d_clip_count(h) -> i64` | number of animation clips | |
 | `r3d_present() -> i64` | render the queue to the window | 1 while open, 0 when closed |
@@ -319,7 +319,7 @@ hands a `net_sim` step (the pointer is passed as integer bits).
 | Builtin | Signature | Notes |
 |---|---|---|
 | `audio_listener(x,y,z, fx,fy,fz)` | set listener pose | position + forward |
-| `play_sound_at(semitone, ms, x,y,z)` | spatialized note | distance attenuation + stereo pan |
+| `play_sound_at(semitone, ms, gain_pct, x,y,z)` | spatialized note | distance attenuation + stereo pan; `gain_pct` mixes the level (100 = default) |
 
 ## 3D physics - Rapier 3D (`phys3d_*`)
 
