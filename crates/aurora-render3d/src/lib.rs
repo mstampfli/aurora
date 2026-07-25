@@ -12,6 +12,7 @@ mod mesh;
 mod model;
 mod render;
 mod scene;
+pub mod terrain;
 
 pub use anim::{skin_matrices, skin_matrices_blended, AnimPlayer};
 pub use glam::{Mat4, Quat, Vec3};
@@ -21,6 +22,7 @@ pub use render::{
     InstanceRaw, Material, MaterialDesc, Renderer3D, DEPTH_FORMAT, MAX_JOINTS, MAX_LIGHTS,
 };
 pub use scene::Scene;
+pub use terrain::{Heightfield, TerrainRender, TileLod};
 
 /// A right-handed perspective projection with a wgpu-style depth range (z in
 /// `[0, 1]`). `fov_y` is in radians.
@@ -137,13 +139,21 @@ pub fn render_offscreen(
     out
 }
 
+/// Serialize the tests that create a GPU device. Several drivers dislike
+/// concurrent device creation, and the offscreen renders are big enough that
+/// running them in parallel is not worth the flakiness.
+#[cfg(test)]
+pub(crate) fn gpu_guard() -> std::sync::MutexGuard<'static, ()> {
+    static GPU_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    GPU_LOCK.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    static GPU_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     fn guard() -> std::sync::MutexGuard<'static, ()> {
-        GPU_LOCK.lock().unwrap_or_else(|p| p.into_inner())
+        crate::gpu_guard()
     }
 
     fn px(buf: &[u8], w: u32, x: u32, y: u32) -> [u8; 4] {

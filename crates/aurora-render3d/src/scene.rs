@@ -42,6 +42,12 @@ pub struct Scene {
     cam: Camera,
     size: (u32, u32),
     clear: [f32; 4],
+    /// The heightmap terrain, if one has been loaded. It sits beside the items
+    /// rather than being one of them, because its geometry is re-chosen each
+    /// frame from the camera this scene already owns.
+    terrain: Option<crate::terrain::TerrainRender>,
+    /// Albedo the terrain is built with.
+    terrain_color: [f32; 3],
 }
 
 impl Scene {
@@ -67,6 +73,8 @@ impl Scene {
             },
             size: (w.max(1), h.max(1)),
             clear: [0.05, 0.06, 0.09, 1.0],
+            terrain: None,
+            terrain_color: [0.32, 0.40, 0.24],
         };
         s.update_camera();
         s.renderer
@@ -493,6 +501,71 @@ impl Scene {
 
     pub fn begin(&mut self) {
         self.renderer.begin();
+    }
+
+    // --- terrain ----------------------------------------------------------
+
+    /// Install (or replace) the heightmap terrain. The heightfield is shared
+    /// with the runtime's height query and physics collider through the `Arc`,
+    /// so the surface drawn here is the same data those answer from.
+    ///
+    /// Installing the SAME heightfield again is free, which is what lets the
+    /// runtime re-offer its terrain on every draw. It has to: the scene does not
+    /// exist until the window (or the headless device) does, so a program that
+    /// loads its terrain before opening a window would otherwise hand it to
+    /// nothing and render an empty world.
+    pub fn set_terrain(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        field: Arc<crate::terrain::Heightfield>,
+    ) {
+        if let Some(t) = self.terrain.as_ref() {
+            if Arc::ptr_eq(t.field(), &field) {
+                return;
+            }
+        }
+        self.terrain = Some(crate::terrain::TerrainRender::new(
+            device,
+            queue,
+            &mut self.renderer,
+            field,
+            self.terrain_color,
+        ));
+    }
+
+    /// Set the terrain albedo. Safe to call before the terrain is loaded.
+    pub fn set_terrain_color(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        color: [f32; 3],
+    ) {
+        self.terrain_color = color;
+        if let Some(t) = self.terrain.as_mut() {
+            t.set_color(device, queue, &mut self.renderer, color);
+        }
+    }
+
+    /// Queue the terrain for this frame at the level of detail the current
+    /// camera calls for. No-op when no terrain is loaded.
+    pub fn draw_terrain(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        let eye = self.cam.eye;
+        if let Some(t) = self.terrain.as_mut() {
+            t.draw(device, queue, &mut self.renderer, eye);
+        }
+    }
+
+    /// The loaded terrain's heightfield, if any.
+    pub fn terrain_field(&self) -> Option<&Arc<crate::terrain::Heightfield>> {
+        self.terrain.as_ref().map(|t| t.field())
+    }
+
+    /// `(tiles queued, finest sample step, coarsest sample step)` of the last
+    /// [`Self::draw_terrain`]. Lets a caller confirm a level-of-detail seam was
+    /// actually on screen before concluding anything from the pixels.
+    pub fn terrain_last_draw(&self) -> Option<(usize, u32, u32)> {
+        self.terrain.as_ref().map(|t| t.last_draw())
     }
 
     /// Queue a model for drawing at `transform`.

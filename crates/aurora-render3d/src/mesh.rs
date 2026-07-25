@@ -271,24 +271,48 @@ pub struct GpuMesh {
     pub vbuf: wgpu::Buffer,
     pub ibuf: wgpu::Buffer,
     pub index_count: u32,
+    /// Allocated byte capacity of `vbuf` and `ibuf`. Geometry that is rebuilt
+    /// while the game runs (terrain LOD tiles) is rewritten in place whenever
+    /// the new data still fits, so a steady-state level-of-detail change costs
+    /// two queue writes and no allocation at all.
+    vcap: u64,
+    icap: u64,
 }
 
 impl GpuMesh {
     pub fn upload(device: &wgpu::Device, mesh: &MeshData) -> GpuMesh {
+        let vdata: &[u8] = bytemuck::cast_slice(&mesh.vertices);
+        let idata: &[u8] = bytemuck::cast_slice(&mesh.indices);
         let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("mesh-verts"),
-            contents: bytemuck::cast_slice(&mesh.vertices),
-            usage: wgpu::BufferUsages::VERTEX,
+            contents: vdata,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
         let ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("mesh-indices"),
-            contents: bytemuck::cast_slice(&mesh.indices),
-            usage: wgpu::BufferUsages::INDEX,
+            contents: idata,
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
         });
         GpuMesh {
             vbuf,
             ibuf,
             index_count: mesh.indices.len() as u32,
+            vcap: vdata.len() as u64,
+            icap: idata.len() as u64,
         }
+    }
+
+    /// Overwrite this mesh's geometry in place, or report `false` when the new
+    /// data does not fit the buffers (the caller then re-uploads).
+    pub fn write(&mut self, queue: &wgpu::Queue, mesh: &MeshData) -> bool {
+        let vdata: &[u8] = bytemuck::cast_slice(&mesh.vertices);
+        let idata: &[u8] = bytemuck::cast_slice(&mesh.indices);
+        if vdata.len() as u64 > self.vcap || idata.len() as u64 > self.icap {
+            return false;
+        }
+        queue.write_buffer(&self.vbuf, 0, vdata);
+        queue.write_buffer(&self.ibuf, 0, idata);
+        self.index_count = mesh.indices.len() as u32;
+        true
     }
 }

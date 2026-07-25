@@ -1210,14 +1210,33 @@ impl Renderer3D {
     }
 
     pub fn add_mesh(&mut self, device: &wgpu::Device, mesh: &MeshData) -> usize {
-        let radius = mesh
-            .vertices
-            .iter()
-            .map(|v| Vec3::from(v.pos).length())
-            .fold(0.0f32, f32::max);
         self.meshes.push(GpuMesh::upload(device, mesh));
-        self.mesh_radius.push(radius.max(0.001));
+        self.mesh_radius.push(bounding_radius(mesh));
         self.meshes.len() - 1
+    }
+
+    /// Replace an existing mesh's geometry, keeping its id (and so every draw
+    /// that already refers to it). Rewrites the GPU buffers in place while the
+    /// new geometry fits and only reallocates when it grows, which is what makes
+    /// per-frame terrain level-of-detail changes cheap.
+    ///
+    /// Ignores an unknown id or empty geometry: a zero-length buffer is not a
+    /// valid wgpu allocation, and silently keeping the old mesh is better than
+    /// tearing down a live one.
+    pub fn update_mesh(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        id: usize,
+        mesh: &MeshData,
+    ) {
+        if id >= self.meshes.len() || mesh.vertices.is_empty() || mesh.indices.is_empty() {
+            return;
+        }
+        if !self.meshes[id].write(queue, mesh) {
+            self.meshes[id] = GpuMesh::upload(device, mesh);
+        }
+        self.mesh_radius[id] = bounding_radius(mesh);
     }
 
     pub fn set_frustum_cull(&mut self, on: bool) {
@@ -1945,7 +1964,18 @@ fn cull_bounds(model: &Mat4, mesh_radius: f32) -> (Vec3, f32) {
     (center, mesh_radius * scale)
 }
 
-fn frustum_planes(vp: Mat4) -> [glam::Vec4; 6] {
+/// Radius of the origin-centred sphere containing `mesh`, as the frustum and
+/// shadow-cascade culls use it. Never zero, so a single-point mesh still has a
+/// testable bound.
+fn bounding_radius(mesh: &MeshData) -> f32 {
+    mesh.vertices
+        .iter()
+        .map(|v| Vec3::from(v.pos).length())
+        .fold(0.0f32, f32::max)
+        .max(0.001)
+}
+
+pub(crate) fn frustum_planes(vp: Mat4) -> [glam::Vec4; 6] {
     let r = vp.to_cols_array_2d();
     // Row-vector extraction (column-major storage: m[col][row]).
     let row = |i: usize| glam::Vec4::new(r[0][i], r[1][i], r[2][i], r[3][i]);
@@ -1960,7 +1990,7 @@ fn frustum_planes(vp: Mat4) -> [glam::Vec4; 6] {
     ]
 }
 
-fn sphere_in_frustum(planes: &[glam::Vec4; 6], center: Vec3, radius: f32) -> bool {
+pub(crate) fn sphere_in_frustum(planes: &[glam::Vec4; 6], center: Vec3, radius: f32) -> bool {
     for p in planes {
         let n = p.truncate();
         let len = n.length().max(1e-6);
