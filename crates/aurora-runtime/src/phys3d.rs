@@ -242,8 +242,13 @@ pub extern "C" fn aurora_phys3d_add_character(x: f64, y: f64, z: f64, hh: f64, r
 
 /// Add a static triangle-mesh collider from `vcount*3` vertex floats and
 /// `icount` triangle indices. For arbitrary level collision geometry.
+///
+/// # Safety
+/// `verts` must point to `vcount * 3` initialized `f64`s and `indices` to
+/// `icount` initialized `i64`s. a null `verts` or `indices` is rejected
+/// rather than dereferenced.
 #[no_mangle]
-pub extern "C" fn aurora_phys3d_add_trimesh(
+pub unsafe extern "C" fn aurora_phys3d_add_trimesh(
     verts: *const f64, vcount: i64, indices: *const i64, icount: i64,
 ) -> i64 {
     if verts.is_null() || indices.is_null() || vcount <= 0 || icount < 3 {

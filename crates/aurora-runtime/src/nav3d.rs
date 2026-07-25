@@ -139,8 +139,13 @@ thread_local! {
 
 /// Build a navmesh from `vcount*3` vertex floats and `icount` triangle indices.
 /// Triangles sharing an edge (two vertices) become neighbors.
+///
+/// # Safety
+/// `verts` must point to `vcount * 3` initialized `f64`s and `indices` to
+/// `icount` initialized `i64`s. a null `verts` or `indices` is rejected
+/// rather than dereferenced.
 #[no_mangle]
-pub extern "C" fn aurora_navmesh_build(
+pub unsafe extern "C" fn aurora_navmesh_build(
     verts: *const f64, vcount: i64, indices: *const i64, icount: i64,
 ) -> i64 {
     if verts.is_null() || indices.is_null() || vcount <= 0 || icount < 3 {
@@ -384,7 +389,11 @@ mod tests {
             4.0, 0.0, 2.0, // 5
         ];
         let idx: Vec<i64> = vec![0, 1, 2, 2, 1, 3, 2, 3, 4, 4, 3, 5];
-        let built = aurora_navmesh_build(verts.as_ptr(), 6, idx.as_ptr(), idx.len() as i64);
+        // SAFETY: `verts` and `idx` are live local vectors, and the counts passed
+        // are exactly their lengths (6 vertices = 18 floats, `idx.len()` indices).
+        let built = unsafe {
+            aurora_navmesh_build(verts.as_ptr(), 6, idx.as_ptr(), idx.len() as i64)
+        };
         assert_eq!(built, 0);
         let n = aurora_navmesh_find(0.5, 0.0, 1.0, 3.5, 0.0, 1.0);
         assert!(n >= 2, "expected waypoints, got {n}");

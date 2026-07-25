@@ -25,7 +25,9 @@
 //!
 //! # Adding a builtin
 //!
-//! 1. write `pub extern "C" fn aurora_<name>(..)` in `aurora-runtime`;
+//! 1. write `pub extern "C" fn aurora_<name>(..)` in `aurora-runtime` - or
+//!    `pub unsafe extern "C" fn`, with a `# Safety` section, if it takes a
+//!    pointer (a `str` or array argument) and reads or writes through it;
 //! 2. add one row to the table below;
 //! 3. document it in `docs/04-stdlib-and-builtins.md` (a test enforces this).
 //!

@@ -9,6 +9,20 @@
 //!
 //! State (framebuffer, ECS world) is thread-local, matching the single-threaded
 //! `main` the compiled program runs on.
+//!
+//! # Raw pointers and `unsafe`
+//!
+//! Aurora passes a `str` as its two `[data, len]` slots, an array as its data
+//! pointer plus a length the COMPILER derives from the array's type, and a
+//! closure as an `[fn_ptr, env_ptr]` pair - so every host function taking a
+//! pointer reads or writes through it. Nothing the function itself can check
+//! makes that sound: the pointer's validity is the caller's to guarantee.
+//!
+//! Every such function is therefore `pub unsafe extern "C" fn` with a `# Safety`
+//! section naming exactly what it requires. `unsafe` is a Rust-level property
+//! only - the emitted symbol, its C ABI, and both consumers above are unchanged
+//! - but it stops safe Rust from calling one of these with a pointer it made up.
+//! A host function that takes no pointer stays safe.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -50,8 +64,10 @@ fn fmt_f64(x: f64) -> String {
 pub extern "C" fn aurora_print_f64(x: f64) {
     print!("{}", fmt_f64(x));
 }
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_print_str(ptr: *const u8, len: i64) {
+pub unsafe extern "C" fn aurora_print_str(ptr: *const u8, len: i64) {
     let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
     print!("{}", String::from_utf8_lossy(s));
 }
@@ -118,8 +134,11 @@ pub extern "C" fn aurora_sleep_ms(ms: i64) {
 /// `n`-element `f64` buffers. Aurora arrays/structs of `f64` are contiguous
 /// 8-byte slots, so they pass straight through as `const double*` â€” this is what
 /// lets `@extern` bind real C/Rust functions that take buffers and vectors.
+///
+/// # Safety
+/// `a` and `b` must each point to `n` initialized `f64`s.
 #[no_mangle]
-pub extern "C" fn aurora_ffi_dot(a: *const f64, b: *const f64, n: i64) -> f64 {
+pub unsafe extern "C" fn aurora_ffi_dot(a: *const f64, b: *const f64, n: i64) -> f64 {
     let n = n.max(0) as usize;
     let (a, b) = unsafe { (std::slice::from_raw_parts(a, n), std::slice::from_raw_parts(b, n)) };
     a.iter().zip(b).map(|(x, y)| x * y).sum()
@@ -127,8 +146,11 @@ pub extern "C" fn aurora_ffi_dot(a: *const f64, b: *const f64, n: i64) -> f64 {
 
 /// `f32` variant â€” reads two C-packed `float` buffers. Tests that Aurora `f32`
 /// aggregates are marshaled to C's 4-byte-packed layout over FFI.
+///
+/// # Safety
+/// `a` and `b` must each point to `n` initialized `f32`s.
 #[no_mangle]
-pub extern "C" fn aurora_ffi_dotf(a: *const f32, b: *const f32, n: i64) -> f32 {
+pub unsafe extern "C" fn aurora_ffi_dotf(a: *const f32, b: *const f32, n: i64) -> f32 {
     let n = n.max(0) as usize;
     let (a, b) = unsafe { (std::slice::from_raw_parts(a, n), std::slice::from_raw_parts(b, n)) };
     a.iter().zip(b).map(|(x, y)| x * y).sum()
@@ -231,8 +253,10 @@ pub extern "C" fn aurora_fb_get(x: i64, y: i64) -> i64 {
         _ => 0,
     })
 }
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_save_ppm(ptr: *const u8, len: i64) {
+pub unsafe extern "C" fn aurora_save_ppm(ptr: *const u8, len: i64) {
     let path = {
         let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
         String::from_utf8_lossy(s).into_owned()
@@ -246,8 +270,11 @@ pub extern "C" fn aurora_save_ppm(ptr: *const u8, len: i64) {
 
 /// Save the 2D framebuffer as a PNG (the format vision tooling reads).
 /// Creates parent directories. Backs the `save_png` builtin.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_save_png(ptr: *const u8, len: i64) {
+pub unsafe extern "C" fn aurora_save_png(ptr: *const u8, len: i64) {
     let path = {
         let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
         String::from_utf8_lossy(s).into_owned()
@@ -368,8 +395,11 @@ pub(crate) unsafe fn write_str(out: *mut i64, bytes: Vec<u8>) {
     *out.add(1) = bytes.len() as i64;
 }
 
+/// # Safety
+/// `ap` must point to `al` initialized bytes and `bp` to `bl`. `out` must
+/// be valid for writes of two `i64`s.
 #[no_mangle]
-pub extern "C" fn aurora_str_concat(
+pub unsafe extern "C" fn aurora_str_concat(
     out: *mut i64, ap: *const u8, al: i64, bp: *const u8, bl: i64,
 ) {
     let a = unsafe { std::slice::from_raw_parts(ap, al.max(0) as usize) };
@@ -380,21 +410,28 @@ pub extern "C" fn aurora_str_concat(
     unsafe { write_str(out, v) };
 }
 
+/// # Safety
+/// `ap` must point to `al` initialized bytes and `bp` to `bl`.
 #[no_mangle]
-pub extern "C" fn aurora_str_eq(ap: *const u8, al: i64, bp: *const u8, bl: i64) -> i64 {
+pub unsafe extern "C" fn aurora_str_eq(ap: *const u8, al: i64, bp: *const u8, bl: i64) -> i64 {
     let a = unsafe { std::slice::from_raw_parts(ap, al.max(0) as usize) };
     let b = unsafe { std::slice::from_raw_parts(bp, bl.max(0) as usize) };
     (a == b) as i64
 }
 
+/// # Safety
+/// `out` must be valid for writes of two `i64`s.
 #[no_mangle]
-pub extern "C" fn aurora_int_to_str(out: *mut i64, n: i64) {
+pub unsafe extern "C" fn aurora_int_to_str(out: *mut i64, n: i64) {
     unsafe { write_str(out, n.to_string().into_bytes()) };
 }
 
 /// Byte at index `i` of the string (0..len), or -1 if out of range.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_str_char_at(ptr: *const u8, len: i64, i: i64) -> i64 {
+pub unsafe extern "C" fn aurora_str_char_at(ptr: *const u8, len: i64, i: i64) -> i64 {
     if i < 0 || i >= len {
         return -1;
     }
@@ -403,8 +440,12 @@ pub extern "C" fn aurora_str_char_at(ptr: *const u8, len: i64, i: i64) -> i64 {
 }
 
 /// Substring `[start, start+n)` (clamped) written into `out` as a new string.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes. `out` must be valid for
+/// writes of two `i64`s.
 #[no_mangle]
-pub extern "C" fn aurora_str_substr(out: *mut i64, ptr: *const u8, len: i64, start: i64, n: i64) {
+pub unsafe extern "C" fn aurora_str_substr(out: *mut i64, ptr: *const u8, len: i64, start: i64, n: i64) {
     let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
     let start = start.clamp(0, len) as usize;
     let end = (start + n.max(0) as usize).min(len.max(0) as usize);
@@ -412,8 +453,11 @@ pub extern "C" fn aurora_str_substr(out: *mut i64, ptr: *const u8, len: i64, sta
 }
 
 /// 1 if `hay` starts with `needle`, else 0.
+///
+/// # Safety
+/// `hp` must point to `hl` initialized bytes and `np` to `nl`.
 #[no_mangle]
-pub extern "C" fn aurora_str_starts_with(
+pub unsafe extern "C" fn aurora_str_starts_with(
     hp: *const u8, hl: i64, np: *const u8, nl: i64,
 ) -> i64 {
     let hay = unsafe { std::slice::from_raw_parts(hp, hl.max(0) as usize) };
@@ -421,8 +465,10 @@ pub extern "C" fn aurora_str_starts_with(
     hay.starts_with(needle) as i64
 }
 
+/// # Safety
+/// `out` must be valid for writes of two `i64`s.
 #[no_mangle]
-pub extern "C" fn aurora_float_to_str(out: *mut i64, x: f64) {
+pub unsafe extern "C" fn aurora_float_to_str(out: *mut i64, x: f64) {
     unsafe { write_str(out, fmt_f64(x).into_bytes()) };
 }
 
@@ -430,8 +476,11 @@ pub extern "C" fn aurora_float_to_str(out: *mut i64, x: f64) {
 
 /// Load a binary PPM image at `path` into the framebuffer (resizing it).
 /// Returns 1 on success, 0 on failure. Backs the `load_ppm` builtin.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_load_ppm(ptr: *const u8, len: i64) -> i64 {
+pub unsafe extern "C" fn aurora_load_ppm(ptr: *const u8, len: i64) -> i64 {
     let path = {
         let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
         String::from_utf8_lossy(s).into_owned()
@@ -448,8 +497,11 @@ pub extern "C" fn aurora_load_ppm(ptr: *const u8, len: i64) -> i64 {
 /// Load a PNG/JPEG image at `path` into the framebuffer (resizing it to the
 /// image), decoded to RGBA via the `image` crate. Returns 1 on success, 0 on
 /// failure. Backs the `load_image` builtin â€” the asset pipeline beyond PPM.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_load_image(ptr: *const u8, len: i64) -> i64 {
+pub unsafe extern "C" fn aurora_load_image(ptr: *const u8, len: i64) -> i64 {
     let path = {
         let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
         String::from_utf8_lossy(s).into_owned()
@@ -474,8 +526,11 @@ thread_local! {
 }
 
 /// Load a TrueType/OpenType font from `path` for `draw_text`. Returns 1/0.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_load_font(ptr: *const u8, len: i64) -> i64 {
+pub unsafe extern "C" fn aurora_load_font(ptr: *const u8, len: i64) -> i64 {
     let path = {
         let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
         String::from_utf8_lossy(s).into_owned()
@@ -533,8 +588,10 @@ fn render_text(x: i64, y: i64, text: &str, px: i64, color: i64) {
     });
 }
 
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_draw_text(x: i64, y: i64, ptr: *const u8, len: i64, px: i64, color: i64) {
+pub unsafe extern "C" fn aurora_draw_text(x: i64, y: i64, ptr: *const u8, len: i64, px: i64, color: i64) {
     let text = {
         let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
         String::from_utf8_lossy(s).into_owned()
@@ -544,8 +601,11 @@ pub extern "C" fn aurora_draw_text(x: i64, y: i64, ptr: *const u8, len: i64, px:
 
 /// Pixel width of `text` at size `px` in the loaded font (sum of glyph advances).
 /// Lets a game centre/right-align labels. Returns 0 if no font is loaded.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_text_width(ptr: *const u8, len: i64, px: i64) -> i64 {
+pub unsafe extern "C" fn aurora_text_width(ptr: *const u8, len: i64, px: i64) -> i64 {
     let text = {
         let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
         String::from_utf8_lossy(s).into_owned()
@@ -855,8 +915,11 @@ pub extern "C" fn aurora_net_bind(port: i64) -> i64 {
 }
 
 /// Point this endpoint at a peer `"host:port"`. Returns 1/0.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_net_connect(ptr: *const u8, len: i64) -> i64 {
+pub unsafe extern "C" fn aurora_net_connect(ptr: *const u8, len: i64) -> i64 {
     let addr = {
         let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
         String::from_utf8_lossy(s).into_owned()
@@ -868,8 +931,11 @@ pub extern "C" fn aurora_net_connect(ptr: *const u8, len: i64) -> i64 {
 }
 
 /// Reliably send a string message. Returns 1/0.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_net_send(ptr: *const u8, len: i64) -> i64 {
+pub unsafe extern "C" fn aurora_net_send(ptr: *const u8, len: i64) -> i64 {
     let msg = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) }.to_vec();
     NET.with(|n| match n.borrow_mut().as_mut() {
         Some(ep) => {
@@ -882,8 +948,11 @@ pub extern "C" fn aurora_net_send(ptr: *const u8, len: i64) -> i64 {
 
 /// Receive the next delivered message into `out` (empty string if none pending).
 /// Pumps the socket first, buffering any newly-delivered messages in order.
+///
+/// # Safety
+/// `out` must be valid for writes of two `i64`s.
 #[no_mangle]
-pub extern "C" fn aurora_net_recv(out: *mut i64) {
+pub unsafe extern "C" fn aurora_net_recv(out: *mut i64) {
     NET.with(|n| {
         if let Some(ep) = n.borrow_mut().as_mut() {
             let delivered = ep.poll();
@@ -902,8 +971,13 @@ pub extern "C" fn aurora_net_recv(out: *mut i64) {
 // disjoint output slots). The closure is `[fn_ptr, env_ptr]`; lambda-lifted
 // closures take `(env_ptr, i)` and return i64.
 
+/// # Safety
+/// `out` must be valid for writes of `n` `i64`s. `fn_ptr` must be a live
+/// `extern "C" fn(i64, i64) -> i64` (a lambda-lifted Aurora closure) and
+/// `env_ptr` its matching environment. both must stay valid for the whole
+/// call, which runs the closure on several threads at once.
 #[no_mangle]
-pub extern "C" fn aurora_par_for(out: *mut i64, n: i64, fn_ptr: *const u8, env_ptr: *const u8) {
+pub unsafe extern "C" fn aurora_par_for(out: *mut i64, n: i64, fn_ptr: *const u8, env_ptr: *const u8) {
     let n = n.max(0) as usize;
     if n == 0 {
         return;
@@ -1038,8 +1112,10 @@ pub extern "C" fn aurora_despawn(e: i64) {
         w.comps.retain(|&(ent, _), _| ent != e);
     });
 }
+/// # Safety
+/// `ptr` must point to `size` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_store_component(e: i64, tid: i64, ptr: *const u8, size: i64) {
+pub unsafe extern "C" fn aurora_store_component(e: i64, tid: i64, ptr: *const u8, size: i64) {
     let bytes = unsafe { std::slice::from_raw_parts(ptr, size.max(0) as usize) };
     with_world(|w| {
         w.comps.insert((e, tid), bytes.to_vec().into_boxed_slice());
@@ -1052,8 +1128,10 @@ pub extern "C" fn aurora_get_component(e: i64, tid: i64) -> *mut u8 {
         None => std::ptr::null_mut(),
     })
 }
+/// # Safety
+/// `ids` must point to `n` initialized `i64`s.
 #[no_mangle]
-pub extern "C" fn aurora_query_begin(ids: *const i64, n: i64) -> i64 {
+pub unsafe extern "C" fn aurora_query_begin(ids: *const i64, n: i64) -> i64 {
     let ids = unsafe { std::slice::from_raw_parts(ids, n.max(0) as usize) };
     let matches: Vec<i64> = with_world(|w| {
         w.entities
@@ -1080,8 +1158,13 @@ pub extern "C" fn aurora_entity_count() -> i64 {
 /// batch have non-conflicting component access, so concurrent execution is
 /// race-free. Each worker is bound to the caller's world for the batch.
 /// `fns` is an array of `n` raw function addresses (each an `extern "C" fn()`).
+///
+/// # Safety
+/// `fns` must point to `n` initialized addresses, each a live `extern "C"
+/// fn(i64) -> i64` compiled system, and all of them must stay valid for the
+/// whole call.
 #[no_mangle]
-pub extern "C" fn aurora_run_parallel(fns: *const usize, n: i64) {
+pub unsafe extern "C" fn aurora_run_parallel(fns: *const usize, n: i64) {
     let n = n.max(0) as usize;
     if n == 0 {
         return;
@@ -1144,8 +1227,11 @@ fn get_i64(buf: &[u8], pos: &mut usize) -> Option<i64> {
 }
 
 /// Save the entire ECS world (entities + components) to `path`. Returns 1/0.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_scene_save(ptr: *const u8, len: i64) -> i64 {
+pub unsafe extern "C" fn aurora_scene_save(ptr: *const u8, len: i64) -> i64 {
     let path = {
         let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
         String::from_utf8_lossy(s).into_owned()
@@ -1177,8 +1263,11 @@ pub extern "C" fn aurora_scene_save(ptr: *const u8, len: i64) -> i64 {
 }
 
 /// Replace the ECS world with the scene saved at `path`. Returns 1/0.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_scene_load(ptr: *const u8, len: i64) -> i64 {
+pub unsafe extern "C" fn aurora_scene_load(ptr: *const u8, len: i64) -> i64 {
     let path = {
         let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
         String::from_utf8_lossy(s).into_owned()
@@ -1261,8 +1350,10 @@ pub fn prof_report() -> Vec<ProfRow> {
     })
 }
 
+/// # Safety
+/// `name_ptr` must point to `name_len` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_prof_enter(name_ptr: *const u8, name_len: i64) {
+pub unsafe extern "C" fn aurora_prof_enter(name_ptr: *const u8, name_len: i64) {
     let name = {
         let s = unsafe { std::slice::from_raw_parts(name_ptr, name_len.max(0) as usize) };
         String::from_utf8_lossy(s).into_owned()
@@ -1314,8 +1405,11 @@ fn audio_capture_note(semitone: i64, dur_ms: i64) {
 
 /// Render the captured note events into a 16-bit mono WAV at 44.1 kHz, placing
 /// each note at its virtual start time. Returns 1 on success, 0 on failure.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_audio_capture_save(ptr: *const u8, len: i64) -> i64 {
+pub unsafe extern "C" fn aurora_audio_capture_save(ptr: *const u8, len: i64) -> i64 {
     let path = {
         let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
         String::from_utf8_lossy(s).into_owned()
@@ -1383,8 +1477,11 @@ pub extern "C" fn aurora_play_note(semitone: i64, dur_ms: i64) {
 /// a fragment shader body (defining `fs_main`, reading `uv` and `u.time`).
 /// `time_ms` animates it. The result replaces the framebuffer, so the next
 /// `window_present`/`save_ppm` shows the GPU-rendered image.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_gpu_render(ptr: *const u8, len: i64, time_ms: i64) {
+pub unsafe extern "C" fn aurora_gpu_render(ptr: *const u8, len: i64, time_ms: i64) {
     let wgsl = {
         let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
         String::from_utf8_lossy(s).into_owned()
@@ -1404,8 +1501,12 @@ pub extern "C" fn aurora_gpu_render(ptr: *const u8, len: i64, time_ms: i64) {
 /// Run a compute shader on the GPU over an `[f64; n]` array, in place. `wgsl`
 /// operates on a `read_write array<f32>` at binding 0. Values are converted
 /// f64â†’f32 for the GPU and back. Backs the `gpu_compute` builtin.
+///
+/// # Safety
+/// `wptr` must point to `wlen` initialized bytes. `data` must be valid for
+/// reads and writes of `n` `f64`s.
 #[no_mangle]
-pub extern "C" fn aurora_gpu_compute(wptr: *const u8, wlen: i64, data: *mut f64, n: i64) {
+pub unsafe extern "C" fn aurora_gpu_compute(wptr: *const u8, wlen: i64, data: *mut f64, n: i64) {
     let wgsl = {
         let s = unsafe { std::slice::from_raw_parts(wptr, wlen.max(0) as usize) };
         String::from_utf8_lossy(s).into_owned()
@@ -1486,8 +1587,11 @@ pub extern "C" fn aurora_mouse_down() -> i64 {
 // sharing the window's wgpu device. Colors are 0..1 floats; angles are radians.
 
 /// Load a glTF/GLB/OBJ model; returns a handle (>= 0) or -1.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_r3d_load_model(ptr: *const u8, len: i64) -> i64 {
+pub unsafe extern "C" fn aurora_r3d_load_model(ptr: *const u8, len: i64) -> i64 {
     let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
     let path = String::from_utf8_lossy(s);
     aurora_window::imm_r3d_load_model(&path)
@@ -1669,8 +1773,11 @@ pub extern "C" fn aurora_r3d_present() -> i64 {
 
 /// Capture the queued 3D scene to a PNG at the framebuffer's size (headless
 /// only), with the HUD framebuffer composited on top. Returns 1 on success.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_r3d_capture(ptr: *const u8, len: i64) -> i64 {
+pub unsafe extern "C" fn aurora_r3d_capture(ptr: *const u8, len: i64) -> i64 {
     let path = {
         let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
         String::from_utf8_lossy(s).into_owned()
@@ -1686,8 +1793,11 @@ pub extern "C" fn aurora_r3d_capture(ptr: *const u8, len: i64) -> i64 {
 }
 
 /// Like `r3d_capture` but at an explicit output resolution.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_r3d_capture_size(ptr: *const u8, len: i64, ow: i64, oh: i64) -> i64 {
+pub unsafe extern "C" fn aurora_r3d_capture_size(ptr: *const u8, len: i64, ow: i64, oh: i64) -> i64 {
     let path = {
         let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
         String::from_utf8_lossy(s).into_owned()
@@ -2115,8 +2225,11 @@ pub extern "C" fn aurora_play_sound_at(
 
 /// Persist a small settings blob (`len` f64 values) to a fixed file on disk, one
 /// value per line. Backs the `save_settings` builtin (keybinds, sensitivity, volume).
+///
+/// # Safety
+/// `data` must point to `len` initialized `f64`s.
 #[no_mangle]
-pub extern "C" fn aurora_save_settings(data: *const f64, len: i64) -> i64 {
+pub unsafe extern "C" fn aurora_save_settings(data: *const f64, len: i64) -> i64 {
     if data.is_null() || len <= 0 {
         return 0;
     }
@@ -2131,8 +2244,11 @@ pub extern "C" fn aurora_save_settings(data: *const f64, len: i64) -> i64 {
 
 /// Read the settings blob back into `data` (up to `len` values); returns the count
 /// read, or -1 if the file is missing. Backs the `load_settings` builtin.
+///
+/// # Safety
+/// `data` must be valid for writes of `len` `f64`s.
 #[no_mangle]
-pub extern "C" fn aurora_load_settings(data: *mut f64, len: i64) -> i64 {
+pub unsafe extern "C" fn aurora_load_settings(data: *mut f64, len: i64) -> i64 {
     if data.is_null() || len <= 0 {
         return -1;
     }
@@ -2156,8 +2272,11 @@ pub extern "C" fn aurora_load_settings(data: *mut f64, len: i64) -> i64 {
 /// Load and play a WAV file at `path` through the audio mixer (downmixed to
 /// mono, normalized to f32). Returns 1 on success, 0 on failure. Backs the
 /// `play_wav` builtin â€” audio asset playback beyond the synth.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_play_wav(ptr: *const u8, len: i64) -> i64 {
+pub unsafe extern "C" fn aurora_play_wav(ptr: *const u8, len: i64) -> i64 {
     let path = {
         let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
         String::from_utf8_lossy(s).into_owned()
@@ -2218,8 +2337,11 @@ fn resample_mono(src: &[f32], src_rate: u32, dst_rate: u32) -> Vec<f32> {
 /// Decode a WAV file ONCE (mono, normalized f32) and cache it, returning a handle for
 /// play_sound_handle / play_sound_handle_at. Returns -1 on failure. Backs `load_sound` - this is
 /// how a game loads real SFX at startup without re-opening/decoding the file on every play.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_load_sound(ptr: *const u8, len: i64) -> i64 {
+pub unsafe extern "C" fn aurora_load_sound(ptr: *const u8, len: i64) -> i64 {
     let path = {
         let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
         String::from_utf8_lossy(s).into_owned()
@@ -2438,8 +2560,10 @@ pub fn dbg_take_stops() -> Vec<Stop> {
     DEBUG.with(|d| std::mem::take(&mut d.borrow_mut().stops))
 }
 
+/// # Safety
+/// `name_ptr` must point to `name_len` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_dbg_enter(name_ptr: *const u8, name_len: i64) {
+pub unsafe extern "C" fn aurora_dbg_enter(name_ptr: *const u8, name_len: i64) {
     let func = {
         let s = unsafe { std::slice::from_raw_parts(name_ptr, name_len.max(0) as usize) };
         String::from_utf8_lossy(s).into_owned()
@@ -2498,7 +2622,9 @@ pub extern "C" fn aurora_dbg_stmt(line: i64) {
     }
 }
 
-fn dbg_record_var(name_ptr: *const u8, name_len: i64, value: DbgVal) {
+/// # Safety
+/// `name_ptr` must point to `name_len` initialized bytes.
+unsafe fn dbg_record_var(name_ptr: *const u8, name_len: i64, value: DbgVal) {
     let name = {
         let s = unsafe { std::slice::from_raw_parts(name_ptr, name_len.max(0) as usize) };
         String::from_utf8_lossy(s).into_owned()
@@ -2516,13 +2642,17 @@ fn dbg_record_var(name_ptr: *const u8, name_len: i64, value: DbgVal) {
     });
 }
 
+/// # Safety
+/// `name_ptr` must point to `name_len` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_dbg_var(name_ptr: *const u8, name_len: i64, value: i64) {
+pub unsafe extern "C" fn aurora_dbg_var(name_ptr: *const u8, name_len: i64, value: i64) {
     dbg_record_var(name_ptr, name_len, DbgVal::Int(value));
 }
 
+/// # Safety
+/// `name_ptr` must point to `name_len` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_dbg_var_f64(name_ptr: *const u8, name_len: i64, value: f64) {
+pub unsafe extern "C" fn aurora_dbg_var_f64(name_ptr: *const u8, name_len: i64, value: f64) {
     dbg_record_var(name_ptr, name_len, DbgVal::Float(value));
 }
 
@@ -2545,17 +2675,22 @@ macro_rules! rust_ty {
 /// that claims the wrong parameter or return type does not compile - the only
 /// thing that can otherwise catch it is a program miscompiled at run time. A
 /// `Str` result is the caller-allocated 2-slot out-pointer, passed first.
+///
+/// The pointer type is spelled `unsafe extern "C" fn` so it accepts BOTH kinds
+/// of host function: a safe one coerces to it, and one that takes a raw pointer
+/// (and is therefore `unsafe`) matches it directly. The parameter and return
+/// types are still checked either way, which is what this macro exists for.
 macro_rules! checked_addr {
     ($sym:ident, [$($p:ident),*], void) => {{
-        let f: extern "C" fn($(rust_ty!($p)),*) = $sym;
+        let f: unsafe extern "C" fn($(rust_ty!($p)),*) = $sym;
         f as usize
     }};
     ($sym:ident, [$($p:ident),*], Str) => {{
-        let f: extern "C" fn(*mut i64, $(rust_ty!($p)),*) = $sym;
+        let f: unsafe extern "C" fn(*mut i64, $(rust_ty!($p)),*) = $sym;
         f as usize
     }};
     ($sym:ident, [$($p:ident),*], $ret:ident) => {{
-        let f: extern "C" fn($(rust_ty!($p)),*) -> rust_ty!($ret) = $sym;
+        let f: unsafe extern "C" fn($(rust_ty!($p)),*) -> rust_ty!($ret) = $sym;
         f as usize
     }};
 }
@@ -2698,7 +2833,9 @@ mod par_world_tests {
                 aurora_spawn_entity();
             }
             let fns = [hold_open as usize, hold_open as usize];
-            aurora_run_parallel(fns.as_ptr(), 2);
+            // SAFETY: `fns` points to a live local array of addresses of `extern "C" fn`s
+            // that outlive the call.
+            unsafe { aurora_run_parallel(fns.as_ptr(), 2); }
             aurora_entity_count()
         });
         wait_for("both systems to enter the batch", || HELD.load(Ordering::SeqCst) == 2);
@@ -2738,7 +2875,9 @@ mod par_world_tests {
         let batch = || {
             std::thread::spawn(|| {
                 let fns = [spawn_two as usize, spawn_two as usize];
-                aurora_run_parallel(fns.as_ptr(), 2);
+                // SAFETY: `fns` points to a live local array of addresses of `extern "C" fn`s
+                // that outlive the call.
+                unsafe { aurora_run_parallel(fns.as_ptr(), 2); }
                 aurora_entity_count()
             })
         };
@@ -2761,7 +2900,9 @@ mod par_world_tests {
     /// A system that itself opens a batch, so the workers below are nested.
     extern "C" fn nested_batch() {
         let fns = [spawn_one as usize, spawn_one as usize];
-        aurora_run_parallel(fns.as_ptr(), 2);
+        // SAFETY: `fns` points to a live local array of addresses of `extern "C" fn`s
+        // that outlive the call.
+        unsafe { aurora_run_parallel(fns.as_ptr(), 2); }
     }
 
     #[test]
@@ -2772,7 +2913,9 @@ mod par_world_tests {
         // 2 outer systems * 2 inner systems = 4 entities, all in the owner.
         let owner = std::thread::spawn(|| {
             let fns = [nested_batch as usize, nested_batch as usize];
-            aurora_run_parallel(fns.as_ptr(), 2);
+            // SAFETY: `fns` points to a live local array of addresses of `extern "C" fn`s
+            // that outlive the call.
+            unsafe { aurora_run_parallel(fns.as_ptr(), 2); }
             aurora_entity_count()
         });
         let count = owner.join().expect("nested batch owner panicked");

@@ -124,7 +124,9 @@ pub extern "C" fn aurora_set_fixed_dt(dt: f64) {
 
 // --- text file I/O ----------------------------------------------------------
 
-fn arg_str(ptr: *const u8, len: i64) -> String {
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
+unsafe fn arg_str(ptr: *const u8, len: i64) -> String {
     let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
     String::from_utf8_lossy(s).into_owned()
 }
@@ -160,8 +162,11 @@ pub extern "C" fn aurora_sys_argc() -> i64 {
 /// `sys_arg(i) -> str`: the i-th argument, or "" when `i` is out of range in
 /// either direction. Never reads out of bounds and never aborts, so a program
 /// can probe for optional arguments without checking `sys_argc` first.
+///
+/// # Safety
+/// `out` must be valid for writes of two `i64`s.
 #[no_mangle]
-pub extern "C" fn aurora_sys_arg(out: *mut i64, i: i64) {
+pub unsafe extern "C" fn aurora_sys_arg(out: *mut i64, i: i64) {
     let args = program_args();
     let s = usize::try_from(i).ok().and_then(|i| args.get(i)).map(|s| s.as_str()).unwrap_or("");
     unsafe { crate::write_str(out, s.as_bytes().to_vec()) };
@@ -170,23 +175,34 @@ pub extern "C" fn aurora_sys_arg(out: *mut i64, i: i64) {
 /// `sys_env(name) -> str`: an environment variable's value, or "" when it is
 /// unset (or holds non-UTF-8). An empty value is reported as "" too, so use a
 /// sentinel value rather than emptiness to mean "set".
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes. `out` must be valid for
+/// writes of two `i64`s.
 #[no_mangle]
-pub extern "C" fn aurora_sys_env(out: *mut i64, ptr: *const u8, len: i64) {
+pub unsafe extern "C" fn aurora_sys_env(out: *mut i64, ptr: *const u8, len: i64) {
     let v = std::env::var(arg_str(ptr, len)).unwrap_or_default();
     unsafe { crate::write_str(out, v.into_bytes()) };
 }
 
 /// `read_file(path) -> str`: the file's contents, or "" if unreadable
 /// (discriminate with `file_exists`). The string lives in the frame arena.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes. `out` must be valid for
+/// writes of two `i64`s.
 #[no_mangle]
-pub extern "C" fn aurora_read_file(out: *mut i64, ptr: *const u8, len: i64) {
+pub unsafe extern "C" fn aurora_read_file(out: *mut i64, ptr: *const u8, len: i64) {
     let bytes = std::fs::read(arg_str(ptr, len)).unwrap_or_default();
     unsafe { crate::write_str(out, bytes) };
 }
 
 /// `write_file(path, contents) -> 1|0`. Creates parent directories.
+///
+/// # Safety
+/// `pp` must point to `pl` initialized bytes and `dp` to `dl`.
 #[no_mangle]
-pub extern "C" fn aurora_write_file(pp: *const u8, pl: i64, dp: *const u8, dl: i64) -> i64 {
+pub unsafe extern "C" fn aurora_write_file(pp: *const u8, pl: i64, dp: *const u8, dl: i64) -> i64 {
     let path = arg_str(pp, pl);
     let data = unsafe { std::slice::from_raw_parts(dp, dl.max(0) as usize) };
     if let Some(parent) = std::path::Path::new(&path).parent() {
@@ -198,8 +214,11 @@ pub extern "C" fn aurora_write_file(pp: *const u8, pl: i64, dp: *const u8, dl: i
 }
 
 /// `file_exists(path) -> 1|0`.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_file_exists(ptr: *const u8, len: i64) -> i64 {
+pub unsafe extern "C" fn aurora_file_exists(ptr: *const u8, len: i64) -> i64 {
     std::path::Path::new(&arg_str(ptr, len)).exists() as i64
 }
 
@@ -276,8 +295,11 @@ fn child_handle(h: i64, pick: impl Fn(&Value) -> Option<&Value>) -> i64 {
 }
 
 /// `json_parse(text) -> handle` (0 on parse error, with a diagnostic).
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_json_parse(ptr: *const u8, len: i64) -> i64 {
+pub unsafe extern "C" fn aurora_json_parse(ptr: *const u8, len: i64) -> i64 {
     let text = arg_str(ptr, len);
     match serde_json::from_str::<Value>(&text) {
         Ok(v) => {
@@ -293,8 +315,11 @@ pub extern "C" fn aurora_json_parse(ptr: *const u8, len: i64) -> i64 {
 }
 
 /// `json_load(path) -> handle`: read + parse a file (0 on failure).
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_json_load(ptr: *const u8, len: i64) -> i64 {
+pub unsafe extern "C" fn aurora_json_load(ptr: *const u8, len: i64) -> i64 {
     let path = arg_str(ptr, len);
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
@@ -317,8 +342,11 @@ pub extern "C" fn aurora_json_load(ptr: *const u8, len: i64) -> i64 {
 }
 
 /// `json_get(h, key) -> handle` (0 if missing / not an object).
+///
+/// # Safety
+/// `kp` must point to `kl` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_json_get(h: i64, kp: *const u8, kl: i64) -> i64 {
+pub unsafe extern "C" fn aurora_json_get(h: i64, kp: *const u8, kl: i64) -> i64 {
     let key = arg_str(kp, kl);
     child_handle(h, |v| v.get(&key))
 }
@@ -361,8 +389,11 @@ pub extern "C" fn aurora_json_bool(h: i64) -> i64 {
 
 /// `json_str(h) -> str`: string contents ("" for non-strings - use
 /// `json_to_str` to serialize any value).
+///
+/// # Safety
+/// `out` must be valid for writes of two `i64`s.
 #[no_mangle]
-pub extern "C" fn aurora_json_str(out: *mut i64, h: i64) {
+pub unsafe extern "C" fn aurora_json_str(out: *mut i64, h: i64) {
     let s = with_value(h, |v| v.as_str().map(|s| s.to_string()).unwrap_or_default())
         .unwrap_or_default();
     unsafe { crate::write_str(out, s.into_bytes()) };
@@ -384,15 +415,21 @@ pub extern "C" fn aurora_json_kind(h: i64) -> i64 {
 }
 
 /// `json_has(h, key) -> 1|0`.
+///
+/// # Safety
+/// `kp` must point to `kl` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_json_has(h: i64, kp: *const u8, kl: i64) -> i64 {
+pub unsafe extern "C" fn aurora_json_has(h: i64, kp: *const u8, kl: i64) -> i64 {
     let key = arg_str(kp, kl);
     with_value(h, |v| v.get(&key).is_some() as i64).unwrap_or(0)
 }
 
 /// `json_key(h, i) -> str`: the i-th key of an object (document order).
+///
+/// # Safety
+/// `out` must be valid for writes of two `i64`s.
 #[no_mangle]
-pub extern "C" fn aurora_json_key(out: *mut i64, h: i64, i: i64) {
+pub unsafe extern "C" fn aurora_json_key(out: *mut i64, h: i64, i: i64) {
     let s = with_value(h, |v| match v {
         Value::Object(o) => o.keys().nth(i.max(0) as usize).cloned().unwrap_or_default(),
         _ => String::new(),
@@ -434,8 +471,11 @@ fn snapshot(h: i64) -> Option<Value> {
 }
 
 /// `json_set(h, key, child)`: store a deep copy of `child` under `key`.
+///
+/// # Safety
+/// `kp` must point to `kl` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_json_set(h: i64, kp: *const u8, kl: i64, child: i64) {
+pub unsafe extern "C" fn aurora_json_set(h: i64, kp: *const u8, kl: i64, child: i64) {
     let key = arg_str(kp, kl);
     let Some(v) = snapshot(child) else { return };
     with_owned(h, |o| {
@@ -446,8 +486,11 @@ pub extern "C" fn aurora_json_set(h: i64, kp: *const u8, kl: i64, child: i64) {
 }
 
 /// `json_set_num(h, key, x)`.
+///
+/// # Safety
+/// `kp` must point to `kl` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_json_set_num(h: i64, kp: *const u8, kl: i64, x: f64) {
+pub unsafe extern "C" fn aurora_json_set_num(h: i64, kp: *const u8, kl: i64, x: f64) {
     let key = arg_str(kp, kl);
     with_owned(h, |o| {
         if let Value::Object(map) = o {
@@ -457,8 +500,11 @@ pub extern "C" fn aurora_json_set_num(h: i64, kp: *const u8, kl: i64, x: f64) {
 }
 
 /// `json_set_str(h, key, s)`.
+///
+/// # Safety
+/// `kp` must point to `kl` initialized bytes and `sp` to `sl`.
 #[no_mangle]
-pub extern "C" fn aurora_json_set_str(h: i64, kp: *const u8, kl: i64, sp: *const u8, sl: i64) {
+pub unsafe extern "C" fn aurora_json_set_str(h: i64, kp: *const u8, kl: i64, sp: *const u8, sl: i64) {
     let key = arg_str(kp, kl);
     let s = arg_str(sp, sl);
     with_owned(h, |o| {
@@ -469,8 +515,11 @@ pub extern "C" fn aurora_json_set_str(h: i64, kp: *const u8, kl: i64, sp: *const
 }
 
 /// `json_set_bool(h, key, b)`.
+///
+/// # Safety
+/// `kp` must point to `kl` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_json_set_bool(h: i64, kp: *const u8, kl: i64, b: i64) {
+pub unsafe extern "C" fn aurora_json_set_bool(h: i64, kp: *const u8, kl: i64, b: i64) {
     let key = arg_str(kp, kl);
     with_owned(h, |o| {
         if let Value::Object(map) = o {
@@ -501,8 +550,11 @@ pub extern "C" fn aurora_json_push_num(h: i64, x: f64) {
 }
 
 /// `json_push_str(h, s)`.
+///
+/// # Safety
+/// `sp` must point to `sl` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_json_push_str(h: i64, sp: *const u8, sl: i64) {
+pub unsafe extern "C" fn aurora_json_push_str(h: i64, sp: *const u8, sl: i64) {
     let s = arg_str(sp, sl);
     with_owned(h, |o| {
         if let Value::Array(a) = o {
@@ -522,16 +574,22 @@ fn num_value(x: f64) -> Value {
 }
 
 /// `json_to_str(h) -> str`: pretty-printed JSON of any handle.
+///
+/// # Safety
+/// `out` must be valid for writes of two `i64`s.
 #[no_mangle]
-pub extern "C" fn aurora_json_to_str(out: *mut i64, h: i64) {
+pub unsafe extern "C" fn aurora_json_to_str(out: *mut i64, h: i64) {
     let s = with_value(h, |v| serde_json::to_string_pretty(v).unwrap_or_default())
         .unwrap_or_default();
     unsafe { crate::write_str(out, s.into_bytes()) };
 }
 
 /// `json_write(h, path) -> 1|0`: pretty-print to a file (parent dirs created).
+///
+/// # Safety
+/// `pp` must point to `pl` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_json_write(h: i64, pp: *const u8, pl: i64) -> i64 {
+pub unsafe extern "C" fn aurora_json_write(h: i64, pp: *const u8, pl: i64) -> i64 {
     let path = arg_str(pp, pl);
     let Some(text) = with_value(h, |v| serde_json::to_string_pretty(v).unwrap_or_default()) else {
         return 0;
@@ -588,76 +646,90 @@ mod tests {
 
     #[test]
     fn json_parse_navigate_and_types() {
-        let text = br#"{"name":"grunt","hp":40,"fast":true,"tags":["melee","dumb"],"pos":{"x":1.5}}"#;
-        let h = aurora_json_parse(text.as_ptr(), text.len() as i64);
-        assert!(h > 0);
-        assert_eq!(aurora_json_kind(h), 5);
-        let name = aurora_json_get(h, b"name".as_ptr(), 4);
-        assert_eq!(aurora_json_kind(name), 3);
-        assert_eq!(str_of(|o| aurora_json_str(o, name)), "grunt");
-        let hp = aurora_json_get(h, b"hp".as_ptr(), 2);
-        assert_eq!(aurora_json_int(hp), 40);
-        assert_eq!(aurora_json_num(hp), 40.0);
-        let fast = aurora_json_get(h, b"fast".as_ptr(), 4);
-        assert_eq!(aurora_json_bool(fast), 1);
-        let tags = aurora_json_get(h, b"tags".as_ptr(), 4);
-        assert_eq!(aurora_json_kind(tags), 4);
-        assert_eq!(aurora_json_len(tags), 2);
-        let t1 = aurora_json_at(tags, 1);
-        assert_eq!(str_of(|o| aurora_json_str(o, t1)), "dumb");
-        let pos = aurora_json_get(h, b"pos".as_ptr(), 3);
-        let x = aurora_json_get(pos, b"x".as_ptr(), 1);
-        assert_eq!(aurora_json_num(x), 1.5);
-        // Missing key / out-of-range / freed handles degrade to 0 / -1.
-        assert_eq!(aurora_json_get(h, b"nope".as_ptr(), 4), 0);
-        assert_eq!(aurora_json_at(tags, 99), 0);
-        assert_eq!(aurora_json_has(h, b"hp".as_ptr(), 2), 1);
-        assert_eq!(aurora_json_has(h, b"nope".as_ptr(), 4), 0);
-        aurora_json_free(h);
-        assert_eq!(aurora_json_kind(h), -1);
-        // Sub-handles survive freeing the root handle (Rc keeps the tree).
-        assert_eq!(aurora_json_int(hp), 40);
+        // SAFETY: every pointer below is `as_ptr()` of a live local byte string or
+        // `String`, and every length is that value's real length; `o` is a live
+        // 2-slot `[i64; 2]` owned by `str_of`.
+        unsafe {
+            let text = br#"{"name":"grunt","hp":40,"fast":true,"tags":["melee","dumb"],"pos":{"x":1.5}}"#;
+            let h = aurora_json_parse(text.as_ptr(), text.len() as i64);
+            assert!(h > 0);
+            assert_eq!(aurora_json_kind(h), 5);
+            let name = aurora_json_get(h, b"name".as_ptr(), 4);
+            assert_eq!(aurora_json_kind(name), 3);
+            assert_eq!(str_of(|o| aurora_json_str(o, name)), "grunt");
+            let hp = aurora_json_get(h, b"hp".as_ptr(), 2);
+            assert_eq!(aurora_json_int(hp), 40);
+            assert_eq!(aurora_json_num(hp), 40.0);
+            let fast = aurora_json_get(h, b"fast".as_ptr(), 4);
+            assert_eq!(aurora_json_bool(fast), 1);
+            let tags = aurora_json_get(h, b"tags".as_ptr(), 4);
+            assert_eq!(aurora_json_kind(tags), 4);
+            assert_eq!(aurora_json_len(tags), 2);
+            let t1 = aurora_json_at(tags, 1);
+            assert_eq!(str_of(|o| aurora_json_str(o, t1)), "dumb");
+            let pos = aurora_json_get(h, b"pos".as_ptr(), 3);
+            let x = aurora_json_get(pos, b"x".as_ptr(), 1);
+            assert_eq!(aurora_json_num(x), 1.5);
+            // Missing key / out-of-range / freed handles degrade to 0 / -1.
+            assert_eq!(aurora_json_get(h, b"nope".as_ptr(), 4), 0);
+            assert_eq!(aurora_json_at(tags, 99), 0);
+            assert_eq!(aurora_json_has(h, b"hp".as_ptr(), 2), 1);
+            assert_eq!(aurora_json_has(h, b"nope".as_ptr(), 4), 0);
+            aurora_json_free(h);
+            assert_eq!(aurora_json_kind(h), -1);
+            // Sub-handles survive freeing the root handle (Rc keeps the tree).
+            assert_eq!(aurora_json_int(hp), 40);
+        }
     }
 
     #[test]
     fn json_build_and_roundtrip() {
-        let obj = aurora_json_new_obj();
-        aurora_json_set_str(obj, b"name".as_ptr(), 4, b"save1".as_ptr(), 5);
-        aurora_json_set_num(obj, b"hp".as_ptr(), 2, 77.0);
-        aurora_json_set_num(obj, b"x".as_ptr(), 1, 1.25);
-        aurora_json_set_bool(obj, b"hard".as_ptr(), 4, 1);
-        let arr = aurora_json_new_arr();
-        aurora_json_push_num(arr, 3.0);
-        aurora_json_push_str(arr, b"sword".as_ptr(), 5);
-        aurora_json_set(obj, b"items".as_ptr(), 5, arr);
-        let text = str_of(|o| aurora_json_to_str(o, obj));
-        let h = aurora_json_parse(text.as_bytes().as_ptr(), text.len() as i64);
-        assert!(h > 0, "round-trip parse of: {text}");
-        assert_eq!(aurora_json_int(aurora_json_get(h, b"hp".as_ptr(), 2)), 77);
-        assert_eq!(aurora_json_num(aurora_json_get(h, b"x".as_ptr(), 1)), 1.25);
-        let items = aurora_json_get(h, b"items".as_ptr(), 5);
-        assert_eq!(aurora_json_len(items), 2);
-        assert_eq!(aurora_json_int(aurora_json_at(items, 0)), 3);
-        // Whole numbers serialize without a fractional suffix.
-        assert!(text.contains("\"hp\": 77"), "got: {text}");
+        // SAFETY: every pointer below is `as_ptr()` of a live local byte string or
+        // `String`, and every length is that value's real length; `o` is a live
+        // 2-slot `[i64; 2]` owned by `str_of`.
+        unsafe {
+            let obj = aurora_json_new_obj();
+            aurora_json_set_str(obj, b"name".as_ptr(), 4, b"save1".as_ptr(), 5);
+            aurora_json_set_num(obj, b"hp".as_ptr(), 2, 77.0);
+            aurora_json_set_num(obj, b"x".as_ptr(), 1, 1.25);
+            aurora_json_set_bool(obj, b"hard".as_ptr(), 4, 1);
+            let arr = aurora_json_new_arr();
+            aurora_json_push_num(arr, 3.0);
+            aurora_json_push_str(arr, b"sword".as_ptr(), 5);
+            aurora_json_set(obj, b"items".as_ptr(), 5, arr);
+            let text = str_of(|o| aurora_json_to_str(o, obj));
+            let h = aurora_json_parse(text.as_bytes().as_ptr(), text.len() as i64);
+            assert!(h > 0, "round-trip parse of: {text}");
+            assert_eq!(aurora_json_int(aurora_json_get(h, b"hp".as_ptr(), 2)), 77);
+            assert_eq!(aurora_json_num(aurora_json_get(h, b"x".as_ptr(), 1)), 1.25);
+            let items = aurora_json_get(h, b"items".as_ptr(), 5);
+            assert_eq!(aurora_json_len(items), 2);
+            assert_eq!(aurora_json_int(aurora_json_at(items, 0)), 3);
+            // Whole numbers serialize without a fractional suffix.
+            assert!(text.contains("\"hp\": 77"), "got: {text}");
+        }
     }
 
     #[test]
     fn file_roundtrip_and_exists() {
-        let dir = std::env::temp_dir().join("aurora_data_test");
-        let path = dir.join("nested").join("t.txt");
-        let p = path.to_string_lossy().into_owned();
-        assert_eq!(aurora_file_exists(p.as_ptr(), p.len() as i64), 0);
-        assert_eq!(
-            aurora_write_file(p.as_ptr(), p.len() as i64, b"hello".as_ptr(), 5),
-            1,
-            "write_file creates parent dirs"
-        );
-        assert_eq!(aurora_file_exists(p.as_ptr(), p.len() as i64), 1);
-        let mut out = [0i64; 2];
-        aurora_read_file(out.as_mut_ptr(), p.as_ptr(), p.len() as i64);
-        let s = unsafe { std::slice::from_raw_parts(out[0] as *const u8, out[1] as usize) };
-        assert_eq!(s, b"hello");
-        let _ = std::fs::remove_dir_all(&dir);
+        // SAFETY: `p` is a live local `String` and the lengths passed are its own
+        // and the literal's; `out` is a live local `[i64; 2]`.
+        unsafe {
+            let dir = std::env::temp_dir().join("aurora_data_test");
+            let path = dir.join("nested").join("t.txt");
+            let p = path.to_string_lossy().into_owned();
+            assert_eq!(aurora_file_exists(p.as_ptr(), p.len() as i64), 0);
+            assert_eq!(
+                aurora_write_file(p.as_ptr(), p.len() as i64, b"hello".as_ptr(), 5),
+                1,
+                "write_file creates parent dirs"
+            );
+            assert_eq!(aurora_file_exists(p.as_ptr(), p.len() as i64), 1);
+            let mut out = [0i64; 2];
+            aurora_read_file(out.as_mut_ptr(), p.as_ptr(), p.len() as i64);
+            let s = std::slice::from_raw_parts(out[0] as *const u8, out[1] as usize);
+            assert_eq!(s, b"hello");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }

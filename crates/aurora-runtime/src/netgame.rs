@@ -1692,8 +1692,10 @@ pub extern "C" fn aurora_net_host(port: i64) -> i64 {
     }
 }
 
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_net_join(ptr: *const u8, len: i64, port: i64) -> i64 {
+pub unsafe extern "C" fn aurora_net_join(ptr: *const u8, len: i64, port: i64) -> i64 {
     let host = {
         let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
         String::from_utf8_lossy(s).into_owned()
@@ -1720,8 +1722,14 @@ pub extern "C" fn aurora_net_join(ptr: *const u8, len: i64, port: i64) -> i64 {
 /// every later tick - long after the Aurora call site returns. The closure must therefore capture
 /// nothing on the caller's stack (Aurora stack-allocates closure envs, so a capture would dangle);
 /// codegen enforces this for `net_sim`. Pass per-tick data through the state/input blob instead.
+///
+/// # Safety
+/// `sim_fn` must be a live `extern "C" fn(i64, i64) -> i64` (a
+/// lambda-lifted Aurora closure) and `sim_env` its matching environment.
+/// both are STORED and invoked on every later tick, so both must outlive
+/// the netcode session, not just this call.
 #[no_mangle]
-pub extern "C" fn aurora_net_sim(sim_fn: *const u8, sim_env: *const u8, state_len: i64, input_len: i64) {
+pub unsafe extern "C" fn aurora_net_sim(sim_fn: *const u8, sim_env: *const u8, state_len: i64, input_len: i64) {
     with((), |s| s.set_sim(sim_fn as usize, sim_env as usize, state_len.max(4) as usize, input_len.max(1) as usize));
 }
 
@@ -1734,8 +1742,14 @@ pub extern "C" fn aurora_net_sim(sim_fn: *const u8, sim_env: *const u8, state_le
 /// another thread, so it takes only by-value args, never closed-over stack state; (2) never call
 /// render/window builtins (the GFX context lives on the main thread); (3) set up its own world via
 /// phys3d_init + net_host inside itself. The fn-pointer + env are just an immutable code address.
+///
+/// # Safety
+/// `fn_ptr` must be a live `extern "C" fn(i64) -> i64` (a lambda-lifted
+/// Aurora closure) and `env_ptr` its matching environment. both are handed
+/// to a server thread that outlives this call, so both must stay valid for
+/// the rest of the process.
 #[no_mangle]
-pub extern "C" fn aurora_net_serve(fn_ptr: *const u8, env_ptr: *const u8) {
+pub unsafe extern "C" fn aurora_net_serve(fn_ptr: *const u8, env_ptr: *const u8) {
     let f = fn_ptr as usize;
     let e = env_ptr as usize;
     let _ = std::thread::Builder::new()
@@ -1750,8 +1764,11 @@ pub extern "C" fn aurora_net_serve(fn_ptr: *const u8, env_ptr: *const u8) {
 
 /// Submit this frame's input blob from an Aurora `[f64; len]` array; returns the
 /// input seq. Floats are narrowed to `f32` for the wire / sim blob.
+///
+/// # Safety
+/// `input` must point to `len` initialized `f64`s.
 #[no_mangle]
-pub extern "C" fn aurora_net_send_input(input: *const f64, len: i64) -> i64 {
+pub unsafe extern "C" fn aurora_net_send_input(input: *const f64, len: i64) -> i64 {
     if input.is_null() || len <= 0 {
         return 0;
     }
@@ -1930,8 +1947,11 @@ pub extern "C" fn aurora_net_player_meta(id: i64, slot: i64) -> f64 {
     read(0.0, |s| s.meta(id.max(0) as u32, slot.max(0) as usize))
 }
 /// Set the local player's display name (broadcast + replicated to everyone).
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_net_set_name(ptr: *const u8, len: i64) {
+pub unsafe extern "C" fn aurora_net_set_name(ptr: *const u8, len: i64) {
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
     with((), |s| s.set_name(bytes))
 }
@@ -1989,8 +2009,11 @@ pub extern "C" fn aurora_net_set_bot_meta(i: i64, slot: i64, v: f64) {
     with((), |s| s.set_bot_meta(i.max(0) as usize, slot.max(0) as usize, v))
 }
 /// Host: set bot `i`'s display name.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
 #[no_mangle]
-pub extern "C" fn aurora_net_set_bot_name(i: i64, ptr: *const u8, len: i64) {
+pub unsafe extern "C" fn aurora_net_set_bot_name(i: i64, ptr: *const u8, len: i64) {
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
     with((), |s| s.set_bot_name(i.max(0) as usize, bytes))
 }
