@@ -710,6 +710,29 @@ fn a_single_tile_terrain_still_meshes() {
 // asserted too, because they localise a regression, but the byte figure is the
 // resource being bounded.
 
+/// The documented tile budget is arithmetic over the vertex layout, so it can
+/// drift the moment a vertex attribute is added. Pin it to a real full-detail
+/// tile mesh: MAX_TILE_BYTES must be exactly what the worst tile costs, and the
+/// budget must be a sane multiple of it.
+#[test]
+fn the_documented_tile_budget_matches_a_real_tile() {
+    let f = bumpy(129); // several tiles, so tile 0 is a full interior tile
+    let m = f.tile_mesh(1, 1, TileLod::default());
+    let actual = (m.vertices.len() * std::mem::size_of::<Vertex>() + m.indices.len() * 4) as u64;
+    assert_eq!(
+        actual, MAX_TILE_BYTES,
+        "a full-detail tile is {actual} B but MAX_TILE_BYTES says {MAX_TILE_BYTES}"
+    );
+    // The number quoted in docs/04-stdlib-and-builtins.md.
+    assert_eq!(MAX_TILE_BYTES, 111_696);
+    assert_eq!(TILE_CACHE_BUDGET, 32 << 20);
+    let tiles = TILE_CACHE_BUDGET / MAX_TILE_BYTES;
+    assert!(
+        (250..=350).contains(&tiles),
+        "the budget holds {tiles} worst-case tiles; the docs say roughly 300"
+    );
+}
+
 /// Reloading a terrain must release the previous terrain's tile meshes and
 /// material.
 ///
