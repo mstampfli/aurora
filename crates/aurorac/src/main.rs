@@ -720,9 +720,10 @@ impl LinkLock {
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                     // Break a lock left behind by a build that died mid-link.
                     if let Ok(md) = std::fs::metadata(&path) {
-                        if let Ok(age) = md.modified().and_then(|m| m.elapsed().map_err(|_| {
-                            std::io::Error::new(std::io::ErrorKind::Other, "clock went backwards")
-                        })) {
+                        if let Ok(age) = md.modified().and_then(|m| {
+                            m.elapsed()
+                                .map_err(|_| std::io::Error::other("clock went backwards"))
+                        }) {
                             if age > Self::STALE {
                                 let _ = std::fs::remove_file(&path);
                                 continue;
