@@ -813,6 +813,99 @@ fn recoloring_terrain_releases_the_old_material() {
     );
 }
 
+/// Walking a camera across a large terrain must not accumulate every tile it
+/// has ever seen.
+///
+/// The identical traverse runs TWICE: once with the cache effectively
+/// unbounded, to measure what the tiles cost when nothing is evicted, and once
+/// at a real budget. Without the first number the second proves nothing - a
+/// bounded figure is only meaningful beside the unbounded one it replaced.
+#[test]
+fn traversing_a_large_terrain_stays_inside_the_tile_budget() {
+    let _g = crate::gpu_guard();
+    let Some((device, queue)) = crate::headless_device() else {
+        eprintln!("no GPU adapter - skipping the terrain tile budget test");
+        return;
+    };
+    // 1025 samples at 1 unit spacing: 32x32 = 1024 tiles over a 1024-unit map,
+    // far more than one frame can see, which is the case the cache exists for.
+    const DIM: u32 = 1025;
+    const STEPS: usize = 24;
+    // Room for well over one frame's visible tiles, and a small fraction of the
+    // whole map. Deliberately below TILE_CACHE_BUDGET so a test-sized walk
+    // actually has to evict.
+    const BUDGET: u64 = 6 << 20;
+
+    let walk = |budget: u64| -> (u64, u64, u64, usize) {
+        let mut scene = crate::Scene::new(
+            &device,
+            &queue,
+            wgpu::TextureFormat::Rgba8Unorm,
+            256,
+            256,
+            1,
+        );
+        let field = Heightfield::generate(4242, DIM, 1.0, 40.0).expect("generate");
+        scene.set_terrain(&device, &queue, std::sync::Arc::new(field));
+        scene
+            .terrain_mut()
+            .expect("terrain is loaded")
+            .set_budget_bytes(budget);
+        let half = (DIM - 1) as f32 * 0.5;
+        let (mut peak, mut visible) = (0u64, 0usize);
+        for i in 0..STEPS {
+            // March from the -X border to the +X border, looking along +X.
+            let x = -half + (i as f32 / (STEPS - 1) as f32) * (2.0 * half);
+            let eye = Vec3::new(x, 60.0, 0.0);
+            scene.set_camera(eye, eye + Vec3::new(1.0, -0.25, 0.0), 60.0);
+            scene.begin();
+            scene.draw_terrain(&device, &queue);
+            peak = peak.max(scene.terrain_tile_bytes().0);
+            visible = visible.max(scene.terrain_last_draw().expect("drawn").0);
+        }
+        let t = scene.terrain_mut().expect("terrain is loaded");
+        (peak, t.evictions(), t.over_budget_frames(), visible)
+    };
+
+    let (unbounded_peak, unbounded_evictions, _, visible) = walk(u64::MAX);
+    let (bounded_peak, evictions, over, _) = walk(BUDGET);
+
+    eprintln!(
+        "terrain tile cache over {STEPS} camera steps on a {DIM}-sample map: \
+         unbounded peak {unbounded_peak} B ({:.2} MiB), bounded peak {bounded_peak} B \
+         ({:.2} MiB) against a {BUDGET} B budget; {evictions} evictions, \
+         {over} over-budget frames, up to {visible} tiles visible per frame",
+        unbounded_peak as f64 / (1024.0 * 1024.0),
+        bounded_peak as f64 / (1024.0 * 1024.0),
+    );
+
+    assert_eq!(
+        unbounded_evictions, 0,
+        "the control walk was supposed to be unbounded"
+    );
+    // The premise: without eviction the traverse really does climb past the
+    // budget. Otherwise the bounded assertion below would hold vacuously.
+    assert!(
+        unbounded_peak > BUDGET,
+        "the traverse only reached {unbounded_peak} B, under the {BUDGET} B budget, \
+         so this test cannot tell a bounded cache from an unbounded one"
+    );
+    assert!(
+        evictions > 0,
+        "the bounded walk never evicted anything, so nothing was exercised"
+    );
+    assert_eq!(
+        over, 0,
+        "{over} frames could not fit their own visible tiles in {BUDGET} B; \
+         that means the budget is too small for this view distance, not that the \
+         cache failed"
+    );
+    assert!(
+        bounded_peak <= BUDGET,
+        "resident tile memory reached {bounded_peak} B, past the {BUDGET} B budget"
+    );
+}
+
 /// The tile cache must also give its memory back when the terrain goes away.
 #[test]
 fn clearing_the_terrain_releases_every_tile() {

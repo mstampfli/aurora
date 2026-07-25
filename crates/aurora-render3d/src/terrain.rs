@@ -599,13 +599,56 @@ impl Default for TileLod {
     }
 }
 
+/// GPU bytes of a worst-case (full-detail) tile mesh: the whole `(n+1)^2`
+/// vertex grid plus two triangles per cell. Derived from the vertex layout
+/// rather than written down, so it cannot drift when a vertex attribute is
+/// added.
+pub const MAX_TILE_BYTES: u64 = {
+    let vertices = ((TILE_CELLS + 1) * (TILE_CELLS + 1)) as u64;
+    let indices = (TILE_CELLS * TILE_CELLS * 6) as u64;
+    vertices * std::mem::size_of::<Vertex>() as u64 + indices * 4
+};
+
+/// Default GPU budget for resident terrain tile geometry, in bytes.
+///
+/// # Where the number comes from
+///
+/// A full-detail tile is `(TILE_CELLS + 1)^2 = 1089` vertices of 80 bytes plus
+/// `TILE_CELLS^2 * 2 * 3 = 6144` 32-bit indices: about 109 KiB. A tile that has
+/// ever been full detail keeps that allocation while it is resident, because
+/// [`crate::GpuMesh::write`] deliberately reuses the buffers rather than
+/// reallocating on every level-of-detail change. So 32 MiB is roughly 300
+/// worst-case tiles, and far more in practice because the tiles behind the
+/// first LOD threshold are a quarter the size per step.
+///
+/// For scale: the 4097-sample cap is 128x128 = 16384 tiles, which at full
+/// detail would be about 1.7 GiB. The budget is what stands between a player
+/// crossing that map and every tile they have ever seen staying resident.
+pub const TILE_CACHE_BUDGET: u64 = 32 << 20;
+
 /// GPU-side terrain: one mesh per tile, rebuilt in place when that tile's level
-/// of detail changes.
+/// of detail changes, and evicted when the cache is over budget.
 ///
 /// Memory is O(tiles), not O(tiles * LOD levels * edge configurations): a tile
 /// keeps ONE mesh whose contents are rewritten, so a camera move costs a queue
 /// write for the handful of tiles that crossed a distance threshold and nothing
 /// at all for the rest.
+///
+/// # Eviction
+///
+/// Tile meshes are built lazily, the first time a tile is actually drawn, so
+/// without eviction the resident set is O(tiles ever visited) and a player
+/// crossing a large map accumulates the whole terrain. The cache is bounded by
+/// [`TILE_CACHE_BUDGET`] bytes of GPU mesh and evicts least-recently-drawn
+/// first (which, since a tile is drawn exactly when it is in the frustum, is
+/// the tile the camera turned away from longest ago).
+///
+/// The set drawn in the CURRENT frame is never evicted: its meshes are already
+/// queued, and dropping one would punch a hole in the frame being rendered. If
+/// one frame's visible tiles alone exceed the budget, they all stay and the
+/// cache is over budget for that frame - a hole in the world is a worse
+/// outcome than a temporary overshoot. [`Self::over_budget_frames`] counts
+/// those frames so it is measurable rather than silent.
 pub struct TerrainRender {
     field: Arc<Heightfield>,
     material: crate::render::MaterialId,
@@ -618,15 +661,32 @@ pub struct TerrainRender {
     /// A visual seam check needs this: "no crack was rendered" proves nothing
     /// unless a level-of-detail boundary was actually on screen.
     last_draw: (usize, u32, u32),
+    /// Monotone draw counter, the "time" the LRU is ordered by.
+    frame: u64,
+    /// GPU bytes currently held by tile meshes, maintained incrementally so the
+    /// eviction check is O(1) per frame rather than a scan.
+    resident: u64,
+    budget: u64,
+    evicted: u64,
+    over_budget_frames: u64,
+    /// Reused scratch for the eviction pass, so a frame that evicts does not
+    /// also allocate.
+    evict_scratch: Vec<(u64, usize)>,
 }
 
 struct TerrainTile {
-    /// Renderer mesh id, allocated the first time the tile is drawn.
+    /// Renderer mesh id, allocated the first time the tile is drawn and
+    /// released again when the cache evicts it.
     mesh: Option<crate::render::MeshId>,
     /// The level of detail currently IN that mesh.
     built: TileLod,
     centre: Vec3,
     radius: f32,
+    /// [`TerrainRender::frame`] at this tile's last draw; 0 when not resident.
+    last_used: u64,
+    /// GPU bytes of this tile's mesh, mirrored here so eviction can subtract
+    /// without a renderer lookup per candidate.
+    bytes: u64,
 }
 
 impl TerrainRender {
@@ -649,6 +709,8 @@ impl TerrainRender {
                     built: TileLod::default(),
                     centre,
                     radius,
+                    last_used: 0,
+                    bytes: 0,
                 });
             }
         }
@@ -667,6 +729,12 @@ impl TerrainRender {
             tiles,
             lod_range,
             last_draw: (0, 1, 1),
+            frame: 0,
+            resident: 0,
+            budget: TILE_CACHE_BUDGET,
+            evicted: 0,
+            over_budget_frames: 0,
+            evict_scratch: Vec::new(),
         }
     }
 
@@ -683,13 +751,47 @@ impl TerrainRender {
             if let Some(id) = tile.mesh.take() {
                 renderer.free_mesh(id);
             }
+            tile.bytes = 0;
+            tile.last_used = 0;
         }
         renderer.free_material(self.material);
+        self.resident = 0;
     }
 
     /// The heightfield this was built from.
     pub fn field(&self) -> &Arc<Heightfield> {
         &self.field
+    }
+
+    /// GPU bytes currently held by this terrain's tile meshes.
+    pub fn resident_bytes(&self) -> u64 {
+        self.resident
+    }
+
+    /// The tile cache budget in bytes ([`TILE_CACHE_BUDGET`] unless overridden).
+    pub fn budget_bytes(&self) -> u64 {
+        self.budget
+    }
+
+    /// Override the tile cache budget. Clamped up to one worst-case full-detail
+    /// tile, because a budget that cannot hold a single tile would evict on
+    /// every frame and thrash instead of caching.
+    pub fn set_budget_bytes(&mut self, bytes: u64) {
+        self.budget = bytes.max(MAX_TILE_BYTES);
+    }
+
+    /// Tile meshes evicted since this terrain was built. Zero across a traverse
+    /// means the cache never had to work, so a budget test that expects
+    /// eviction should assert this is non-zero before trusting its result.
+    pub fn evictions(&self) -> u64 {
+        self.evicted
+    }
+
+    /// Frames whose own visible tile set exceeded the budget, so nothing could
+    /// be evicted. Non-zero means the budget is too small for the view
+    /// distance in use, not that the cache failed.
+    pub fn over_budget_frames(&self) -> u64 {
+        self.over_budget_frames
     }
 
     /// `(tiles queued, finest sample step, coarsest sample step)` of the last
@@ -754,6 +856,7 @@ impl TerrainRender {
         renderer: &mut crate::render::Renderer3D,
         eye: Vec3,
     ) {
+        self.frame += 1;
         let steps = self.desired_steps(eye);
         let planes = crate::render::frustum_planes(renderer.view_proj());
         let per = self.tiles_per_side;
@@ -794,7 +897,13 @@ impl TerrainRender {
                         None => tile.mesh = Some(renderer.add_mesh(device, &mesh)),
                     }
                     tile.built = lod;
+                    // The mesh may have grown (a coarse tile refined back to
+                    // full detail reallocates); re-read rather than assume.
+                    let now = tile.mesh.map_or(0, |id| renderer.mesh_bytes_of(id));
+                    self.resident = self.resident - tile.bytes + now;
+                    tile.bytes = now;
                 }
+                tile.last_used = self.frame;
                 let Some(id) = tile.mesh else { continue };
                 renderer.draw(
                     id,
@@ -808,6 +917,50 @@ impl TerrainRender {
             }
         }
         self.last_draw = (drawn, finest.min(coarsest), coarsest);
+        self.evict_to_budget(renderer);
+    }
+
+    /// Drop least-recently-drawn tile meshes until the cache fits its budget.
+    ///
+    /// Runs after the draw so this frame's tiles are already stamped with the
+    /// current frame and are therefore skipped: their meshes are queued for
+    /// rendering, and freeing one would drop that geometry from the frame.
+    fn evict_to_budget(&mut self, renderer: &mut crate::render::Renderer3D) {
+        if self.resident <= self.budget {
+            return;
+        }
+        // Candidates: resident tiles NOT drawn this frame, oldest first.
+        let frame = self.frame;
+        let mut scratch = std::mem::take(&mut self.evict_scratch);
+        scratch.clear();
+        scratch.extend(
+            self.tiles
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.mesh.is_some() && t.last_used != frame)
+                .map(|(i, t)| (t.last_used, i)),
+        );
+        scratch.sort_unstable();
+        for &(_, i) in &scratch {
+            if self.resident <= self.budget {
+                break;
+            }
+            let tile = &mut self.tiles[i];
+            if let Some(id) = tile.mesh.take() {
+                renderer.free_mesh(id);
+                self.resident -= tile.bytes;
+                tile.bytes = 0;
+                tile.last_used = 0;
+                self.evicted += 1;
+            }
+        }
+        self.evict_scratch = scratch;
+        if self.resident > self.budget {
+            // Every remaining tile is in this frame's view. Keeping them is the
+            // right call, but it is worth counting: it means the budget is
+            // smaller than the view distance actually needs.
+            self.over_budget_frames += 1;
+        }
     }
 }
 

@@ -461,6 +461,16 @@ vertex positions and there is no crack and no T-junction. Normals come from the
 heightfield gradient at full resolution, so lighting does not pop across a level
 change.
 
+**Tile memory.** A tile's GPU mesh is built the first time that tile is actually
+drawn, so without a bound the resident set would be every tile the camera has
+ever seen - about 1.7 GiB for the 4097-sample cap. The tile cache is bounded at
+**32 MiB** of GPU vertex + index data (roughly 300 worst-case full-detail tiles,
+and many more in practice, since a tile past the first LOD threshold is a
+quarter the size per step). Over budget, the least-recently-drawn tiles are
+evicted and rebuilt if the camera comes back. Tiles drawn in the current frame
+are never evicted, so a single frame whose visible tiles exceed the budget keeps
+them all rather than rendering a hole.
+
 **Reloading.** `terrain_generate` / `terrain_load` REPLACE the terrain, and the
 outgoing one's tile meshes and material are released as the new one is
 installed, so reloading in a loop does not accumulate GPU memory. Note that

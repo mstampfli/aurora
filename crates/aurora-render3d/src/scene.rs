@@ -589,6 +589,19 @@ impl Scene {
         }
     }
 
+    /// GPU bytes held by the terrain's resident tile meshes, and the budget
+    /// that bounds them. `(0, 0)` when no terrain is loaded.
+    pub fn terrain_tile_bytes(&self) -> (u64, u64) {
+        self.terrain
+            .as_ref()
+            .map_or((0, 0), |t| (t.resident_bytes(), t.budget_bytes()))
+    }
+
+    /// The live terrain, for callers that need to tune its tile cache.
+    pub fn terrain_mut(&mut self) -> Option<&mut crate::terrain::TerrainRender> {
+        self.terrain.as_mut()
+    }
+
     /// Set the terrain albedo. Safe to call before the terrain is loaded.
     pub fn set_terrain_color(
         &mut self,

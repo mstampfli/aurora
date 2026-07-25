@@ -25,7 +25,7 @@ pub use render::{
 };
 pub use scene::Scene;
 pub use slot::SlotMap;
-pub use terrain::{Heightfield, TerrainRender, TileLod};
+pub use terrain::{Heightfield, TerrainRender, TileLod, TILE_CACHE_BUDGET};
 
 /// A right-handed perspective projection with a wgpu-style depth range (z in
 /// `[0, 1]`). `fov_y` is in radians.
