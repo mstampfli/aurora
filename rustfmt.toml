@@ -1,0 +1,7 @@
+# Pinned so `cargo fmt` is reproducible and never rewrites files wholesale.
+#
+# rustfmt's default newline_style is "Auto", which infers per file. With the
+# repository normalised to LF by .gitattributes, pinning Unix here means fmt
+# and git agree, and a format pass only ever shows the lines it actually
+# reformatted.
+newline_style = "Unix"

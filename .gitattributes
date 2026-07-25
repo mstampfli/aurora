@@ -1,0 +1,45 @@
+# Line endings are normalised to LF in the repository.
+#
+# Before this file existed, every blob was stored CRLF and nothing enforced it.
+# Any tool that wrote LF - rustfmt, an editor, a script - turned a small edit
+# into a whole-file rewrite. A single `cargo fmt` produced a diff of +44851
+# and -39651 lines across a 47k line codebase, which is unreviewable, and real
+# changes were hiding inside that noise.
+#
+# text=auto means git stores LF and converts on checkout according to the
+# platform and core.autocrlf. Line endings therefore stop appearing in diffs
+# at all, whatever wrote the file.
+* text=auto
+
+# Explicit for the source and data we actually diff.
+*.rs      text
+*.aur     text
+*.toml    text
+*.md      text
+*.wgsl    text
+*.json    text
+*.yml     text
+*.yaml    text
+*.ps1     text
+*.sh      text eol=lf
+
+# Binary: never touch these, and never try to diff them as text.
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
+*.gif     binary
+*.ico     binary
+*.wav     binary
+*.mp3     binary
+*.ogg     binary
+*.ppm     binary
+*.glb     binary
+*.gltf    binary
+*.ttf     binary
+*.otf     binary
+*.exe     binary
+*.dll     binary
+*.pdb     binary
+*.lib     binary
+*.obj     binary
+*.aurtape binary
