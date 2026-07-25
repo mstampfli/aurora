@@ -200,14 +200,14 @@ impl<'a> Lexer<'a> {
                     self.bump();
                     self.bump();
                     let digits = self.eat_while(|c| c.is_ascii_hexdigit() || c == '_');
-                    return self.finish_int(&digits, 16, start);
+                    return self.finish_int(digits, 16, start);
                 }
                 Some('b') | Some('B') => {
                     let start = self.pos;
                     self.bump();
                     self.bump();
                     let digits = self.eat_while(|c| c == '0' || c == '1' || c == '_');
-                    return self.finish_int(&digits, 2, start);
+                    return self.finish_int(digits, 2, start);
                 }
                 _ => {}
             }

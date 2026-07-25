@@ -129,7 +129,7 @@ mod channel_tests {
             round += 1;
             for (seq, payload) in a.outgoing() {
                 // Deterministic, seq-dependent loss; clears on later rounds.
-                let drop = (round + seq) % 3 == 0;
+                let drop = (round + seq).is_multiple_of(3);
                 if !drop {
                     delivered.extend(b.on_recv(seq, payload));
                 }

@@ -110,6 +110,10 @@ fn integer_literals_and_suffixes() {
     no_errors("0 42 1_000 0xFF 0b1010 7u8 64i32");
 }
 
+// `3.14` here is an ordinary float literal the lexer must round-trip, not an
+// approximation of PI: substituting `std::f64::consts::PI` would test a
+// different (17-significant-digit) input and defeat the point of the case.
+#[allow(clippy::approx_constant)]
 #[test]
 fn float_literals() {
     use TokenKind::*;

@@ -171,6 +171,10 @@ pub fn demo() -> Result<(), String> {
     )
 }
 
+/// The per-frame callback a window is driven by: given this frame's input
+/// and delta time, it draws into the framebuffer that is then presented.
+type FrameFn = Box<dyn FnMut(&Input, f32, &mut Framebuffer)>;
+
 struct App {
     title: String,
     width: u32,
@@ -180,7 +184,7 @@ struct App {
     fb: Framebuffer,
     input: Input,
     last: Instant,
-    frame: Box<dyn FnMut(&Input, f32, &mut Framebuffer)>,
+    frame: FrameFn,
 }
 
 impl ApplicationHandler for App {

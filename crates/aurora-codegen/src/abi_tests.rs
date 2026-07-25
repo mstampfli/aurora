@@ -4,10 +4,14 @@
 
 use super::*;
 
+/// One declared host import: the key call lowering looks it up by, the C symbol
+/// it resolves to, and the Cranelift parameter and return types it declares.
+type DeclaredImport = (&'static str, String, Vec<Type>, Vec<Type>);
+
 /// The host imports of a real (empty) compilation, keyed the way call lowering
 /// looks them up, paired with the symbol and Cranelift signature each declares,
 /// plus the target's pointer type (what a `Ptr` parameter lowers to).
-fn declared_imports() -> (Type, Vec<(&'static str, String, Vec<Type>, Vec<Type>)>) {
+fn declared_imports() -> (Type, Vec<DeclaredImport>) {
     let (module, diags) = aurora_parser::parse_str("fn main() { }");
     assert!(!diags.iter().any(|d| d.is_error()), "parse failed");
     let mut builder = JITBuilder::new(cranelift_module::default_libcall_names()).unwrap();

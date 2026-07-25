@@ -20,9 +20,9 @@
 //!
 //! Every such function is therefore `pub unsafe extern "C" fn` with a `# Safety`
 //! section naming exactly what it requires. `unsafe` is a Rust-level property
-//! only - the emitted symbol, its C ABI, and both consumers above are unchanged
-//! - but it stops safe Rust from calling one of these with a pointer it made up.
-//! A host function that takes no pointer stays safe.
+//! only: the emitted symbol, its C ABI, and both consumers above are unchanged.
+//! What it buys is that safe Rust can no longer call one of these with a pointer
+//! it invented. A host function that takes no pointer stays safe.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -1433,8 +1433,10 @@ pub unsafe extern "C" fn aurora_scene_load(ptr: *const u8, len: i64) -> i64 {
     }
     let mut pos = 4;
     let mut parse = || -> Option<World> {
-        let mut world = World::default();
-        world.next = get_i64(&b, &mut pos)?;
+        let mut world = World {
+            next: get_i64(&b, &mut pos)?,
+            ..Default::default()
+        };
         let n_ent = get_i64(&b, &mut pos)?;
         for _ in 0..n_ent {
             world.entities.push(get_i64(&b, &mut pos)?);
@@ -2806,9 +2808,9 @@ pub extern "C" fn aurora_play_sound_handle(handle: i64, gain_pct: i64) {
     }
 }
 
-/// Play a cached sound (a load_sound handle) SPATIALIZED at a world position: distance attenuation
-/// + stereo pan from the listener pose, like play_sound_at but for a real WAV. Backs
-/// `play_sound_handle_at`.
+/// Play a cached sound (a load_sound handle) SPATIALIZED at a world position:
+/// distance attenuation and stereo pan from the listener pose, like
+/// play_sound_at but for a real WAV. Backs `play_sound_handle_at`.
 #[no_mangle]
 pub extern "C" fn aurora_play_sound_handle_at(handle: i64, gain_pct: i64, x: f64, y: f64, z: f64) {
     if handle < 0 || headless_audio() {
@@ -2940,13 +2942,17 @@ struct Frame {
     vars: Vec<(String, DbgVal)>,
 }
 
+/// The interactive stepper's callback: it is handed each [`Stop`] as it
+/// happens and answers with the [`DbgCmd`] that resumes the program.
+pub type StopHandler = Box<dyn FnMut(&Stop) -> DbgCmd>;
+
 #[derive(Default)]
 struct DebugState {
     breakpoints: HashSet<u32>,
     step: bool,
     frames: Vec<Frame>,
     stops: Vec<Stop>,
-    handler: Option<Box<dyn FnMut(&Stop) -> DbgCmd>>,
+    handler: Option<StopHandler>,
 }
 thread_local! {
     static DEBUG: RefCell<DebugState> = RefCell::new(DebugState::default());
@@ -2967,7 +2973,7 @@ pub fn dbg_reset(breakpoints: HashSet<u32>, step: bool) {
 
 /// Install an interactive handler invoked at every stop (it decides whether to
 /// continue, step, or quit). Without one, stops are simply recorded.
-pub fn dbg_set_handler(handler: Box<dyn FnMut(&Stop) -> DbgCmd>) {
+pub fn dbg_set_handler(handler: StopHandler) {
     DEBUG.with(|d| d.borrow_mut().handler = Some(handler));
 }
 

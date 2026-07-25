@@ -68,7 +68,7 @@ fn round_trip_preserves_replicated_fields() {
     assert_eq!(m.get("ammo"), Some(&Value::Float(2.5))); // quantize(0.1) preserves 2.5
     assert_eq!(m.get("alive"), Some(&Value::Bool(true)));
     // The non-replicated field never crosses the wire.
-    assert!(m.get("fx_timer").is_none());
+    assert!(!m.contains_key("fx_timer"));
 }
 
 #[test]

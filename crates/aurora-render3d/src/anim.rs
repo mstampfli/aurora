@@ -616,11 +616,11 @@ pub fn skin_matrices_blended(
 fn upper_mask(skel: &Skeleton, root: usize) -> Vec<bool> {
     let n = skel.joints.len();
     let mut mask = vec![false; n];
-    for i in 0..n {
+    for (i, slot) in mask.iter_mut().enumerate() {
         let mut j = i;
         loop {
             if j == root {
-                mask[i] = true;
+                *slot = true;
                 break;
             }
             match skel.joints[j].parent {

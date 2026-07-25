@@ -89,7 +89,7 @@ impl Gpu {
         if n == 0 {
             return Ok(Vec::new());
         }
-        let bytes = (n * std::mem::size_of::<f32>()) as wgpu::BufferAddress;
+        let bytes = std::mem::size_of_val(data) as wgpu::BufferAddress;
 
         let storage = self
             .device

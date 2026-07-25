@@ -107,8 +107,12 @@ fn encode_ack(ack: u32) -> Vec<u8> {
     b
 }
 
+/// A decoded packet: the cumulative ack it carries, plus the `(seq, payload)`
+/// it delivers when it is more than a bare ack.
+type Decoded = (u32, Option<(u32, Vec<u8>)>);
+
 /// Returns `(cumulative_ack, optional (seq, payload))`, or `None` if malformed.
-fn decode(pkt: &[u8]) -> Option<(u32, Option<(u32, Vec<u8>)>)> {
+fn decode(pkt: &[u8]) -> Option<Decoded> {
     if pkt.len() < 5 {
         return None;
     }

@@ -85,6 +85,11 @@ pub enum Keyword {
 }
 
 impl Keyword {
+    // NOT `std::str::FromStr`: that returns `Result<Self, Self::Err>`, and a
+    // word simply not being a keyword is the common case here, not an error.
+    // `Option` is the honest return type, and the lexer calls this for every
+    // identifier it scans.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Keyword> {
         use Keyword::*;
         Some(match s {

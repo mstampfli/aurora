@@ -73,10 +73,17 @@ impl FVec3 {
         FVec3::new(Fixed::from_int(x), Fixed::from_int(y), Fixed::from_int(z))
     }
 
+    // Deliberately inherent rather than `std::ops::Add`/`Sub`: `FVec3` is the
+    // deterministic fixed-point vector the lockstep sim runs on, and spelling
+    // each step `a.add(b)` keeps that arithmetic visible instead of letting it
+    // hide behind `+`, where a stray float would look identical.
+    #[allow(clippy::should_implement_trait)]
     pub fn add(self, o: FVec3) -> FVec3 {
         FVec3::new(self.x + o.x, self.y + o.y, self.z + o.z)
     }
 
+    // Inherent for the same reason as `add` above.
+    #[allow(clippy::should_implement_trait)]
     pub fn sub(self, o: FVec3) -> FVec3 {
         FVec3::new(self.x - o.x, self.y - o.y, self.z - o.z)
     }

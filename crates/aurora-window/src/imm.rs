@@ -792,6 +792,10 @@ pub fn r3d_draw_quat(
     });
 }
 
+// The parameter list mirrors this builtin's row in `aurora-abi`, which is
+// the single source of truth for its signature; grouping the arguments
+// would break the 1:1 correspondence the table is built on.
+#[allow(clippy::too_many_arguments)]
 pub fn r3d_draw_tint(
     handle: i64,
     px: f32,

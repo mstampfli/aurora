@@ -480,6 +480,10 @@ impl Session {
 
     /// Fire a hitscan ray. On the host it resolves now; on a client it sends the
     /// shot with the view tick so the server can lag-compensate.
+    // The parameter list mirrors this builtin's row in `aurora-abi`, which is
+    // the single source of truth for its signature; grouping the arguments
+    // would break the 1:1 correspondence the table is built on.
+    #[allow(clippy::too_many_arguments)]
     pub fn fire(&mut self, ox: f32, oy: f32, oz: f32, dx: f32, dy: f32, dz: f32, weapon: u8) {
         let o = [ox, oy, oz];
         let d = [dx, dy, dz];
@@ -692,7 +696,7 @@ impl Session {
             all.push((c.id, c.state));
         }
         let interest2 = self.interest * self.interest;
-        let keyframe = self.server_tick % 30 == 0;
+        let keyframe = self.server_tick.is_multiple_of(30);
         let (tick, stick, slen) = (self.tick, self.server_tick as u32, self.state_len);
 
         for ci in 0..self.clients.len() {
@@ -825,6 +829,10 @@ impl Session {
                     }
                     // Relay the client's self-reported metadata, EXCEPT slots the host has taken
                     // authority over (hp/shield) - those keep the host's authoritative value.
+                    // The slot index selects across THREE arrays (the incoming
+                    // `meta`, the client's `meta_owned` mask, and its live
+                    // state); a zip of all three reads worse than the index.
+                    #[allow(clippy::needless_range_loop)]
                     for s in 0..META_LEN {
                         if !self.clients[idx].meta_owned[s] {
                             self.clients[idx].state.meta[s] = meta[s];
@@ -998,6 +1006,8 @@ impl Session {
                 // Re-base the easing offset so the camera stays exactly where it was this frame, then
                 // glides to the freshly reconciled physics position (decayed in update()). A big
                 // correction (teleport / respawn) is too far to smooth - snap it.
+                // x/y/z across three separate arrays; a triple zip reads worse.
+                #[allow(clippy::needless_range_loop)]
                 for i in 0..3 {
                     self.smooth_err[i] = shown[i] - self.pred.s[i];
                 }
@@ -1403,6 +1413,9 @@ impl Session {
 
     // --- shot effects: host announces every shot; clients draw the tracer + play the sound ---
     /// Host: announce a shot (net-id shooter, origin, endpoint, weapon), broadcast this frame.
+    // One argument per field of the wire record this pushes; grouping them
+    // would only move the same list one level out.
+    #[allow(clippy::too_many_arguments)]
     pub fn push_shot(
         &mut self,
         shooter: u32,
@@ -1567,34 +1580,42 @@ fn encode_input(
     }
     b
 }
-fn decode_input(
-    b: &[u8],
-    len: usize,
-    slen: usize,
-) -> Option<(
+/// One decoded client->server input packet, in the order [`encode_input`] wrote
+/// it: the input sequence number, the input blob, the client's self-reported
+/// metadata, its display name, and its own predicted movement state (which the
+/// host does NOT trust - see `on_server_packet`).
+type DecodedInput = (
     u32,
     InputBlob,
     [f32; META_LEN],
     [u8; NAME_MAX],
     [f32; STATE_MAX],
-)> {
+);
+
+fn decode_input(b: &[u8], len: usize, slen: usize) -> Option<DecodedInput> {
     if b.len() < 5 + len * 4 + META_LEN * 4 + NAME_MAX + slen * 4 || b[0] != TAG_INPUT {
         return None;
     }
     let seq = rd_u32(b, 1);
     let mut blob = [0.0f32; INPUT_MAX];
+    // The index IS the wire offset here, and `blob[i]` asserts loudly that the
+    // sender's `len` really is within INPUT_MAX (`set_sim` clamps it); an
+    // iterator with `.take(len)` would silently decode a short blob instead.
+    #[allow(clippy::needless_range_loop)]
     for i in 0..len {
         blob[i] = rd_f32(b, 5 + i * 4);
     }
     let mut meta = [0.0f32; META_LEN];
-    for i in 0..META_LEN {
-        meta[i] = rd_f32(b, 5 + len * 4 + i * 4);
+    for (i, slot) in meta.iter_mut().enumerate() {
+        *slot = rd_f32(b, 5 + len * 4 + i * 4);
     }
     let no = 5 + len * 4 + META_LEN * 4;
     let mut name = [0u8; NAME_MAX];
     name.copy_from_slice(&b[no..no + NAME_MAX]);
     let so = no + NAME_MAX;
     let mut state = [0.0f32; STATE_MAX];
+    // Same as `blob` above: `state[i]` is the bounds check on the sender's `slen`.
+    #[allow(clippy::needless_range_loop)]
     for i in 0..slen {
         state[i] = rd_f32(b, so + i * 4);
     }
@@ -1629,7 +1650,13 @@ fn encode_snapshot(
     }
     b
 }
-fn decode_snapshot(b: &[u8]) -> Option<(u32, u32, f32, u32, Vec<(u32, Player)>)> {
+/// One decoded server->client snapshot, in the order [`encode_snapshot`] wrote
+/// it: the receiver's own net id, the input sequence the server has acked, the
+/// simulation time, the server tick, and every replicated player it carries
+/// (each keyed by net id).
+type DecodedSnapshot = (u32, u32, f32, u32, Vec<(u32, Player)>);
+
+fn decode_snapshot(b: &[u8]) -> Option<DecodedSnapshot> {
     if b.len() < 20 || b[0] != TAG_SNAPSHOT {
         return None;
     }
@@ -3165,7 +3192,7 @@ mod meta_replication_test {
         }
         let mut got = 0;
         for _ in 0..6 {
-            host.push_shot(BOT_ID_BASE as u32, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 0);
+            host.push_shot(BOT_ID_BASE, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 0);
             host.flush_shots(); // broadcast this frame's shots, then clears the host's list
             client.update(0.016);
             if client.shot_count() > 0 {

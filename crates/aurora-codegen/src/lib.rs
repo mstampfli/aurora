@@ -1425,12 +1425,14 @@ impl Jit {
         // SAFETY: verified all-i64 signature of `arity` params.
         unsafe {
             Ok(match args {
-                [] => std::mem::transmute::<_, extern "C" fn() -> i64>(ptr)(),
-                [a] => std::mem::transmute::<_, extern "C" fn(i64) -> i64>(ptr)(*a),
-                [a, b] => std::mem::transmute::<_, extern "C" fn(i64, i64) -> i64>(ptr)(*a, *b),
-                [a, b, c] => {
-                    std::mem::transmute::<_, extern "C" fn(i64, i64, i64) -> i64>(ptr)(*a, *b, *c)
+                [] => std::mem::transmute::<*const u8, extern "C" fn() -> i64>(ptr)(),
+                [a] => std::mem::transmute::<*const u8, extern "C" fn(i64) -> i64>(ptr)(*a),
+                [a, b] => {
+                    std::mem::transmute::<*const u8, extern "C" fn(i64, i64) -> i64>(ptr)(*a, *b)
                 }
+                [a, b, c] => std::mem::transmute::<*const u8, extern "C" fn(i64, i64, i64) -> i64>(
+                    ptr,
+                )(*a, *b, *c),
                 _ => return Err("JIT entry supports up to 3 args".into()),
             })
         }
@@ -1444,12 +1446,14 @@ impl Jit {
         // SAFETY: verified all-f64 signature of `arity` params.
         unsafe {
             Ok(match args {
-                [] => std::mem::transmute::<_, extern "C" fn() -> f64>(ptr)(),
-                [a] => std::mem::transmute::<_, extern "C" fn(f64) -> f64>(ptr)(*a),
-                [a, b] => std::mem::transmute::<_, extern "C" fn(f64, f64) -> f64>(ptr)(*a, *b),
-                [a, b, c] => {
-                    std::mem::transmute::<_, extern "C" fn(f64, f64, f64) -> f64>(ptr)(*a, *b, *c)
+                [] => std::mem::transmute::<*const u8, extern "C" fn() -> f64>(ptr)(),
+                [a] => std::mem::transmute::<*const u8, extern "C" fn(f64) -> f64>(ptr)(*a),
+                [a, b] => {
+                    std::mem::transmute::<*const u8, extern "C" fn(f64, f64) -> f64>(ptr)(*a, *b)
                 }
+                [a, b, c] => std::mem::transmute::<*const u8, extern "C" fn(f64, f64, f64) -> f64>(
+                    ptr,
+                )(*a, *b, *c),
                 _ => return Err("JIT entry supports up to 3 args".into()),
             })
         }
@@ -2656,6 +2660,11 @@ fn tr_match(
 }
 
 /// Emit the branch deciding whether `pat` matches `sv` (-> body or next).
+// The first four parameters are the backend's context (module, builder,
+// locals, env) threaded through every lowering function; the rest are this
+// one's real inputs. Bundling the context into a struct is the right fix
+// and a backend-wide refactor, not a lint edit.
+#[allow(clippy::too_many_arguments)]
 fn pattern_test(
     m: &mut dyn Module,
     b: &mut FunctionBuilder,
@@ -2871,6 +2880,11 @@ fn pattern_names(pat: &Pat) -> Vec<Option<String>> {
 }
 
 /// Counting loop with an incrementing `var` while `cmp(var, end())` holds.
+// The first four parameters are the backend's context (module, builder,
+// locals, env) threaded through every lowering function; the rest are this
+// one's real inputs. Bundling the context into a struct is the right fix
+// and a backend-wide refactor, not a lint edit.
+#[allow(clippy::too_many_arguments)]
 fn loop_count(
     m: &mut dyn Module,
     b: &mut FunctionBuilder,
@@ -2936,6 +2950,11 @@ fn coerce_to_dyn(b: &mut FunctionBuilder, env: &Env, val: Value, type_name: &str
 
 /// Dynamic method dispatch on a `dyn Trait` value: switch on the runtime type id
 /// and call the matching concrete `Type#method`. Args/return are scalar i64.
+// The first four parameters are the backend's context (module, builder,
+// locals, env) threaded through every lowering function; the rest are this
+// one's real inputs. Bundling the context into a struct is the right fix
+// and a backend-wide refactor, not a lint edit.
+#[allow(clippy::too_many_arguments)]
 fn tr_dyn_call(
     m: &mut dyn Module,
     b: &mut FunctionBuilder,
@@ -3860,6 +3879,11 @@ fn tr_call(
 }
 
 /// `lhs op= rhs` / `lhs = rhs`, where lhs is a variable, field, or index.
+// The first four parameters are the backend's context (module, builder,
+// locals, env) threaded through every lowering function; the rest are this
+// one's real inputs. Bundling the context into a struct is the right fix
+// and a backend-wide refactor, not a lint edit.
+#[allow(clippy::too_many_arguments)]
 fn assign(
     m: &mut dyn Module,
     b: &mut FunctionBuilder,
@@ -4486,7 +4510,7 @@ fn ffi_needs_marshal(c: &Cty, structs: &HashMap<String, Vec<(String, Cty)>>) -> 
 }
 
 fn align_up(x: u32, a: u32) -> u32 {
-    (x + a - 1) / a * a
+    x.div_ceil(a) * a
 }
 
 /// Flatten an aggregate's scalar leaves with their Aurora byte offset (each leaf

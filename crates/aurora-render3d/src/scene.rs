@@ -435,6 +435,10 @@ impl Scene {
     /// Drive the upper-body overlay as a weighted BLEND of two clips (`clip_a` at weight 0, `clip_b`
     /// at weight 1), masked to `mask_root`. Call every frame to track a continuous value such as aim
     /// pitch (look down -> up); only the first call fades in, so per-frame weight updates stay smooth.
+    // The parameter list mirrors this builtin's row in `aurora-abi`, which is
+    // the single source of truth for its signature; grouping the arguments
+    // would break the 1:1 correspondence the table is built on.
+    #[allow(clippy::too_many_arguments)]
     pub fn anim_aim_upper(
         &mut self,
         handle: i64,
@@ -497,7 +501,7 @@ impl Scene {
     /// arms to drop the torso/head/legs so only the arms render.
     pub fn hide_joint(&mut self, handle: i64, joint: i64) {
         if let Some(idx) = self.resolve(handle) {
-            if joint >= 0 && joint < 64 {
+            if (0..64).contains(&joint) {
                 self.items[idx].hidden_joints |= 1u64 << joint;
             }
         }

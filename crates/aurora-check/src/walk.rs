@@ -3,7 +3,7 @@
 use aurora_ast::{Block, Expr, ExprKind, QueryExpr, Stmt};
 
 /// Collect references to every `query<...>` expression reachable from `block`.
-pub(crate) fn queries_in_block<'a>(block: &'a Block) -> Vec<&'a QueryExpr> {
+pub(crate) fn queries_in_block(block: &Block) -> Vec<&QueryExpr> {
     let mut out = Vec::new();
     walk_block(block, &mut out);
     out

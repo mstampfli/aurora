@@ -9,7 +9,7 @@
 //! and `check` never resolved callees at all, so a call to a function that does
 //! not exist passed with a green light.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 /// Write a throwaway multi-file program to its own temp directory and return the
@@ -26,7 +26,7 @@ fn program(tag: &str, files: &[(&str, &str)]) -> PathBuf {
 }
 
 /// Run `aurorac <cmd> <entry>`. Headless, so nothing can try to open a window.
-fn aurorac(cmd: &str, entry: &PathBuf) -> Output {
+fn aurorac(cmd: &str, entry: &Path) -> Output {
     Command::new(env!("CARGO_BIN_EXE_aurorac"))
         .args([cmd, entry.to_str().unwrap()])
         .env("AURORA_HEADLESS", "1")

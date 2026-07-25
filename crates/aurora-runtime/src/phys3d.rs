@@ -43,11 +43,13 @@ thread_local! {
 /// Create (or reset) the 3D physics world with gravity `(gx, gy, gz)`.
 #[no_mangle]
 pub extern "C" fn aurora_phys3d_init(gx: f64, gy: f64, gz: f64) {
-    let mut controller = KinematicCharacterController::default();
-    controller.up = Vector::y_axis();
-    controller.offset = CharacterLength::Absolute(0.02);
-    controller.slide = true;
-    controller.snap_to_ground = Some(CharacterLength::Absolute(0.3));
+    let controller = KinematicCharacterController {
+        up: Vector::y_axis(),
+        offset: CharacterLength::Absolute(0.02),
+        slide: true,
+        snap_to_ground: Some(CharacterLength::Absolute(0.3)),
+        ..Default::default()
+    };
     let p = Phys3 {
         gravity: vector![gx as Real, gy as Real, gz as Real],
         params: IntegrationParameters::default(),
@@ -109,17 +111,13 @@ pub extern "C" fn aurora_phys3d_debug_draw(r: f64, g: f64, b: f64) {
             let rot = iso.rotation;
             // Transform a shape-local point to world.
             let w = |lx: f32, ly: f32, lz: f32| -> [f32; 3] {
-                let pt = rot * point![lx as Real, ly as Real, lz as Real];
-                [
-                    (pt.x + t.x) as f32,
-                    (pt.y + t.y) as f32,
-                    (pt.z + t.z) as f32,
-                ]
+                let pt = rot * point![lx, ly, lz];
+                [(pt.x + t.x), (pt.y + t.y), (pt.z + t.z)]
             };
             let shape = col.shape();
             if let Some(cb) = shape.as_cuboid() {
                 let e = cb.half_extents;
-                let (hx, hy, hz) = (e.x as f32, e.y as f32, e.z as f32);
+                let (hx, hy, hz) = (e.x, e.y, e.z);
                 // 8 corners, 12 edges.
                 let c = [
                     w(-hx, -hy, -hz),
@@ -149,10 +147,10 @@ pub extern "C" fn aurora_phys3d_debug_draw(r: f64, g: f64, b: f64) {
                     line(c[i], c[j]);
                 }
             } else if let Some(ball) = shape.as_ball() {
-                debug_rings(&w, ball.radius as f32, 0.0, &line);
+                debug_rings(&w, ball.radius, 0.0, &line);
             } else if let Some(cap) = shape.as_capsule() {
-                let rad = cap.radius as f32;
-                let half = ((cap.segment.b - cap.segment.a).norm() as f32) * 0.5;
+                let rad = cap.radius;
+                let half = (cap.segment.b - cap.segment.a).norm() * 0.5;
                 // Rings at both cap centers + connecting verticals.
                 debug_rings(&w, rad, half, &line);
                 debug_rings(&w, rad, -half, &line);
@@ -451,7 +449,7 @@ pub extern "C" fn aurora_phys3d_set_pos(h: i64, x: f64, y: f64, z: f64) {
         {
             let t = vector![x as Real, y as Real, z as Real];
             if b.is_kinematic() {
-                b.set_next_kinematic_translation(t.into());
+                b.set_next_kinematic_translation(t);
                 b.set_translation(t, true);
             } else {
                 b.set_translation(t, true);
@@ -546,9 +544,9 @@ pub extern "C" fn aurora_phys3d_move_character(h: i64, dx: f64, dy: f64, dz: f64
         }
         // BOX -> CHARACTER: a fast crate carries the character a fraction of its horizontal speed
         // (capped, soft) rather than being a perfect wall.
-        let mut carry = vector![0.0 as Real, 0.0, 0.0];
+        let mut carry = vector![0.0_f32, 0.0, 0.0];
         for (_, v) in &dyn_hits {
-            let vh = vector![v.x, 0.0 as Real, v.z];
+            let vh = vector![v.x, 0.0_f32, v.z];
             let vl = vh.norm();
             if vl > 2.0 {
                 let s = vl.min(8.0); // cap how hard a flung box can shove you
@@ -569,7 +567,7 @@ pub extern "C" fn aurora_phys3d_move_character(h: i64, dx: f64, dy: f64, dz: f64
         let hdir = vector![dx as Real, 0.0, dz as Real];
         let hl = hdir.norm();
         if hl > 0.001 {
-            let imp = hdir / hl * 0.5 as Real;
+            let imp = hdir / hl * 0.5_f32;
             for (bh, _) in dyn_hits {
                 if let Some(b) = p.bodies.get_mut(bh) {
                     b.apply_impulse(imp, true);

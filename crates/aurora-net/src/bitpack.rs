@@ -107,9 +107,9 @@ pub fn write_quat(w: &mut BitWriter, q: [f32; 4], bits: u32) {
     let sign = if q[largest] < 0.0 { -1.0 } else { 1.0 };
 
     w.write_bits(largest as u64, 2);
-    for i in 0..4 {
+    for (i, c) in q.iter().enumerate() {
         if i != largest {
-            w.write_bits(quantize(q[i] * sign, INV_SQRT2, bits), bits);
+            w.write_bits(quantize(c * sign, INV_SQRT2, bits), bits);
         }
     }
 }
@@ -119,10 +119,10 @@ pub fn read_quat(r: &mut BitReader, bits: u32) -> [f32; 4] {
     let largest = r.read_bits(2) as usize;
     let mut q = [0.0f32; 4];
     let mut sum_sq = 0.0;
-    for i in 0..4 {
+    for (i, c) in q.iter_mut().enumerate() {
         if i != largest {
             let v = dequantize(r.read_bits(bits), INV_SQRT2, bits);
-            q[i] = v;
+            *c = v;
             sum_sq += v * v;
         }
     }
