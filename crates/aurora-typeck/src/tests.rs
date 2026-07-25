@@ -1,5 +1,11 @@
 //! Type-checker tests: catch real mismatches between known types, while staying
-//! silent on unresolved external names (the leniency contract).
+//! silent on unresolved external *types* (the leniency contract).
+//!
+//! Leniency about a type is not leniency about a name: a direct call to a name
+//! that is declared nowhere is an error (`E0313`). The tests at the bottom pin
+//! both sides of that line, because getting it wrong in either direction is bad
+//! a false green hides a whole broken function, and a false error would fire
+//! on every one of the several hundred runtime builtins.
 
 use crate::check_types;
 use aurora_parser::parse_str;
@@ -52,15 +58,18 @@ fn mixed_scalar_arithmetic_is_caught() {
 #[test]
 fn vector_scalar_arithmetic_is_allowed() {
     // Vec3 * f32 is overloaded algebra, not an error.
-    let errs = errors("fn f() { let v: Vec3 = make()\n let s: f32 = 2.0\n let r = v * s }");
+    let errs = errors("fn f(v: Vec3) { let s: f32 = 2.0\n let r = v * s }");
     assert!(errs.is_empty(), "vector*scalar should be allowed, got {errs:?}");
 }
 
 #[test]
 fn unknown_names_do_not_false_positive() {
-    // App.new / load / texture are all unresolved externs; no errors expected.
+    // Unresolved method/field accesses (`App.new`, `app.run()`) stay lenient,
+    // and a DECLARED `@extern` import is a real name. Neither may error. A call
+    // to a name declared nowhere is a different case, covered below.
     let errs = errors(
-        "fn main() {
+        "@extern fn load(path: str) -> Handle
+         fn main() {
             let app = App.new(\"x\", 1, 2)
             let cube: Handle = load(\"c.glb\")
             app.run()
@@ -195,4 +204,88 @@ fn unsatisfied_trait_bound_is_caught() {
 fn condition_must_be_bool_when_known() {
     let errs = errors("fn f() { if 1 { } }");
     assert!(errs.iter().any(|e| e.contains("condition")), "got {errs:?}");
+}
+
+// --- callee resolution (E0313) ----------------------------------------------
+
+/// The defect this guards: a call to a function that does not exist used to type
+/// check clean, and the backend then replaced the whole enclosing function with
+/// a stub returning 0. It has to be an error, wherever it appears.
+#[test]
+fn unknown_function_is_caught() {
+    for src in [
+        "fn main() { println(no_such_function_anywhere(1)) }",
+        "fn helper() -> i64 { no_such_fn(1) }\nfn main() { println(str(helper())) }",
+    ] {
+        let errs = errors(src);
+        assert!(
+            errs.iter().any(|e| e.contains("unknown function")),
+            "an undefined callee was accepted in {src:?}, got {errs:?}"
+        );
+    }
+}
+
+/// A near-miss on a real name is the realistic version of the bug: it must not
+/// be waved through just because a similarly named function exists.
+#[test]
+fn a_typo_of_a_real_function_is_caught() {
+    let errs = errors("fn tick(dt: f64) -> f64 { dt }\nfn main() { println(str(tikc(1.0))) }");
+    assert!(errs.iter().any(|e| e.contains("`tikc`")), "got {errs:?}");
+}
+
+/// The leniency that MUST survive: runtime builtins are not `fn` items, and
+/// there are several hundred of them. Reporting these would make the compiler
+/// unusable, so a sample across the builtin families must stay silent.
+#[test]
+fn runtime_builtins_are_not_unknown_functions() {
+    let errs = errors(
+        "fn main() {
+            println(str(abs(0 - 3)))
+            srand(1)
+            let r = rand_int(0, 2)
+            r3d_camera(0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 60.0)
+            phys3d_init(0.0, 0.0 - 9.8, 0.0)
+            net_host(45123)
+            nav_init(8, 8)
+            par_for(r, |i| i)
+         }",
+    );
+    assert!(errs.is_empty(), "a builtin was reported as unknown, got {errs:?}");
+}
+
+/// A bodiless `@extern` import is a declaration, not a definition: it still
+/// resolves.
+#[test]
+fn an_extern_import_resolves() {
+    let errs = errors("@extern fn hypot(x: f64, y: f64) -> f64\nfn f() -> f64 { hypot(3.0, 4.0) }");
+    assert!(errs.is_empty(), "an `@extern` import was reported as unknown, got {errs:?}");
+}
+
+/// A local holding a closure is a legitimate callee that is not a `fn` item.
+#[test]
+fn a_local_closure_is_a_legitimate_callee() {
+    let errs = errors("fn main() { let f = |x: i64| x + 1\n println(str(f(2))) }");
+    assert!(errs.is_empty(), "calling a local closure was reported, got {errs:?}");
+}
+
+/// A shader stage is GPU code: its intrinsics and bound globals have no CPU
+/// declaration and must not be resolved against one.
+#[test]
+fn shader_stage_intrinsics_are_not_unknown_functions() {
+    let errs = errors("@fragment fn shade() -> Color { vec4(0.9, 0.2, 0.5, 1.0) }");
+    assert!(errs.is_empty(), "a shader intrinsic was reported as unknown, got {errs:?}");
+    // ...and leaving the stage re-arms the check.
+    let errs = errors("@fragment fn shade() -> Color { vec4(1.0, 1.0, 1.0, 1.0) }\n\
+                       fn main() { println(str(nope(1))) }");
+    assert!(
+        errs.iter().any(|e| e.contains("`nope`")),
+        "the check must resume after a shader stage, got {errs:?}"
+    );
+}
+
+/// A name brought in by `use` comes from a module we cannot see.
+#[test]
+fn a_used_import_is_not_an_unknown_function() {
+    let errs = errors("use engine::spawn_actor\nfn main() { spawn_actor(1) }");
+    assert!(errs.is_empty(), "a `use`d name was reported as unknown, got {errs:?}");
 }

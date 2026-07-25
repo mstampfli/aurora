@@ -961,7 +961,13 @@ fn cmd_run(path: &str) -> ExitCode {
 
 fn cmd_check(path: &str) -> ExitCode {
     let Some(src) = read_program(path) else { return ExitCode::FAILURE };
-    let file = SourceFile::new(path, src);
+    // Check exactly the program `run` and `build` compile: the user's source,
+    // its dependencies, and the standard prelude. Checking a different program
+    // than the one that runs is how `check` could pass a call to `lerp` in one
+    // command and reject it in another.
+    let user_src = format!("{src}{}", collect_dep_sources());
+    let boundary = user_src.len() as u32;
+    let file = SourceFile::new(path, aurora_std::with_std(&user_src));
     let (module, mut diags) = aurora_parser::parse_str(&file.src);
     diags.extend(aurora_check::check(&module));
     diags.extend(aurora_typeck::check_types(&module));
@@ -971,7 +977,11 @@ fn cmd_check(path: &str) -> ExitCode {
         eprintln!("{}", d.render(&file));
     }
     if errors == 0 {
-        println!("ok: checked {} item(s), no errors", module.items.len());
+        // The prelude is appended after the user's source, so an item that
+        // starts beyond the boundary belongs to the standard library. Report the
+        // user's item count: that number is about their program.
+        let items = module.items.iter().filter(|it| it.span.lo < boundary).count();
+        println!("ok: checked {items} item(s), no errors");
         ExitCode::SUCCESS
     } else {
         eprintln!("{errors} error(s)");

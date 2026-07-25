@@ -22,7 +22,12 @@ file is passed to `aurorac`; see
 
 ### Compilation failures are never silent
 
-If a function fails to lower to native code, `run` and `build` both refuse
+A call to a name that is not a function, a builtin, an `@extern` import, a local
+holding a closure, or a `use`d name is a hard error (`E0313`) - a typo in a call
+does not compile. `check`, `run`, and `build` all check the same program (your
+source, its dependencies, and the prelude), so they agree.
+
+If a function still fails to lower to native code, `run` and `build` both refuse
 and name every failing function and the reason. Neither falls back to running it:
 a function that failed to compile is otherwise replaced with a stub returning 0,
 and the program runs with that behaviour silently missing.

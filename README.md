@@ -157,7 +157,7 @@ The pipeline is `lex -> parse -> resolve -> typecheck -> ECS-safety -> move-chec
 
 ```sh
 cargo build --workspace      # builds the toolchain (Cranelift takes a moment first time)
-cargo test  --workspace      # 343 tests
+cargo test  --workspace      # 416 tests
 ```
 
 ## CLI

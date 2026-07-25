@@ -4,9 +4,10 @@
 //! not. File-based modules (`mod NAME;`): the loader is wired into every
 //! subcommand through `read_program`, so an unresolvable module has to fail the
 //! command, the item count has to include what the modules brought in, and `run`
-//! has to execute across files. And stubbed functions: a function that fails to
-//! compile is replaced with a stub returning 0, and that was reported for `main`
-//! only, so a broken helper ran as a silent no-op.
+//! has to execute across files. And unresolved names: a function that fails to
+//! compile used to be replaced with a stub returning 0 everywhere except `main`,
+//! and `check` never resolved callees at all, so a call to a function that does
+//! not exist passed with a green light.
 
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -116,6 +117,11 @@ fn run_fails_on_an_unresolvable_module() {
 
 // --- silent compilation failures -------------------------------------------
 
+/// A program calling a function that does not exist, from a helper rather than
+/// from `main`. The helper's body cannot compile.
+const UNKNOWN_CALLEE_IN_HELPER: &str =
+    "fn helper() -> i64 { no_such_fn(1) }\nfn main() { println(str(helper())) }";
+
 /// A program that passes every static check but that the BACKEND cannot lower:
 /// `C::make` is an associated function, which the native backend does not
 /// compile, and a multi-segment callee is not resolved by the type checker. So
@@ -158,4 +164,153 @@ fn build_refuses_a_program_whose_helper_failed_to_compile() {
     assert!(!out.status.success(), "build emitted a binary with a stubbed function");
     assert!(stderr.contains("helper"), "the error must name the function: {stderr}");
     assert!(stderr.contains("C::make"), "the error must say why: {stderr}");
+}
+
+/// The unresolved-name form of the same bug reaches the type checker first, so
+/// it is rejected before codegen, by both the JIT and the AOT driver.
+#[test]
+fn run_and_build_reject_an_unknown_callee_in_a_helper() {
+    for cmd in ["run", "build"] {
+        let entry = program(&format!("unknown_{cmd}"), &[("main.aur", UNKNOWN_CALLEE_IN_HELPER)]);
+        let out = aurorac(cmd, &entry);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "`{cmd}` accepted a call to a function that does not exist");
+        assert!(stderr.contains("E0313"), "`{cmd}`: expected E0313, got: {stderr}");
+        assert!(stderr.contains("no_such_fn"), "`{cmd}`: must name the callee: {stderr}");
+    }
+}
+
+/// `check` used to answer `ok: checked 2 item(s), no errors` for this program:
+/// the type checker never resolved callees at all.
+#[test]
+fn check_rejects_an_unknown_function_called_from_a_helper() {
+    let entry = program("checkhelper", &[("main.aur", UNKNOWN_CALLEE_IN_HELPER)]);
+    let out = aurorac("check", &entry);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "check passed an unknown function: {stdout}");
+    assert!(!stdout.contains("no errors"), "check reported a false green: {stdout}");
+    assert!(stderr.contains("E0313"), "expected an E0313 error, got: {stderr}");
+    assert!(stderr.contains("no_such_fn"), "the error must name the callee: {stderr}");
+}
+
+/// The same unknown call directly in `main`.
+#[test]
+fn check_rejects_an_unknown_function_called_from_main() {
+    let entry =
+        program("checkmain", &[("main.aur", "fn main() { println(no_such_function_anywhere(1)) }")]);
+    let out = aurorac("check", &entry);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "check passed an unknown function in main: {stdout}");
+    assert!(!stdout.contains("no errors"), "check reported a false green: {stdout}");
+    assert!(
+        stderr.contains("no_such_function_anywhere"),
+        "the error must name the callee: {stderr}"
+    );
+}
+
+/// `run` must reject it too, and agree with `check`: one program, one meaning.
+#[test]
+fn run_rejects_an_unknown_function_called_from_main() {
+    let entry =
+        program("runmain", &[("main.aur", "fn main() { println(no_such_function_anywhere(1)) }")]);
+    let out = aurorac("run", &entry);
+    assert!(!out.status.success(), "run executed a call to a function that does not exist");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("no_such_function_anywhere"),
+        "the error must name the callee: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// The leniency that must survive: the several hundred runtime builtins are not
+/// user-defined functions, and `check`/`run` must not report them as unknown.
+#[test]
+fn builtins_and_prelude_functions_still_compile_and_run() {
+    // Exercises a builtin family each (RNG, bitwise) plus a prelude function.
+    // The RNG value itself is clamped away so the expected output is exact.
+    let src = "fn main() {\n\
+        \x20   srand(7)\n\
+        \x20   let r = rand_int(0, 3)\n\
+        \x20   println(str(clampi(r, 5, 5)))\n\
+        \x20   println(str(lerp(0.0, 10.0, 0.5)))\n\
+        \x20   println(str(band(6, 3)))\n\
+        }";
+    let entry = program("builtins", &[("main.aur", src)]);
+    let check = aurorac("check", &entry);
+    assert!(
+        check.status.success(),
+        "check rejected builtins/prelude calls: {}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+    let run = aurorac("run", &entry);
+    assert!(
+        run.status.success(),
+        "run rejected builtins/prelude calls: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["5", "5.0", "2"], "unexpected output: {stdout}");
+}
+
+/// An `@extern` import has no body and resolves at link/registration time, so it
+/// must stay accepted by the name resolver.
+#[test]
+fn an_extern_declaration_still_checks_and_runs() {
+    let src = "@extern fn hypot(x: f64, y: f64) -> f64\n\
+               fn main() { println(str(hypot(3.0, 4.0))) }";
+    let entry = program("externfn", &[("main.aur", src)]);
+    let check = aurorac("check", &entry);
+    assert!(
+        check.status.success(),
+        "check rejected an `@extern` import: {}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+    let run = aurorac("run", &entry);
+    assert!(
+        run.status.success(),
+        "run rejected an `@extern` import: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "5.0");
+}
+
+/// `check` used to type-check a DIFFERENT program from the one `run` compiles:
+/// it left out the standard prelude. A program calling a prelude function had to
+/// be accepted by both, and a program calling nothing real rejected by both.
+#[test]
+fn check_and_run_agree_on_the_same_program() {
+    let good = program("parity_ok", &[("main.aur", "fn main() { println(str(clamp01(2.0))) }")]);
+    let bad = program("parity_bad", &[("main.aur", "fn main() { println(str(clamp01x(2.0))) }")]);
+    for (entry, want_ok, label) in [(&good, true, "prelude call"), (&bad, false, "typo'd call")] {
+        let check = aurorac("check", entry);
+        let run = aurorac("run", entry);
+        assert_eq!(
+            check.status.success(),
+            want_ok,
+            "check disagreed on the {label}: {}{}",
+            String::from_utf8_lossy(&check.stdout),
+            String::from_utf8_lossy(&check.stderr)
+        );
+        assert_eq!(
+            run.status.success(),
+            want_ok,
+            "run disagreed on the {label}: {}{}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}
+
+/// Adding the prelude to `check` must not change the item count it reports: that
+/// number is about the user's program, not the standard library.
+#[test]
+fn check_counts_only_the_users_items_not_the_prelude() {
+    let entry = program("countuser", &[("main.aur", "fn helper() -> i64 { 1 }\nfn main() { println(helper()) }")]);
+    let out = aurorac("check", &entry);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "check failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(stdout.contains("checked 2 item(s)"), "expected 2 checked items, got: {stdout}");
 }
