@@ -165,6 +165,15 @@ tables:
 | `json_to_str(h) -> str`, `json_write(h, path) -> 1|0` | pretty serialization |
 | `json_free(h)` | release a handle (sub-handles keep the document alive) |
 
+**Handle lifetime.** `json_free` returns the handle's slot for reuse, so
+parse-and-free in a loop - a server handling one document per request - stays
+bounded. A freed handle is invalidated rather than recycled: the next
+`json_parse` may land in the same slot, but the old handle keeps reading as kind
+`-1` instead of quietly answering with the new document. Every handle you are
+given is yours to free, including the child handles from `json_get`/`json_at`;
+holding them all while walking a large array keeps that many nodes (and the
+document behind them) alive, exactly as it would in C.
+
 ## Headless harness (capture, scripted input, tapes)
 
 `AURORA_HEADLESS=1` runs any windowed game with NO window/event loop: presents

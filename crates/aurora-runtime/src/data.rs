@@ -241,16 +241,26 @@ enum JNode {
     Owned(Value),
 }
 
+/// The `i64` an Aurora program holds for a JSON node.
+type NodeId = aurora_slot::Key<JNode>;
+
 thread_local! {
-    static JSON: RefCell<Vec<Option<JNode>>> = const { RefCell::new(Vec::new()) };
+    /// Live JSON handles.
+    ///
+    /// This used to be a `Vec<Option<JNode>>` that only ever grew: `json_free`
+    /// set a slot to `None` and nothing ever reused it, so a server parsing one
+    /// document per request grew the index vector without bound even though it
+    /// freed every handle it took. The slot store reuses a freed slot AND bumps
+    /// its generation, so the spine plateaus and the freed handle still reads
+    /// as invalid rather than as whatever document landed there next.
+    static JSON: RefCell<aurora_slot::SlotMap<JNode>> =
+        const { RefCell::new(aurora_slot::SlotMap::new()) };
 }
 
 fn push_node(n: JNode) -> i64 {
-    JSON.with(|j| {
-        let mut j = j.borrow_mut();
-        j.push(Some(n));
-        j.len() as i64 // handle = index + 1; 0 stays "invalid"
-    })
+    // A key is never 0 (generation 0 is never issued), so 0 stays the
+    // "invalid/absent" answer it has always been.
+    JSON.with(|j| j.borrow_mut().insert(n).to_i64())
 }
 
 /// Run `f` on the value behind `h` (parsed nodes and owned values look the
@@ -258,10 +268,9 @@ fn push_node(n: JNode) -> i64 {
 fn with_value<R>(h: i64, f: impl FnOnce(&Value) -> R) -> Option<R> {
     JSON.with(|j| {
         let j = j.borrow();
-        match j.get((h - 1).max(0) as usize)? {
-            Some(JNode::Parsed { node, .. }) if h > 0 => Some(f(unsafe { &**node })),
-            Some(JNode::Owned(v)) if h > 0 => Some(f(v)),
-            _ => None,
+        match j.get(NodeId::from_i64(h)?)? {
+            JNode::Parsed { node, .. } => Some(f(unsafe { &**node })),
+            JNode::Owned(v) => Some(f(v)),
         }
     })
 }
@@ -269,8 +278,8 @@ fn with_value<R>(h: i64, f: impl FnOnce(&Value) -> R) -> Option<R> {
 fn with_owned<R>(h: i64, f: impl FnOnce(&mut Value) -> R) -> Option<R> {
     JSON.with(|j| {
         let mut j = j.borrow_mut();
-        match j.get_mut((h - 1).max(0) as usize)? {
-            Some(JNode::Owned(v)) if h > 0 => Some(f(v)),
+        match j.get_mut(NodeId::from_i64(h)?)? {
+            JNode::Owned(v) => Some(f(v)),
             _ => None,
         }
     })
@@ -282,23 +291,19 @@ fn child_handle(h: i64, pick: impl Fn(&Value) -> Option<&Value>) -> i64 {
     JSON.with(|j| {
         let node = {
             let j = j.borrow();
-            match j.get((h - 1).max(0) as usize) {
-                Some(Some(JNode::Parsed { root, node })) if h > 0 => {
+            match NodeId::from_i64(h).and_then(|k| j.get(k)) {
+                Some(JNode::Parsed { root, node }) => {
                     pick(unsafe { &**node }).map(|c| JNode::Parsed {
                         root: root.clone(),
                         node: c,
                     })
                 }
-                Some(Some(JNode::Owned(v))) if h > 0 => pick(v).map(|c| JNode::Owned(c.clone())),
-                _ => None,
+                Some(JNode::Owned(v)) => pick(v).map(|c| JNode::Owned(c.clone())),
+                None => None,
             }
         };
         match node {
-            Some(n) => {
-                let mut j = j.borrow_mut();
-                j.push(Some(n));
-                j.len() as i64
-            }
+            Some(n) => j.borrow_mut().insert(n).to_i64(),
             None => 0,
         }
     })
@@ -454,14 +459,15 @@ pub unsafe extern "C" fn aurora_json_key(out: *mut i64, h: i64, i: i64) {
 
 /// `json_free(h)`: release a handle (and, for parsed roots, its share of the
 /// document). Reading a freed handle yields kind -1, never a crash.
+///
+/// The slot is reused by the next handle, so parse-and-free in a loop occupies
+/// bounded memory, and its generation is bumped, so `h` keeps reading as
+/// invalid rather than as the next document that lands there.
 #[no_mangle]
 pub extern "C" fn aurora_json_free(h: i64) {
     JSON.with(|j| {
-        let mut j = j.borrow_mut();
-        if h > 0 {
-            if let Some(slot) = j.get_mut((h - 1) as usize) {
-                *slot = None;
-            }
+        if let Some(k) = NodeId::from_i64(h) {
+            j.borrow_mut().remove(k);
         }
     });
 }
@@ -702,6 +708,98 @@ mod tests {
             assert_eq!(aurora_json_kind(h), -1);
             // Sub-handles survive freeing the root handle (Rc keeps the tree).
             assert_eq!(aurora_json_int(hp), 40);
+        }
+    }
+
+    /// Handle slots ever allocated by the JSON store. The leak is stated in
+    /// these units because the payload was already freed correctly: it was the
+    /// index vector holding it that grew forever.
+    fn spine_slots() -> usize {
+        JSON.with(|j| j.borrow().slot_count())
+    }
+
+    /// Parse-and-free in a loop - a server handling one JSON request per
+    /// connection - must occupy bounded memory.
+    ///
+    /// It did not: `push_node` only ever appended, and `json_free` wrote `None`
+    /// into a slot that nothing reused, so the spine grew by one entry per
+    /// parse (plus one per child handle) for the life of the process even
+    /// though the program freed every handle it was given.
+    #[test]
+    fn parse_and_free_in_a_loop_leaves_the_handle_spine_bounded() {
+        // SAFETY: `doc` is a live local byte string and the length passed is
+        // its own; the key pointers are literals with their own lengths.
+        unsafe {
+            let doc = br#"{"hp":40,"tags":["melee","dumb"],"pos":{"x":1.5}}"#;
+            let cycle = || {
+                let h = aurora_json_parse(doc.as_ptr(), doc.len() as i64);
+                assert!(h > 0);
+                let tags = aurora_json_get(h, b"tags".as_ptr(), 4);
+                let first = aurora_json_at(tags, 0);
+                let pos = aurora_json_get(h, b"pos".as_ptr(), 3);
+                assert_eq!(aurora_json_len(tags), 2);
+                for handle in [first, tags, pos, h] {
+                    aurora_json_free(handle);
+                }
+            };
+            // One cycle first, so the slots it needs are already allocated and
+            // the measurement below is about REUSE rather than about warm-up.
+            cycle();
+            let after_one = spine_slots();
+            for _ in 0..500 {
+                cycle();
+            }
+            assert_eq!(
+                spine_slots(),
+                after_one,
+                "the handle spine grew across 500 parse/free cycles"
+            );
+            assert_eq!(JSON.with(|j| j.borrow().len()), 0, "handles leaked");
+        }
+    }
+
+    /// A freed handle must keep reading as invalid even once its slot has been
+    /// handed to a different document. With a plain index it would read the new
+    /// one - a save file answering with another save file's fields.
+    #[test]
+    fn a_freed_json_handle_never_aliases_the_document_that_reuses_its_slot() {
+        // SAFETY: both pointers are `as_ptr()` of live local byte strings and
+        // the lengths passed are their own.
+        unsafe {
+            let a = br#"{"hp":40}"#;
+            let b = br#"{"hp":99}"#;
+            let first = aurora_json_parse(a.as_ptr(), a.len() as i64);
+            assert_eq!(
+                aurora_json_int(aurora_json_get(first, b"hp".as_ptr(), 2)),
+                40
+            );
+            aurora_json_free(first);
+            let second = aurora_json_parse(b.as_ptr(), b.len() as i64);
+            assert_ne!(first, second, "the reused slot must change the handle");
+            assert_eq!(
+                aurora_json_kind(first),
+                -1,
+                "a freed handle read a live doc"
+            );
+            assert_eq!(aurora_json_get(first, b"hp".as_ptr(), 2), 0);
+            assert_eq!(aurora_json_len(first), 0);
+            assert_eq!(
+                aurora_json_int(aurora_json_get(second, b"hp".as_ptr(), 2)),
+                99
+            );
+            // Freeing twice must not take the document that took the slot.
+            aurora_json_free(first);
+            assert_eq!(
+                aurora_json_kind(second),
+                5,
+                "a double free hit the wrong doc"
+            );
+            // 0 has always meant "invalid/absent" and must still not resolve.
+            assert_eq!(aurora_json_kind(0), -1);
+            assert_eq!(aurora_json_kind(-1), -1);
+            aurora_json_free(0);
+            aurora_json_free(-1);
+            assert_eq!(aurora_json_kind(second), 5);
         }
     }
 
