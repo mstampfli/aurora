@@ -38,6 +38,10 @@ thread_local! {
     static TERRAIN: RefCell<Option<Arc<Heightfield>>> = const { RefCell::new(None) };
     /// Terrain albedo, handed to the renderer with the heightfield on each draw.
     static COLOR: Cell<[f32; 3]> = const { Cell::new([0.32, 0.40, 0.24]) };
+    /// The body handle [`aurora_terrain_collider`] issued last, so the next
+    /// call can take the old collider down instead of stacking another
+    /// heightfield on top of it. `-1` means "none outstanding".
+    static COLLIDER: Cell<i64> = const { Cell::new(-1) };
 }
 
 /// Take a `str` argument's (pointer, length) pair as a path.
@@ -161,9 +165,30 @@ pub extern "C" fn aurora_terrain_height(x: f64, z: f64) -> f64 {
 
 /// Register the terrain with the 3D physics world (call after `phys3d_init`) and
 /// return its body handle, or -1 if there is no terrain or no physics world.
+///
+/// REPLACES the collider this function issued last, rather than adding another.
+/// There is only ever one loaded terrain, so a second live terrain collider is
+/// always a duplicate of the first: two heightfields in the same place, one of
+/// them stale after a reload, both answering raycasts and both costing
+/// broad-phase work. It used to be the program's job to call this exactly once
+/// per terrain; that is a contract a reload loop breaks quietly, and a stale
+/// heightfield is one of the largest colliders a world holds.
+///
+/// A handle from a world that has since been reset by `phys3d_init` is already
+/// invalid, so the removal below is a no-op in that case rather than a risk of
+/// taking down some unrelated body that inherited the slot.
 #[no_mangle]
 pub extern "C" fn aurora_terrain_collider() -> i64 {
-    with_field(-1, crate::phys3d::add_heightfield)
+    let previous = COLLIDER.with(|c| c.get());
+    let handle = with_field(-1, crate::phys3d::add_heightfield);
+    if handle >= 0 {
+        // Only drop the old one once the new one exists: if adding failed there
+        // is nothing to replace it with, and silently leaving the world without
+        // terrain collision would be worse than keeping the old surface.
+        crate::phys3d::aurora_phys3d_remove(previous);
+        COLLIDER.with(|c| c.set(handle));
+    }
+    handle
 }
 
 /// Samples along one side of the loaded terrain, or 0 if none is loaded.

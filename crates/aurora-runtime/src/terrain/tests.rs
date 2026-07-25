@@ -351,3 +351,83 @@ fn generate_rejects_a_dim_that_cannot_tile() {
     );
     assert_eq!(aurora_terrain_size(), 33);
 }
+
+/// Reloading terrain and re-registering its collider must not stack colliders.
+///
+/// `terrain_collider` used to add a Rapier body per call, and a heightfield
+/// collider is one of the largest a world holds: `dim*dim` samples plus its
+/// acceleration structure. The documented mitigation was "call it once per
+/// terrain", which a reload loop breaks silently - and the old collider still
+/// answered raycasts, so the world kept the previous surface underneath the new
+/// one. It now replaces the collider it issued last.
+#[test]
+fn re_registering_terrain_replaces_its_collider_instead_of_stacking_them() {
+    aurora_phys3d_init(0.0, -9.81, 0.0);
+    install_field(flat(33, 1.0, 2.0));
+    let first = aurora_terrain_collider();
+    assert!(first >= 0, "the first registration must succeed");
+    assert_eq!(
+        crate::phys3d::census(),
+        (1, 1, 1, 1),
+        "one terrain body, one collider"
+    );
+
+    // 200 reloads, each re-registering, exactly as a level-streaming loop does.
+    let mut handle = first;
+    for i in 0..200 {
+        install_field(flat(33, 1.0, 2.0 + i as f32 * 0.01));
+        let next = aurora_terrain_collider();
+        assert!(next >= 0, "reload {i} failed to register");
+        assert_eq!(
+            aurora_phys3d_alive(handle),
+            0,
+            "reload {i} left the previous collider alive"
+        );
+        handle = next;
+        let (bodies, colliders, live, slots) = crate::phys3d::census();
+        assert_eq!(
+            (bodies, colliders, live),
+            (1, 1, 1),
+            "reload {i} stacked a collider"
+        );
+        // TWO handle slots, not one: the new collider is built BEFORE the old
+        // one is dropped, so a failed registration leaves the world with the
+        // surface it had rather than with none. The two slots then alternate
+        // forever, which is the plateau this test is really about.
+        assert_eq!(slots, 2, "reload {i} grew the handle store to {slots}");
+    }
+
+    // The surviving collider is the CURRENT terrain, not the first one.
+    aurora_phys3d_step(0.016);
+    let (body, y) = raycast_surface(0.0, 0.0, 50.0).expect("terrain must be hit");
+    assert_eq!(body, handle, "the ray hit a stale terrain body");
+    let expected = 2.0 + 199.0 * 0.01;
+    assert!(
+        (y - expected).abs() < 1e-3,
+        "hit the old surface: got {y}, want {expected}"
+    );
+}
+
+/// A world reset between registrations must not make the stored handle remove
+/// some unrelated body that inherited its slot.
+#[test]
+fn re_registering_after_a_world_reset_removes_nothing_else() {
+    aurora_phys3d_init(0.0, -9.81, 0.0);
+    install_field(flat(33, 1.0, 1.0));
+    let stale = aurora_terrain_collider();
+    assert!(stale >= 0);
+
+    aurora_phys3d_init(0.0, -9.81, 0.0);
+    // This body takes the slot the old terrain collider had.
+    let bystander = aurora_phys3d_add_box(9.0, 9.0, 9.0, 1.0, 1.0, 1.0, 0);
+    let terrain = aurora_terrain_collider();
+    assert!(terrain >= 0);
+    assert_ne!(terrain, stale);
+    assert_eq!(
+        aurora_phys3d_alive(bystander),
+        1,
+        "the stale terrain handle removed an unrelated body"
+    );
+    assert_eq!(aurora_phys3d_x(bystander), 9.0);
+    assert_eq!(crate::phys3d::census(), (2, 2, 2, 2));
+}

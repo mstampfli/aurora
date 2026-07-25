@@ -469,7 +469,7 @@ returns are the same triangles. There is one terrain at a time.
 | `terrain_color(r,g,b)` | terrain albedo, 0..1 | applies from the next `terrain_draw` |
 | `terrain_draw()` | queue the terrain for this frame | between `r3d_begin` and `r3d_present`, like `r3d_draw`; picks per-tile detail from the current camera |
 | `terrain_height(x,z) -> f64` | surface height at a world position | interpolated across the collider's own triangles |
-| `terrain_collider() -> i64` | register the terrain with 3D physics | call after `phys3d_init`; returns a `phys3d_*` body handle, or -1 |
+| `terrain_collider() -> i64` | register the terrain with 3D physics | call after `phys3d_init`; returns a `phys3d_*` body handle, or -1; REPLACES the collider it issued last |
 | `terrain_size() -> i64` | samples per side (`dim`) | 0 if no terrain is loaded |
 | `terrain_spacing() -> f64` | world units between samples | |
 | `terrain_origin_x/z() -> f64` | world position of sample (0,0) | the terrain's -X / -Z border |
@@ -513,9 +513,13 @@ them all rather than rendering a hole.
 
 **Reloading.** `terrain_generate` / `terrain_load` REPLACE the terrain, and the
 outgoing one's tile meshes and material are released as the new one is
-installed, so reloading in a loop does not accumulate GPU memory. Note that
-`terrain_collider()` adds a physics body per call: call it once per terrain, not
-once per frame.
+installed, so reloading in a loop does not accumulate GPU memory.
+`terrain_collider()` likewise REPLACES the collider it issued last rather than
+stacking another heightfield on top of it, so a reload loop is bounded on the
+physics side too and a stale surface never answers raycasts underneath the new
+one. The handle it returned before is dead afterwards (`phys3d_alive` reports
+0); calling it once per terrain is still the tidy thing to do, but it is no
+longer load-bearing.
 
 ### The `.aterr` heightfield format
 
