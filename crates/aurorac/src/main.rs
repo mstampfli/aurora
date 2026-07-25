@@ -63,13 +63,19 @@ fn run_cli() -> ExitCode {
                 ExitCode::from(2)
             }
         },
-        Some("run") => match resolve_entry(args.get(1).map(String::as_str)) {
-            Ok(path) => cmd_run(&path),
-            Err(e) => {
-                eprintln!("{e}");
-                ExitCode::from(2)
+        Some("run") => {
+            // First positional arg may be the file, or omitted to use the
+            // manifest; everything after it belongs to the PROGRAM, not to us.
+            let explicit = args.get(1).filter(|a| !a.starts_with('-')).map(String::as_str);
+            let rest_start = if explicit.is_some() { 2 } else { 1 };
+            match resolve_entry(explicit) {
+                Ok(path) => cmd_run(&path, &args[rest_start..]),
+                Err(e) => {
+                    eprintln!("{e}");
+                    ExitCode::from(2)
+                }
             }
-        },
+        }
         Some("jit") => match args.get(1) {
             Some(path) => cmd_jit(path, &args[2..]),
             None => {
@@ -78,7 +84,7 @@ fn run_cli() -> ExitCode {
             }
         },
         Some("native") => match args.get(1) {
-            Some(path) => cmd_native(path),
+            Some(path) => cmd_native(path, &args[2..]),
             None => {
                 eprintln!("usage: aurorac native <file>");
                 ExitCode::from(2)
@@ -163,7 +169,8 @@ fn run_cli() -> ExitCode {
             println!("  aurorac lex <file>      tokenize a source file");
             println!("  aurorac parse <file>    parse a source file to an AST");
             println!("  aurorac check <file>    parse and run static checks");
-            println!("  aurorac run <file>      check, then compile `main` to native code & run");
+            println!("  aurorac run <file> [args...]  check, compile `main` to native code & run");
+            println!("                          (args after the file go to the PROGRAM: sys_arg)");
             println!("  aurorac native <file>   compile `main` to native code & run (no interpreter)");
             println!("  aurorac build <file> [-o <out>] compile to a standalone native executable");
             println!("  aurorac jit <file> <fn> [args]  compile a fn to native code & run");
@@ -182,6 +189,25 @@ fn run_cli() -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+/// Install the argument vector the RUNNING PROGRAM sees, so `sys_argc`/`sys_arg`
+/// report the same thing whichever way it was compiled: argv[0] is the program
+/// as invoked - the source file under `aurorac run`, the executable itself for
+/// `aurorac build` output - and argv[1..] are its own arguments. Without this
+/// the JIT-run program would read `aurorac`'s command line instead of its own.
+///
+/// A leading `--` is dropped, so `aurorac run game.aur -- --host 45123` and
+/// `aurorac run game.aur --host 45123` pass the same vector.
+fn set_program_args(path: &str, extra: &[String]) {
+    let extra = match extra.first() {
+        Some(first) if first == "--" => &extra[1..],
+        _ => extra,
+    };
+    let mut argv = Vec::with_capacity(1 + extra.len());
+    argv.push(path.to_string());
+    argv.extend(extra.iter().cloned());
+    aurora_runtime::set_program_args(argv);
 }
 
 /// Resolve which source file to compile: an explicit path if given, otherwise
@@ -566,7 +592,8 @@ fn cmd_render(out: &str) -> ExitCode {
     }
 }
 
-fn cmd_native(path: &str) -> ExitCode {
+fn cmd_native(path: &str, args: &[String]) -> ExitCode {
+    set_program_args(path, args);
     let Some(src) = read_program(path) else { return ExitCode::FAILURE };
     let file = SourceFile::new(path, aurora_std::with_std(&src));
     let (module, mut diags) = aurora_parser::parse_str(&file.src);
@@ -721,6 +748,8 @@ fn cmd_build(path: &str, rest: &[String]) -> ExitCode {
 /// locals at each breakpoint (or every statement when stepping). Without `-i`,
 /// breakpoints just print; with `-i` it drops into an interactive stdin REPL.
 fn cmd_debug(path: &str, rest: &[String]) -> ExitCode {
+    // `rest` is the debugger's own flags, so the program gets just its name.
+    set_program_args(path, &[]);
     let mut breakpoints: Vec<u32> = Vec::new();
     let mut step = false;
     let mut interactive = false;
@@ -797,6 +826,7 @@ fn cmd_debug(path: &str, rest: &[String]) -> ExitCode {
 /// Run a program under the native profiler and print a per-function report
 /// (call counts + wall-clock time), sorted by time.
 fn cmd_profile(path: &str) -> ExitCode {
+    set_program_args(path, &[]);
     let Some(src) = read_program(path) else { return ExitCode::FAILURE };
     let file = SourceFile::new(path, aurora_std::with_std(&src));
     let (module, mut diags) = aurora_parser::parse_str(&file.src);
@@ -863,6 +893,9 @@ fn cmd_watch(path: &str) -> ExitCode {
 }
 
 fn cmd_jit(path: &str, rest: &[String]) -> ExitCode {
+    // `rest` names the function to call and its integer arguments, not the
+    // program's, so the program sees only its own name.
+    set_program_args(path, &[]);
     let Some(func) = rest.first() else {
         eprintln!("usage: aurorac jit <file> <function> [int args...]");
         return ExitCode::from(2);
@@ -905,7 +938,8 @@ fn cmd_jit(path: &str, rest: &[String]) -> ExitCode {
     }
 }
 
-fn cmd_run(path: &str) -> ExitCode {
+fn cmd_run(path: &str, args: &[String]) -> ExitCode {
+    set_program_args(path, args);
     let Some(src) = read_program(path) else { return ExitCode::FAILURE };
     let deps = collect_dep_sources();
     let file = SourceFile::new(path, aurora_std::with_std(&format!("{src}{deps}")));

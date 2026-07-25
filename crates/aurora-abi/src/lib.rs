@@ -552,6 +552,11 @@ macro_rules! for_each_builtin {
         [special,  mouse_y,                       aurora_mouse_y,                        [],                                              I64]
         [special,  mouse_down,                    aurora_mouse_down,                     [],                                              I64]
 
+        // Process environment: the program's own argument vector and env vars.
+        [scalar,   sys_argc,                      aurora_sys_argc,                       [],                                              I64]
+        [text,     sys_arg,                       aurora_sys_arg,                        [I64],                                           Str]
+        [text,     sys_env,                       aurora_sys_env,                        [Ptr, I64],                                      Str]
+
         // Assertions.
         [scalar,   assert,                        aurora_assert,                         [I64],                                           void]
 

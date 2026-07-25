@@ -32,6 +32,43 @@ fn assert_lowers_to_a_runtime_call() {
     assert_eq!(compile_call(src, "twice", &[21]), 42);
 }
 
+/// `sys_argc`/`sys_arg`/`sys_env` are table-driven end to end (one `scalar` row
+/// and two `text` rows, no bespoke lowering), so this checks the generic text
+/// dispatch as much as the builtins: a `str` result comes back as a real Aurora
+/// string, and every out-of-range read is `""` rather than a crash.
+#[test]
+fn sys_builtins_read_the_process_environment() {
+    let src = "fn argc() -> i64 { sys_argc() }\n\
+               fn arg_len(i: i64) -> i64 { len(sys_arg(i)) }\n\
+               fn env_len(name: str) -> i64 { len(sys_env(name)) }\n\
+               fn set_len() -> i64 { env_len(\"AURORA_TEST_SET\") }\n\
+               fn empty_len() -> i64 { env_len(\"AURORA_TEST_EMPTY\") }\n\
+               fn missing_len() -> i64 { env_len(\"AURORA_TEST_MISSING_XYZ\") }\n\
+               fn noname_len() -> i64 { env_len(\"\") }\n\
+               fn main() { println(argc()) }";
+    let (module, diags) = parse_str(src);
+    assert!(!diags.iter().any(|d| d.is_error()), "parse failed");
+    let (_, failed) = build_object(&module).expect("object emission failed");
+    assert!(failed.is_empty(), "the sys_* builtins did not lower: {failed:?}");
+
+    // This test binary's own argv: at least the program name, which is not empty.
+    let argc = compile_call(src, "argc", &[]);
+    assert!(argc >= 1, "argc must count argv[0], got {argc}");
+    assert!(compile_call(src, "arg_len", &[0]) > 0, "argv[0] must not be empty");
+    // Out of range in both directions, including the extremes.
+    for i in [argc, argc + 1, 1_000_000, -1, -1_000_000, i64::MIN, i64::MAX] {
+        assert_eq!(compile_call(src, "arg_len", &[i]), 0, "sys_arg({i}) must be empty");
+    }
+
+    std::env::set_var("AURORA_TEST_SET", "value");
+    std::env::set_var("AURORA_TEST_EMPTY", "");
+    std::env::remove_var("AURORA_TEST_MISSING_XYZ");
+    assert_eq!(compile_call(src, "set_len", &[]), 5);
+    assert_eq!(compile_call(src, "empty_len", &[]), 0, "an empty value reads as \"\"");
+    assert_eq!(compile_call(src, "missing_len", &[]), 0, "an unset variable reads as \"\"");
+    assert_eq!(compile_call(src, "noname_len", &[]), 0, "an empty name reads as \"\"");
+}
+
 #[test]
 fn build_object_emits_aot_object_with_entry_symbol() {
     // AOT path: lowering to a native object file must succeed and embed the

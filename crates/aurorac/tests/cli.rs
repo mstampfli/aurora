@@ -314,3 +314,76 @@ fn check_counts_only_the_users_items_not_the_prelude() {
     assert!(out.status.success(), "check failed: {}", String::from_utf8_lossy(&out.stderr));
     assert!(stdout.contains("checked 2 item(s)"), "expected 2 checked items, got: {stdout}");
 }
+
+/// `sys_arg` must mean the same thing whichever way a program was compiled, or
+/// role dispatch (`--host`, `--dedicated`) works in one and not the other. Under
+/// `run` the compiler owns `std::env::args()`, so it installs the program's own
+/// vector: argv[0] the source file, argv[1..] whatever followed it.
+#[test]
+fn run_passes_the_programs_own_arguments() {
+    let entry = program("sysargs", &[("main.aur", ECHO_ARGS)]);
+    let out = Command::new(env!("CARGO_BIN_EXE_aurorac"))
+        .args(["run", entry.to_str().unwrap(), "--host", "45123"])
+        .env("AURORA_HEADLESS", "1")
+        .env("AURORA_TEST_ROLE", "host")
+        .output()
+        .expect("run aurorac");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "run failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(stdout.replace('\r', ""), expected_echo(entry.to_str().unwrap()));
+}
+
+/// The same program built as a standalone executable, run with the same
+/// arguments: everything but argv[0] (the program as invoked) must match.
+#[test]
+fn a_built_executable_echoes_its_own_arguments() {
+    let entry = program("sysargsaot", &[("main.aur", ECHO_ARGS)]);
+    let exe = entry.with_file_name(if cfg!(windows) { "echo.exe" } else { "echo" });
+    let build = Command::new(env!("CARGO_BIN_EXE_aurorac"))
+        .args(["build", entry.to_str().unwrap(), "-o", exe.to_str().unwrap()])
+        .env("AURORA_HEADLESS", "1")
+        .output()
+        .expect("run aurorac build");
+    assert!(
+        build.status.success(),
+        "build failed: {}{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let out = Command::new(&exe)
+        .args(["--host", "45123"])
+        .env("AURORA_HEADLESS", "1")
+        .env("AURORA_TEST_ROLE", "host")
+        .output()
+        .expect("run the built executable");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "exe failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(stdout.replace('\r', ""), expected_echo(exe.to_str().unwrap()));
+}
+
+/// Prints its whole argument vector, both out-of-range ends, and three env
+/// lookups, so one comparison covers every edge at once.
+const ECHO_ARGS: &str = "fn main() {\n\
+     println(str(sys_argc()))\n\
+     let mut i = 0\n\
+     while i < sys_argc() {\n\
+         println(\"[\" + sys_arg(i) + \"]\")\n\
+         i = i + 1\n\
+     }\n\
+     println(\"past=[\" + sys_arg(sys_argc()) + \"]\")\n\
+     println(\"far=[\" + sys_arg(1000000) + \"]\")\n\
+     println(\"neg=[\" + sys_arg(0 - 1) + \"]\")\n\
+     println(\"negfar=[\" + sys_arg(0 - 1000000) + \"]\")\n\
+     println(\"role=[\" + sys_env(\"AURORA_TEST_ROLE\") + \"]\")\n\
+     println(\"unset=[\" + sys_env(\"AURORA_TEST_DEFINITELY_UNSET\") + \"]\")\n\
+     println(\"noname=[\" + sys_env(\"\") + \"]\")\n\
+ }";
+
+/// What `ECHO_ARGS` prints for a program invoked as `argv0 --host 45123`.
+fn expected_echo(argv0: &str) -> String {
+    format!(
+        "3\n[{argv0}]\n[--host]\n[45123]\n\
+         past=[]\nfar=[]\nneg=[]\nnegfar=[]\n\
+         role=[host]\nunset=[]\nnoname=[]\n"
+    )
+}

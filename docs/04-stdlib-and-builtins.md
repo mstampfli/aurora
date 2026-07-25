@@ -122,6 +122,31 @@ Text files: `read_file(path) -> str` ("" if unreadable - discriminate with
 parent directories). `save_png(path)` writes the 2D framebuffer as a PNG
 (`save_ppm`'s tool-friendly sibling).
 
+## Process environment
+
+The program's own command line and environment, so one binary can dispatch its
+own role (`--host`, `--dedicated`, `--verify <name>`).
+
+| Builtin | Signature | Notes |
+|---|---|---|
+| `sys_argc()` | `-> i64` | argument count, **including** argv[0], so always >= 1 |
+| `sys_arg(i)` | `-> str` | the i-th argument; `""` when `i` is out of range either way |
+| `sys_env(name)` | `-> str` | an environment variable, or `""` when unset |
+
+`sys_arg(0)` is the program **as invoked**: the executable's path for a binary
+built with `aurorac build`, and the source file's path under `aurorac run`.
+`sys_arg(1..)` are the program's own arguments and are identical either way, so
+a program reads the same command line however it was compiled:
+
+```sh
+aurorac build game.aur -o game.exe && ./game.exe --host 45123
+aurorac run   game.aur --host 45123        # same sys_arg(1) / sys_arg(2)
+aurorac run   game.aur -- --host 45123     # a leading `--` is dropped
+```
+
+An unset variable and one set to the empty string both read as `""`, so use a
+sentinel value (not emptiness) if you must tell them apart.
+
 JSON (backed by `serde_json`; handles are `i64`, 0 = invalid/absent, reading a
 bad handle is always safe). Load content as data at boot instead of hardcoding
 tables:

@@ -129,6 +129,53 @@ fn arg_str(ptr: *const u8, len: i64) -> String {
     String::from_utf8_lossy(s).into_owned()
 }
 
+// --- process environment ----------------------------------------------------
+//
+// The program's OWN argument vector, which is not always the process's: under
+// `aurorac run` the compiler owns `std::env::args()`, so it installs the
+// program's vector (the source file it was asked to run, then everything after
+// it) with `set_program_args`. Both paths therefore agree on argv[0] = the
+// program as invoked and argv[1..] = its arguments.
+
+static PROGRAM_ARGS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+/// Install the argument vector `sys_argc`/`sys_arg` report. Called by the
+/// compiler driver before it runs a program; ignored if the vector is already
+/// set, and never needed by an AOT executable, which owns the real one.
+pub fn set_program_args(args: Vec<String>) {
+    let _ = PROGRAM_ARGS.set(args);
+}
+
+fn program_args() -> &'static [String] {
+    PROGRAM_ARGS.get_or_init(|| std::env::args().collect())
+}
+
+/// `sys_argc() -> i64`: how many arguments the program was invoked with,
+/// including argv[0] (the program itself), so it is always at least 1.
+#[no_mangle]
+pub extern "C" fn aurora_sys_argc() -> i64 {
+    program_args().len() as i64
+}
+
+/// `sys_arg(i) -> str`: the i-th argument, or "" when `i` is out of range in
+/// either direction. Never reads out of bounds and never aborts, so a program
+/// can probe for optional arguments without checking `sys_argc` first.
+#[no_mangle]
+pub extern "C" fn aurora_sys_arg(out: *mut i64, i: i64) {
+    let args = program_args();
+    let s = usize::try_from(i).ok().and_then(|i| args.get(i)).map(|s| s.as_str()).unwrap_or("");
+    unsafe { crate::write_str(out, s.as_bytes().to_vec()) };
+}
+
+/// `sys_env(name) -> str`: an environment variable's value, or "" when it is
+/// unset (or holds non-UTF-8). An empty value is reported as "" too, so use a
+/// sentinel value rather than emptiness to mean "set".
+#[no_mangle]
+pub extern "C" fn aurora_sys_env(out: *mut i64, ptr: *const u8, len: i64) {
+    let v = std::env::var(arg_str(ptr, len)).unwrap_or_default();
+    unsafe { crate::write_str(out, v.into_bytes()) };
+}
+
 /// `read_file(path) -> str`: the file's contents, or "" if unreadable
 /// (discriminate with `file_exists`). The string lives in the frame arena.
 #[no_mangle]
