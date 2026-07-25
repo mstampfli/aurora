@@ -1579,6 +1579,15 @@ fn lower(
     };
 
     for item in &module.items {
+        // A `@vertex`/`@fragment`/`@compute` function is GPU code: `aurora-shader`
+        // lowers it to WGSL, and its body legitimately names shader-only globals
+        // and intrinsics (`model`, `albedo`, `vec4`, `texture`) that have no CPU
+        // meaning. Compiling it here could only ever fail, and reporting that
+        // failure would block every program shipping a shader beside its game
+        // code. It is not CPU code, so it is not this backend's to compile.
+        if aurora_ast::is_shader_stage(&item.attrs) {
+            continue;
+        }
         // FFI imports: `@extern` bodiless functions.
         if let ItemKind::Fn(f) = &item.kind {
             if f.body.is_none() && has_attr(&item.attrs, "extern") {
@@ -2087,6 +2096,16 @@ impl Jit {
     /// did — so callers can report *why* instead of a generic "codegen gap".
     pub fn compile_error(&self, name: &str) -> Option<&str> {
         self.failed.get(name).map(|s| s.as_str())
+    }
+
+    /// Every function/lambda/system that failed to compile, name -> reason.
+    ///
+    /// A failed body is replaced with a stub that returns 0, so a non-empty map
+    /// means the program would silently compute nothing for those functions.
+    /// Anything that RUNS the program must refuse instead: the same rule
+    /// `build_object`'s failure map enforces for `aurorac build`.
+    pub fn failures(&self) -> &HashMap<String, String> {
+        &self.failed
     }
 }
 

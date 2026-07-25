@@ -67,6 +67,27 @@ pub enum AttrArg {
     Positional(Expr),
 }
 
+/// Attribute names that mark a function as a **GPU shader stage**.
+///
+/// Such a function is lowered to WGSL by `aurora-shader`; it is not CPU code,
+/// and it may freely reference shader-only globals and intrinsics (`vec4`,
+/// `texture`, bound uniforms). Both the native backend (which must not try to
+/// compile it) and the front end (which must not report its intrinsics as
+/// unknown names) key off this one list.
+pub const SHADER_STAGE_ATTRS: &[&str] = &["vertex", "fragment", "compute"];
+
+/// The shader-stage attribute on an item, if it carries one.
+pub fn shader_stage_attr(attrs: &[Attr]) -> Option<&'static str> {
+    attrs
+        .iter()
+        .find_map(|a| SHADER_STAGE_ATTRS.iter().copied().find(|s| *s == a.name.name))
+}
+
+/// Is this item a GPU shader stage rather than CPU code?
+pub fn is_shader_stage(attrs: &[Attr]) -> bool {
+    shader_stage_attr(attrs).is_some()
+}
+
 // ---------------------------------------------------------------------------
 // Module & items
 // ---------------------------------------------------------------------------

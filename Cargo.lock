@@ -197,6 +197,7 @@ dependencies = [
  "aurora-parser",
  "aurora-runtime",
  "aurora-span",
+ "aurora-std",
  "cranelift",
  "cranelift-jit",
  "cranelift-module",

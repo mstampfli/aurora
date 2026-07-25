@@ -20,6 +20,17 @@ declaring file's directory and namespaces its items as `NAME::item`. Only the en
 file is passed to `aurorac`; see
 [`01-grammar-and-types.md`](01-grammar-and-types.md) §3.1 for the full rule.
 
+### Compilation failures are never silent
+
+If a function fails to lower to native code, `run` and `build` both refuse
+and name every failing function and the reason. Neither falls back to running it:
+a function that failed to compile is otherwise replaced with a stub returning 0,
+and the program runs with that behaviour silently missing.
+
+A `@vertex` / `@fragment` / `@compute` function is GPU code lowered to WGSL, so
+it is exempt: it is not compiled as CPU code, and its intrinsics are not resolved
+against CPU declarations.
+
 ---
 
 ## Core builtins

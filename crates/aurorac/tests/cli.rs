@@ -1,9 +1,12 @@
-//! Driver-level tests for file-based modules (`mod NAME;`).
+//! Driver-level tests: the failure modes where `aurorac` used to report success.
 //!
-//! The loader is wired into every `aurorac` subcommand through `read_program`, so
-//! these drive the real binary: an unresolvable module has to fail the command
-//! (it used to pass `check` with a false green), the item count has to include
-//! what the modules brought in, and `run` has to actually execute across files.
+//! Two families live here, both about the compiler staying silent when it should
+//! not. File-based modules (`mod NAME;`): the loader is wired into every
+//! subcommand through `read_program`, so an unresolvable module has to fail the
+//! command, the item count has to include what the modules brought in, and `run`
+//! has to execute across files. And stubbed functions: a function that fails to
+//! compile is replaced with a stub returning 0, and that was reported for `main`
+//! only, so a broken helper ran as a silent no-op.
 
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -109,4 +112,50 @@ fn run_fails_on_an_unresolvable_module() {
         "expected an E0110 error, got: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+// --- silent compilation failures -------------------------------------------
+
+/// A program that passes every static check but that the BACKEND cannot lower:
+/// `C::make` is an associated function, which the native backend does not
+/// compile, and a multi-segment callee is not resolved by the type checker. So
+/// this reaches codegen clean and fails there, in a helper rather than in
+/// `main`: exactly the shape that used to be stubbed away in silence.
+const HELPER_THE_BACKEND_CANNOT_LOWER: &str = "struct C { v: i64 }\n\
+     impl C { fn make(v: i64) -> C { C { v: v } } }\n\
+     fn helper() -> i64 { let c = C::make(4); c.v }\n\
+     fn main() { println(\"main ran\") }";
+
+/// The headline bug: a non-`main` function that fails to compile was replaced
+/// with a stub returning 0, and the program ran to completion with exit 0. A
+/// gameplay system that fails to compile has to break the build, not quietly
+/// evaluate to nothing.
+#[test]
+fn run_refuses_a_program_whose_helper_failed_to_compile() {
+    let entry = program("stubhelper", &[("main.aur", HELPER_THE_BACKEND_CANNOT_LOWER)]);
+    let out = aurorac("run", &entry);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "run executed a program with a stubbed function: {stdout}");
+    assert!(
+        !stdout.contains("main ran"),
+        "the program must not run at all when a helper was stubbed: {stdout}"
+    );
+    assert!(stderr.contains("helper"), "the error must name the function: {stderr}");
+    assert!(
+        stderr.contains("C::make"),
+        "the error must say why the function failed: {stderr}"
+    );
+}
+
+/// The same program through the AOT path. `build` already refused; it must keep
+/// refusing, and for the same stated reason.
+#[test]
+fn build_refuses_a_program_whose_helper_failed_to_compile() {
+    let entry = program("stubhelperaot", &[("main.aur", HELPER_THE_BACKEND_CANNOT_LOWER)]);
+    let out = aurorac("build", &entry);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "build emitted a binary with a stubbed function");
+    assert!(stderr.contains("helper"), "the error must name the function: {stderr}");
+    assert!(stderr.contains("C::make"), "the error must say why: {stderr}");
 }

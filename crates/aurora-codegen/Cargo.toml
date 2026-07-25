@@ -18,3 +18,4 @@ cranelift-native = "0.131.2"
 
 [dev-dependencies]
 aurora-parser.workspace = true
+aurora-std.workspace = true

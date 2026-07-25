@@ -337,6 +337,31 @@ fn manifest_value(toml: &str, key: &str) -> Option<String> {
 /// The loader only appends, so byte offsets in `path`'s own text are unchanged
 /// and the prelude/dependency sources every caller concatenates afterwards keep
 /// lining up with the spans reported here.
+/// Report the functions that failed to compile to native code, and say whether
+/// the command must refuse.
+///
+/// A body that fails to lower is replaced with a stub returning 0. Left
+/// unreported that is the worst possible failure mode: the program builds and
+/// runs, and the broken function just quietly evaluates to nothing. So every
+/// path that compiles or executes a program routes through here, not just
+/// `main` (only `main` used to be checked when running, which is how a missing
+/// language feature could hide inside a helper for a long time).
+///
+/// `verb` completes "refusing to ...".
+fn report_stub_failures(failed: &std::collections::HashMap<String, String>, verb: &str) -> bool {
+    if failed.is_empty() {
+        return false;
+    }
+    let mut names: Vec<&String> = failed.keys().collect();
+    names.sort();
+    eprintln!("error: {} function(s) failed to compile to native code:", failed.len());
+    for n in names {
+        eprintln!("  - {n}: {}", failed[n]);
+    }
+    eprintln!("refusing to {verb}: a stubbed function silently does nothing and returns 0.");
+    true
+}
+
 fn read_program(path: &str) -> Option<String> {
     let src = match std::fs::read_to_string(path) {
         Ok(s) => s,
@@ -554,25 +579,27 @@ fn cmd_native(path: &str) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    // Verify `main` actually compiled to native code (not stubbed).
+    // Verify every function actually compiled to native code (not stubbed).
     match aurora_codegen::build(&module) {
-        Ok(jit) if jit.compiled("main") => match jit.call_i64("main", &[]) {
-            Ok(_) => {
-                use std::io::Write;
-                let _ = std::io::stdout().flush();
-                ExitCode::SUCCESS
+        Ok(jit) => {
+            if report_stub_failures(jit.failures(), "run") {
+                return ExitCode::FAILURE;
             }
-            Err(e) => {
-                eprintln!("native error: {e}");
-                ExitCode::FAILURE
+            if !jit.compiled("main") {
+                eprintln!("native: `main` did not compile to native code (codegen gap)");
+                return ExitCode::FAILURE;
             }
-        },
-        Ok(_) => {
-            eprintln!(
-                "native: `main` uses constructs not yet compiled (struct/array/ECS). \
-                 Use `aurorac run` to interpret it for now."
-            );
-            ExitCode::FAILURE
+            match jit.call_i64("main", &[]) {
+                Ok(_) => {
+                    use std::io::Write;
+                    let _ = std::io::stdout().flush();
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("native error: {e}");
+                    ExitCode::FAILURE
+                }
+            }
         }
         Err(e) => {
             eprintln!("native error: {e}");
@@ -635,18 +662,7 @@ fn cmd_build(path: &str, rest: &[String]) -> ExitCode {
     // A function that failed to compile was replaced with a no-op stub: the
     // binary would silently do the wrong thing. Refuse to build if `main` (or any
     // function) was stubbed, and report exactly which and why.
-    if !failed.is_empty() {
-        let mut names: Vec<&String> = failed.keys().collect();
-        names.sort();
-        eprintln!(
-            "build error: {} function(s) failed to compile and would be replaced \
-             with a no-op stub:",
-            failed.len()
-        );
-        for n in names {
-            eprintln!("  - {n}: {}", failed[n]);
-        }
-        eprintln!("refusing to emit a binary that silently does nothing for these.");
+    if report_stub_failures(&failed, "emit a binary") {
         return ExitCode::FAILURE;
     }
 
@@ -793,10 +809,15 @@ fn cmd_profile(path: &str) -> ExitCode {
         return ExitCode::FAILURE;
     }
     let jit = match aurora_codegen::build_profile(&module) {
-        Ok(j) if j.compiled("main") => j,
-        Ok(_) => {
-            eprintln!("profile: `main` did not compile to native code");
-            return ExitCode::FAILURE;
+        Ok(j) => {
+            if report_stub_failures(j.failures(), "profile") {
+                return ExitCode::FAILURE;
+            }
+            if !j.compiled("main") {
+                eprintln!("profile: `main` did not compile to native code");
+                return ExitCode::FAILURE;
+            }
+            j
         }
         Err(e) => {
             eprintln!("profile error: {e}");
@@ -904,27 +925,32 @@ fn cmd_run(path: &str) -> ExitCode {
     // Aurora is a compiled language: always lower `main` to native machine code
     // and run it. No interpreter fallback.
     match aurora_codegen::build(&module) {
-        Ok(jit) if jit.compiled("main") => match jit.call_i64("main", &[]) {
-            Ok(_) => {
-                use std::io::Write;
-                let _ = std::io::stdout().flush();
-                // Leak windowed GPU state / drop headless GPU state deliberately,
-                // then exit directly so nothing is torn down during thread-local
-                // teardown (which trips wgpu's internals).
-                aurora_runtime::aurora_runtime_shutdown();
-                std::process::exit(0);
-            }
-            Err(e) => {
-                eprintln!("native error: {e}");
-                ExitCode::FAILURE
-            }
-        },
         Ok(jit) => {
-            match jit.compile_error("main") {
-                Some(reason) => eprintln!("error: `main` did not compile to native code: {reason}"),
-                None => eprintln!("error: `main` did not compile to native code (codegen gap)"),
+            // Every stubbed function, not only `main`: running a program whose
+            // helper was replaced by `return 0` produces plausible-looking output
+            // with the real behaviour missing.
+            if report_stub_failures(jit.failures(), "run") {
+                return ExitCode::FAILURE;
             }
-            ExitCode::FAILURE
+            if !jit.compiled("main") {
+                eprintln!("error: `main` did not compile to native code (codegen gap)");
+                return ExitCode::FAILURE;
+            }
+            match jit.call_i64("main", &[]) {
+                Ok(_) => {
+                    use std::io::Write;
+                    let _ = std::io::stdout().flush();
+                    // Leak windowed GPU state / drop headless GPU state deliberately,
+                    // then exit directly so nothing is torn down during thread-local
+                    // teardown (which trips wgpu's internals).
+                    aurora_runtime::aurora_runtime_shutdown();
+                    std::process::exit(0);
+                }
+                Err(e) => {
+                    eprintln!("native error: {e}");
+                    ExitCode::FAILURE
+                }
+            }
         }
         Err(e) => {
             eprintln!("native error: {e}");
