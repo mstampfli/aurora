@@ -303,8 +303,16 @@ fn locate_dep(
     let lib = manifest_value(&manifest, "lib")
         .or_else(|| manifest_value(&manifest, "entry"))
         .ok_or("dependency manifest has no `lib`/`entry`")?;
-    let src = std::fs::read_to_string(dir.join(&lib))
+    let lib_path = dir.join(&lib);
+    let src = std::fs::read_to_string(&lib_path)
         .map_err(|e| format!("cannot read `{lib}`: {e}"))?;
+    // A dependency's library may itself be split across files with `mod NAME;`.
+    // Loading them here means they land inside the `mod <dep> { .. }` wrapper the
+    // caller adds, so they stay namespaced under the dependency.
+    let (src, diags) = aurora_parser::load_file_modules(&src, &lib_path);
+    if let Some(d) = diags.iter().find(|d| d.is_error()) {
+        return Err(format!("in `{lib}`: {}", d.message));
+    }
     Ok((dir, src))
 }
 
@@ -319,6 +327,35 @@ fn manifest_value(toml: &str, key: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Read `path` and resolve its file-based `mod NAME;` declarations by loading
+/// `NAME.aur` (see `aurora_parser::load_file_modules`). Returns `None` after
+/// reporting, so an unresolvable module is a hard error instead of a module that
+/// silently contributes nothing.
+///
+/// The loader only appends, so byte offsets in `path`'s own text are unchanged
+/// and the prelude/dependency sources every caller concatenates afterwards keep
+/// lining up with the spans reported here.
+fn read_program(path: &str) -> Option<String> {
+    let src = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: cannot read `{path}`: {e}");
+            return None;
+        }
+    };
+    let (expanded, diags) = aurora_parser::load_file_modules(&src, std::path::Path::new(path));
+    if !diags.is_empty() {
+        let file = SourceFile::new(path, expanded.clone());
+        for d in &diags {
+            eprintln!("{}", d.render(&file));
+        }
+        if diags.iter().any(|d| d.is_error()) {
+            return None;
+        }
+    }
+    Some(expanded)
 }
 
 /// Scaffold a new project directory with a manifest and a hello-world program.
@@ -378,13 +415,7 @@ fn cmd_lex(path: &str) -> ExitCode {
 }
 
 fn cmd_wgsl(path: &str) -> ExitCode {
-    let src = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: cannot read `{path}`: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let Some(src) = read_program(path) else { return ExitCode::FAILURE };
     let file = SourceFile::new(path, src);
     let (module, diags) = aurora_parser::parse_str(&file.src);
     if diags.iter().any(|d| d.is_error()) {
@@ -423,13 +454,7 @@ fn cmd_gpu(path: &str, rest: &[String]) -> ExitCode {
         }
     }
 
-    let src = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: cannot read `{path}`: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let Some(src) = read_program(path) else { return ExitCode::FAILURE };
     let file = SourceFile::new(path, src);
     let (module, diags) = aurora_parser::parse_str(&file.src);
     if diags.iter().any(|d| d.is_error()) {
@@ -517,13 +542,7 @@ fn cmd_render(out: &str) -> ExitCode {
 }
 
 fn cmd_native(path: &str) -> ExitCode {
-    let src = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: cannot read `{path}`: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let Some(src) = read_program(path) else { return ExitCode::FAILURE };
     let file = SourceFile::new(path, aurora_std::with_std(&src));
     let (module, mut diags) = aurora_parser::parse_str(&file.src);
     diags.extend(aurora_check::check(&module));
@@ -592,13 +611,7 @@ fn cmd_build(path: &str, rest: &[String]) -> ExitCode {
         }
     }
 
-    let src = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: cannot read `{path}`: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let Some(src) = read_program(path) else { return ExitCode::FAILURE };
     let file = SourceFile::new(path, aurora_std::with_std(&format!("{src}{}", collect_dep_sources())));
     let (module, mut diags) = aurora_parser::parse_str(&file.src);
     diags.extend(aurora_check::check(&module));
@@ -723,13 +736,7 @@ fn cmd_debug(path: &str, rest: &[String]) -> ExitCode {
         }
     }
 
-    let src = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: cannot read `{path}`: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let Some(src) = read_program(path) else { return ExitCode::FAILURE };
 
     // Include the standard library, like the other execution paths.
     let src = aurora_std::with_std(&src);
@@ -774,13 +781,7 @@ fn cmd_debug(path: &str, rest: &[String]) -> ExitCode {
 /// Run a program under the native profiler and print a per-function report
 /// (call counts + wall-clock time), sorted by time.
 fn cmd_profile(path: &str) -> ExitCode {
-    let src = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: cannot read `{path}`: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let Some(src) = read_program(path) else { return ExitCode::FAILURE };
     let file = SourceFile::new(path, aurora_std::with_std(&src));
     let (module, mut diags) = aurora_parser::parse_str(&file.src);
     diags.extend(aurora_check::check(&module));
@@ -848,13 +849,7 @@ fn cmd_jit(path: &str, rest: &[String]) -> ExitCode {
     let raw = &rest[1..];
     let is_float = raw.iter().any(|a| a.contains('.'));
 
-    let src = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: cannot read `{path}`: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let Some(src) = read_program(path) else { return ExitCode::FAILURE };
     let file = SourceFile::new(path, src);
     let (module, diags) = aurora_parser::parse_str(&file.src);
     if diags.iter().any(|d| d.is_error()) {
@@ -890,13 +885,7 @@ fn cmd_jit(path: &str, rest: &[String]) -> ExitCode {
 }
 
 fn cmd_run(path: &str) -> ExitCode {
-    let src = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: cannot read `{path}`: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let Some(src) = read_program(path) else { return ExitCode::FAILURE };
     let deps = collect_dep_sources();
     let file = SourceFile::new(path, aurora_std::with_std(&format!("{src}{deps}")));
     let (module, mut diags) = aurora_parser::parse_str(&file.src);
@@ -945,13 +934,7 @@ fn cmd_run(path: &str) -> ExitCode {
 }
 
 fn cmd_check(path: &str) -> ExitCode {
-    let src = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: cannot read `{path}`: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let Some(src) = read_program(path) else { return ExitCode::FAILURE };
     let file = SourceFile::new(path, src);
     let (module, mut diags) = aurora_parser::parse_str(&file.src);
     diags.extend(aurora_check::check(&module));
@@ -971,13 +954,7 @@ fn cmd_check(path: &str) -> ExitCode {
 }
 
 fn cmd_parse(path: &str) -> ExitCode {
-    let src = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: cannot read `{path}`: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let Some(src) = read_program(path) else { return ExitCode::FAILURE };
     let file = SourceFile::new(path, src);
     let (module, diags) = aurora_parser::parse_str(&file.src);
 
