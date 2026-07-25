@@ -122,6 +122,7 @@ crates/
   aurora-span      spans + source maps
   aurora-diag      diagnostics + caret renderer
   aurora-lexer     hand-rolled lexer (nested comments, newline-aware ASI)
+  aurora-abi       the ONE builtin table (name, symbol, signature) every layer generates from
   aurora-ast       the syntax tree
   aurora-parser    recursive-descent + Pratt expressions
   aurora-types     type representation + union-find unifier
@@ -157,7 +158,7 @@ The pipeline is `lex -> parse -> resolve -> typecheck -> ECS-safety -> move-chec
 
 ```sh
 cargo build --workspace      # builds the toolchain (Cranelift takes a moment first time)
-cargo test  --workspace      # 343 tests
+cargo test  --workspace      # 416 tests
 ```
 
 ## CLI

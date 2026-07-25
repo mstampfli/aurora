@@ -1,4 +1,4 @@
-//! Aurora's native runtime — the host functions compiled Aurora code calls.
+//! Aurora's native runtime â€” the host functions compiled Aurora code calls.
 //!
 //! Every `aurora_*` symbol here is `#[no_mangle] pub extern "C"`, so it is a
 //! real, linkable C-ABI symbol. Two consumers use them:
@@ -23,6 +23,10 @@ pub use phys3d::*;
 mod netgame;
 pub use netgame::*;
 
+// Determinism + data: seeded RNG, fixed dt, file I/O, JSON.
+mod data;
+pub use data::*;
+
 // --- printing --------------------------------------------------------------
 
 #[no_mangle]
@@ -30,7 +34,7 @@ pub extern "C" fn aurora_print_i64(n: i64) {
     print!("{n}");
 }
 /// Format an `f64` for display. Whole-valued finite floats get a trailing `.0`
-/// (`7.0` not `7`) so floats are visually distinct from ints — Aurora is a
+/// (`7.0` not `7`) so floats are visually distinct from ints â€” Aurora is a
 /// float-heavy game-dev language and the ambiguity is a debugging hazard.
 /// Non-finite values (`inf`, `NaN`) and already-fractional values are left as
 /// Rust's default Display renders them.
@@ -56,7 +60,7 @@ pub extern "C" fn aurora_print_nl() {
     println!();
 }
 
-/// Flush buffered stdout — called from the AOT entry shim before exit, since the
+/// Flush buffered stdout â€” called from the AOT entry shim before exit, since the
 /// program does not return through Rust's runtime (which would flush for us).
 #[no_mangle]
 pub extern "C" fn aurora_runtime_flush() {
@@ -80,8 +84,17 @@ thread_local! {
 /// Real elapsed seconds since the previous call (0.016 on the first call),
 /// clamped to 0.1 so a stall can't make the game lurch or spiral. Lets the game
 /// loop run frame-rate-independent instead of assuming a fixed step.
+///
+/// Under a fixed step (`set_fixed_dt` builtin or `AURORA_FIXED_DT` env var)
+/// this returns the scripted dt and advances the virtual clock instead - the
+/// determinism hook replays and headless runs rely on.
 #[no_mangle]
 pub extern "C" fn aurora_frame_dt() -> f64 {
+    let fixed = data::fixed_dt_override();
+    if fixed > 0.0 {
+        data::advance_virtual_time(fixed);
+        return fixed;
+    }
     LAST_FRAME.with(|c| {
         let now = std::time::Instant::now();
         let dt = match c.borrow_mut().replace(now) {
@@ -103,7 +116,7 @@ pub extern "C" fn aurora_sleep_ms(ms: i64) {
 
 /// FFI demonstration target (a Rust `extern "C"` function): dot product of two
 /// `n`-element `f64` buffers. Aurora arrays/structs of `f64` are contiguous
-/// 8-byte slots, so they pass straight through as `const double*` — this is what
+/// 8-byte slots, so they pass straight through as `const double*` â€” this is what
 /// lets `@extern` bind real C/Rust functions that take buffers and vectors.
 #[no_mangle]
 pub extern "C" fn aurora_ffi_dot(a: *const f64, b: *const f64, n: i64) -> f64 {
@@ -112,7 +125,7 @@ pub extern "C" fn aurora_ffi_dot(a: *const f64, b: *const f64, n: i64) -> f64 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
-/// `f32` variant — reads two C-packed `float` buffers. Tests that Aurora `f32`
+/// `f32` variant â€” reads two C-packed `float` buffers. Tests that Aurora `f32`
 /// aggregates are marshaled to C's 4-byte-packed layout over FFI.
 #[no_mangle]
 pub extern "C" fn aurora_ffi_dotf(a: *const f32, b: *const f32, n: i64) -> f32 {
@@ -129,6 +142,19 @@ pub extern "C" fn aurora_oob(idx: i64, len: i64) {
     use std::io::Write;
     let _ = std::io::stdout().flush();
     eprintln!("panic: array index {idx} out of bounds (length {len})");
+    std::process::exit(101);
+}
+
+/// `assert(cond)`: abort unless `cond` holds, matching the interpreter's
+/// "assertion failed" and the documented "abort if `cond` is 0".
+#[no_mangle]
+pub extern "C" fn aurora_assert(cond: i64) {
+    if cond != 0 {
+        return;
+    }
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    eprintln!("panic: assertion failed");
     std::process::exit(101);
 }
 
@@ -218,14 +244,46 @@ pub extern "C" fn aurora_save_ppm(ptr: *const u8, len: i64) {
     });
 }
 
+/// Save the 2D framebuffer as a PNG (the format vision tooling reads).
+/// Creates parent directories. Backs the `save_png` builtin.
+#[no_mangle]
+pub extern "C" fn aurora_save_png(ptr: *const u8, len: i64) {
+    let path = {
+        let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
+        String::from_utf8_lossy(s).into_owned()
+    };
+    FB.with(|fb| {
+        if let Some(f) = fb.borrow().as_ref() {
+            let (w, h) = (f.width(), f.height());
+            let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+            for y in 0..h {
+                for x in 0..w {
+                    let c = f.get(x, y);
+                    rgba.extend_from_slice(&[c.r, c.g, c.b, 255]);
+                }
+            }
+            if let Some(parent) = std::path::Path::new(&path).parent() {
+                if !parent.as_os_str().is_empty() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+            }
+            if let Err(e) =
+                image::save_buffer(&path, &rgba, w, h, image::ExtendedColorType::Rgba8)
+            {
+                eprintln!("aurora: save_png {path}: {e}");
+            }
+        }
+    });
+}
+
 // --- region arenas ----------------------------------------------------------
 //
 // A real runtime backing for the language's `#frame`/`#level`/`#perm` regions:
 // each is a chunked bump allocator. Dynamic allocations (string concat, int/
 // float formatting) come from the `#frame` arena, and `frame_reset()` frees the
-// whole frame's allocations at once (O(1)) — so memory is arena-managed and
+// whole frame's allocations at once (O(1)) â€” so memory is arena-managed and
 // reclaimed at frame boundaries instead of leaking. The region *checker*
-// (`aurora-check` §8.2) statically prevents storing shorter-lived (frame) data
+// (`aurora-check` Â§8.2) statically prevents storing shorter-lived (frame) data
 // where longer-lived data is expected, which is what makes the bulk reset safe.
 
 const CHUNK: usize = 1 << 20; // 1 MiB per chunk
@@ -304,7 +362,7 @@ pub fn frame_arena_used() -> usize {
 // resulting `[ptr, len]` into a caller-provided 2-slot aggregate `out`.
 
 /// Write a `[ptr, len]` pair (allocated in the frame arena) into `out`.
-unsafe fn write_str(out: *mut i64, bytes: Vec<u8>) {
+pub(crate) unsafe fn write_str(out: *mut i64, bytes: Vec<u8>) {
     let ptr = frame_alloc(&bytes) as i64;
     *out = ptr;
     *out.add(1) = bytes.len() as i64;
@@ -389,7 +447,7 @@ pub extern "C" fn aurora_load_ppm(ptr: *const u8, len: i64) -> i64 {
 
 /// Load a PNG/JPEG image at `path` into the framebuffer (resizing it to the
 /// image), decoded to RGBA via the `image` crate. Returns 1 on success, 0 on
-/// failure. Backs the `load_image` builtin — the asset pipeline beyond PPM.
+/// failure. Backs the `load_image` builtin â€” the asset pipeline beyond PPM.
 #[no_mangle]
 pub extern "C" fn aurora_load_image(ptr: *const u8, len: i64) -> i64 {
     let path = {
@@ -447,7 +505,7 @@ fn render_text(x: i64, y: i64, text: &str, px: i64, color: i64) {
             let mut fb = fb.borrow_mut();
             let Some(fb) = fb.as_mut() else { return };
             let (w, h) = (fb.width() as i32, fb.height() as i32);
-            let baseline = y + px as i64; // `y` is the top; baseline ≈ y + size
+            let baseline = y + px as i64; // `y` is the top; baseline â‰ˆ y + size
             let mut pen = x;
             for ch in text.chars() {
                 let (m, bitmap) = font.rasterize(ch, px);
@@ -514,7 +572,7 @@ pub extern "C" fn aurora_draw_int(x: i64, y: i64, n: i64, px: i64, color: i64) {
 // --- real 2D physics (Rapier) -----------------------------------------------
 //
 // A stateful physics world backed by Rapier: rigid bodies, colliders, gravity,
-// continuous collision — far beyond the hand-rolled AABB resolver in the stdlib.
+// continuous collision â€” far beyond the hand-rolled AABB resolver in the stdlib.
 // Bodies are referenced by an i64 handle (an index into `handles`). Positions
 // are the body centre, in whatever units the program uses (e.g. pixels).
 
@@ -896,32 +954,67 @@ thread_local! {
 //
 // Normally every ECS host fn touches the *calling thread's* thread_local
 // `WORLD`. During `aurora_run_parallel`, systems run on worker threads whose own
-// thread_local world is empty, so their world access is routed to the single
-// shared world owned by the main thread. `PAR_WORLD`, when non-null, points at a
-// `ParWorld` living on the main thread's stack for the duration of one batch.
+// thread_local world is empty, so their world access must be routed back to the
+// world owned by the thread that started the batch.
 //
-// SAFETY rests on the §6.2 data-race-freedom theorem the compiler already
-// enforces: two systems run concurrently only when their component access sets
-// don't conflict, so no two threads ever touch the same component buffer
-// mutably. The `Mutex` serialises only *structural* map access (lookup/insert);
-// component data is then written through raw pointers into heap-stable
-// `Box<[u8]>` buffers, which unrelated inserts never reallocate.
+// That routing is a property of *the thread doing the work*, never of the
+// process: a thread that is not part of a batch must keep using its own world.
+// `PAR_WORLD` is therefore thread-local and is written only by the scoped
+// workers `aurora_run_parallel` spawns, which inherit their parent's world
+// pointer explicitly. A process-global slot would reroute every unrelated
+// thread's ECS access into whichever world happened to be running a batch, and
+// its save/restore would be racy across threads (leaving a pointer to a dead
+// stack frame behind).
+//
+// Lifetime: the pointer is only ever observed by threads created inside the
+// `thread::scope` that owns the `ParWorld`, and `thread::scope` joins them all
+// before that owner's frame returns. So a live `PAR_WORLD` always points at a
+// live `ParWorld`, by construction, with no save/restore protocol at all.
+//
+// SAFETY also rests on the section 6.2 data-race-freedom theorem the compiler
+// already enforces: two systems run concurrently only when their component
+// access sets don't conflict, so no two threads ever touch the same component
+// buffer mutably. The `Mutex` serialises only *structural* map access
+// (lookup/insert); component data is then written through raw pointers into
+// heap-stable `Box<[u8]>` buffers, which unrelated inserts never reallocate.
 struct ParWorld {
     lock: std::sync::Mutex<()>,
     world: *mut World,
 }
-static PAR_WORLD: std::sync::atomic::AtomicPtr<ParWorld> =
-    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
 
-/// Route ECS world access: the shared world under a lock during a parallel
-/// batch, otherwise the calling thread's thread_local world.
+/// A `*const ParWorld` that may be moved into a scoped worker thread.
+///
+/// SAFETY: the pointee is only reached through `ParWorld`'s own `Mutex`, and
+/// `thread::scope` joins every holder before the pointee's frame ends.
+#[derive(Clone, Copy)]
+struct ParWorldPtr(*const ParWorld);
+unsafe impl Send for ParWorldPtr {}
+impl ParWorldPtr {
+    /// Read the pointer back out. Taking `self` by value keeps closures
+    /// capturing the whole `Send` wrapper rather than the bare pointer field.
+    fn get(self) -> *const ParWorld {
+        self.0
+    }
+}
+
+thread_local! {
+    /// Non-null only while *this* thread is executing systems for a parallel
+    /// batch; then it points at the `ParWorld` of the thread that owns the
+    /// batch. Threads outside a batch always see null and use their own world.
+    static PAR_WORLD: std::cell::Cell<*const ParWorld> =
+        const { std::cell::Cell::new(std::ptr::null()) };
+}
+
+/// Route ECS world access: the batch's shared world under a lock while this
+/// thread is inside a parallel batch, otherwise this thread's own world.
 fn with_world<R>(f: impl FnOnce(&mut World) -> R) -> R {
-    let p = PAR_WORLD.load(std::sync::atomic::Ordering::Acquire);
+    let p = PAR_WORLD.with(|c| c.get());
     if p.is_null() {
         WORLD.with(|w| f(&mut w.borrow_mut()))
     } else {
-        // SAFETY: `p` points at a `ParWorld` on the main thread's stack that
-        // outlives the `thread::scope` in `aurora_run_parallel`; the lock guards
+        // SAFETY: `p` was installed by `run_batch` on this very thread and the
+        // owning `thread::scope` cannot return until this thread is joined, so
+        // the `ParWorld` and its world are still alive. The lock guards
         // concurrent structural access to the shared world.
         let par = unsafe { &*p };
         let _guard = par.lock.lock().unwrap();
@@ -983,8 +1076,9 @@ pub extern "C" fn aurora_entity_count() -> i64 {
 }
 
 /// Run a batch of zero-arg system functions concurrently over the shared ECS
-/// world. The §6.2 scheduler check guarantees the systems handed to one batch
-/// have non-conflicting component access, so concurrent execution is race-free.
+/// world. The section 6.2 scheduler check guarantees the systems handed to one
+/// batch have non-conflicting component access, so concurrent execution is
+/// race-free. Each worker is bound to the caller's world for the batch.
 /// `fns` is an array of `n` raw function addresses (each an `extern "C" fn()`).
 #[no_mangle]
 pub extern "C" fn aurora_run_parallel(fns: *const usize, n: i64) {
@@ -999,24 +1093,41 @@ pub extern "C" fn aurora_run_parallel(fns: *const usize, n: i64) {
         f();
         return;
     }
+    // A batch nested inside another batch keeps running against the world this
+    // thread is already bound to, reusing the *same* `ParWorld` so every worker
+    // under it contends on one lock (two locks over one world would not exclude
+    // each other).
+    let inherited = PAR_WORLD.with(|c| c.get());
+    if !inherited.is_null() {
+        run_batch(ParWorldPtr(inherited), &addrs);
+        return;
+    }
     WORLD.with(|w| {
         // `as_ptr` yields `*mut World` without taking a RefCell borrow, so the
         // worker threads (which route through `PAR_WORLD` + lock) are the only
-        // accessors during the scope.
-        let mut par = ParWorld { lock: std::sync::Mutex::new(()), world: w.as_ptr() };
-        let prev = PAR_WORLD.swap(&mut par as *mut ParWorld, std::sync::atomic::Ordering::AcqRel);
-        std::thread::scope(|scope| {
-            for &a in &addrs {
-                scope.spawn(move || {
-                    // SAFETY: `a` is a finalized native function address; `usize`
-                    // is `Send`. System bodies access the world only through the
-                    // routing layer above.
-                    let f: extern "C" fn() = unsafe { std::mem::transmute(a) };
-                    f();
-                });
-            }
-        });
-        PAR_WORLD.store(prev, std::sync::atomic::Ordering::Release);
+        // accessors during the scope; this thread just blocks in the join.
+        let par = ParWorld { lock: std::sync::Mutex::new(()), world: w.as_ptr() };
+        run_batch(ParWorldPtr(&par), &addrs);
+    });
+}
+
+/// Run `addrs` concurrently, each worker bound to `par` for the duration.
+///
+/// The binding is installed on the worker threads only, so no thread outside
+/// this scope can ever observe it, and `thread::scope` guarantees every worker
+/// is joined before `par`'s frame goes away.
+fn run_batch(par: ParWorldPtr, addrs: &[usize]) {
+    std::thread::scope(|scope| {
+        for &a in addrs {
+            scope.spawn(move || {
+                PAR_WORLD.with(|c| c.set(par.get()));
+                // SAFETY: `a` is a finalized native function address; `usize` is
+                // `Send`. System bodies access the world only through the
+                // routing layer above.
+                let f: extern "C" fn() = unsafe { std::mem::transmute(a) };
+                f();
+            });
+        }
     });
 }
 
@@ -1039,8 +1150,9 @@ pub extern "C" fn aurora_scene_save(ptr: *const u8, len: i64) -> i64 {
         let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
         String::from_utf8_lossy(s).into_owned()
     };
-    let bytes = WORLD.with(|w| {
-        let w = w.borrow();
+    // Routed like every other world access, so saving from inside a parallel
+    // batch snapshots the batch's world instead of an empty thread-local one.
+    let bytes = with_world(|w| {
         let mut b = Vec::new();
         b.extend_from_slice(b"ASCN"); // magic
         put_i64(&mut b, w.next);
@@ -1096,7 +1208,7 @@ pub extern "C" fn aurora_scene_load(ptr: *const u8, len: i64) -> i64 {
     };
     match parse() {
         Some(w) => {
-            WORLD.with(|world| *world.borrow_mut() = w);
+            with_world(|world| *world = w);
             1
         }
         None => 0,
@@ -1107,7 +1219,7 @@ pub extern "C" fn aurora_scene_load(ptr: *const u8, len: i64) -> i64 {
 //
 // In profiling builds the compiler emits `aurora_prof_enter(name)` at each
 // function entry and `aurora_prof_exit()` at each return, accumulating call
-// counts and wall-clock time per function — a real instrumenting profiler over
+// counts and wall-clock time per function â€” a real instrumenting profiler over
 // the native code.
 
 #[derive(Default)]
@@ -1177,10 +1289,88 @@ pub extern "C" fn aurora_prof_exit() {
 // `key_down` builtins, wiring the language to real audio output (cpal) and a
 // real-time window (winit + wgpu) that presents the builtin framebuffer.
 
+/// Whether audio output should skip the device: true under `AURORA_HEADLESS=1`,
+/// so verification runs never contend for cpal (deterministic, no audio thread).
+/// Read once and cached.
+pub(crate) fn headless_audio() -> bool {
+    use std::sync::OnceLock;
+    static H: OnceLock<bool> = OnceLock::new();
+    *H.get_or_init(|| std::env::var("AURORA_HEADLESS").map(|v| v == "1").unwrap_or(false))
+}
+
+// Offline audio capture: under headless, play_note/play_sound record the note
+// (semitone, seconds, virtual start time) instead of touching the device, so
+// `audio_capture_save` can render them to a WAV that `wav-audit` verifies -
+// closing the loop on synthesized/procedural audio (library WAVs are audited
+// directly).
+thread_local! {
+    static AUDIO_CAP: RefCell<Vec<(i32, f32, f64)>> = const { RefCell::new(Vec::new()) };
+}
+
+fn audio_capture_note(semitone: i64, dur_ms: i64) {
+    let t = crate::data::virtual_time_seconds();
+    AUDIO_CAP.with(|c| c.borrow_mut().push((semitone as i32, (dur_ms.max(0) as f32) / 1000.0, t)));
+}
+
+/// Render the captured note events into a 16-bit mono WAV at 44.1 kHz, placing
+/// each note at its virtual start time. Returns 1 on success, 0 on failure.
+#[no_mangle]
+pub extern "C" fn aurora_audio_capture_save(ptr: *const u8, len: i64) -> i64 {
+    let path = {
+        let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
+        String::from_utf8_lossy(s).into_owned()
+    };
+    let sr = 44_100u32;
+    let events = AUDIO_CAP.with(|c| c.borrow().clone());
+    if events.is_empty() {
+        return 0;
+    }
+    // Buffer spans from 0 to the latest note end.
+    let end_s = events.iter().map(|(_, d, t)| t + *d as f64).fold(0.0, f64::max);
+    let total = ((end_s * sr as f64).ceil() as usize).max(1) + sr as usize / 10;
+    let mut buf = vec![0.0f32; total];
+    for (semi, dur, t) in &events {
+        let note = aurora_audio::Note::new(aurora_audio::pitch(*semi), *dur)
+            .wave(aurora_audio::Wave::Triangle)
+            .gain(0.4);
+        let samples = note.render(sr);
+        let off = (t * sr as f64) as usize;
+        for (i, s) in samples.iter().enumerate() {
+            if off + i < buf.len() {
+                buf[off + i] += *s;
+            }
+        }
+    }
+    // Soft-clip to keep peaks in range, then write 16-bit PCM.
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: sr,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        if !parent.as_os_str().is_empty() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    }
+    let Ok(mut w) = hound::WavWriter::create(&path, spec) else { return 0 };
+    for s in &buf {
+        let v = (s.clamp(-1.0, 1.0) * 32767.0) as i16;
+        if w.write_sample(v).is_err() {
+            return 0;
+        }
+    }
+    w.finalize().is_ok() as i64
+}
+
 /// Synthesize and play one note: `semitone` is relative to A4, `dur_ms` ms long.
 /// Blocks until the note finishes (so notes sequence naturally).
 #[no_mangle]
 pub extern "C" fn aurora_play_note(semitone: i64, dur_ms: i64) {
+    if headless_audio() {
+        audio_capture_note(semitone, dur_ms);
+        return;
+    }
     let sr = 44_100;
     let dur = (dur_ms.max(0) as f32) / 1000.0;
     let note = aurora_audio::Note::new(aurora_audio::pitch(semitone as i32), dur)
@@ -1213,7 +1403,7 @@ pub extern "C" fn aurora_gpu_render(ptr: *const u8, len: i64, time_ms: i64) {
 
 /// Run a compute shader on the GPU over an `[f64; n]` array, in place. `wgsl`
 /// operates on a `read_write array<f32>` at binding 0. Values are converted
-/// f64→f32 for the GPU and back. Backs the `gpu_compute` builtin.
+/// f64â†’f32 for the GPU and back. Backs the `gpu_compute` builtin.
 #[no_mangle]
 pub extern "C" fn aurora_gpu_compute(wptr: *const u8, wlen: i64, data: *mut f64, n: i64) {
     let wgsl = {
@@ -1229,7 +1419,7 @@ pub extern "C" fn aurora_gpu_compute(wptr: *const u8, wlen: i64, data: *mut f64,
     }
 }
 
-/// Open a real-time window backing a `w`×`h` builtin framebuffer.
+/// Open a real-time window backing a `w`Ã—`h` builtin framebuffer.
 #[no_mangle]
 pub extern "C" fn aurora_window_open(w: i64, h: i64) {
     aurora_window::imm_open(w.max(0) as u32, h.max(0) as u32);
@@ -1409,6 +1599,11 @@ pub extern "C" fn aurora_r3d_draw_on_joint(
 pub extern "C" fn aurora_r3d_joint_dump(host: i64) {
     aurora_window::imm_r3d_joint_dump(host);
 }
+/// Model-space position of a joint (axis 0=x/1=y/2=z) in the host's current pose.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_joint_pos(host: i64, joint: i64, axis: i64) -> f64 {
+    aurora_window::imm_r3d_joint_pos(host, joint, axis) as f64
+}
 #[no_mangle]
 pub extern "C" fn aurora_r3d_anim_play(h: i64, clip: i64, looping: i64, speed: f64, fade: f64) {
     aurora_window::imm_r3d_anim_play(h, clip, looping, speed as f32, fade as f32);
@@ -1422,12 +1617,29 @@ pub extern "C" fn aurora_r3d_anim_play_upper(h: i64, clip: i64, looping: i64, sp
     aurora_window::imm_r3d_anim_play_upper(h, clip, looping, speed as f32, fade as f32, mask_root);
 }
 #[no_mangle]
+pub extern "C" fn aurora_r3d_anim_aim_upper(h: i64, clip_a: i64, clip_b: i64, weight: f64, speed: f64, fade: f64, mask_root: i64) {
+    aurora_window::imm_r3d_anim_aim_upper(h, clip_a, clip_b, weight as f32, speed as f32, fade as f32, mask_root);
+}
+#[no_mangle]
+pub extern "C" fn aurora_r3d_anim_blend(h: i64, clip_a: i64, clip_b: i64, weight: f64, speed: f64, fade: f64) {
+    aurora_window::imm_r3d_anim_blend(h, clip_a, clip_b, weight as f32, speed as f32, fade as f32);
+}
+#[no_mangle]
+pub extern "C" fn aurora_r3d_anim_seek_upper(h: i64, t: f64) {
+    aurora_window::imm_r3d_anim_seek_upper(h, t as f32);
+}
+#[no_mangle]
 pub extern "C" fn aurora_r3d_pose_bone(h: i64, joint: i64, rx: f64, ry: f64, rz: f64) {
     aurora_window::imm_r3d_pose_bone(h, joint, rx as f32, ry as f32, rz as f32);
 }
 #[no_mangle]
 pub extern "C" fn aurora_r3d_clear_pose(h: i64) {
     aurora_window::imm_r3d_clear_pose(h);
+}
+/// Hide one skin joint's geometry on a model (first-person arms drop the body this way).
+#[no_mangle]
+pub extern "C" fn aurora_r3d_hide_joint(h: i64, joint: i64) {
+    aurora_window::imm_r3d_hide_joint(h, joint);
 }
 #[no_mangle]
 pub extern "C" fn aurora_r3d_anim_stop_upper(h: i64, fade: f64) {
@@ -1453,6 +1665,66 @@ pub extern "C" fn aurora_r3d_present() -> i64 {
     } else {
         0
     }
+}
+
+/// Capture the queued 3D scene to a PNG at the framebuffer's size (headless
+/// only), with the HUD framebuffer composited on top. Returns 1 on success.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_capture(ptr: *const u8, len: i64) -> i64 {
+    let path = {
+        let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
+        String::from_utf8_lossy(s).into_owned()
+    };
+    let (rgba, w, h) = FB.with(|fb| {
+        fb.borrow()
+            .as_ref()
+            .map(|f| (f.rgba(), f.width(), f.height()))
+            .unwrap_or((Vec::new(), 0, 0))
+    });
+    let (ow, oh) = if w > 0 && h > 0 { (w, h) } else { (1280, 720) };
+    aurora_window::imm_r3d_capture(&path, &rgba, w, h, ow, oh)
+}
+
+/// Like `r3d_capture` but at an explicit output resolution.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_capture_size(ptr: *const u8, len: i64, ow: i64, oh: i64) -> i64 {
+    let path = {
+        let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
+        String::from_utf8_lossy(s).into_owned()
+    };
+    let (rgba, w, h) = FB.with(|fb| {
+        fb.borrow()
+            .as_ref()
+            .map(|f| (f.rgba(), f.width(), f.height()))
+            .unwrap_or((Vec::new(), 0, 0))
+    });
+    aurora_window::imm_r3d_capture(&path, &rgba, w, h, ow.max(16) as u32, oh.max(16) as u32)
+}
+
+/// Input injection builtins: scripted input indistinguishable from a player.
+#[no_mangle]
+pub extern "C" fn aurora_inject_key(code: i64, down: i64) {
+    aurora_window::imm_inject_key(code.max(0) as u32, down != 0);
+}
+#[no_mangle]
+pub extern "C" fn aurora_inject_mouse_move(dx: f64, dy: f64) {
+    aurora_window::imm_inject_mouse_move(dx, dy);
+}
+#[no_mangle]
+pub extern "C" fn aurora_inject_mouse_pos(x: i64, y: i64) {
+    aurora_window::imm_inject_mouse_pos(x, y);
+}
+#[no_mangle]
+pub extern "C" fn aurora_inject_mouse_button(b: i64, down: i64) {
+    aurora_window::imm_inject_mouse_button(b.max(0) as u32, down != 0);
+}
+#[no_mangle]
+pub extern "C" fn aurora_inject_scroll(dy: f64) {
+    aurora_window::imm_inject_scroll(dy);
+}
+#[no_mangle]
+pub extern "C" fn aurora_inject_char(c: i64) {
+    aurora_window::imm_inject_char(c.max(0) as u32);
 }
 
 /// Current window/surface size in physical pixels (0 before the window exists).
@@ -1498,6 +1770,10 @@ pub extern "C" fn aurora_r3d_ssao(on: i64) {
     aurora_window::imm_r3d_ssao(on);
 }
 #[no_mangle]
+pub extern "C" fn aurora_r3d_viewmodel(on: i64) {
+    aurora_window::imm_r3d_viewmodel(on);
+}
+#[no_mangle]
 pub extern "C" fn aurora_r3d_point_shadows(on: i64) {
     aurora_window::imm_r3d_point_shadows(on);
 }
@@ -1525,6 +1801,16 @@ pub extern "C" fn aurora_r3d_draw_billboard(h: i64, x: f64, y: f64, z: f64, size
 pub extern "C" fn aurora_r3d_debug_line(ax: f64, ay: f64, az: f64, bx: f64, by: f64, bz: f64, r: f64, g: f64, b: f64) {
     aurora_window::imm_r3d_debug_line(
         ax as f32, ay as f32, az as f32, bx as f32, by as f32, bz as f32, r as f32, g as f32, b as f32,
+    );
+}
+/// Draw a model's skeleton as debug bone lines (headless rig/hitbox audits).
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn aurora_r3d_debug_skeleton(
+    handle: i64, px: f64, py: f64, pz: f64, yaw: f64, scale: f64, r: f64, g: f64, b: f64,
+) {
+    aurora_window::imm_r3d_debug_skeleton(
+        handle, px as f32, py as f32, pz as f32, yaw as f32, scale as f32, r as f32, g as f32, b as f32,
     );
 }
 #[no_mangle]
@@ -1700,10 +1986,16 @@ pub extern "C" fn aurora_atan2(y: f64, x: f64) -> f64 {
     y.atan2(x)
 }
 
-/// Play a note WITHOUT blocking — mixed into the persistent audio engine, so
+/// Play a note WITHOUT blocking â€” mixed into the persistent audio engine, so
 /// sounds and music overlap. `looped` != 0 repeats it until volume/stop.
 #[no_mangle]
 pub extern "C" fn aurora_play_sound(semitone: i64, dur_ms: i64, looped: i64) {
+    if headless_audio() {
+        if looped == 0 {
+            audio_capture_note(semitone, dur_ms);
+        }
+        return;
+    }
     let sr = 44_100;
     let dur = (dur_ms.max(0) as f32) / 1000.0;
     let mut note = aurora_audio::Note::new(aurora_audio::pitch(semitone as i32), dur)
@@ -1727,6 +2019,9 @@ pub extern "C" fn aurora_play_sound(semitone: i64, dur_ms: i64, looped: i64) {
 /// that should read as a "thwack/click" rather than a tone. `gain_pct` is 0..200.
 #[no_mangle]
 pub extern "C" fn aurora_play_noise(dur_ms: i64, gain_pct: i64) {
+    if headless_audio() {
+        return;
+    }
     let sr = 44_100;
     let dur = (dur_ms.max(1) as f32) / 1000.0;
     let g = (gain_pct.clamp(0, 200) as f32) / 100.0;
@@ -1800,6 +2095,9 @@ fn norm3(v: [f64; 3]) -> [f64; 3] {
 pub extern "C" fn aurora_play_sound_at(
     semitone: i64, dur_ms: i64, gain_pct: i64, x: f64, y: f64, z: f64,
 ) {
+    if headless_audio() {
+        return;
+    }
     let (gain, pan) = spatialize([x, y, z]);
     if gain <= 0.001 {
         return;
@@ -1857,13 +2155,19 @@ pub extern "C" fn aurora_load_settings(data: *mut f64, len: i64) -> i64 {
 
 /// Load and play a WAV file at `path` through the audio mixer (downmixed to
 /// mono, normalized to f32). Returns 1 on success, 0 on failure. Backs the
-/// `play_wav` builtin — audio asset playback beyond the synth.
+/// `play_wav` builtin â€” audio asset playback beyond the synth.
 #[no_mangle]
 pub extern "C" fn aurora_play_wav(ptr: *const u8, len: i64) -> i64 {
     let path = {
         let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
         String::from_utf8_lossy(s).into_owned()
     };
+    // Headless: don't touch the audio device (deterministic verification runs
+    // must not contend for cpal). Report success if the file is readable so
+    // the wiring is still exercised.
+    if headless_audio() {
+        return std::path::Path::new(&path).exists() as i64;
+    }
     let Ok(mut reader) = hound::WavReader::open(&path) else { return 0 };
     let spec = reader.spec();
     let ch = spec.channels.max(1) as usize;
@@ -1886,6 +2190,103 @@ pub extern "C" fn aurora_play_wav(ptr: *const u8, len: i64) -> i64 {
     1
 }
 
+thread_local! {
+    // Decoded sound cache: mono f32 samples RESAMPLED to the device rate, shared by Arc so every
+    // later play is copy-free (no per-shot resample/alloc). Indexed by handle.
+    static SOUNDS: RefCell<Vec<std::sync::Arc<Vec<f32>>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Linear-resample a mono buffer to a new rate, done ONCE at load so playback never re-resamples.
+fn resample_mono(src: &[f32], src_rate: u32, dst_rate: u32) -> Vec<f32> {
+    if src_rate == dst_rate || src.is_empty() {
+        return src.to_vec();
+    }
+    let ratio = src_rate as f64 / dst_rate as f64;
+    let n = (src.len() as f64 / ratio) as usize;
+    (0..n)
+        .map(|i| {
+            let pos = i as f64 * ratio;
+            let i0 = pos as usize;
+            let frac = (pos - i0 as f64) as f32;
+            let s0 = src.get(i0).copied().unwrap_or(0.0);
+            let s1 = src.get(i0 + 1).copied().unwrap_or(s0);
+            s0 + (s1 - s0) * frac
+        })
+        .collect()
+}
+
+/// Decode a WAV file ONCE (mono, normalized f32) and cache it, returning a handle for
+/// play_sound_handle / play_sound_handle_at. Returns -1 on failure. Backs `load_sound` - this is
+/// how a game loads real SFX at startup without re-opening/decoding the file on every play.
+#[no_mangle]
+pub extern "C" fn aurora_load_sound(ptr: *const u8, len: i64) -> i64 {
+    let path = {
+        let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
+        String::from_utf8_lossy(s).into_owned()
+    };
+    let Ok(mut reader) = hound::WavReader::open(&path) else { return -1 };
+    let spec = reader.spec();
+    let ch = spec.channels.max(1) as usize;
+    let raw: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Float => reader.samples::<f32>().filter_map(|s| s.ok()).collect(),
+        hound::SampleFormat::Int => {
+            let max = (1i64 << (spec.bits_per_sample - 1).max(1)) as f32;
+            reader.samples::<i32>().filter_map(|s| s.ok()).map(|s| s as f32 / max).collect()
+        }
+    };
+    let mono: Vec<f32> = if ch <= 1 {
+        raw
+    } else {
+        raw.chunks(ch).map(|c| c.iter().sum::<f32>() / ch as f32).collect()
+    };
+    if mono.is_empty() {
+        return -1;
+    }
+    // Match the device rate ONCE so every play is a copy-free Arc share (fixes the sustained-fire hitch).
+    let buf = resample_mono(&mono, spec.sample_rate, aurora_audio::device_rate());
+    if buf.is_empty() {
+        return -1;
+    }
+    SOUNDS.with(|s| {
+        let mut v = s.borrow_mut();
+        v.push(std::sync::Arc::new(buf));
+        (v.len() - 1) as i64
+    })
+}
+
+/// Play a cached sound (a load_sound handle) NON-positionally at `gain_pct` (0..200, 100 = unity).
+/// Backs `play_sound_handle` - no re-decode, so it is safe on the hot path (every shot/footstep).
+#[no_mangle]
+pub extern "C" fn aurora_play_sound_handle(handle: i64, gain_pct: i64) {
+    if handle < 0 || headless_audio() {
+        return;
+    }
+    let arc = SOUNDS.with(|s| s.borrow().get(handle as usize).cloned());
+    if let Some(a) = arc {
+        let g = 0.7 * (gain_pct.max(0) as f32) / 100.0;
+        aurora_audio::play_mixed_arc(a, false, g, 0.0);
+    }
+}
+
+/// Play a cached sound (a load_sound handle) SPATIALIZED at a world position: distance attenuation
+/// + stereo pan from the listener pose, like play_sound_at but for a real WAV. Backs
+/// `play_sound_handle_at`.
+#[no_mangle]
+pub extern "C" fn aurora_play_sound_handle_at(handle: i64, gain_pct: i64, x: f64, y: f64, z: f64) {
+    if handle < 0 || headless_audio() {
+        return;
+    }
+    let (sgain, pan) = spatialize([x, y, z]);
+    if sgain <= 0.001 {
+        return;
+    }
+    let arc = SOUNDS.with(|s| s.borrow().get(handle as usize).cloned());
+    if let Some(a) = arc {
+        let g = sgain * (gain_pct.max(0) as f32) / 100.0;
+        aurora_audio::play_mixed_arc(a, false, g, pan);
+    }
+}
+
 /// Set the master audio volume from a 0..=100 percentage.
 #[no_mangle]
 pub extern "C" fn aurora_audio_volume(percent: i64) {
@@ -1896,6 +2297,60 @@ pub extern "C" fn aurora_audio_volume(percent: i64) {
 #[no_mangle]
 pub extern "C" fn aurora_audio_stop() {
     aurora_audio::stop_all();
+}
+
+/// Start looping a cached sound (a load_sound handle) as background music at `gain_pct` (0..200,
+/// 100 = unity). Replaces any current music. Backs `play_music` - a game loads a track once and
+/// loops it under the action.
+#[no_mangle]
+pub extern "C" fn aurora_play_music(handle: i64, gain_pct: i64) {
+    if handle < 0 || headless_audio() {
+        return;
+    }
+    let arc = SOUNDS.with(|s| s.borrow().get(handle as usize).cloned());
+    if let Some(a) = arc {
+        let g = 0.7 * (gain_pct.max(0) as f32) / 100.0;
+        aurora_audio::play_music(a, g);
+    }
+}
+
+/// Set the background-music gain live from a 0..=200 percentage (a music-volume slider), without
+/// restarting the track. Backs `music_volume`.
+#[no_mangle]
+pub extern "C" fn aurora_music_volume(percent: i64) {
+    aurora_audio::set_music_gain(0.7 * (percent.clamp(0, 200) as f32) / 100.0);
+}
+
+/// Stop the background music, leaving SFX untouched. Backs `music_stop`.
+#[no_mangle]
+pub extern "C" fn aurora_music_stop() {
+    aurora_audio::stop_music();
+}
+
+/// Start looping a cached sound (a load_sound handle) as the AMBIENCE bed at `gain_pct` (0..200).
+/// A second looping channel, independent of the music. Backs `play_ambience`.
+#[no_mangle]
+pub extern "C" fn aurora_play_ambience(handle: i64, gain_pct: i64) {
+    if handle < 0 || headless_audio() {
+        return;
+    }
+    let arc = SOUNDS.with(|s| s.borrow().get(handle as usize).cloned());
+    if let Some(a) = arc {
+        let g = 0.7 * (gain_pct.max(0) as f32) / 100.0;
+        aurora_audio::play_ambience(a, g);
+    }
+}
+
+/// Set the ambience-bed gain live from a 0..=200 percentage. Backs `ambience_volume`.
+#[no_mangle]
+pub extern "C" fn aurora_ambience_volume(percent: i64) {
+    aurora_audio::set_ambience_gain(0.7 * (percent.clamp(0, 200) as f32) / 100.0);
+}
+
+/// Stop the ambience bed, leaving music + SFX untouched. Backs `ambience_stop`.
+#[no_mangle]
+pub extern "C" fn aurora_ambience_stop() {
+    aurora_audio::stop_ambience();
 }
 
 // --- native debugger support ----------------------------------------------
@@ -2071,338 +2526,74 @@ pub extern "C" fn aurora_dbg_var_f64(name_ptr: *const u8, name_len: i64, value: 
     dbg_record_var(name_ptr, name_len, DbgVal::Float(value));
 }
 
-/// Touch every host symbol so the linker keeps this crate's object in an AOT
-/// link even when the Rust driver references nothing from it directly.
-pub fn force_link() -> usize {
-    let fns: [*const (); 314] = [
-        aurora_net_projectile_intent as *const (),
-        aurora_net_server_projectile_count as *const (),
-        aurora_net_server_projectile_shooter as *const (),
-        aurora_net_server_projectile_kind as *const (),
-        aurora_net_server_projectile_ox as *const (),
-        aurora_net_server_projectile_oy as *const (),
-        aurora_net_server_projectile_oz as *const (),
-        aurora_net_server_projectile_vx as *const (),
-        aurora_net_server_projectile_vy as *const (),
-        aurora_net_server_projectile_vz as *const (),
-        aurora_net_server_projectiles_clear as *const (),
-        aurora_net_set_player_meta as *const (),
-        aurora_net_push_kill as *const (),
-        aurora_net_kill_count as *const (),
-        aurora_net_kill_killer as *const (),
-        aurora_net_kill_victim as *const (),
-        aurora_net_kills_clear as *const (),
-        aurora_net_push_shot as *const (),
-        aurora_net_shot_count as *const (),
-        aurora_net_shot_shooter as *const (),
-        aurora_net_shot_field as *const (),
-        aurora_net_shot_weapon as *const (),
-        aurora_net_shots_clear as *const (),
-        aurora_net_push_boom as *const (),
-        aurora_net_boom_count as *const (),
-        aurora_net_boom_source as *const (),
-        aurora_net_boom_field as *const (),
-        aurora_net_booms_clear as *const (),
-        aurora_net_max_clients as *const (),
-        aurora_net_rejected as *const (),
-        aurora_net_connected as *const (),
-        aurora_net_dedicated as *const (),
-        aurora_net_cfg_set as *const (),
-        aurora_net_cfg_get as *const (),
-        aurora_net_set_bot_count as *const (),
-        aurora_net_set_bot as *const (),
-        aurora_net_set_bot_meta as *const (),
-        aurora_net_set_bot_name as *const (),
-        aurora_net_bot_count as *const (),
-        aurora_net_set_object_count as *const (),
-        aurora_net_set_object as *const (),
-        aurora_net_object_count as *const (),
-        aurora_net_object_x as *const (),
-        aurora_net_object_y as *const (),
-        aurora_net_object_z as *const (),
-        aurora_net_set_object_rot as *const (),
-        aurora_net_object_qx as *const (),
-        aurora_net_object_qy as *const (),
-        aurora_net_object_qz as *const (),
-        aurora_net_object_qw as *const (),
-        aurora_net_set_object_vel as *const (),
-        aurora_net_object_vx as *const (),
-        aurora_net_object_vy as *const (),
-        aurora_net_object_vz as *const (),
-        aurora_r3d_draw_quat as *const (),
-        aurora_net_set_fx_count as *const (),
-        aurora_net_set_fx as *const (),
-        aurora_net_fx_count as *const (),
-        aurora_net_fx_x as *const (),
-        aurora_net_fx_y as *const (),
-        aurora_net_fx_z as *const (),
-        aurora_net_fx_kind as *const (),
-        aurora_net_server_hit_count as *const (),
-        aurora_net_server_hit_shooter as *const (),
-        aurora_net_server_hit_victim as *const (),
-        aurora_net_server_hit_weapon as *const (),
-        aurora_net_server_hit_x as *const (),
-        aurora_net_server_hit_y as *const (),
-        aurora_net_server_hit_z as *const (),
-        aurora_net_server_hits_clear as *const (),
-        aurora_net_set_name as *const (),
-        aurora_net_player_name_len as *const (),
-        aurora_net_player_name_char as *const (),
-        aurora_net_set_meta as *const (),
-        aurora_net_player_meta as *const (),
-        aurora_r3d_draw_shield as *const (),
-        aurora_net_player_state as *const (),
-        aurora_r3d_draw_on_joint as *const (),
-        aurora_r3d_joint_dump as *const (),
-        aurora_r3d_blur as *const (),
-        aurora_input_suppress as *const (),
-        aurora_text_width as *const (),
-        aurora_phys3d_add_box_rot as *const (),
-        aurora_save_settings as *const (),
-        aurora_load_settings as *const (),
-        aurora_r3d_ssao as *const (),
-        aurora_r3d_point_shadows as *const (),
-        // Multiplayer (generic framework: the game registers its Aurora sim).
-        aurora_net_host as *const (),
-        aurora_net_join as *const (),
-        aurora_net_sim as *const (),
-        aurora_net_serve as *const (),
-        aurora_net_send_input as *const (),
-        aurora_net_update as *const (),
-        aurora_net_leave as *const (),
-        aurora_net_interest as *const (),
-        aurora_net_hit_radius as *const (),
-        aurora_net_spawn_at as *const (),
-        aurora_net_spawn_input_slot as *const (),
-        aurora_net_respawn_client as *const (),
-        aurora_net_impulse_input_slot as *const (),
-        aurora_net_push_impulse as *const (),
-        aurora_net_my_id as *const (),
-        aurora_net_is_server as *const (),
-        aurora_net_player_count as *const (),
-        aurora_net_player_id_at as *const (),
-        aurora_net_player_x as *const (),
-        aurora_net_player_y as *const (),
-        aurora_net_player_z as *const (),
-        aurora_net_player_yaw as *const (),
-        aurora_net_local_x as *const (),
-        aurora_net_local_y as *const (),
-        aurora_net_local_z as *const (),
-        aurora_net_local_yaw as *const (),
-        aurora_net_state as *const (),
-        aurora_net_local_state as *const (),
-        aurora_net_fire as *const (),
-        aurora_net_hit_player as *const (),
-        aurora_net_hit_seq as *const (),
-        aurora_net_hit_x as *const (),
-        aurora_net_hit_y as *const (),
-        aurora_net_hit_z as *const (),
-        // Rebindable input-action layer.
-        aurora_input_bind as *const (),
-        aurora_input_binding as *const (),
-        aurora_input_down as *const (),
-        aurora_input_axis as *const (),
-        // Raw f32-blob accessors (for the Aurora net sim).
-        aurora_f32_load as *const (),
-        aurora_f32_store as *const (),
-        aurora_f32_blob as *const (),
-        // Transcendental math builtins.
-        aurora_sin as *const (),
-        aurora_cos as *const (),
-        aurora_tan as *const (),
-        aurora_pow as *const (),
-        aurora_log as *const (),
-        aurora_exp as *const (),
-        aurora_atan2 as *const (),
-        // 3D rendering extras.
-        aurora_r3d_fog as *const (),
-        aurora_r3d_sky as *const (),
-        aurora_r3d_shadows as *const (),
-        aurora_r3d_clear_lights as *const (),
-        aurora_r3d_point_light as *const (),
-        aurora_r3d_make_sprite as *const (),
-        aurora_r3d_draw_billboard as *const (),
-        aurora_r3d_debug_line as *const (),
-        aurora_r3d_frustum_cull as *const (),
-        aurora_r3d_screen_x as *const (),
-        aurora_r3d_screen_y as *const (),
-        // FPS input.
-        aurora_mouse_dx as *const (),
-        aurora_mouse_dy as *const (),
-        aurora_mouse_scroll as *const (),
-        aurora_mouse_button as *const (),
-        aurora_grab_mouse as *const (),
-        // 3D positional audio.
-        aurora_audio_listener as *const (),
-        aurora_play_sound_at as *const (),
-        // Rich 3D physics queries.
-        aurora_phys3d_raycast_full as *const (),
-        aurora_phys3d_raycast_ex as *const (),
-        aurora_phys3d_raycast_world as *const (),
-        aurora_phys3d_hit_x as *const (),
-        aurora_phys3d_hit_y as *const (),
-        aurora_phys3d_hit_z as *const (),
-        aurora_phys3d_hit_nx as *const (),
-        aurora_phys3d_hit_ny as *const (),
-        aurora_phys3d_hit_nz as *const (),
-        aurora_phys3d_hit_body as *const (),
-        aurora_phys3d_spherecast as *const (),
-        aurora_phys3d_overlap_sphere as *const (),
-        aurora_phys3d_apply_force as *const (),
-        aurora_phys3d_apply_torque as *const (),
-        aurora_phys3d_set_angvel as *const (),
-        aurora_phys3d_set_rot as *const (),
-        aurora_phys3d_rot_qx as *const (),
-        aurora_phys3d_rot_qy as *const (),
-        aurora_phys3d_rot_qz as *const (),
-        aurora_phys3d_rot_qw as *const (),
-        // 3D physics (Rapier 3D).
-        aurora_phys3d_init as *const (),
-        aurora_phys3d_add_box as *const (),
-        aurora_phys3d_add_sphere as *const (),
-        aurora_phys3d_add_capsule as *const (),
-        aurora_phys3d_add_character as *const (),
-        aurora_phys3d_add_trimesh as *const (),
-        aurora_phys3d_step as *const (),
-        aurora_phys3d_x as *const (),
-        aurora_phys3d_y as *const (),
-        aurora_phys3d_z as *const (),
-        aurora_phys3d_vel_x as *const (),
-        aurora_phys3d_vel_y as *const (),
-        aurora_phys3d_vel_z as *const (),
-        aurora_phys3d_set_vel as *const (),
-        aurora_phys3d_set_pos as *const (),
-        aurora_phys3d_apply_impulse as *const (),
-        aurora_phys3d_move_character as *const (),
-        aurora_phys3d_grounded as *const (),
-        aurora_phys3d_raycast as *const (),
-        // 3D pathfinding (voxel grid + navmesh).
-        aurora_nav3d_init as *const (),
-        aurora_nav3d_wall as *const (),
-        aurora_nav3d_find as *const (),
-        aurora_nav3d_x as *const (),
-        aurora_nav3d_y as *const (),
-        aurora_nav3d_z as *const (),
-        aurora_navmesh_build as *const (),
-        aurora_navmesh_find as *const (),
-        aurora_navmesh_x as *const (),
-        aurora_navmesh_y as *const (),
-        aurora_navmesh_z as *const (),
-        // 3D rendering.
-        aurora_r3d_load_model as *const (),
-        aurora_r3d_make_box as *const (),
-        aurora_r3d_make_box_sized as *const (),
-        aurora_r3d_make_box_emissive as *const (),
-        aurora_r3d_make_sphere as *const (),
-        aurora_r3d_make_plane as *const (),
-        aurora_r3d_camera as *const (),
-        aurora_r3d_camera_roll as *const (),
-        aurora_r3d_light as *const (),
-        aurora_r3d_clear as *const (),
-        aurora_r3d_begin as *const (),
-        aurora_r3d_draw as *const (),
-        aurora_r3d_draw_tint as *const (),
-        aurora_r3d_anim_play as *const (),
-        aurora_r3d_anim_update as *const (),
-        aurora_r3d_anim_play_upper as *const (),
-        aurora_r3d_pose_bone as *const (),
-        aurora_r3d_clear_pose as *const (),
-        aurora_r3d_anim_stop_upper as *const (),
-        aurora_r3d_clip_count as *const (),
-        aurora_r3d_present as *const (),
-        aurora_oob as *const (),
-        aurora_divzero as *const (),
-        aurora_fmod as *const (),
-        aurora_ffi_dot as *const (),
-        aurora_ffi_dotf as *const (),
-        aurora_phys_vel_x as *const (),
-        aurora_phys_vel_y as *const (),
-        aurora_phys_apply_impulse as *const (),
-        aurora_phys_apply_force as *const (),
-        aurora_phys_set_pos as *const (),
-        aurora_phys_raycast as *const (),
-        aurora_load_image as *const (),
-        aurora_load_font as *const (),
-        aurora_draw_text as *const (),
-        aurora_play_wav as *const (),
-        aurora_phys_init as *const (),
-        aurora_phys_add as *const (),
-        aurora_phys_step as *const (),
-        aurora_phys_x as *const (),
-        aurora_phys_y as *const (),
-        aurora_phys_set_vel as *const (),
-        aurora_nav_init as *const (),
-        aurora_nav_wall as *const (),
-        aurora_nav_find as *const (),
-        aurora_nav_x as *const (),
-        aurora_nav_y as *const (),
-        aurora_par_for as *const (),
-        aurora_run_parallel as *const (),
-        aurora_gpu_compute as *const (),
-        aurora_net_bind as *const (),
-        aurora_net_connect as *const (),
-        aurora_net_send as *const (),
-        aurora_net_recv as *const (),
-        aurora_frame_reset as *const (),
-        aurora_load_ppm as *const (),
-        aurora_scene_save as *const (),
-        aurora_scene_load as *const (),
-        aurora_prof_enter as *const (),
-        aurora_prof_exit as *const (),
-        aurora_str_concat as *const (),
-        aurora_str_eq as *const (),
-        aurora_str_char_at as *const (),
-        aurora_str_substr as *const (),
-        aurora_str_starts_with as *const (),
-        aurora_int_to_str as *const (),
-        aurora_float_to_str as *const (),
-        aurora_play_note as *const (),
-        aurora_play_sound as *const (),
-        aurora_play_noise as *const (),
-        aurora_surface_w as *const (),
-        aurora_surface_h as *const (),
-        aurora_r3d_speedlines as *const (),
-        aurora_r3d_damage as *const (),
-        aurora_draw_int as *const (),
-        aurora_audio_volume as *const (),
-        aurora_audio_stop as *const (),
-        aurora_gpu_render as *const (),
-        aurora_window_open as *const (),
-        aurora_window_present as *const (),
-        aurora_key_down as *const (),
-        aurora_input_char as *const (),
-        aurora_window_fullscreen as *const (),
-        aurora_mouse_x as *const (),
-        aurora_mouse_y as *const (),
-        aurora_mouse_down as *const (),
-        aurora_dbg_enter as *const (),
-        aurora_dbg_leave as *const (),
-        aurora_dbg_stmt as *const (),
-        aurora_dbg_var as *const (),
-        aurora_dbg_var_f64 as *const (),
-        aurora_print_i64 as *const (),
-        aurora_print_f64 as *const (),
-        aurora_print_str as *const (),
-        aurora_print_nl as *const (),
-        aurora_runtime_flush as *const (),
-        aurora_frame_dt as *const (),
-        aurora_sleep_ms as *const (),
-        aurora_framebuffer as *const (),
-        aurora_clear as *const (),
-        aurora_pixel as *const (),
-        aurora_triangle as *const (),
-        aurora_fb_get as *const (),
-        aurora_save_ppm as *const (),
-        aurora_spawn_entity as *const (),
-        aurora_despawn as *const (),
-        aurora_store_component as *const (),
-        aurora_get_component as *const (),
-        aurora_query_begin as *const (),
-        aurora_query_entity as *const (),
-        aurora_entity_count as *const (),
-    ];
-    std::hint::black_box(fns.iter().map(|p| *p as usize).sum())
+macro_rules! rust_ty {
+    (I64) => {
+        i64
+    };
+    (F64) => {
+        f64
+    };
+    // A `str` argument is its two slots: this is the data pointer, and the
+    // `I64` that follows it in the row is the length.
+    (Ptr) => {
+        *const u8
+    };
 }
+
+/// Take a host function's address THROUGH a function pointer spelled from its
+/// table row. Rust then checks the row against the real definition, so a row
+/// that claims the wrong parameter or return type does not compile - the only
+/// thing that can otherwise catch it is a program miscompiled at run time. A
+/// `Str` result is the caller-allocated 2-slot out-pointer, passed first.
+macro_rules! checked_addr {
+    ($sym:ident, [$($p:ident),*], void) => {{
+        let f: extern "C" fn($(rust_ty!($p)),*) = $sym;
+        f as usize
+    }};
+    ($sym:ident, [$($p:ident),*], Str) => {{
+        let f: extern "C" fn(*mut i64, $(rust_ty!($p)),*) = $sym;
+        f as usize
+    }};
+    ($sym:ident, [$($p:ident),*], $ret:ident) => {{
+        let f: extern "C" fn($(rust_ty!($p)),*) -> rust_ty!($ret) = $sym;
+        f as usize
+    }};
+}
+
+// An `inline` builtin has no runtime function to keep. `scalar` and `text` rows
+// are entirely table-driven - nothing else describes their signature - so they
+// are the kinds whose row is checked against the definition. The rest pass
+// arrays and closures, whose Rust spelling the table does not model.
+macro_rules! force_link_one {
+    ($acc:ident, inline, $sym:ident, [$($p:ident),*], $ret:ident) => {};
+    ($acc:ident, scalar, $sym:ident, [$($p:ident),*], $ret:ident) => {
+        $acc = $acc.wrapping_add(checked_addr!($sym, [$($p),*], $ret));
+    };
+    ($acc:ident, text, $sym:ident, [$($p:ident),*], $ret:ident) => {
+        $acc = $acc.wrapping_add(checked_addr!($sym, [$($p),*], $ret));
+    };
+    ($acc:ident, $kind:ident, $sym:ident, [$($p:ident),*], $ret:ident) => {
+        $acc = $acc.wrapping_add($sym as usize);
+    };
+}
+
+macro_rules! gen_force_link {
+    ($([$kind:ident, $name:ident, $sym:ident, [$($p:ident),*], $ret:ident])*) => {
+        /// Touch every host symbol so the linker keeps this crate's object in an
+        /// AOT link even when the Rust driver references nothing from it
+        /// directly. Generated from `aurora-abi`'s builtin table, so it cannot
+        /// fall behind the runtime the way a hand-written list did - and a row
+        /// naming a function that does not exist, or giving a `scalar` builtin a
+        /// signature its definition does not have, fails to COMPILE here.
+        pub fn force_link() -> usize {
+            let mut acc = 0usize;
+            $( force_link_one!(acc, $kind, $sym, [$($p),*], $ret); )*
+            acc
+        }
+    };
+}
+
+aurora_abi::for_each_builtin!(gen_force_link);
 
 #[cfg(test)]
 mod arena_tests {
@@ -2459,5 +2650,132 @@ mod arena_tests {
         let bytes = unsafe { std::slice::from_raw_parts(first, 4) };
         assert_eq!(bytes, b"abcd");
         aurora_frame_reset();
+    }
+}
+
+/// Parallel-batch world routing must stay bound to the thread doing the work.
+///
+/// These pin down the ownership rule that `PAR_WORLD` is per-thread: a batch
+/// running on one thread must never redirect ECS access on any other thread.
+/// Both tests hold the racy window open deliberately, so they fail every time
+/// against a process-global routing slot instead of only under load.
+#[cfg(test)]
+mod par_world_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Systems are bare `extern "C" fn()`, so the batches below coordinate
+    /// through statics. Spin waits are bounded so a regression fails the test
+    /// instead of hanging the suite.
+    fn wait_for(what: &str, cond: impl Fn() -> bool) {
+        let start = std::time::Instant::now();
+        while !cond() {
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(30),
+                "timed out waiting for {what}"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    static HELD: AtomicUsize = AtomicUsize::new(0);
+    static RELEASE: AtomicUsize = AtomicUsize::new(0);
+
+    /// Announce arrival, then park inside the batch so the window stays open.
+    extern "C" fn hold_open() {
+        HELD.fetch_add(1, Ordering::SeqCst);
+        wait_for("the test to release the batch", || RELEASE.load(Ordering::SeqCst) != 0);
+    }
+
+    #[test]
+    fn parallel_batch_does_not_capture_another_threads_world() {
+        // Thread A owns a world with 5 entities and parks two systems inside a
+        // parallel batch. While that batch is wide open, an unrelated thread B
+        // does ordinary ECS work. B's entities belong in B's world, and A's
+        // world must not absorb them.
+        let a = std::thread::spawn(|| {
+            for _ in 0..5 {
+                aurora_spawn_entity();
+            }
+            let fns = [hold_open as usize, hold_open as usize];
+            aurora_run_parallel(fns.as_ptr(), 2);
+            aurora_entity_count()
+        });
+        wait_for("both systems to enter the batch", || HELD.load(Ordering::SeqCst) == 2);
+
+        let b = std::thread::spawn(|| {
+            for _ in 0..3 {
+                aurora_spawn_entity();
+            }
+            aurora_entity_count()
+        });
+        let b_count = b.join().expect("bystander thread panicked");
+
+        // Release before asserting, so a failure cannot wedge thread A.
+        RELEASE.store(1, Ordering::SeqCst);
+        let a_count = a.join().expect("batch owner thread panicked");
+
+        assert_eq!(b_count, 3, "a thread outside the batch must see only its own entities");
+        assert_eq!(a_count, 5, "the batch's world must not absorb another thread's entities");
+    }
+
+    static GATE: std::sync::OnceLock<std::sync::Barrier> = std::sync::OnceLock::new();
+
+    /// Wait until every system of both batches is live, then spawn into
+    /// whichever world this thread is routed to.
+    extern "C" fn spawn_two() {
+        GATE.get_or_init(|| std::sync::Barrier::new(4)).wait();
+        aurora_spawn_entity();
+        aurora_spawn_entity();
+    }
+
+    #[test]
+    fn concurrent_batches_keep_their_worlds_separate() {
+        // Two threads run a two-system batch each, forced to overlap by the
+        // barrier. Each system spawns 2 entities into its own batch's world, so
+        // both owners must end with exactly 4: one shared routing slot would
+        // funnel all 8 spawns into a single world.
+        let batch = || {
+            std::thread::spawn(|| {
+                let fns = [spawn_two as usize, spawn_two as usize];
+                aurora_run_parallel(fns.as_ptr(), 2);
+                aurora_entity_count()
+            })
+        };
+        let a = batch();
+        let b = batch();
+        let a_count = a.join().expect("batch A panicked");
+        let b_count = b.join().expect("batch B panicked");
+        assert_eq!(
+            (a_count, b_count),
+            (4, 4),
+            "each concurrent batch must stay inside its own owner's world"
+        );
+    }
+
+    /// Innermost system: one entity into whatever world it is routed to.
+    extern "C" fn spawn_one() {
+        aurora_spawn_entity();
+    }
+
+    /// A system that itself opens a batch, so the workers below are nested.
+    extern "C" fn nested_batch() {
+        let fns = [spawn_one as usize, spawn_one as usize];
+        aurora_run_parallel(fns.as_ptr(), 2);
+    }
+
+    #[test]
+    fn nested_batches_reach_the_owning_threads_world() {
+        // A batch started from inside a batch must keep writing to the world of
+        // the thread that opened the outer one, not to the empty thread-local
+        // world of the worker that happens to be running the outer system.
+        // 2 outer systems * 2 inner systems = 4 entities, all in the owner.
+        let owner = std::thread::spawn(|| {
+            let fns = [nested_batch as usize, nested_batch as usize];
+            aurora_run_parallel(fns.as_ptr(), 2);
+            aurora_entity_count()
+        });
+        let count = owner.join().expect("nested batch owner panicked");
+        assert_eq!(count, 4, "nested batch writes must land in the outer owner's world");
     }
 }

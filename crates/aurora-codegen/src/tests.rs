@@ -16,6 +16,59 @@ fn compile_call_f64(src: &str, entry: &str, args: &[f64]) -> f64 {
     jit_call_f64(&module, entry, args).unwrap_or_else(|e| panic!("jit error: {e}"))
 }
 
+/// `assert` is a documented builtin the front end accepts, so the backend must
+/// have a callee for it. It had none: every program calling `assert` failed to
+/// lower, and before stubbing became loud the whole enclosing function silently
+/// did nothing. Only the passing path can run in-process - a failing assert
+/// aborts the process by design.
+#[test]
+fn assert_lowers_to_a_runtime_call() {
+    let src = "fn twice(n: i64) -> i64 {\n assert(n > 0)\n n * 2\n }
+    fn main() { println(twice(21)) }";
+    let (module, diags) = parse_str(src);
+    assert!(!diags.iter().any(|d| d.is_error()), "parse failed");
+    let (_, failed) = build_object(&module).expect("object emission failed");
+    assert!(failed.is_empty(), "`assert` did not lower: {failed:?}");
+    assert_eq!(compile_call(src, "twice", &[21]), 42);
+}
+
+/// `sys_argc`/`sys_arg`/`sys_env` are table-driven end to end (one `scalar` row
+/// and two `text` rows, no bespoke lowering), so this checks the generic text
+/// dispatch as much as the builtins: a `str` result comes back as a real Aurora
+/// string, and every out-of-range read is `""` rather than a crash.
+#[test]
+fn sys_builtins_read_the_process_environment() {
+    let src = "fn argc() -> i64 { sys_argc() }\n\
+               fn arg_len(i: i64) -> i64 { len(sys_arg(i)) }\n\
+               fn env_len(name: str) -> i64 { len(sys_env(name)) }\n\
+               fn set_len() -> i64 { env_len(\"AURORA_TEST_SET\") }\n\
+               fn empty_len() -> i64 { env_len(\"AURORA_TEST_EMPTY\") }\n\
+               fn missing_len() -> i64 { env_len(\"AURORA_TEST_MISSING_XYZ\") }\n\
+               fn noname_len() -> i64 { env_len(\"\") }\n\
+               fn main() { println(argc()) }";
+    let (module, diags) = parse_str(src);
+    assert!(!diags.iter().any(|d| d.is_error()), "parse failed");
+    let (_, failed) = build_object(&module).expect("object emission failed");
+    assert!(failed.is_empty(), "the sys_* builtins did not lower: {failed:?}");
+
+    // This test binary's own argv: at least the program name, which is not empty.
+    let argc = compile_call(src, "argc", &[]);
+    assert!(argc >= 1, "argc must count argv[0], got {argc}");
+    assert!(compile_call(src, "arg_len", &[0]) > 0, "argv[0] must not be empty");
+    // Out of range in both directions, including the extremes.
+    for i in [argc, argc + 1, 1_000_000, -1, -1_000_000, i64::MIN, i64::MAX] {
+        assert_eq!(compile_call(src, "arg_len", &[i]), 0, "sys_arg({i}) must be empty");
+    }
+
+    std::env::set_var("AURORA_TEST_SET", "value");
+    std::env::set_var("AURORA_TEST_EMPTY", "");
+    std::env::remove_var("AURORA_TEST_MISSING_XYZ");
+    assert_eq!(compile_call(src, "set_len", &[]), 5);
+    assert_eq!(compile_call(src, "empty_len", &[]), 0, "an empty value reads as \"\"");
+    assert_eq!(compile_call(src, "missing_len", &[]), 0, "an unset variable reads as \"\"");
+    assert_eq!(compile_call(src, "noname_len", &[]), 0, "an empty name reads as \"\"");
+}
+
 #[test]
 fn build_object_emits_aot_object_with_entry_symbol() {
     // AOT path: lowering to a native object file must succeed and embed the
@@ -1109,4 +1162,198 @@ fn wrong_entry_type_errors_clearly() {
 /// cross-check test self-contained (returns None to fall back to native).
 fn aurora_interp_eval(_module: &aurora_parser::ast::Module, _n: i64) -> Option<i64> {
     None
+}
+
+// --- top-level consts -------------------------------------------------------
+
+#[test]
+fn top_level_consts_compile_and_run() {
+    // A const has no runtime storage: each use lowers its initializer inline.
+    let src = "const LIMIT: i64 = 7
+    const STEP: i64 = LIMIT * 2
+    fn run() -> i64 { LIMIT * 100 + STEP }"; // 700 + 14 = 714
+    assert_eq!(compile_call(src, "run", &[]), 714);
+}
+
+#[test]
+fn float_const_compiles_and_runs() {
+    let src = "const G: f64 = 2.5
+    fn run() -> f64 { G * 4.0 }";
+    assert_eq!(compile_call_f64(src, "run", &[]), 10.0);
+}
+
+#[test]
+fn self_referential_const_is_reported_not_a_stack_overflow() {
+    // Inlining a const that names itself would recurse forever, and a stack
+    // overflow is an uncatchable abort, so it has to be a diagnostic.
+    let src = "const A: i64 = B
+    const B: i64 = A
+    fn run() -> i64 { A }";
+    let (module, _) = parse_str(src);
+    let err = jit_call(&module, "run", &[]).expect_err("a const cycle must be rejected");
+    assert!(err.contains("defined in terms of itself"), "unexpected error: {err}");
+}
+
+// --- file-based modules (`mod NAME;`) ---------------------------------------
+//
+// The loader appends `NAME.aur` as an inline `mod NAME { .. }` block, so the
+// backend sees `NAME::`-prefixed top-level items. These tests pin that the whole
+// way down to native code, on BOTH lowering paths: the JIT (`jit_call`) and the
+// AOT object backend (`build_object`). The resolution rule itself is tested in
+// `aurora-parser`'s `tests/modules.rs`.
+
+/// Write a throwaway multi-file program to its own temp directory, expand its
+/// file modules, and parse it. `files[0]` is the entry file.
+fn file_program(tag: &str, files: &[(&str, &str)]) -> aurora_parser::ast::Module {
+    let dir = std::env::temp_dir().join(format!("aurora_modjit_{}_{tag}", std::process::id()));
+    // Fresh every run, so a stale file cannot mask a failure.
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    for (name, src) in files {
+        std::fs::write(dir.join(name), src).expect("write module file");
+    }
+    let entry = dir.join(files[0].0);
+    let src = std::fs::read_to_string(&entry).expect("read entry file");
+    let (expanded, diags) = aurora_parser::load_file_modules(&src, &entry);
+    assert!(!diags.iter().any(|d| d.is_error()), "module loading failed: {diags:?}");
+    let (module, diags) = parse_str(&expanded);
+    assert!(!diags.iter().any(|d| d.is_error()), "parse failed: {diags:?}");
+    module
+}
+
+#[test]
+fn cross_module_function_call_compiles_and_runs() {
+    let module = file_program(
+        "call",
+        &[
+            ("main.aur", "mod helper;\nfn run() -> i64 { helper::add(2, 3) * 10 }"),
+            ("helper.aur", "fn add(a: i64, b: i64) -> i64 { a + b }"),
+        ],
+    );
+    assert_eq!(jit_call(&module, "run", &[]).expect("jit failed"), 50);
+}
+
+#[test]
+fn cross_module_struct_construction_compiles_and_runs() {
+    let module = file_program(
+        "struct",
+        &[
+            (
+                "main.aur",
+                "mod shape;\nfn run() -> f64 { let p = shape::P { x: 4.0, y: 6.0 }\n p.x + p.y }",
+            ),
+            ("shape.aur", "struct P { x: f64, y: f64 }"),
+        ],
+    );
+    assert_eq!(jit_call_f64(&module, "run", &[]).expect("jit failed"), 10.0);
+}
+
+#[test]
+fn cross_module_enum_compiles_and_runs() {
+    // Both a variant named through the module (`k::Kind::Small`) and one produced
+    // inside the module then matched inside it.
+    let module = file_program(
+        "enum",
+        &[
+            (
+                "main.aur",
+                "mod k;\nfn run() -> i64 { k::code(k::classify(9)) * 10 + k::code(k::Kind::Small) }",
+            ),
+            (
+                "k.aur",
+                "enum Kind { Small, Big }
+                 fn classify(n: i64) -> Kind { if n > 5 { Kind::Big } else { Kind::Small } }
+                 fn code(x: Kind) -> i64 { match x { Kind::Small => 1, Kind::Big => 2 } }",
+            ),
+        ],
+    );
+    assert_eq!(jit_call(&module, "run", &[]).expect("jit failed"), 21);
+}
+
+#[test]
+fn cross_module_const_compiles_and_runs() {
+    // A module const, read both from inside the module and through its path.
+    let module = file_program(
+        "const",
+        &[
+            ("main.aur", "mod cfg;\nfn run() -> i64 { cfg::LIMIT * 10 + cfg::doubled() }"),
+            ("cfg.aur", "const LIMIT: i64 = 7\nfn doubled() -> i64 { LIMIT * 2 }"),
+        ],
+    );
+    assert_eq!(jit_call(&module, "run", &[]).expect("jit failed"), 84);
+}
+
+#[test]
+fn file_module_can_call_root_level_items_unqualified() {
+    // A name a module does not define itself resolves against the top level, so a
+    // module body can use the entry file's items (and the std prelude).
+    let module = file_program(
+        "rootref",
+        &[
+            (
+                "main.aur",
+                "mod m;\nfn triple(n: i64) -> i64 { n * 3 }\nfn run() -> i64 { m::via() }",
+            ),
+            ("m.aur", "fn via() -> i64 { triple(5) }"),
+        ],
+    );
+    assert_eq!(jit_call(&module, "run", &[]).expect("jit failed"), 15);
+}
+
+#[test]
+fn nested_file_modules_compile_and_run() {
+    let module = file_program(
+        "nested",
+        &[
+            ("main.aur", "mod mid;\nfn run() -> i64 { mid::doubled() }"),
+            ("mid.aur", "mod leaf;\nfn doubled() -> i64 { leaf::base() * 2 }"),
+            ("leaf.aur", "fn base() -> i64 { 10 }"),
+        ],
+    );
+    assert_eq!(jit_call(&module, "run", &[]).expect("jit failed"), 20);
+}
+
+#[test]
+fn diamond_file_modules_compile_and_run() {
+    // `shared` is declared twice but must be defined once, or the backend would
+    // see two identical function names.
+    let module = file_program(
+        "diamond",
+        &[
+            ("main.aur", "mod l;\nmod r;\nfn run() -> i64 { l::lv() * 10 + r::rv() }"),
+            ("l.aur", "mod shared;\nfn lv() -> i64 { shared::base() + 1 }"),
+            ("r.aur", "mod shared;\nfn rv() -> i64 { shared::base() + 2 }"),
+            ("shared.aur", "fn base() -> i64 { 4 }"),
+        ],
+    );
+    assert_eq!(jit_call(&module, "run", &[]).expect("jit failed"), 56);
+}
+
+#[test]
+fn file_modules_lower_to_an_aot_object_with_nothing_stubbed() {
+    // AOT path (`aurorac build`), not the JIT. A function the backend cannot
+    // compile is emitted as a stub, so `failed` being empty is what proves the
+    // module's items were really lowered rather than silently dropped.
+    let module = file_program(
+        "aot",
+        &[
+            (
+                "main.aur",
+                "mod helper;\nmod shape;\nfn main() {
+                     println(helper::add(2, 3))
+                     let p = shape::P { x: 4.0, y: 6.0 }
+                     println(str(p.x + p.y))
+                 }",
+            ),
+            ("helper.aur", "mod shape;\nfn add(a: i64, b: i64) -> i64 { a + b + shape::ZERO }"),
+            ("shape.aur", "struct P { x: f64, y: f64 }\nconst ZERO: i64 = 0"),
+        ],
+    );
+    let (obj, failed) = build_object(&module).expect("object emission failed");
+    assert!(failed.is_empty(), "file-module functions were stubbed, not compiled: {failed:?}");
+    let needle = b"aurora_user_main";
+    assert!(
+        obj.windows(needle.len()).any(|w| w == needle),
+        "emitted object is missing the `aurora_user_main` entry symbol"
+    );
 }

@@ -16,7 +16,7 @@ mod scene;
 pub use anim::{skin_matrices, skin_matrices_blended, AnimPlayer};
 pub use glam::{Mat4, Quat, Vec3};
 pub use mesh::{GpuMesh, MeshData, Vertex};
-pub use model::{Clip, Joint, Model, Primitive, Skeleton};
+pub use model::{Channel, Clip, Interp, Joint, Model, Path, Primitive, Skeleton};
 pub use render::{InstanceRaw, Material, MaterialDesc, Renderer3D, DEPTH_FORMAT, MAX_JOINTS, MAX_LIGHTS};
 pub use scene::Scene;
 
@@ -559,7 +559,7 @@ mod tests {
 
         // Skinned with an identity joint: the cube renders normally.
         r.begin();
-        r.draw(cube, red, Mat4::IDENTITY, Some(vec![Mat4::IDENTITY]));
+        r.draw(cube, red, Mat4::IDENTITY, Some(std::sync::Arc::new(vec![Mat4::IDENTITY])));
         let lit = render_offscreen(&mut r, &device, &queue, w, h, [0.0, 0.0, 0.0, 1.0]);
         assert!(px(&lit, w, w / 2, h / 2)[0] > 60, "identity-skinned cube should render");
 
@@ -567,7 +567,7 @@ mod tests {
         // cube, so the center is background -> proves the joint matrix is applied
         // in the vertex shader.
         r.begin();
-        r.draw(cube, red, Mat4::IDENTITY, Some(vec![Mat4::from_scale(Vec3::splat(0.0001))]));
+        r.draw(cube, red, Mat4::IDENTITY, Some(std::sync::Arc::new(vec![Mat4::from_scale(Vec3::splat(0.0001))])));
         let collapsed = render_offscreen(&mut r, &device, &queue, w, h, [0.0, 0.0, 0.0, 1.0]);
         assert!(px(&collapsed, w, w / 2, h / 2)[0] < 20, "collapsed-skin cube should vanish");
     }

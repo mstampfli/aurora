@@ -3,6 +3,8 @@
 //! the surface the engine/runtime drives; it owns no device and borrows one per
 //! call so the same scene renders offscreen or to the window.
 
+use std::sync::Arc;
+
 use glam::{Mat4, Vec3};
 
 use crate::anim::AnimPlayer;
@@ -17,6 +19,10 @@ struct Renderable {
     model: Option<Model>,
     player: AnimPlayer,
     skinned: bool,
+    /// Bitmask of skin joints to HIDE: their skinning matrix is zeroed before drawing, so
+    /// geometry weighted to them collapses to the model origin (used for first-person arms -
+    /// hide the torso/head/legs so only the arms render). Bit i = joint i. 0 = show all.
+    hidden_joints: u64,
 }
 
 struct Camera {
@@ -122,6 +128,9 @@ impl Scene {
     pub fn set_point_shadows(&mut self, on: bool) {
         self.renderer.set_point_shadows(on);
     }
+    pub fn set_viewmodel(&mut self, on: bool) {
+        self.renderer.set_viewmodel(on);
+    }
     pub fn clear_point_lights(&mut self) {
         self.renderer.clear_point_lights();
     }
@@ -131,6 +140,12 @@ impl Scene {
 
     pub fn set_clear(&mut self, r: f32, g: f32, b: f32) {
         self.clear = [r, g, b, 1.0];
+    }
+
+    /// The current clear color (offscreen capture renders with the same
+    /// background the live window would).
+    pub fn clear_color(&self) -> [f32; 4] {
+        self.clear
     }
 
     /// Load a model file (glTF/GLB/OBJ). Returns a handle or -1 on failure.
@@ -160,7 +175,7 @@ impl Scene {
             prims.push((mesh, mat));
             skinned |= p.skinned;
         }
-        self.items.push(Renderable { prims, model: Some(model), player: AnimPlayer::new(), skinned });
+        self.items.push(Renderable { prims, model: Some(model), player: AnimPlayer::new(), skinned, hidden_joints: 0 });
         (self.items.len() - 1) as i64
     }
 
@@ -179,6 +194,7 @@ impl Scene {
             model: None,
             player: AnimPlayer::new(),
             skinned: false,
+            hidden_joints: 0,
         });
         (self.items.len() - 1) as i64
     }
@@ -224,6 +240,7 @@ impl Scene {
             model: None,
             player: AnimPlayer::new(),
             skinned: false,
+            hidden_joints: 0,
         });
         (self.items.len() - 1) as i64
     }
@@ -280,6 +297,7 @@ impl Scene {
             model: None,
             player: AnimPlayer::new(),
             skinned: false,
+            hidden_joints: 0,
         });
         (self.items.len() - 1) as i64
     }
@@ -348,6 +366,24 @@ impl Scene {
         }
     }
 
+    /// Drive the FULL-BODY base as a sustained weighted blend of two clips (`clip_a` at weight 0,
+    /// `clip_b` at weight 1) - e.g. idle <-> run by speed. Call every frame to update the weight; the
+    /// first call crossfades in over `fade` so jump->land and similar transitions stay smooth.
+    pub fn anim_blend(&mut self, handle: i64, clip_a: i64, clip_b: i64, weight: f32, speed: f32, fade: f32) {
+        if let Some(r) = self.item_mut(handle) {
+            r.player.blend(clip_a.max(0) as usize, clip_b.max(0) as usize, weight, speed, fade);
+        }
+    }
+
+    /// Drive the upper-body overlay as a weighted BLEND of two clips (`clip_a` at weight 0, `clip_b`
+    /// at weight 1), masked to `mask_root`. Call every frame to track a continuous value such as aim
+    /// pitch (look down -> up); only the first call fades in, so per-frame weight updates stay smooth.
+    pub fn anim_aim_upper(&mut self, handle: i64, clip_a: i64, clip_b: i64, weight: f32, speed: f32, fade: f32, mask_root: i64) {
+        if let Some(r) = self.item_mut(handle) {
+            r.player.aim_upper(clip_a.max(0) as usize, clip_b.max(0) as usize, weight, speed, fade, mask_root.max(0) as usize);
+        }
+    }
+
     /// Set a per-bone pose override (extra local XYZ-Euler rotation on `joint`), e.g. to author a
     /// slide the clips don't have. Set each frame; clear_pose() resets a model to its pure clip pose.
     pub fn pose_bone(&mut self, handle: i64, joint: i64, rx: f32, ry: f32, rz: f32) {
@@ -371,29 +407,55 @@ impl Scene {
         }
     }
 
+    /// Jump a model's upper-body overlay playback to `t` seconds (skip a clip wind-up).
+    pub fn anim_seek_upper(&mut self, handle: i64, t: f32) {
+        if let Some(r) = self.item_mut(handle) {
+            r.player.seek_upper(t);
+        }
+    }
+
     pub fn begin(&mut self) {
         self.renderer.begin();
     }
 
     /// Queue a model for drawing at `transform`.
+    /// Hide one skin joint's geometry on a model (its skinning matrix is zeroed, collapsing that
+    /// geometry to the model origin). Accumulates; clear with [`show_joints`]. Used by first-person
+    /// arms to drop the torso/head/legs so only the arms render.
+    pub fn hide_joint(&mut self, handle: i64, joint: i64) {
+        if let Some(idx) = self.resolve(handle) {
+            if joint >= 0 && joint < 64 {
+                self.items[idx].hidden_joints |= 1u64 << joint;
+            }
+        }
+    }
+
+    /// Show all joints again (clear the hidden mask).
+    pub fn show_joints(&mut self, handle: i64) {
+        if let Some(idx) = self.resolve(handle) {
+            self.items[idx].hidden_joints = 0;
+        }
+    }
+
     pub fn draw(&mut self, handle: i64, transform: Mat4) {
         let idx = match self.resolve(handle) {
             Some(i) => i,
             None => return,
         };
-        // Compute skinning matrices once if needed.
+        // Compute skinning matrices ONCE, then share them across all primitives via Arc (a cheap
+        // refcount bump per prim instead of deep-copying the 128-matrix array each time).
+        let mask = self.items[idx].hidden_joints;
         let joints = {
             let r = &self.items[idx];
             if r.skinned {
-                r.model.as_ref().map(|m| r.player.matrices(m))
+                r.model.as_ref().map(|m| r.player.matrices(m, mask)).filter(|v| !v.is_empty()).map(Arc::new)
             } else {
                 None
             }
         };
         let prims = self.items[idx].prims.clone();
         for (mesh, mat) in prims {
-            let j = joints.clone().filter(|v| !v.is_empty());
-            self.renderer.draw(mesh, mat, transform, j);
+            self.renderer.draw(mesh, mat, transform, joints.clone());
         }
     }
 
@@ -403,18 +465,18 @@ impl Scene {
             Some(i) => i,
             None => return,
         };
+        let mask = self.items[idx].hidden_joints;
         let joints = {
             let r = &self.items[idx];
             if r.skinned {
-                r.model.as_ref().map(|m| r.player.matrices(m))
+                r.model.as_ref().map(|m| r.player.matrices(m, mask)).filter(|v| !v.is_empty()).map(Arc::new)
             } else {
                 None
             }
         };
         let prims = self.items[idx].prims.clone();
         for (mesh, mat) in prims {
-            let j = joints.clone().filter(|v| !v.is_empty());
-            self.renderer.draw_tint(mesh, mat, transform, j, tint);
+            self.renderer.draw_tint(mesh, mat, transform, joints.clone(), tint);
         }
     }
 
@@ -425,18 +487,18 @@ impl Scene {
             Some(i) => i,
             None => return,
         };
+        let mask = self.items[idx].hidden_joints;
         let joints = {
             let r = &self.items[idx];
             if r.skinned {
-                r.model.as_ref().map(|m| r.player.matrices(m))
+                r.model.as_ref().map(|m| r.player.matrices(m, mask)).filter(|v| !v.is_empty()).map(Arc::new)
             } else {
                 None
             }
         };
         let prims = self.items[idx].prims.clone();
         for (mesh, mat) in prims {
-            let j = joints.clone().filter(|v| !v.is_empty());
-            self.renderer.draw_shield(mesh, mat, transform, j, strength, time);
+            self.renderer.draw_shield(mesh, mat, transform, joints.clone(), strength, time);
         }
     }
 
@@ -453,6 +515,55 @@ impl Scene {
             })
             .unwrap_or(Mat4::IDENTITY);
         self.draw(weapon, host_xform * g * local);
+    }
+
+    /// The full model-space global transform of `joint` in the host's CURRENT
+    /// pose (what `draw_on_joint` composes with). Tooling uses it to draw
+    /// attachment gnomons and to solve socket transforms.
+    pub fn joint_global_mat(&self, host: i64, joint: i64) -> Option<Mat4> {
+        let idx = self.resolve(host)?;
+        let r = &self.items[idx];
+        r.model.as_ref().and_then(|m| r.player.joint_global(m, joint.max(0) as usize))
+    }
+
+    /// The model-space position of `joint` in the host's CURRENT pose (the translation of its
+    /// global transform, before the draw transform). Lets a first-person rig cancel the bone offset
+    /// so a bone-attached weapon lands at a fixed camera-space spot. None if missing.
+    pub fn joint_pos(&self, host: i64, joint: i64) -> Option<[f32; 3]> {
+        let idx = self.resolve(host)?;
+        let r = &self.items[idx];
+        let g = r.model.as_ref().and_then(|m| r.player.joint_global(m, joint.max(0) as usize))?;
+        let t = g.w_axis;
+        Some([t.x, t.y, t.z])
+    }
+
+    /// Draw the host's skeleton as debug lines (parent->child bones) at the
+    /// given world transform, for headless rig/hitbox visual audits. Uses the
+    /// current animation pose. No-op if the model has no skeleton.
+    pub fn debug_skeleton(&mut self, host: i64, host_xform: Mat4, color: Vec3) {
+        let Some(idx) = self.resolve(host) else { return };
+        // Collect (parent_world, child_world) segments first (immutable borrow),
+        // then draw (mutable borrow of the renderer).
+        let mut segs: Vec<(Vec3, Vec3)> = Vec::new();
+        {
+            let r = &self.items[idx];
+            let Some(model) = r.model.as_ref() else { return };
+            let Some(skel) = model.skeleton.as_ref() else { return };
+            for (ji, joint) in skel.joints.iter().enumerate() {
+                let Some(parent) = joint.parent else { continue };
+                let (Some(cg), Some(pg)) =
+                    (r.player.joint_global(model, ji), r.player.joint_global(model, parent))
+                else {
+                    continue;
+                };
+                let cp = host_xform.transform_point3(cg.w_axis.truncate());
+                let pp = host_xform.transform_point3(pg.w_axis.truncate());
+                segs.push((pp, cp));
+            }
+        }
+        for (a, b) in segs {
+            self.renderer.debug_line(a, b, color);
+        }
     }
 
     /// Print every joint index + name of `host` to stdout (bone-discovery helper).

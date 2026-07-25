@@ -25,7 +25,10 @@ pub use imm::{
     mouse_button as imm_mouse_button, mouse_delta as imm_mouse_delta, open as imm_open,
     present as imm_present, scroll as imm_scroll,
     r3d_anim_play as imm_r3d_anim_play, r3d_anim_play_upper as imm_r3d_anim_play_upper,
+    r3d_anim_aim_upper as imm_r3d_anim_aim_upper, r3d_anim_blend as imm_r3d_anim_blend,
+    r3d_anim_seek_upper as imm_r3d_anim_seek_upper,
     r3d_pose_bone as imm_r3d_pose_bone, r3d_clear_pose as imm_r3d_clear_pose,
+    r3d_hide_joint as imm_r3d_hide_joint,
     r3d_anim_stop_upper as imm_r3d_anim_stop_upper, r3d_anim_update as imm_r3d_anim_update,
     r3d_begin as imm_r3d_begin, r3d_camera as imm_r3d_camera,
     r3d_camera_roll as imm_r3d_camera_roll, r3d_clear as imm_r3d_clear,
@@ -33,6 +36,7 @@ pub use imm::{
     r3d_debug_line as imm_r3d_debug_line, r3d_draw as imm_r3d_draw, r3d_draw_quat as imm_r3d_draw_quat,
     r3d_draw_tint as imm_r3d_draw_tint,
     r3d_draw_on_joint as imm_r3d_draw_on_joint, r3d_joint_dump as imm_r3d_joint_dump,
+    r3d_joint_pos as imm_r3d_joint_pos,
     r3d_draw_shield as imm_r3d_draw_shield,
     r3d_draw_billboard as imm_r3d_draw_billboard, r3d_fog as imm_r3d_fog,
     r3d_frustum_cull as imm_r3d_frustum_cull, r3d_light as imm_r3d_light,
@@ -43,9 +47,14 @@ pub use imm::{
     r3d_make_sprite as imm_r3d_make_sprite, r3d_point_light as imm_r3d_point_light,
     r3d_point_shadows as imm_r3d_point_shadows, r3d_present as imm_r3d_present,
     r3d_shadows as imm_r3d_shadows, r3d_sky as imm_r3d_sky, r3d_ssao as imm_r3d_ssao,
+    r3d_viewmodel as imm_r3d_viewmodel,
     blur as imm_blur,
     damage as imm_damage, r3d_world_to_screen as imm_r3d_world_to_screen,
     speedlines as imm_speedlines, surface_h as imm_surface_h, surface_w as imm_surface_w,
+    r3d_capture as imm_r3d_capture, r3d_debug_skeleton as imm_r3d_debug_skeleton,
+    inject_key as imm_inject_key, inject_mouse_move as imm_inject_mouse_move,
+    inject_mouse_pos as imm_inject_mouse_pos, inject_mouse_button as imm_inject_mouse_button,
+    inject_scroll as imm_inject_scroll, inject_char as imm_inject_char,
 };
 pub use input::{Input, Key};
 
@@ -484,12 +493,38 @@ impl Gfx {
         let surface = instance
             .create_surface(window.clone())
             .map_err(|e| format!("create surface: {e}"))?;
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: Some(&surface),
-            force_fallback_adapter: false,
-        }))
-        .ok_or("no GPU adapter")?;
+        // Hybrid-laptop GPU selection: HighPerformance can still hand back the integrated GPU, so
+        // EXPLICITLY enumerate every adapter and prefer a surface-compatible DISCRETE one. Logs all
+        // candidates so it's visible which GPUs exist and which we picked. Falls back to the normal
+        // request if enumeration finds no discrete GPU (e.g. the dGPU isn't exposed to Vulkan - then
+        // the user must launch with __NV_PRIME_RENDER_OFFLOAD=1 __VK_LAYER_NV_optimus=NVIDIA_only).
+        let mut all = instance.enumerate_adapters(wgpu::Backends::all());
+        let mut pick: Option<usize> = None;
+        for (i, a) in all.iter().enumerate() {
+            let info = a.get_info();
+            let compat = a.is_surface_supported(&surface);
+            eprintln!("[aurora] candidate GPU: {} ({:?}, {:?}, surface_ok={})", info.name, info.device_type, info.backend, compat);
+            if pick.is_none() && compat && info.device_type == wgpu::DeviceType::DiscreteGpu {
+                pick = Some(i);
+            }
+        }
+        let adapter = match pick {
+            Some(i) => all.swap_remove(i),
+            None => pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: Some(&surface),
+                force_fallback_adapter: false,
+            }))
+            .ok_or("no GPU adapter")?,
+        };
+        {
+            // Print the GPU we actually got. On a hybrid laptop this reveals if we're (wrongly)
+            // on the integrated GPU instead of the discrete one - the #1 cause of "laggy on a
+            // strong GPU". If it's the iGPU, relaunch with PRIME offload:
+            //   __NV_PRIME_RENDER_OFFLOAD=1 __VK_LAYER_NV_optimus=NVIDIA_only <game>
+            let info = adapter.get_info();
+            eprintln!("[aurora] GPU: {} ({:?}, backend {:?})", info.name, info.device_type, info.backend);
+        }
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("aurora-window"),
@@ -512,13 +547,32 @@ impl Gfx {
             .copied()
             .find(|f| !f.is_srgb())
             .unwrap_or(caps.formats[0]);
+        // Present mode: DEFAULT to plain Fifo (the long-standing baseline - vsync-capped, GPU idles
+        // between frames, coolest/most stable on a throttled laptop). Override at runtime with
+        // AURORA_PRESENT=mailbox|relaxed|immediate|fifo to A/B which feels best on this machine
+        // (Mailbox = uncapped/lowest-latency but maxes the GPU; relaxed = adaptive vsync, no hard
+        // cliff; immediate = uncapped, may tear). Falls back to Fifo if the pick is unsupported.
+        let present_mode = {
+            let want = std::env::var("AURORA_PRESENT").unwrap_or_default().to_lowercase();
+            let pick = match want.as_str() {
+                "mailbox" => wgpu::PresentMode::Mailbox,
+                "relaxed" | "fiforelaxed" | "adaptive" => wgpu::PresentMode::FifoRelaxed,
+                "immediate" | "nosync" => wgpu::PresentMode::Immediate,
+                _ => wgpu::PresentMode::Fifo,
+            };
+            if caps.present_modes.contains(&pick) { pick } else { wgpu::PresentMode::Fifo }
+        };
+        eprintln!("[aurora] present mode: {:?}", present_mode);
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
             width: size.width.max(1),
             height: size.height.max(1),
-            present_mode: wgpu::PresentMode::Fifo,
-            desired_maximum_frame_latency: 2,
+            present_mode,
+            // 1 (not 2) frame of queued latency: lowest input lag, which matters for a shooter and
+            // is a common cause of "feels laggy" even at a fine framerate. The scene is tiny so the
+            // reduced CPU/GPU overlap costs nothing here.
+            desired_maximum_frame_latency: 1,
             alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],
         };
@@ -1124,6 +1178,26 @@ impl Gfx {
         }
         self.queue.submit(Some(enc.finish()));
         surface_tex.present();
+        // Once-per-second FPS / frame-time readout to stderr, so lag is a number, not a feeling.
+        {
+            use std::cell::Cell;
+            use std::time::Instant;
+            thread_local! {
+                static FRAMES: Cell<u32> = const { Cell::new(0) };
+                static T0: Cell<Option<Instant>> = const { Cell::new(None) };
+            }
+            let now = Instant::now();
+            T0.with(|t0| {
+                if t0.get().is_none() { t0.set(Some(now)); }
+                let n = FRAMES.with(|f| { let n = f.get() + 1; f.set(n); n });
+                let el = now.duration_since(t0.get().unwrap()).as_secs_f64();
+                if el >= 1.0 {
+                    eprintln!("[aurora] {:.0} fps ({:.1} ms/frame)", n as f64 / el, el * 1000.0 / n as f64);
+                    FRAMES.with(|f| f.set(0));
+                    t0.set(Some(now));
+                }
+            });
+        }
     }
 
     pub(crate) fn resize(&mut self, w: u32, h: u32) {

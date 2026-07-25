@@ -10,6 +10,11 @@
 //! catch real mismatches between *known* types — `let x: bool = 1`, a function
 //! returning the wrong type, mismatched `if` branches, `i32 + f32`, and so on.
 //!
+//! Leniency about a *type* is not leniency about a *name*, though. A direct call
+//! to a plain name that resolves to nothing is a hard error (`E0313`): see
+//! [`Typeck::report_unknown_callee`] for the exact set of callees that are
+//! legitimately not top-level `fn` items.
+//!
 //! Vector/matrix algebra (`Vec3 * f32`, `Mat4 * Vec4`) is intentionally treated
 //! permissively rather than strictly unified, matching the overloaded operators
 //! in spec §7.5.
@@ -55,6 +60,13 @@ struct Typeck {
     fn_bounds: HashMap<String, Vec<(String, String)>>,
     /// User-defined type names (structs/components/enums) — shadow builtins.
     user_types: std::collections::HashSet<String>,
+    /// Names brought into scope by `use`. We cannot see the other module, so a
+    /// call to one of these is not judged.
+    imported: std::collections::HashSet<String>,
+    /// Are we inside a `@vertex`/`@fragment`/`@compute` body? Shader stages name
+    /// GPU intrinsics and bound globals that have no CPU declaration, so callee
+    /// resolution is off inside them.
+    in_shader: bool,
     /// The declared return type of the function currently being checked, if it
     /// was written explicitly — used to check `return expr` against it.
     cur_ret: Option<Ty>,
@@ -74,6 +86,8 @@ impl Typeck {
             trait_impls: std::collections::HashSet::new(),
             fn_bounds: HashMap::new(),
             user_types: std::collections::HashSet::new(),
+            imported: std::collections::HashSet::new(),
+            in_shader: false,
             cur_ret: None,
         }
     }
@@ -143,6 +157,24 @@ impl Typeck {
                         }
                     }
                 }
+                // `use` brings in names whose definitions we cannot see, so they
+                // are not judged as unknown callees.
+                ItemKind::Use(u) => match &u.kind {
+                    aurora_ast::UseKind::Single(alias) => {
+                        let name = alias
+                            .as_ref()
+                            .map(|a| a.name.clone())
+                            .or_else(|| u.path.segments.last().map(|s| s.ident.name.clone()));
+                        if let Some(n) = name {
+                            self.imported.insert(n);
+                        }
+                    }
+                    aurora_ast::UseKind::Group(names) => {
+                        for n in names {
+                            self.imported.insert(n.name.clone());
+                        }
+                    }
+                },
                 _ => {}
             }
         }
@@ -169,6 +201,9 @@ impl Typeck {
 
     fn run(&mut self, module: &Module) {
         for item in &module.items {
+            // A shader stage is GPU code lowered to WGSL, so its body may name
+            // intrinsics and bound globals that have no CPU declaration.
+            self.in_shader = aurora_ast::is_shader_stage(&item.attrs);
             match &item.kind {
                 ItemKind::Fn(f) => self.check_fn(f),
                 ItemKind::System(s) => self.check_system(&s.body, &s.params),
@@ -189,6 +224,7 @@ impl Typeck {
                 _ => {}
             }
         }
+        self.in_shader = false;
     }
 
     fn check_fn(&mut self, f: &aurora_ast::FnDecl) {
@@ -565,10 +601,14 @@ impl Typeck {
         let arg_tys: Vec<(Span, Ty)> = args.iter().map(|a| (a.value.span, self.infer(&a.value))).collect();
 
         // Only known top-level function paths get argument checking; everything
-        // else (methods, builtins, imports) is treated as unknown.
+        // else (methods, builtins, imports) is treated as unknown for TYPING
+        // purposes, but a plain name still has to resolve to something.
         if let ExprKind::Path(p) = &callee.kind {
             if p.is_single() {
                 let name = &p.segments[0].ident.name;
+                if !self.fns.contains_key(name) {
+                    self.report_unknown_callee(name, p.span);
+                }
                 if let Some(Ty::Fn(params, ret)) = self.fns.get(name).cloned() {
                     // Instantiate generic type parameters with fresh variables so
                     // each call is checked independently (e.g. `pair(1, true)`).
@@ -619,6 +659,43 @@ impl Typeck {
         }
         self.infer(callee);
         Ty::Error
+    }
+
+    /// A direct call `name(...)` whose `name` is not a top-level function.
+    ///
+    /// Aurora resolves names leniently ON PURPOSE, so this must reject only what
+    /// is genuinely unresolvable. Everything else that can legitimately sit in
+    /// callee position without being a `fn` item is enumerated here:
+    ///
+    /// * a **runtime builtin** (`println`, `r3d_draw`, `net_host`, ...): several
+    ///   hundred names the backend lowers to host calls, declared once in
+    ///   `aurora-abi`'s table (re-exported as [`aurora_ast::is_builtin`]), from
+    ///   which the backend generates its lowering, so the two cannot disagree;
+    /// * an **`@extern` import**: bodiless, but still a `fn` item, so it is in
+    ///   `self.fns` already and never reaches here;
+    /// * a **local or parameter holding a closure** (`let f = |x| x + 1; f(2)`);
+    /// * a **user-defined type** used as a constructor (`Pair(1, 2)`);
+    /// * a name brought in by **`use`**, whose definition we cannot see;
+    /// * anything inside a **shader stage**, which is GPU code.
+    ///
+    /// Multi-segment callees (`Enum::Variant(x)`, `mod::f()`) are not judged
+    /// here: resolving those needs variant and associated-item tables this pass
+    /// does not build. They are still caught by the backend, which now refuses
+    /// to stub a function it could not compile.
+    fn report_unknown_callee(&mut self, name: &str, span: Span) {
+        if self.in_shader
+            || aurora_ast::is_builtin(name)
+            || self.lookup(name).is_some()
+            || self.user_types.contains(name)
+            || self.imported.contains(name)
+        {
+            return;
+        }
+        self.diags.push(
+            Diagnostic::error(format!("unknown function `{name}`"))
+                .with_code("E0313")
+                .primary(span, "no function, builtin, or import with this name"),
+        );
     }
 
     fn infer_struct(

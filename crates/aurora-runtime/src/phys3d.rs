@@ -86,6 +86,84 @@ fn body_builder(x: f64, y: f64, z: f64, dynamic: i64) -> RigidBodyBuilder {
     b.translation(vector![x as Real, y as Real, z as Real])
 }
 
+/// Draw every physics collider as a debug wireframe (box/sphere/capsule) in
+/// its current world pose, via the r3d debug-line path so it appears in
+/// captures. For headless HITBOX visual audits: the physics world and the
+/// rendered world can be checked to agree. `(r,g,b)` is the line color.
+#[no_mangle]
+pub extern "C" fn aurora_phys3d_debug_draw(r: f64, g: f64, b: f64) {
+    PHYS3.with(|p| {
+        let p = p.borrow();
+        let Some(p) = p.as_ref() else { return };
+        let (rf, gf, bf) = (r as f32, g as f32, b as f32);
+        let line = |a: [f32; 3], b: [f32; 3]| {
+            aurora_window::imm_r3d_debug_line(a[0], a[1], a[2], b[0], b[1], b[2], rf, gf, bf);
+        };
+        for (_, col) in p.colliders.iter() {
+            let iso = col.position();
+            let t = iso.translation.vector;
+            let rot = iso.rotation;
+            // Transform a shape-local point to world.
+            let w = |lx: f32, ly: f32, lz: f32| -> [f32; 3] {
+                let pt = rot * point![lx as Real, ly as Real, lz as Real];
+                [(pt.x + t.x) as f32, (pt.y + t.y) as f32, (pt.z + t.z) as f32]
+            };
+            let shape = col.shape();
+            if let Some(cb) = shape.as_cuboid() {
+                let e = cb.half_extents;
+                let (hx, hy, hz) = (e.x as f32, e.y as f32, e.z as f32);
+                // 8 corners, 12 edges.
+                let c = [
+                    w(-hx, -hy, -hz), w(hx, -hy, -hz), w(hx, hy, -hz), w(-hx, hy, -hz),
+                    w(-hx, -hy, hz), w(hx, -hy, hz), w(hx, hy, hz), w(-hx, hy, hz),
+                ];
+                let edges = [
+                    (0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7), (7, 4),
+                    (0, 4), (1, 5), (2, 6), (3, 7),
+                ];
+                for (i, j) in edges {
+                    line(c[i], c[j]);
+                }
+            } else if let Some(ball) = shape.as_ball() {
+                debug_rings(&w, ball.radius as f32, 0.0, &line);
+            } else if let Some(cap) = shape.as_capsule() {
+                let rad = cap.radius as f32;
+                let half = ((cap.segment.b - cap.segment.a).norm() as f32) * 0.5;
+                // Rings at both cap centers + connecting verticals.
+                debug_rings(&w, rad, half, &line);
+                debug_rings(&w, rad, -half, &line);
+                let n = 8;
+                for k in 0..n {
+                    let ang = k as f32 / n as f32 * std::f32::consts::TAU;
+                    let (cx, cz) = (rad * ang.cos(), rad * ang.sin());
+                    line(w(cx, -half, cz), w(cx, half, cz));
+                }
+            }
+        }
+    });
+}
+
+/// Draw a horizontal ring of `radius` at local height `y` (a wireframe circle
+/// in the XZ plane), transformed to world by `w`.
+fn debug_rings(w: &impl Fn(f32, f32, f32) -> [f32; 3], radius: f32, y: f32, line: &impl Fn([f32; 3], [f32; 3])) {
+    let n = 16;
+    let mut prev = w(radius, y, 0.0);
+    for k in 1..=n {
+        let ang = k as f32 / n as f32 * std::f32::consts::TAU;
+        let cur = w(radius * ang.cos(), y, radius * ang.sin());
+        line(prev, cur);
+        prev = cur;
+    }
+    // A vertical ring too, so a sphere reads as a sphere.
+    let mut pv = w(radius, y, 0.0);
+    for k in 1..=n {
+        let ang = k as f32 / n as f32 * std::f32::consts::TAU;
+        let cur = w(radius * ang.cos(), y + radius * ang.sin(), 0.0);
+        line(pv, cur);
+        pv = cur;
+    }
+}
+
 /// Add a box (half-extents hx,hy,hz) at (x,y,z). `dynamic` 1=moving, 0=static.
 #[no_mangle]
 pub extern "C" fn aurora_phys3d_add_box(

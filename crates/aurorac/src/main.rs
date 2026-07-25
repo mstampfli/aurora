@@ -63,13 +63,19 @@ fn run_cli() -> ExitCode {
                 ExitCode::from(2)
             }
         },
-        Some("run") => match resolve_entry(args.get(1).map(String::as_str)) {
-            Ok(path) => cmd_run(&path),
-            Err(e) => {
-                eprintln!("{e}");
-                ExitCode::from(2)
+        Some("run") => {
+            // First positional arg may be the file, or omitted to use the
+            // manifest; everything after it belongs to the PROGRAM, not to us.
+            let explicit = args.get(1).filter(|a| !a.starts_with('-')).map(String::as_str);
+            let rest_start = if explicit.is_some() { 2 } else { 1 };
+            match resolve_entry(explicit) {
+                Ok(path) => cmd_run(&path, &args[rest_start..]),
+                Err(e) => {
+                    eprintln!("{e}");
+                    ExitCode::from(2)
+                }
             }
-        },
+        }
         Some("jit") => match args.get(1) {
             Some(path) => cmd_jit(path, &args[2..]),
             None => {
@@ -78,7 +84,7 @@ fn run_cli() -> ExitCode {
             }
         },
         Some("native") => match args.get(1) {
-            Some(path) => cmd_native(path),
+            Some(path) => cmd_native(path, &args[2..]),
             None => {
                 eprintln!("usage: aurorac native <file>");
                 ExitCode::from(2)
@@ -163,7 +169,8 @@ fn run_cli() -> ExitCode {
             println!("  aurorac lex <file>      tokenize a source file");
             println!("  aurorac parse <file>    parse a source file to an AST");
             println!("  aurorac check <file>    parse and run static checks");
-            println!("  aurorac run <file>      check, then compile `main` to native code & run");
+            println!("  aurorac run <file> [args...]  check, compile `main` to native code & run");
+            println!("                          (args after the file go to the PROGRAM: sys_arg)");
             println!("  aurorac native <file>   compile `main` to native code & run (no interpreter)");
             println!("  aurorac build <file> [-o <out>] compile to a standalone native executable");
             println!("  aurorac jit <file> <fn> [args]  compile a fn to native code & run");
@@ -182,6 +189,25 @@ fn run_cli() -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+/// Install the argument vector the RUNNING PROGRAM sees, so `sys_argc`/`sys_arg`
+/// report the same thing whichever way it was compiled: argv[0] is the program
+/// as invoked - the source file under `aurorac run`, the executable itself for
+/// `aurorac build` output - and argv[1..] are its own arguments. Without this
+/// the JIT-run program would read `aurorac`'s command line instead of its own.
+///
+/// A leading `--` is dropped, so `aurorac run game.aur -- --host 45123` and
+/// `aurorac run game.aur --host 45123` pass the same vector.
+fn set_program_args(path: &str, extra: &[String]) {
+    let extra = match extra.first() {
+        Some(first) if first == "--" => &extra[1..],
+        _ => extra,
+    };
+    let mut argv = Vec::with_capacity(1 + extra.len());
+    argv.push(path.to_string());
+    argv.extend(extra.iter().cloned());
+    aurora_runtime::set_program_args(argv);
 }
 
 /// Resolve which source file to compile: an explicit path if given, otherwise
@@ -303,8 +329,16 @@ fn locate_dep(
     let lib = manifest_value(&manifest, "lib")
         .or_else(|| manifest_value(&manifest, "entry"))
         .ok_or("dependency manifest has no `lib`/`entry`")?;
-    let src = std::fs::read_to_string(dir.join(&lib))
+    let lib_path = dir.join(&lib);
+    let src = std::fs::read_to_string(&lib_path)
         .map_err(|e| format!("cannot read `{lib}`: {e}"))?;
+    // A dependency's library may itself be split across files with `mod NAME;`.
+    // Loading them here means they land inside the `mod <dep> { .. }` wrapper the
+    // caller adds, so they stay namespaced under the dependency.
+    let (src, diags) = aurora_parser::load_file_modules(&src, &lib_path);
+    if let Some(d) = diags.iter().find(|d| d.is_error()) {
+        return Err(format!("in `{lib}`: {}", d.message));
+    }
     Ok((dir, src))
 }
 
@@ -319,6 +353,60 @@ fn manifest_value(toml: &str, key: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Read `path` and resolve its file-based `mod NAME;` declarations by loading
+/// `NAME.aur` (see `aurora_parser::load_file_modules`). Returns `None` after
+/// reporting, so an unresolvable module is a hard error instead of a module that
+/// silently contributes nothing.
+///
+/// The loader only appends, so byte offsets in `path`'s own text are unchanged
+/// and the prelude/dependency sources every caller concatenates afterwards keep
+/// lining up with the spans reported here.
+/// Report the functions that failed to compile to native code, and say whether
+/// the command must refuse.
+///
+/// A body that fails to lower is replaced with a stub returning 0. Left
+/// unreported that is the worst possible failure mode: the program builds and
+/// runs, and the broken function just quietly evaluates to nothing. So every
+/// path that compiles or executes a program routes through here, not just
+/// `main` (only `main` used to be checked when running, which is how a missing
+/// language feature could hide inside a helper for a long time).
+///
+/// `verb` completes "refusing to ...".
+fn report_stub_failures(failed: &std::collections::HashMap<String, String>, verb: &str) -> bool {
+    if failed.is_empty() {
+        return false;
+    }
+    let mut names: Vec<&String> = failed.keys().collect();
+    names.sort();
+    eprintln!("error: {} function(s) failed to compile to native code:", failed.len());
+    for n in names {
+        eprintln!("  - {n}: {}", failed[n]);
+    }
+    eprintln!("refusing to {verb}: a stubbed function silently does nothing and returns 0.");
+    true
+}
+
+fn read_program(path: &str) -> Option<String> {
+    let src = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: cannot read `{path}`: {e}");
+            return None;
+        }
+    };
+    let (expanded, diags) = aurora_parser::load_file_modules(&src, std::path::Path::new(path));
+    if !diags.is_empty() {
+        let file = SourceFile::new(path, expanded.clone());
+        for d in &diags {
+            eprintln!("{}", d.render(&file));
+        }
+        if diags.iter().any(|d| d.is_error()) {
+            return None;
+        }
+    }
+    Some(expanded)
 }
 
 /// Scaffold a new project directory with a manifest and a hello-world program.
@@ -378,13 +466,7 @@ fn cmd_lex(path: &str) -> ExitCode {
 }
 
 fn cmd_wgsl(path: &str) -> ExitCode {
-    let src = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: cannot read `{path}`: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let Some(src) = read_program(path) else { return ExitCode::FAILURE };
     let file = SourceFile::new(path, src);
     let (module, diags) = aurora_parser::parse_str(&file.src);
     if diags.iter().any(|d| d.is_error()) {
@@ -423,13 +505,7 @@ fn cmd_gpu(path: &str, rest: &[String]) -> ExitCode {
         }
     }
 
-    let src = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: cannot read `{path}`: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let Some(src) = read_program(path) else { return ExitCode::FAILURE };
     let file = SourceFile::new(path, src);
     let (module, diags) = aurora_parser::parse_str(&file.src);
     if diags.iter().any(|d| d.is_error()) {
@@ -516,14 +592,9 @@ fn cmd_render(out: &str) -> ExitCode {
     }
 }
 
-fn cmd_native(path: &str) -> ExitCode {
-    let src = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: cannot read `{path}`: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+fn cmd_native(path: &str, args: &[String]) -> ExitCode {
+    set_program_args(path, args);
+    let Some(src) = read_program(path) else { return ExitCode::FAILURE };
     let file = SourceFile::new(path, aurora_std::with_std(&src));
     let (module, mut diags) = aurora_parser::parse_str(&file.src);
     diags.extend(aurora_check::check(&module));
@@ -535,25 +606,27 @@ fn cmd_native(path: &str) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    // Verify `main` actually compiled to native code (not stubbed).
+    // Verify every function actually compiled to native code (not stubbed).
     match aurora_codegen::build(&module) {
-        Ok(jit) if jit.compiled("main") => match jit.call_i64("main", &[]) {
-            Ok(_) => {
-                use std::io::Write;
-                let _ = std::io::stdout().flush();
-                ExitCode::SUCCESS
+        Ok(jit) => {
+            if report_stub_failures(jit.failures(), "run") {
+                return ExitCode::FAILURE;
             }
-            Err(e) => {
-                eprintln!("native error: {e}");
-                ExitCode::FAILURE
+            if !jit.compiled("main") {
+                eprintln!("native: `main` did not compile to native code (codegen gap)");
+                return ExitCode::FAILURE;
             }
-        },
-        Ok(_) => {
-            eprintln!(
-                "native: `main` uses constructs not yet compiled (struct/array/ECS). \
-                 Use `aurorac run` to interpret it for now."
-            );
-            ExitCode::FAILURE
+            match jit.call_i64("main", &[]) {
+                Ok(_) => {
+                    use std::io::Write;
+                    let _ = std::io::stdout().flush();
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("native error: {e}");
+                    ExitCode::FAILURE
+                }
+            }
         }
         Err(e) => {
             eprintln!("native error: {e}");
@@ -592,13 +665,7 @@ fn cmd_build(path: &str, rest: &[String]) -> ExitCode {
         }
     }
 
-    let src = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: cannot read `{path}`: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let Some(src) = read_program(path) else { return ExitCode::FAILURE };
     let file = SourceFile::new(path, aurora_std::with_std(&format!("{src}{}", collect_dep_sources())));
     let (module, mut diags) = aurora_parser::parse_str(&file.src);
     diags.extend(aurora_check::check(&module));
@@ -622,18 +689,7 @@ fn cmd_build(path: &str, rest: &[String]) -> ExitCode {
     // A function that failed to compile was replaced with a no-op stub: the
     // binary would silently do the wrong thing. Refuse to build if `main` (or any
     // function) was stubbed, and report exactly which and why.
-    if !failed.is_empty() {
-        let mut names: Vec<&String> = failed.keys().collect();
-        names.sort();
-        eprintln!(
-            "build error: {} function(s) failed to compile and would be replaced \
-             with a no-op stub:",
-            failed.len()
-        );
-        for n in names {
-            eprintln!("  - {n}: {}", failed[n]);
-        }
-        eprintln!("refusing to emit a binary that silently does nothing for these.");
+    if report_stub_failures(&failed, "emit a binary") {
         return ExitCode::FAILURE;
     }
 
@@ -692,6 +748,8 @@ fn cmd_build(path: &str, rest: &[String]) -> ExitCode {
 /// locals at each breakpoint (or every statement when stepping). Without `-i`,
 /// breakpoints just print; with `-i` it drops into an interactive stdin REPL.
 fn cmd_debug(path: &str, rest: &[String]) -> ExitCode {
+    // `rest` is the debugger's own flags, so the program gets just its name.
+    set_program_args(path, &[]);
     let mut breakpoints: Vec<u32> = Vec::new();
     let mut step = false;
     let mut interactive = false;
@@ -723,13 +781,7 @@ fn cmd_debug(path: &str, rest: &[String]) -> ExitCode {
         }
     }
 
-    let src = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: cannot read `{path}`: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let Some(src) = read_program(path) else { return ExitCode::FAILURE };
 
     // Include the standard library, like the other execution paths.
     let src = aurora_std::with_std(&src);
@@ -774,13 +826,8 @@ fn cmd_debug(path: &str, rest: &[String]) -> ExitCode {
 /// Run a program under the native profiler and print a per-function report
 /// (call counts + wall-clock time), sorted by time.
 fn cmd_profile(path: &str) -> ExitCode {
-    let src = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: cannot read `{path}`: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    set_program_args(path, &[]);
+    let Some(src) = read_program(path) else { return ExitCode::FAILURE };
     let file = SourceFile::new(path, aurora_std::with_std(&src));
     let (module, mut diags) = aurora_parser::parse_str(&file.src);
     diags.extend(aurora_check::check(&module));
@@ -792,10 +839,15 @@ fn cmd_profile(path: &str) -> ExitCode {
         return ExitCode::FAILURE;
     }
     let jit = match aurora_codegen::build_profile(&module) {
-        Ok(j) if j.compiled("main") => j,
-        Ok(_) => {
-            eprintln!("profile: `main` did not compile to native code");
-            return ExitCode::FAILURE;
+        Ok(j) => {
+            if report_stub_failures(j.failures(), "profile") {
+                return ExitCode::FAILURE;
+            }
+            if !j.compiled("main") {
+                eprintln!("profile: `main` did not compile to native code");
+                return ExitCode::FAILURE;
+            }
+            j
         }
         Err(e) => {
             eprintln!("profile error: {e}");
@@ -841,6 +893,9 @@ fn cmd_watch(path: &str) -> ExitCode {
 }
 
 fn cmd_jit(path: &str, rest: &[String]) -> ExitCode {
+    // `rest` names the function to call and its integer arguments, not the
+    // program's, so the program sees only its own name.
+    set_program_args(path, &[]);
     let Some(func) = rest.first() else {
         eprintln!("usage: aurorac jit <file> <function> [int args...]");
         return ExitCode::from(2);
@@ -848,13 +903,7 @@ fn cmd_jit(path: &str, rest: &[String]) -> ExitCode {
     let raw = &rest[1..];
     let is_float = raw.iter().any(|a| a.contains('.'));
 
-    let src = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: cannot read `{path}`: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let Some(src) = read_program(path) else { return ExitCode::FAILURE };
     let file = SourceFile::new(path, src);
     let (module, diags) = aurora_parser::parse_str(&file.src);
     if diags.iter().any(|d| d.is_error()) {
@@ -889,14 +938,9 @@ fn cmd_jit(path: &str, rest: &[String]) -> ExitCode {
     }
 }
 
-fn cmd_run(path: &str) -> ExitCode {
-    let src = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: cannot read `{path}`: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+fn cmd_run(path: &str, args: &[String]) -> ExitCode {
+    set_program_args(path, args);
+    let Some(src) = read_program(path) else { return ExitCode::FAILURE };
     let deps = collect_dep_sources();
     let file = SourceFile::new(path, aurora_std::with_std(&format!("{src}{deps}")));
     let (module, mut diags) = aurora_parser::parse_str(&file.src);
@@ -915,25 +959,32 @@ fn cmd_run(path: &str) -> ExitCode {
     // Aurora is a compiled language: always lower `main` to native machine code
     // and run it. No interpreter fallback.
     match aurora_codegen::build(&module) {
-        Ok(jit) if jit.compiled("main") => match jit.call_i64("main", &[]) {
-            Ok(_) => {
-                use std::io::Write;
-                let _ = std::io::stdout().flush();
-                // Exit directly so leaked GPU/audio resources aren't dropped
-                // during thread-local teardown (which trips wgpu's internals).
-                std::process::exit(0);
-            }
-            Err(e) => {
-                eprintln!("native error: {e}");
-                ExitCode::FAILURE
-            }
-        },
         Ok(jit) => {
-            match jit.compile_error("main") {
-                Some(reason) => eprintln!("error: `main` did not compile to native code: {reason}"),
-                None => eprintln!("error: `main` did not compile to native code (codegen gap)"),
+            // Every stubbed function, not only `main`: running a program whose
+            // helper was replaced by `return 0` produces plausible-looking output
+            // with the real behaviour missing.
+            if report_stub_failures(jit.failures(), "run") {
+                return ExitCode::FAILURE;
             }
-            ExitCode::FAILURE
+            if !jit.compiled("main") {
+                eprintln!("error: `main` did not compile to native code (codegen gap)");
+                return ExitCode::FAILURE;
+            }
+            match jit.call_i64("main", &[]) {
+                Ok(_) => {
+                    use std::io::Write;
+                    let _ = std::io::stdout().flush();
+                    // Leak windowed GPU state / drop headless GPU state deliberately,
+                    // then exit directly so nothing is torn down during thread-local
+                    // teardown (which trips wgpu's internals).
+                    aurora_runtime::aurora_runtime_shutdown();
+                    std::process::exit(0);
+                }
+                Err(e) => {
+                    eprintln!("native error: {e}");
+                    ExitCode::FAILURE
+                }
+            }
         }
         Err(e) => {
             eprintln!("native error: {e}");
@@ -943,14 +994,14 @@ fn cmd_run(path: &str) -> ExitCode {
 }
 
 fn cmd_check(path: &str) -> ExitCode {
-    let src = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: cannot read `{path}`: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let file = SourceFile::new(path, src);
+    let Some(src) = read_program(path) else { return ExitCode::FAILURE };
+    // Check exactly the program `run` and `build` compile: the user's source,
+    // its dependencies, and the standard prelude. Checking a different program
+    // than the one that runs is how `check` could pass a call to `lerp` in one
+    // command and reject it in another.
+    let user_src = format!("{src}{}", collect_dep_sources());
+    let boundary = user_src.len() as u32;
+    let file = SourceFile::new(path, aurora_std::with_std(&user_src));
     let (module, mut diags) = aurora_parser::parse_str(&file.src);
     diags.extend(aurora_check::check(&module));
     diags.extend(aurora_typeck::check_types(&module));
@@ -960,7 +1011,11 @@ fn cmd_check(path: &str) -> ExitCode {
         eprintln!("{}", d.render(&file));
     }
     if errors == 0 {
-        println!("ok: checked {} item(s), no errors", module.items.len());
+        // The prelude is appended after the user's source, so an item that
+        // starts beyond the boundary belongs to the standard library. Report the
+        // user's item count: that number is about their program.
+        let items = module.items.iter().filter(|it| it.span.lo < boundary).count();
+        println!("ok: checked {items} item(s), no errors");
         ExitCode::SUCCESS
     } else {
         eprintln!("{errors} error(s)");
@@ -969,13 +1024,7 @@ fn cmd_check(path: &str) -> ExitCode {
 }
 
 fn cmd_parse(path: &str) -> ExitCode {
-    let src = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: cannot read `{path}`: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let Some(src) = read_program(path) else { return ExitCode::FAILURE };
     let file = SourceFile::new(path, src);
     let (module, diags) = aurora_parser::parse_str(&file.src);
 

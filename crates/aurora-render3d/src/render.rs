@@ -2,6 +2,8 @@
 //! normal mapping, emissive) lit by a directional light plus point lights, with
 //! fog and a depth buffer, drawing indexed, optionally skinned meshes.
 
+use std::sync::Arc;
+
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat3, Mat4, Vec3};
 
@@ -13,7 +15,7 @@ pub const MAX_JOINTS: usize = 128;
 pub const MAX_LIGHTS: usize = 16;
 const OBJ_ALIGN: u64 = 256;
 const JOINT_BYTES: u64 = (MAX_JOINTS * 64) as u64;
-const SHADOW_SIZE: u32 = 2048;
+const SHADOW_SIZE: u32 = 1024;
 const NUM_CASCADES: usize = 3;
 const PCUBE_SIZE: u32 = 1024;
 
@@ -99,10 +101,15 @@ struct DrawCmd {
     mesh: usize,
     material: usize,
     model: Mat4,
-    joints: Option<Vec<Mat4>>,
+    // Skinning matrices, shared via Arc so a model's primitives reference ONE allocation instead
+    // of deep-copying the full 128-matrix array per primitive each frame.
+    joints: Option<Arc<Vec<Mat4>>>,
     tint: [f32; 3],
     /// Energy-shield Fresnel rim: [strength, time]. strength 0 = off.
     shield: [f32; 2],
+    /// Viewmodel (first-person arms/weapon): drawn ONLY in the main color pass, skipped in the
+    /// shadow cascades + SSAO prepass so it never casts a world shadow or darkens AO at the camera.
+    viewmodel: bool,
 }
 
 #[repr(C)]
@@ -206,6 +213,9 @@ pub struct Renderer3D {
     materials: Vec<Material>,
 
     frustum_cull: bool,
+    /// When true, draws are flagged as viewmodel (skip shadow + SSAO passes). Toggled around the
+    /// first-person arms/weapon each frame via set_viewmodel.
+    vm_mode: bool,
     last_drawn: usize,
 
     globals: GlobalsU,
@@ -766,7 +776,9 @@ impl Renderer3D {
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
             ],
         });
-        let ssao = build_ssao(device, &ssao_layout, &blur_layout, &ao_layout, &globals_buf, &sampler, w.max(1), h.max(1));
+        // SSAO runs at HALF resolution (AO is low-frequency; fs_ssao samples by UV with a world-space
+        // radius, so it's resolution-independent). Quarters the SSAO prepass+occlusion+blur fillrate.
+        let ssao = build_ssao(device, &ssao_layout, &blur_layout, &ao_layout, &globals_buf, &sampler, (w / 2).max(1), (h / 2).max(1));
 
         // Point-light shadow cube: 6 faces of distance-to-light (R16Float).
         let pcube_tex = device.create_texture(&wgpu::TextureDescriptor {
@@ -928,6 +940,7 @@ impl Renderer3D {
             mesh_radius: Vec::new(),
             materials: Vec::new(),
             frustum_cull: true,
+            vm_mode: false,
             last_drawn: 0,
             globals,
             queue_cmds: Vec::new(),
@@ -946,7 +959,7 @@ impl Renderer3D {
             }
             self.ssao = build_ssao(
                 device, &self.ssao_layout, &self.blur_layout, &self.ao_layout, &self.globals_buf,
-                &self.sampler, w, h,
+                &self.sampler, (w / 2).max(1), (h / 2).max(1),
             );
             self.depth_size = (w, h);
         }
@@ -1022,6 +1035,10 @@ impl Renderer3D {
 
     pub fn set_frustum_cull(&mut self, on: bool) {
         self.frustum_cull = on;
+    }
+    /// While on, subsequent draws are tagged as viewmodel (skipped in shadow + SSAO passes).
+    pub fn set_viewmodel(&mut self, on: bool) {
+        self.vm_mode = on;
     }
     /// Number of draws that survived frustum culling in the last `render`.
     pub fn last_drawn(&self) -> usize {
@@ -1122,24 +1139,24 @@ impl Renderer3D {
         self.inst_cmds.clear();
     }
 
-    pub fn draw(&mut self, mesh: usize, material: usize, model: Mat4, joints: Option<Vec<Mat4>>) {
+    pub fn draw(&mut self, mesh: usize, material: usize, model: Mat4, joints: Option<Arc<Vec<Mat4>>>) {
         self.draw_tint(mesh, material, model, joints, [0.0, 0.0, 0.0]);
     }
 
     /// Like [`draw`] but adds a per-draw RGB `tint` OFFSET to the albedo (identity (0,0,0)).
-    pub fn draw_tint(&mut self, mesh: usize, material: usize, model: Mat4, joints: Option<Vec<Mat4>>, tint: [f32; 3]) {
+    pub fn draw_tint(&mut self, mesh: usize, material: usize, model: Mat4, joints: Option<Arc<Vec<Mat4>>>, tint: [f32; 3]) {
         if mesh < self.meshes.len() {
             let material = if material < self.materials.len() { material } else { 0 };
-            self.queue_cmds.push(DrawCmd { mesh, material, model, joints, tint, shield: [0.0, 0.0] });
+            self.queue_cmds.push(DrawCmd { mesh, material, model, joints, tint, shield: [0.0, 0.0], viewmodel: self.vm_mode });
         }
     }
 
     /// Like [`draw`] but adds an energy-shield Fresnel rim (cyan crackle, `strength` 0..1,
     /// animated by `time`). Tint stays neutral.
-    pub fn draw_shield(&mut self, mesh: usize, material: usize, model: Mat4, joints: Option<Vec<Mat4>>, strength: f32, time: f32) {
+    pub fn draw_shield(&mut self, mesh: usize, material: usize, model: Mat4, joints: Option<Arc<Vec<Mat4>>>, strength: f32, time: f32) {
         if mesh < self.meshes.len() {
             let material = if material < self.materials.len() { material } else { 0 };
-            self.queue_cmds.push(DrawCmd { mesh, material, model, joints, tint: [0.0, 0.0, 0.0], shield: [strength, time] });
+            self.queue_cmds.push(DrawCmd { mesh, material, model, joints, tint: [0.0, 0.0, 0.0], shield: [strength, time], viewmodel: self.vm_mode });
         }
     }
 
@@ -1273,21 +1290,35 @@ impl Renderer3D {
             if ta != tb {
                 return ta.cmp(&tb); // opaque (false) first
             }
+            let da = (cam - self.queue_cmds[a].model.w_axis.truncate()).length_squared();
+            let db = (cam - self.queue_cmds[b].model.w_axis.truncate()).length_squared();
             if ta {
-                // back-to-front for transparent
-                let da = (cam - self.queue_cmds[a].model.w_axis.truncate()).length_squared();
-                let db = (cam - self.queue_cmds[b].model.w_axis.truncate()).length_squared();
+                // Transparent: back-to-front so alpha blending composites correctly.
                 db.partial_cmp(&da).unwrap_or(std::cmp::Ordering::Equal)
             } else {
-                std::cmp::Ordering::Equal
+                // Opaque: front-to-back so the GPU's early-z rejects covered fragments BEFORE the
+                // PBR shader runs - kills overdraw shading (same goal as a depth pre-pass, but free
+                // and with no MSAA/transparency/precision pitfalls). Final image is identical.
+                da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
             }
         });
 
+        // Camera frustum planes - reused to cull the SSAO prepass AND the main pass (the same
+        // camera view). NOT used for the shadow cascades: those are rendered from the LIGHT's view,
+        // where an object behind the camera can still cast a shadow into frame, so camera-culling
+        // them would drop valid shadows.
+        let cam_planes = frustum_planes(Mat4::from_cols_array_2d(&self.globals.view_proj));
+
         // Shadow pass: render scene depth into each cascade layer from its light
-        // matrix (selected by dynamic offset into the per-cascade buffer).
+        // matrix (selected by dynamic offset into the per-cascade buffer). Each object is drawn
+        // ONLY into the cascades its bounding sphere actually reaches (per-cascade cull below), so
+        // near objects no longer get rasterized into all three concentric cascades.
+        let shadow_light = Vec3::new(self.globals.dir_dir[0], self.globals.dir_dir[1], self.globals.dir_dir[2]).normalize_or_zero();
+        let shadow_cam = Vec3::new(self.globals.cam_pos[0], self.globals.cam_pos[1], self.globals.cam_pos[2]);
         if self.shadows_on {
             for cascade in 0..NUM_CASCADES {
                 let off = (cascade * 256) as u32;
+                let e = self.globals.csm_splits[cascade];
                 let mut sp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("shadow"),
                     color_attachments: &[],
@@ -1306,6 +1337,15 @@ impl Renderer3D {
                 sp.set_bind_group(0, &self.shadow_globals_bg, &[off]);
                 for (ci, &(obj_off, joint_off)) in offsets.iter().enumerate() {
                     let cmd = &self.queue_cmds[ci];
+                    if cmd.viewmodel { continue; }   // viewmodels never cast world shadows
+                    // Skip objects whose shadow can't land in this cascade's footprint (kept for
+                    // every cascade they DO reach, so no shadow is lost - see caster_in_cascade).
+                    if self.frustum_cull {
+                        let (center, radius) = cull_bounds(&cmd.model, self.mesh_radius[cmd.mesh]);
+                        if !caster_in_cascade(center, radius, shadow_cam, shadow_light, e) {
+                            continue;
+                        }
+                    }
                     let m = &self.meshes[cmd.mesh];
                     sp.set_bind_group(1, &self.obj_bg, &[obj_off, joint_off]);
                     sp.set_vertex_buffer(0, m.vbuf.slice(..));
@@ -1347,7 +1387,14 @@ impl Renderer3D {
                 pp.set_pipeline(&self.prepass_pipeline);
                 pp.set_bind_group(0, &self.globals_bg, &[]);
                 for (ci, &(obj_off, joint_off)) in offsets.iter().enumerate() {
-                    let m = &self.meshes[self.queue_cmds[ci].mesh];
+                    let cmd = &self.queue_cmds[ci];
+                    if cmd.viewmodel { continue; }   // viewmodels don't belong in the AO geometry
+                    // SSAO only affects on-screen pixels - cull to the camera frustum like the main pass.
+                    if self.frustum_cull {
+                        let (center, radius) = cull_bounds(&cmd.model, self.mesh_radius[cmd.mesh]);
+                        if !sphere_in_frustum(&cam_planes, center, radius) { continue; }
+                    }
+                    let m = &self.meshes[cmd.mesh];
                     pp.set_bind_group(1, &self.obj_bg, &[obj_off, joint_off]);
                     pp.set_vertex_buffer(0, m.vbuf.slice(..));
                     pp.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
@@ -1487,18 +1534,13 @@ impl Renderer3D {
         pass.set_bind_group(0, &self.globals_bg, &[]);
         pass.set_bind_group(3, ao_bg, &[]);
         pass.set_bind_group(4, &self.pshadow_bg, &[]);
-        let planes = frustum_planes(Mat4::from_cols_array_2d(&self.globals.view_proj));
         let mut drawn = 0usize;
         for &ci in &order {
             let cmd = &self.queue_cmds[ci];
             // Frustum cull by the mesh's bounding sphere (scaled by the model).
             if self.frustum_cull {
-                let center = cmd.model.w_axis.truncate();
-                let scale = cmd.model.x_axis.truncate().length()
-                    .max(cmd.model.y_axis.truncate().length())
-                    .max(cmd.model.z_axis.truncate().length());
-                let radius = self.mesh_radius[cmd.mesh] * scale;
-                if !sphere_in_frustum(&planes, center, radius) {
+                let (center, radius) = cull_bounds(&cmd.model, self.mesh_radius[cmd.mesh]);
+                if !sphere_in_frustum(&cam_planes, center, radius) {
                     continue;
                 }
             }
@@ -1555,6 +1597,29 @@ impl Renderer3D {
 }
 
 /// The six frustum planes (a,b,c,d) from a view-projection matrix.
+/// Whether a caster (bounding sphere `center`/`radius`) can cast into a camera-centred cascade of
+/// footprint half-width `e`. The cascades are concentric squares centred on the camera, and the
+/// shader selects a fragment's cascade by its distance from the camera - so a caster only matters
+/// to cascade i if its distance PERPENDICULAR to the light is within that footprint. That
+/// perpendicular distance is invariant along the light direction, so a caster occluding any
+/// in-cascade fragment is always kept (no shadow is ever dropped); only genuinely out-of-footprint
+/// casters are skipped. `light` must be normalized. Square footprint -> circumscribed radius e*sqrt2.
+fn caster_in_cascade(center: Vec3, radius: f32, cam: Vec3, light: Vec3, e: f32) -> bool {
+    let off = center - cam;
+    let perp = off - light * off.dot(light);
+    perp.length() <= e * std::f32::consts::SQRT_2 + radius
+}
+
+/// Bounding-sphere center + world-space radius for a draw command's model, used by every pass's
+/// frustum cull (single source of truth so the camera and main passes test identical bounds).
+fn cull_bounds(model: &Mat4, mesh_radius: f32) -> (Vec3, f32) {
+    let center = model.w_axis.truncate();
+    let scale = model.x_axis.truncate().length()
+        .max(model.y_axis.truncate().length())
+        .max(model.z_axis.truncate().length());
+    (center, mesh_radius * scale)
+}
+
 fn frustum_planes(vp: Mat4) -> [glam::Vec4; 6] {
     let r = vp.to_cols_array_2d();
     // Row-vector extraction (column-major storage: m[col][row]).

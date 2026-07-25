@@ -60,6 +60,19 @@ struct ImmApp {
     dmg_oc: f32,
     /// Fullscreen blur radius in pixels (0 = off); used for the paused/menu backdrop.
     blur: f32,
+    /// Headless mode (AURORA_HEADLESS=1): no window, no event loop, no surface.
+    /// 3D renders offscreen on demand (`r3d_capture`); input comes from the
+    /// inject_* builtins or a replay tape.
+    headless: bool,
+    /// Lazily-created headless GPU + scene (only when 3D builtins are used).
+    hgfx: Option<HeadlessGfx>,
+    /// Present counter (frames elapsed), for AURORA_MAX_FRAMES and tapes.
+    frame: u64,
+    /// Present returns "closed" past this many frames (0 = unlimited). The
+    /// harness's universal timeout: any unmodified game loop exits cleanly.
+    max_frames: u64,
+    /// Input record/replay tape (AURORA_INPUT_RECORD / AURORA_INPUT_REPLAY).
+    tape: Tape,
 }
 
 impl ApplicationHandler for ImmApp {
@@ -201,7 +214,7 @@ impl ApplicationHandler for ImmApp {
 }
 
 thread_local! {
-    static IMM: RefCell<Option<(EventLoop<()>, ImmApp)>> = const { RefCell::new(None) };
+    static IMM: RefCell<Option<(Option<EventLoop<()>>, ImmApp)>> = const { RefCell::new(None) };
 }
 
 /// Leak the window + GPU state instead of dropping it. Call right before the process
@@ -210,20 +223,37 @@ thread_local! {
 pub fn imm_leak() {
     IMM.with(|s| {
         if let Some(inner) = s.borrow_mut().take() {
-            std::mem::forget(inner);
+            // Headless state has no winit window/event loop; dropping the wgpu
+            // device DELIBERATELY (before thread-local teardown) lets its worker
+            // threads shut down cleanly instead of panicking at process exit.
+            if inner.1.headless {
+                drop(inner);
+            } else {
+                std::mem::forget(inner);
+            }
         }
     });
 }
 
 /// Open a window backing a `width`×`height` framebuffer. Replaces any prior one.
+/// With `AURORA_HEADLESS=1` no window or event loop is created: presents just
+/// advance the frame counter (and the replay tape), and 3D renders offscreen
+/// on demand via `r3d_capture`.
 pub fn open(width: u32, height: u32) {
-    let event_loop = match crate::new_event_loop() {
-        Ok(e) => e,
-        Err(e) => {
-            eprintln!("aurora-window: event loop creation failed: {e}");
-            return;
+    let headless = std::env::var("AURORA_HEADLESS").map(|v| v == "1").unwrap_or(false);
+    let event_loop = if headless {
+        None
+    } else {
+        match crate::new_event_loop() {
+            Ok(e) => Some(e),
+            Err(e) => {
+                eprintln!("aurora-window: event loop creation failed: {e}");
+                return;
+            }
         }
     };
+    let max_frames = std::env::var("AURORA_MAX_FRAMES").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let tape = Tape::from_env();
     let app = ImmApp {
         width: width.max(1),
         height: height.max(1),
@@ -252,6 +282,11 @@ pub fn open(width: u32, height: u32) {
         dmg_dy: 0.0,
         dmg_oc: 0.0,
         blur: 0.0,
+        headless,
+        hgfx: None,
+        frame: 0,
+        max_frames,
+        tape,
     };
     IMM.with(|s| *s.borrow_mut() = Some((event_loop, app)));
 }
@@ -331,8 +366,11 @@ pub fn present(rgba: &[u8]) -> bool {
         // so the deltas accumulated this pump survive for the caller to read after
         // present returns. Resetting after the pump would zero them first.
         reset_frame_input(app);
-        event_loop.pump_app_events(Some(Duration::ZERO), app);
-        if app.open {
+        if let Some(el) = event_loop.as_mut() {
+            el.pump_app_events(Some(Duration::ZERO), app);
+        }
+        end_frame(app);
+        if app.open && !app.headless {
             // Only upload when the buffer matches the window's framebuffer size.
             let expected = (app.width * app.height * 4) as usize;
             if let Some(g) = app.gfx.as_mut() {
@@ -401,12 +439,78 @@ pub fn mouse() -> (i64, i64, bool) {
 
 use glam::{EulerRot, Mat4, Quat, Vec3};
 
-fn with_gfx<R>(default: R, f: impl FnOnce(&mut Gfx) -> R) -> R {
+/// Anything that can hand out the wgpu device/queue and the 3D scene: the
+/// window's `Gfx`, or the surface-free `HeadlessGfx`. Every r3d_* builtin is
+/// written against this, so both backends share one code path.
+trait SceneHost {
+    fn scene_mut(&mut self) -> (&wgpu::Device, &wgpu::Queue, &mut aurora_render3d::Scene);
+}
+
+impl SceneHost for Gfx {
+    fn scene_mut(&mut self) -> (&wgpu::Device, &wgpu::Queue, &mut aurora_render3d::Scene) {
+        Gfx::scene_mut(self)
+    }
+}
+
+/// Headless GPU + scene: a device from `headless_device()` (no surface) and a
+/// `Scene` in the offscreen-proven format (Rgba8Unorm, no MSAA).
+struct HeadlessGfx {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    scene: Option<aurora_render3d::Scene>,
+    w: u32,
+    h: u32,
+}
+
+impl HeadlessGfx {
+    fn new(w: u32, h: u32) -> Option<HeadlessGfx> {
+        let (device, queue) = aurora_render3d::headless_device()?;
+        Some(HeadlessGfx { device, queue, scene: None, w: w.max(1), h: h.max(1) })
+    }
+}
+
+impl SceneHost for HeadlessGfx {
+    fn scene_mut(&mut self) -> (&wgpu::Device, &wgpu::Queue, &mut aurora_render3d::Scene) {
+        if self.scene.is_none() {
+            self.scene = Some(aurora_render3d::Scene::new(
+                &self.device,
+                &self.queue,
+                wgpu::TextureFormat::Rgba8Unorm,
+                self.w,
+                self.h,
+                1,
+            ));
+        }
+        (&self.device, &self.queue, self.scene.as_mut().unwrap())
+    }
+}
+
+fn with_gfx<R>(default: R, f: impl FnOnce(&mut dyn SceneHost) -> R) -> R {
     IMM.with(|s| {
         let mut slot = s.borrow_mut();
         let Some((event_loop, app)) = slot.as_mut() else { return default };
+        if app.headless {
+            if app.hgfx.is_none() && app.open {
+                match HeadlessGfx::new(app.width, app.height) {
+                    Some(h) => app.hgfx = Some(h),
+                    None => {
+                        // Contract: a blocked visual path is loud, never silent -
+                        // runners treat this marker as BLOCKED, not as a pass.
+                        eprintln!("aurora: HEADLESS-NO-GPU");
+                        app.open = false;
+                        return default;
+                    }
+                }
+            }
+            return match app.hgfx.as_mut() {
+                Some(h) => f(h),
+                None => default,
+            };
+        }
         if app.gfx.is_none() && app.open {
-            event_loop.pump_app_events(Some(Duration::ZERO), app);
+            if let Some(el) = event_loop.as_mut() {
+                el.pump_app_events(Some(Duration::ZERO), app);
+            }
         }
         match app.gfx.as_mut() {
             Some(g) => f(g),
@@ -503,6 +607,12 @@ pub fn r3d_ssao(on: i64) {
         s.set_ssao(on != 0);
     });
 }
+pub fn r3d_viewmodel(on: i64) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.set_viewmodel(on != 0);
+    });
+}
 pub fn r3d_point_shadows(on: i64) {
     with_gfx((), |gf| {
         let (_, _, s) = gf.scene_mut();
@@ -545,6 +655,21 @@ pub fn r3d_frustum_cull(on: i64) {
     with_gfx((), |gf| {
         let (_, _, s) = gf.scene_mut();
         s.renderer.set_frustum_cull(on != 0);
+    });
+}
+
+/// Draw a model's skeleton as debug bone lines at (px,py,pz)/yaw/scale, in the
+/// current pose - for headless rig/hitbox visual audits.
+#[allow(clippy::too_many_arguments)]
+pub fn r3d_debug_skeleton(handle: i64, px: f32, py: f32, pz: f32, yaw: f32, scale: f32, r: f32, g: f32, b: f32) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        let m = Mat4::from_scale_rotation_translation(
+            Vec3::splat(scale),
+            Quat::from_euler(EulerRot::YXZ, yaw, 0.0, 0.0),
+            Vec3::new(px, py, pz),
+        );
+        s.debug_skeleton(handle, m, Vec3::new(r, g, b));
     });
 }
 pub fn r3d_begin() {
@@ -675,6 +800,14 @@ pub fn r3d_joint_dump(host: i64) {
         s.dump_joints(host);
     });
 }
+/// Model-space position of `joint` in the host's current pose, component `axis` (0=x,1=y,2=z).
+pub fn r3d_joint_pos(host: i64, joint: i64, axis: i64) -> f32 {
+    with_gfx(0.0f32, |gf| {
+        let (_, _, s) = gf.scene_mut();
+        let p = s.joint_pos(host, joint).unwrap_or([0.0, 0.0, 0.0]);
+        p[(axis.max(0) as usize).min(2)]
+    })
+}
 
 pub fn r3d_anim_play(handle: i64, clip: i64, looping: i64, speed: f32, fade: f32) {
     with_gfx((), |gf| {
@@ -694,6 +827,24 @@ pub fn r3d_anim_play_upper(handle: i64, clip: i64, looping: i64, speed: f32, fad
         s.anim_play_upper(handle, clip, looping != 0, speed, fade, mask_root);
     });
 }
+pub fn r3d_anim_aim_upper(handle: i64, clip_a: i64, clip_b: i64, weight: f32, speed: f32, fade: f32, mask_root: i64) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.anim_aim_upper(handle, clip_a, clip_b, weight, speed, fade, mask_root);
+    });
+}
+pub fn r3d_anim_blend(handle: i64, clip_a: i64, clip_b: i64, weight: f32, speed: f32, fade: f32) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.anim_blend(handle, clip_a, clip_b, weight, speed, fade);
+    });
+}
+pub fn r3d_anim_seek_upper(handle: i64, t: f32) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.anim_seek_upper(handle, t);
+    });
+}
 pub fn r3d_pose_bone(handle: i64, joint: i64, rx: f32, ry: f32, rz: f32) {
     with_gfx((), |gf| {
         let (_, _, s) = gf.scene_mut();
@@ -704,6 +855,12 @@ pub fn r3d_clear_pose(handle: i64) {
     with_gfx((), |gf| {
         let (_, _, s) = gf.scene_mut();
         s.clear_pose(handle);
+    });
+}
+pub fn r3d_hide_joint(handle: i64, joint: i64) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.hide_joint(handle, joint);
     });
 }
 pub fn r3d_anim_stop_upper(handle: i64, fade: f32) {
@@ -729,8 +886,11 @@ pub fn r3d_present(hud_rgba: &[u8], hud_w: u32, hud_h: u32) -> bool {
         // Reset per-frame input before pumping so this frame's mouse/scroll delta
         // survives for the caller to read after present returns (see `present`).
         reset_frame_input(app);
-        event_loop.pump_app_events(Some(Duration::ZERO), app);
-        if app.open {
+        if let Some(el) = event_loop.as_mut() {
+            el.pump_app_events(Some(Duration::ZERO), app);
+        }
+        end_frame(app);
+        if app.open && !app.headless {
             let (sli, slt) = (app.sl_intensity, app.sl_time);
             let (dv, dh, ddx, ddy, doc) =
                 (app.dmg_vig, app.dmg_hit, app.dmg_dx, app.dmg_dy, app.dmg_oc);
@@ -740,6 +900,293 @@ pub fn r3d_present(hud_rgba: &[u8], hud_w: u32, hud_h: u32) -> bool {
             }
         }
         app.open
+    })
+}
+
+/// Per-present bookkeeping shared by both present paths: run the input tape
+/// (record after the pump so real events are captured; replay overwrites the
+/// input state), advance the frame counter, and enforce AURORA_MAX_FRAMES.
+fn end_frame(app: &mut ImmApp) {
+    tape_tick(app);
+    app.frame += 1;
+    if app.max_frames > 0 && app.frame >= app.max_frames {
+        app.open = false;
+    }
+}
+
+// --- input injection + record/replay tape -----------------------------------
+//
+// inject_* write the same state real events write, so scripted input is
+// indistinguishable from a player (works windowed too - demo playback). A tape
+// (AURORA_INPUT_RECORD=path / AURORA_INPUT_REPLAY=path) captures/replays the
+// full per-frame input state; combined with srand + fixed dt a replayed
+// session reproduces bit-for-bit. Replay ends -> present reports "closed", so
+// the game loop exits on its own.
+//
+// Tape format (line-based, deterministic, greppable):
+//   AURTAPE 1
+//   f=<n>;k=<code,code,..>;dx=<f>;dy=<f>;mx=<i>;my=<i>;s=<f>;b=<bitmask>;t=<c,c,..>
+
+enum Tape {
+    Off,
+    Record { out: std::io::BufWriter<std::fs::File> },
+    Replay { frames: Vec<TapeFrame>, next: usize },
+}
+
+#[derive(Default)]
+struct TapeFrame {
+    keys: Vec<u32>,
+    dx: f64,
+    dy: f64,
+    mx: i64,
+    my: i64,
+    scroll: f64,
+    buttons: u32,
+    typed: Vec<u32>,
+}
+
+impl Tape {
+    fn from_env() -> Tape {
+        if let Ok(path) = std::env::var("AURORA_INPUT_REPLAY") {
+            match std::fs::read_to_string(&path) {
+                Ok(text) => {
+                    let frames = parse_tape(&text);
+                    eprintln!("aurora: replaying input tape {path} ({} frames)", frames.len());
+                    return Tape::Replay { frames, next: 0 };
+                }
+                Err(e) => eprintln!("aurora: cannot read input tape {path}: {e}"),
+            }
+        }
+        if let Ok(path) = std::env::var("AURORA_INPUT_RECORD") {
+            match std::fs::File::create(&path) {
+                Ok(f) => {
+                    use std::io::Write;
+                    let mut out = std::io::BufWriter::new(f);
+                    let _ = writeln!(out, "AURTAPE 1");
+                    eprintln!("aurora: recording input tape to {path}");
+                    return Tape::Record { out };
+                }
+                Err(e) => eprintln!("aurora: cannot create input tape {path}: {e}"),
+            }
+        }
+        Tape::Off
+    }
+}
+
+fn parse_tape(text: &str) -> Vec<TapeFrame> {
+    let mut frames = Vec::new();
+    for line in text.lines().skip(1) {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let mut fr = TapeFrame::default();
+        for field in line.split(';') {
+            let Some((k, v)) = field.split_once('=') else { continue };
+            match k {
+                "k" => fr.keys = v.split(',').filter_map(|s| s.parse().ok()).collect(),
+                "dx" => fr.dx = v.parse().unwrap_or(0.0),
+                "dy" => fr.dy = v.parse().unwrap_or(0.0),
+                "mx" => fr.mx = v.parse().unwrap_or(0),
+                "my" => fr.my = v.parse().unwrap_or(0),
+                "s" => fr.scroll = v.parse().unwrap_or(0.0),
+                "b" => fr.buttons = v.parse().unwrap_or(0),
+                "t" => fr.typed = v.split(',').filter_map(|s| s.parse().ok()).collect(),
+                _ => {}
+            }
+        }
+        frames.push(fr);
+    }
+    frames
+}
+
+/// Aurora key-code range covered by snapshots/tapes (0..=65, see code_to_key).
+const KEY_CODE_MAX: u32 = 65;
+
+fn tape_tick(app: &mut ImmApp) {
+    match &mut app.tape {
+        Tape::Off => {}
+        Tape::Record { out } => {
+            use std::io::Write;
+            let keys: Vec<String> = (0..=KEY_CODE_MAX)
+                .filter(|&c| code_to_key(c).map(|k| app.keys.contains(&k)).unwrap_or(false))
+                .map(|c| c.to_string())
+                .collect();
+            let buttons = (app.mouse_down as u32)
+                | (app.mouse_right as u32) << 1
+                | (app.mouse_middle as u32) << 2
+                | (app.mouse_back as u32) << 3
+                | (app.mouse_forward as u32) << 4;
+            let typed: Vec<String> = app.typed.iter().map(|c| c.to_string()).collect();
+            let _ = writeln!(
+                out,
+                "f={};k={};dx={};dy={};mx={};my={};s={};b={};t={}",
+                app.frame,
+                keys.join(","),
+                app.mouse_dx,
+                app.mouse_dy,
+                app.mouse.0,
+                app.mouse.1,
+                app.scroll,
+                buttons,
+                typed.join(",")
+            );
+        }
+        Tape::Replay { frames, next } => {
+            if *next >= frames.len() {
+                app.open = false;
+                return;
+            }
+            let fr = &frames[*next];
+            *next += 1;
+            app.keys.clear();
+            for &c in &fr.keys {
+                if let Some(k) = code_to_key(c) {
+                    app.keys.insert(k);
+                }
+            }
+            app.mouse_dx = fr.dx;
+            app.mouse_dy = fr.dy;
+            app.mouse = (fr.mx, fr.my);
+            app.scroll = fr.scroll;
+            app.mouse_down = fr.buttons & 1 != 0;
+            app.mouse_right = fr.buttons & 2 != 0;
+            app.mouse_middle = fr.buttons & 4 != 0;
+            app.mouse_back = fr.buttons & 8 != 0;
+            app.mouse_forward = fr.buttons & 16 != 0;
+            app.typed = fr.typed.clone();
+        }
+    }
+}
+
+/// Press or release a key by Aurora key code (same state real events write).
+pub fn inject_key(code: u32, down: bool) {
+    IMM.with(|s| {
+        if let Some((_, app)) = s.borrow_mut().as_mut() {
+            if let Some(k) = code_to_key(code) {
+                if down {
+                    app.keys.insert(k);
+                } else {
+                    app.keys.remove(&k);
+                }
+            }
+        }
+    });
+}
+
+/// Add raw mouse-look motion (accumulates until the next present).
+pub fn inject_mouse_move(dx: f64, dy: f64) {
+    IMM.with(|s| {
+        if let Some((_, app)) = s.borrow_mut().as_mut() {
+            app.mouse_dx += dx;
+            app.mouse_dy += dy;
+        }
+    });
+}
+
+/// Set the cursor position in framebuffer pixels.
+pub fn inject_mouse_pos(x: i64, y: i64) {
+    IMM.with(|s| {
+        if let Some((_, app)) = s.borrow_mut().as_mut() {
+            app.mouse = (x, y);
+        }
+    });
+}
+
+/// Press or release a mouse button (0 left, 1 right, 2 middle, 3 back, 4 forward).
+pub fn inject_mouse_button(b: u32, down: bool) {
+    IMM.with(|s| {
+        if let Some((_, app)) = s.borrow_mut().as_mut() {
+            match b {
+                1 => app.mouse_right = down,
+                2 => app.mouse_middle = down,
+                3 => app.mouse_back = down,
+                4 => app.mouse_forward = down,
+                _ => app.mouse_down = down,
+            }
+        }
+    });
+}
+
+/// Add scroll-wheel delta (accumulates until the next present).
+pub fn inject_scroll(dy: f64) {
+    IMM.with(|s| {
+        if let Some((_, app)) = s.borrow_mut().as_mut() {
+            app.scroll += dy;
+        }
+    });
+}
+
+/// Queue a typed character code for text fields (Backspace = 8).
+pub fn inject_char(c: u32) {
+    IMM.with(|s| {
+        if let Some((_, app)) = s.borrow_mut().as_mut() {
+            app.typed.push(c);
+        }
+    });
+}
+
+/// Render the queued 3D scene offscreen and save it as a PNG with the HUD
+/// framebuffer composited on top (black = transparent, like the live overlay).
+/// Headless-only: the harness's eyes. Returns 1 on success, 0 on failure.
+pub fn r3d_capture(path: &str, hud_rgba: &[u8], hud_w: u32, hud_h: u32, out_w: u32, out_h: u32) -> i64 {
+    IMM.with(|s| {
+        let mut slot = s.borrow_mut();
+        let Some((_, app)) = slot.as_mut() else { return 0 };
+        if !app.headless {
+            eprintln!("aurora: r3d_capture is headless-only (set AURORA_HEADLESS=1)");
+            return 0;
+        }
+        if app.hgfx.is_none() && app.open {
+            match HeadlessGfx::new(app.width, app.height) {
+                Some(h) => app.hgfx = Some(h),
+                None => {
+                    eprintln!("aurora: HEADLESS-NO-GPU");
+                    app.open = false;
+                    return 0;
+                }
+            }
+        }
+        let Some(h) = app.hgfx.as_mut() else { return 0 };
+        let (w, hh) = (out_w.clamp(16, 4096), out_h.clamp(16, 4096));
+        let (device, queue, scene) = h.scene_mut();
+        // Match the camera aspect to the capture size before rendering.
+        scene.resize(device, w, hh);
+        let clear = scene.clear_color();
+        let mut px = aurora_render3d::render_offscreen(&mut scene.renderer, device, queue, w, hh, clear);
+        // Composite the HUD (CPU framebuffer) over the render: nearest-neighbor
+        // scale, near-black is the transparent key (same threshold as HUD_WGSL).
+        if hud_w > 0 && hud_h > 0 && hud_rgba.len() >= (hud_w * hud_h * 4) as usize {
+            for y in 0..hh {
+                let sy = (y as u64 * hud_h as u64 / hh as u64) as u32;
+                for x in 0..w {
+                    let sx = (x as u64 * hud_w as u64 / w as u64) as u32;
+                    let so = ((sy * hud_w + sx) * 4) as usize;
+                    let (r, g, b) = (hud_rgba[so], hud_rgba[so + 1], hud_rgba[so + 2]);
+                    if r as u32 + g as u32 + b as u32 >= 3 {
+                        let o = ((y * w + x) * 4) as usize;
+                        px[o] = r;
+                        px[o + 1] = g;
+                        px[o + 2] = b;
+                        px[o + 3] = 255;
+                    }
+                }
+            }
+        }
+        for p in px.chunks_exact_mut(4) {
+            p[3] = 255;
+        }
+        if let Some(parent) = std::path::Path::new(path).parent() {
+            if !parent.as_os_str().is_empty() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+        }
+        match image::save_buffer(path, &px, w, hh, image::ExtendedColorType::Rgba8) {
+            Ok(()) => 1,
+            Err(e) => {
+                eprintln!("aurora: r3d_capture {path}: {e}");
+                0
+            }
+        }
     })
 }
 

@@ -68,15 +68,14 @@ enum Stage {
 }
 
 fn shader_stage(item: &Item) -> Option<Stage> {
-    for attr in &item.attrs {
-        match attr.name.name.as_str() {
-            "vertex" => return Some(Stage::Vertex),
-            "fragment" => return Some(Stage::Fragment),
-            "compute" => return Some(Stage::Compute),
-            _ => {}
-        }
+    // `aurora_ast::SHADER_STAGE_ATTRS` is the one list of stage attributes (the
+    // native backend skips exactly these items); this only maps it to a stage.
+    match aurora_ast::shader_stage_attr(&item.attrs)? {
+        "vertex" => Some(Stage::Vertex),
+        "fragment" => Some(Stage::Fragment),
+        "compute" => Some(Stage::Compute),
+        _ => None,
     }
-    None
 }
 
 type Structs = HashMap<String, Vec<String>>; // name -> field order

@@ -15,6 +15,42 @@ aurorac check  game.aur              # type + safety checks only
 `enum`, `trait`, `impl`, `const`, and `mod` are all items; statements end at a
 newline or `;` (block-form `if`/`while`/`for`/`match` need no separator).
 
+Split a program across files with `mod NAME;`, which loads `NAME.aur` from the
+declaring file's directory and namespaces its items as `NAME::item`. Only the entry
+file is passed to `aurorac`; see
+[`01-grammar-and-types.md`](01-grammar-and-types.md) §3.1 for the full rule.
+
+### Compilation failures are never silent
+
+A call to a name that is not a function, a builtin, an `@extern` import, a local
+holding a closure, or a `use`d name is a hard error (`E0313`) - a typo in a call
+does not compile. `check`, `run`, and `build` all check the same program (your
+source, its dependencies, and the prelude), so they agree.
+
+If a function still fails to lower to native code, `run` and `build` both refuse
+and name every failing function and the reason. Neither falls back to running it:
+a function that failed to compile is otherwise replaced with a stub returning 0,
+and the program runs with that behaviour silently missing.
+
+A `@vertex` / `@fragment` / `@compute` function is GPU code lowered to WGSL, so
+it is exempt: it is not compiled as CPU code, and its intrinsics are not resolved
+against CPU declarations.
+
+### Where builtins come from
+
+Every builtin below is one row of a single table, `for_each_builtin!` in
+`crates/aurora-abi/src/lib.rs`: its Aurora name, the `aurora_*` runtime symbol
+that implements it, and its parameter/return types. The front end's name list,
+the backend's JIT symbol table, host imports and call-site signatures, and the
+AOT link keeper are all generated from that one table, so they cannot drift
+apart, and a row that names a runtime function that does not exist - or gives it
+a signature it does not have - fails to compile.
+
+Adding a builtin is therefore: write the `aurora_<name>` function in
+`aurora-runtime`, add one row, and document it here. A test fails if a new row
+is left undocumented, and another checks the argument list written here against
+the table for every builtin whose arguments are plain numbers.
+
 ---
 
 ## Core builtins
@@ -22,7 +58,7 @@ newline or `;` (block-form `if`/`while`/`for`/`match` need no separator).
 | Builtin | Signature | Notes |
 |---|---|---|
 | `print` / `println` | `(value)` | print a scalar/string (with/without newline) |
-| `assert` | `(cond)` | abort if `cond` is 0 |
+| `assert` | `(cond)` | abort if `cond` is 0 (`panic: assertion failed`, exit 101) |
 | `str` | `(int\|float) -> str` | format a number |
 | `len` | `(str\|array) -> i64` | length |
 | `char_at` / `substr` / `starts_with` | string ops | |
@@ -65,6 +101,103 @@ run in parallel** (the §6.2 checker proves they can't race). `despawn(e)`,
 | `play_wav(path) -> i64` | decode + play a **WAV** file | `hound` |
 | `scene_save(path)` / `scene_load(path)` | persist the ECS world | built-in |
 
+## Determinism & data
+
+Seeded RNG (deterministic BY DEFAULT - a fixed seed unless `srand` is called):
+
+| Builtin | Signature |
+|---|---|
+| `srand(seed)` | reseed the stream (same seed = same sequence, any machine) |
+| `rand() -> f64` | uniform in `[0, 1)` (53 random bits, SplitMix64) |
+| `rand_range(lo, hi) -> f64` | uniform in `[lo, hi)` |
+| `rand_int(lo, hi) -> i64` | uniform integer, **inclusive** both ends |
+
+Fixed timestep: `set_fixed_dt(dt)` pins `frame_dt()` to exactly `dt` per call
+(and advances a virtual clock); `set_fixed_dt(0.0)` restores the wall clock.
+The `AURORA_FIXED_DT` env var does the same for unmodified programs - the
+test-harness hook for reproducible runs.
+
+Text files: `read_file(path) -> str` ("" if unreadable - discriminate with
+`file_exists(path) -> 1|0`), `write_file(path, contents) -> 1|0` (creates
+parent directories). `save_png(path)` writes the 2D framebuffer as a PNG
+(`save_ppm`'s tool-friendly sibling).
+
+## Process environment
+
+The program's own command line and environment, so one binary can dispatch its
+own role (`--host`, `--dedicated`, `--verify <name>`).
+
+| Builtin | Signature | Notes |
+|---|---|---|
+| `sys_argc()` | `-> i64` | argument count, **including** argv[0], so always >= 1 |
+| `sys_arg(i)` | `-> str` | the i-th argument; `""` when `i` is out of range either way |
+| `sys_env(name)` | `-> str` | an environment variable, or `""` when unset |
+
+`sys_arg(0)` is the program **as invoked**: the executable's path for a binary
+built with `aurorac build`, and the source file's path under `aurorac run`.
+`sys_arg(1..)` are the program's own arguments and are identical either way, so
+a program reads the same command line however it was compiled:
+
+```sh
+aurorac build game.aur -o game.exe && ./game.exe --host 45123
+aurorac run   game.aur --host 45123        # same sys_arg(1) / sys_arg(2)
+aurorac run   game.aur -- --host 45123     # a leading `--` is dropped
+```
+
+An unset variable and one set to the empty string both read as `""`, so use a
+sentinel value (not emptiness) if you must tell them apart.
+
+JSON (backed by `serde_json`; handles are `i64`, 0 = invalid/absent, reading a
+bad handle is always safe). Load content as data at boot instead of hardcoding
+tables:
+
+| Builtin | Meaning |
+|---|---|
+| `json_parse(text) -> h` / `json_load(path) -> h` | parse (0 + stderr diagnostic on error) |
+| `json_get(h, key) -> h` / `json_at(h, i) -> h` | O(1) child handles, no copying |
+| `json_len(h)` | array length / object entry count / string bytes |
+| `json_num(h) -> f64`, `json_int(h)`, `json_bool(h)`, `json_str(h) -> str` | leaf reads |
+| `json_kind(h)` | -1 invalid, 0 null, 1 bool, 2 number, 3 string, 4 array, 5 object |
+| `json_has(h, key)`, `json_key(h, i) -> str` | probing / key iteration (document order) |
+| `json_new_obj()`, `json_new_arr()` | mutable builders (saves, telemetry) |
+| `json_set(h, key, child)`, `json_set_num/str/bool(h, key, v)` | object writes |
+| `json_push(h, child)`, `json_push_num/str(h, v)` | array appends |
+| `json_to_str(h) -> str`, `json_write(h, path) -> 1|0` | pretty serialization |
+| `json_free(h)` | release a handle (sub-handles keep the document alive) |
+
+## Headless harness (capture, scripted input, tapes)
+
+`AURORA_HEADLESS=1` runs any windowed game with NO window/event loop: presents
+just advance a frame counter, 3D lives on a surface-free device, and
+`AURORA_MAX_FRAMES=N` makes present report "closed" after N frames so any
+unmodified `while r3d_present() { }` loop exits cleanly. If no GPU adapter
+exists the run prints `aurora: HEADLESS-NO-GPU` and closes - runners must treat
+that as BLOCKED, never as a pass.
+
+- `r3d_capture(path) -> 1|0` / `r3d_capture_size(path, w, h)`: render the
+  queued scene offscreen to a PNG with the HUD framebuffer composited on top
+  (black = transparent, same as the live overlay). Headless-only; call it
+  INSTEAD of `r3d_present` for a captured frame.
+- Input injection (indistinguishable from a player; works windowed too):
+  `inject_key(code, down)`, `inject_mouse_move(dx, dy)`,
+  `inject_mouse_pos(x, y)`, `inject_mouse_button(b, down)`,
+  `inject_scroll(dy)`, `inject_char(c)`.
+- Tapes: `AURORA_INPUT_RECORD=file` writes one line of full input state per
+  present; `AURORA_INPUT_REPLAY=file` replays it (real input is overridden)
+  and CLOSES the window when the tape ends. Replay + `srand` defaults +
+  `AURORA_FIXED_DT` reproduce a session bit-for-bit
+  (see `examples/headless_capture.aur` - captures hash-identical on replay).
+  `AURORA_FIXED_DT` takes precedence over `set_fixed_dt`, so a game runs at a
+  fixed step under verification even if it requests wall-clock in play.
+- Debug overlays (appear in captures, for rig/hitbox audits):
+  `r3d_debug_skeleton(h, px,py,pz, yaw, scale, r,g,b)` draws a model's bones;
+  `phys3d_debug_draw(r,g,b)` draws every physics collider as a wireframe
+  (box/sphere/capsule) so you can verify hitboxes align with the mesh.
+- Offline audio: under headless, `play_note`/`play_sound` record their events
+  (not the device); `audio_capture_save(path) -> 1|0` renders them to a 16-bit
+  WAV at their virtual timestamps, so synthesized audio can be `wav-audit`ed.
+  Audio playback is otherwise a device no-op under headless (deterministic).
+
 ## Networking (reliable UDP)
 
 `net_bind(port)`, `net_connect(host, port)`, `net_send(msg)`, `net_recv() -> str`.
@@ -101,7 +234,7 @@ accessors.
 | `net_state(id, i) -> f64` / `net_local_state(i) -> f64` | read any game-defined state float | velocity, flags, etc. |
 | `net_interest(radius)` | relevancy radius | clients are only told about players within it |
 | `net_hit_radius(r)` | per-player hit sphere radius | used by the lag-compensated raycast |
-| `net_fire(ox,oy,oz, dx,dy,dz)` | lag-compensated hitscan | server rewinds targets to the shooter's view |
+| `net_fire(ox,oy,oz, dx,dy,dz, weapon)` | lag-compensated hitscan | server rewinds targets to the shooter's view; `weapon` is a 0..255 id carried through to `net_server_hit_weapon` so the server can apply per-weapon damage |
 | `net_hit_player() -> i64` / `net_hit_x/y/z() -> f64` | last validated hit | player id (-1 none) + world point |
 
 Snapshots are **delta-compressed** (only changed, in-interest players, with periodic
@@ -157,7 +290,7 @@ window. Colors are 0..1 floats; angles are radians; handles are `i64`.
 | `r3d_clear(r,g,b)` | background color | |
 | `r3d_begin()` | start a frame (clear the draw queue) | call once per frame |
 | `r3d_draw(h, px,py,pz, yaw,pitch,roll, scale)` | queue a model at a transform | Euler radians, uniform scale |
-| `r3d_anim_play(h, clip, looping, speed)` | start an animation clip | `looping`/`speed` |
+| `r3d_anim_play(h, clip, looping, speed, fade)` | start an animation clip | `looping`/`speed`; `fade` crossfades from the current clip over that many seconds (0 = snap) |
 | `r3d_anim_update(h, dt)` | advance the current clip | per frame |
 | `r3d_clip_count(h) -> i64` | number of animation clips | |
 | `r3d_present() -> i64` | render the queue to the window | 1 while open, 0 when closed |
@@ -226,7 +359,7 @@ hands a `net_sim` step (the pointer is passed as integer bits).
 | Builtin | Signature | Notes |
 |---|---|---|
 | `audio_listener(x,y,z, fx,fy,fz)` | set listener pose | position + forward |
-| `play_sound_at(semitone, ms, x,y,z)` | spatialized note | distance attenuation + stereo pan |
+| `play_sound_at(semitone, ms, gain_pct, x,y,z)` | spatialized note | distance attenuation + stereo pan; `gain_pct` mixes the level (100 = default) |
 
 ## 3D physics - Rapier 3D (`phys3d_*`)
 

@@ -1,0 +1,81 @@
+// End-to-end proof of the determinism + data builtins through the COMPILED
+// path (JIT and AOT): seeded RNG, fixed dt, file I/O, JSON parse/build
+// round-trip. Prints RESULT lines (expect 1) in the house sim-test style.
+
+fn main() {
+    // --- seeded RNG: same seed => same sequence, different seed => diverges.
+    srand(42)
+    let a1 = rand()
+    let a2 = rand()
+    srand(42)
+    let b1 = rand()
+    let b2 = rand()
+    println("RESULT rng_repeat=" + str(bool_int(a1 == b1 and a2 == b2)) + " (expect 1)")
+    srand(7)
+    let c1 = rand()
+    println("RESULT rng_diverge=" + str(bool_int(c1 != a1)) + " (expect 1)")
+    let mut in_range = 1
+    let mut i = 0
+    while i < 200 {
+        let v = rand_int(3, 7)
+        if v < 3 or v > 7 { in_range = 0 }
+        let f = rand_range(2.0, 4.0)
+        if f < 2.0 or f >= 4.0 { in_range = 0 }
+        i = i + 1
+    }
+    println("RESULT rng_ranges=" + str(in_range) + " (expect 1)")
+
+    // --- fixed dt: frame_dt returns exactly the scripted step.
+    set_fixed_dt(0.0166667)
+    let d1 = frame_dt()
+    let d2 = frame_dt()
+    println("RESULT fixed_dt=" + str(bool_int(d1 == 0.0166667 and d2 == 0.0166667)) + " (expect 1)")
+    set_fixed_dt(0.0)
+
+    // --- file I/O round-trip (nested dir is created by write_file).
+    let path = "qa_tmp/data_builtins_test.txt"
+    let wrote = write_file(path, "hello aurora")
+    let exists = file_exists(path)
+    let back = read_file(path)
+    println("RESULT file_roundtrip=" + str(bool_int(wrote == 1 and exists == 1 and back == "hello aurora")) + " (expect 1)")
+
+    // --- JSON: build -> serialize -> parse -> navigate.
+    let obj = json_new_obj()
+    json_set_str(obj, "name", "grunt")
+    json_set_num(obj, "hp", 40.0)
+    json_set_num(obj, "speed", 4.5)
+    json_set_bool(obj, "elite", 0)
+    let tags = json_new_arr()
+    json_push_str(tags, "melee")
+    json_push_str(tags, "swarm")
+    json_push_num(tags, 3.0)
+    json_set(obj, "tags", tags)
+    let ok = json_write(obj, "qa_tmp/enemy.json")
+    println("RESULT json_write=" + str(ok) + " (expect 1)")
+
+    let doc = json_load("qa_tmp/enemy.json")
+    let kind_ok = bool_int(json_kind(doc) == 5)
+    let name = json_str(json_get(doc, "name"))
+    let hp = json_int(json_get(doc, "hp"))
+    let speed = json_num(json_get(doc, "speed"))
+    let tags2 = json_get(doc, "tags")
+    let n_tags = json_len(tags2)
+    let tag1 = json_str(json_at(tags2, 1))
+    let t3 = json_int(json_at(tags2, 2))
+    let has = json_has(doc, "hp")
+    let missing = json_get(doc, "nope")
+    println("RESULT json_kinds=" + str(kind_ok) + " (expect 1)")
+    println("RESULT json_values=" + str(bool_int(name == "grunt" and hp == 40 and speed == 4.5)) + " (expect 1)")
+    println("RESULT json_arrays=" + str(bool_int(n_tags == 3 and tag1 == "swarm" and t3 == 3)) + " (expect 1)")
+    println("RESULT json_probes=" + str(bool_int(has == 1 and missing == 0 and json_kind(missing) == 0 - 1)) + " (expect 1)")
+
+    // Parse from a string too (not just a file).
+    let inline = json_parse("{\"x\": 1.5, \"list\": [10, 20]}")
+    let x = json_num(json_get(inline, "x"))
+    let l1 = json_int(json_at(json_get(inline, "list"), 1))
+    println("RESULT json_parse_str=" + str(bool_int(x == 1.5 and l1 == 20)) + " (expect 1)")
+}
+
+fn bool_int(b: bool) -> i64 {
+    if b { 1 } else { 0 }
+}

@@ -1,7 +1,7 @@
 //! Skeletal animation: sample a clip's TRS channels at a time, pose the
 //! skeleton, and produce per-joint skinning matrices for the vertex shader.
 
-use glam::{Mat4, Quat, Vec3};
+use glam::{Mat4, Quat, Vec3, Vec4};
 
 use crate::model::{Channel, Interp, Model, Path, Skeleton};
 
@@ -18,6 +18,13 @@ pub struct AnimPlayer {
     prev_time: f32,
     blend: f32,       // 0 = fully prev, 1 = fully current
     blend_rate: f32,  // blend units per second (1/fade_seconds)
+    // Sustained two-clip BASE blend (e.g. idle <-> run by movement speed): when `bblend_on`, the
+    // full-body base pose is lerp(clip, bclip2, bblend). `btime2` advances bclip2 independently, so
+    // both loops play at their own cadence. Call blend() every frame to track a continuous value.
+    bclip2: usize,
+    btime2: f32,
+    bblend: f32,
+    bblend_on: bool,
     // Optional upper-body overlay: a second clip applied only to `umask_root` and its
     // descendants (e.g. shoot/reload on the arms while the legs keep running). `uweight`
     // fades the overlay in/out so it never pops.
@@ -30,6 +37,19 @@ pub struct AnimPlayer {
     uweight: f32,
     uweight_target: f32,
     uweight_rate: f32,
+    // Optional AIM BLEND: when `ublend_on`, the upper overlay is a weighted blend of `uclip` and
+    // `uclip2` (ublend 0 = uclip, 1 = uclip2) BEFORE it is masked in - e.g. lerp a look-down aim
+    // pose into a look-up one by the player's pitch. Both clips share `utime`.
+    uclip2: usize,
+    ublend: f32,
+    ublend_on: bool,
+    // Upper-overlay CROSSFADE: when the overlay clip changes (e.g. aim -> katana swing -> aim), the
+    // old overlay pose (uprev_clip @ uprev_time) is crossfaded into the new one over `ufade` 0->1, so
+    // overlay-to-overlay transitions blend instead of popping. Separate from `uweight` (overlay-vs-base).
+    uprev_clip: usize,
+    uprev_time: f32,
+    ufade: f32,
+    ufade_rate: f32,
     // Per-bone POSE overrides: an extra local rotation pre-multiplied onto a joint after the clip
     // pose is sampled (and after the upper overlay). Lets game code author a pose the clips don't
     // have - e.g. bend the thighs forward into a slide while the spine keeps its upright clip pose.
@@ -49,6 +69,10 @@ impl Default for AnimPlayer {
             prev_time: 0.0,
             blend: 1.0,
             blend_rate: 0.0,
+            bclip2: 0,
+            btime2: 0.0,
+            bblend: 0.0,
+            bblend_on: false,
             upper: false,
             uclip: 0,
             utime: 0.0,
@@ -58,6 +82,13 @@ impl Default for AnimPlayer {
             uweight: 0.0,
             uweight_target: 0.0,
             uweight_rate: 0.0,
+            uclip2: 0,
+            ublend: 0.0,
+            ublend_on: false,
+            uprev_clip: 0,
+            uprev_time: 0.0,
+            ufade: 1.0,
+            ufade_rate: 0.0,
             pose: [(0u32, Quat::IDENTITY); 8],
             pose_n: 0,
         }
@@ -85,15 +116,49 @@ impl AnimPlayer {
         self.time = 0.0;
         self.looping = looping;
         self.speed = speed;
+        self.bblend_on = false;   // a single base clip again, not a sustained blend
+    }
+
+    /// Drive the FULL-BODY base as a sustained weighted blend of two clips (`clip_a` at weight 0,
+    /// `clip_b` at weight 1) - e.g. idle <-> run by movement speed, so the legs ease smoothly into
+    /// standing still instead of snapping. Call every frame to update the weight; the first call
+    /// that enters blend mode crossfades in over `fade` (so a jump->land transition is smooth too).
+    pub fn blend(&mut self, clip_a: usize, clip_b: usize, weight: f32, speed: f32, fade: f32) {
+        if !self.bblend_on {
+            if fade > 0.0001 {
+                self.prev_clip = self.clip;
+                self.prev_time = self.time;
+                self.blend = 0.0;
+                self.blend_rate = 1.0 / fade;
+            } else {
+                self.blend = 1.0;
+            }
+            self.btime2 = 0.0;
+        }
+        self.bblend_on = true;
+        self.clip = clip_a;
+        self.bclip2 = clip_b;
+        self.bblend = weight.clamp(0.0, 1.0);
+        self.looping = true;
+        self.speed = speed;
     }
 
     /// Start (or swap) an upper-body overlay clip, masked to `mask_root` + its descendants,
     /// fading the overlay weight in over `fade` seconds. The lower body keeps the base clip.
     pub fn play_upper(&mut self, clip: usize, looping: bool, speed: f32, fade: f32, mask_root: usize) {
-        if !self.upper {
+        if self.upper {
+            // Already overlaying: crossfade FROM the current overlay pose into the new clip.
+            let (dc, dtime) = self.upper_dominant();
+            self.uprev_clip = dc;
+            self.uprev_time = dtime;
+            self.ufade = 0.0;
+            self.ufade_rate = if fade > 0.0001 { 1.0 / fade } else { 1_000_000.0 };
+        } else {
             self.uweight = 0.0;
+            self.ufade = 1.0;   // coming from the base; the uweight fade-in covers it, no clip crossfade
         }
         self.upper = true;
+        self.ublend_on = false;   // a plain single-clip overlay (reload/recoil/swing), not an aim blend
         self.uclip = clip;
         self.utime = 0.0;
         self.ulooping = looping;
@@ -103,10 +168,56 @@ impl AnimPlayer {
         self.uweight_rate = if fade > 0.0001 { 1.0 / fade } else { 1_000_000.0 };
     }
 
+    /// Drive the upper-body overlay as a weighted BLEND of two clips (`clip_a` at weight 0,
+    /// `clip_b` at weight 1), masked to `mask_root`. Built to be called EVERY frame to track a
+    /// continuous value (e.g. aim pitch): only the first call that enters blend mode fades the
+    /// overlay in, so updating the weight/clips per frame stays smooth and never re-pops.
+    pub fn aim_upper(&mut self, clip_a: usize, clip_b: usize, weight: f32, speed: f32, fade: f32, mask_root: usize) {
+        let was_blend = self.ublend_on;
+        if !self.upper {
+            self.uweight = 0.0;
+            self.utime = 0.0;
+            self.ufade = 1.0;
+        } else if !was_blend {
+            // Transitioning INTO the aim blend from a single-clip overlay (katana/reload/recoil): crossfade.
+            self.uprev_clip = self.uclip;
+            self.uprev_time = self.utime;
+            self.ufade = 0.0;
+            self.ufade_rate = if fade > 0.0001 { 1.0 / fade } else { 1_000_000.0 };
+        }
+        self.upper = true;
+        self.ublend_on = true;
+        self.uclip = clip_a;
+        self.uclip2 = clip_b;
+        self.ublend = weight.clamp(0.0, 1.0);
+        self.ulooping = true;
+        self.uspeed = speed;
+        self.umask_root = mask_root;
+        self.uweight_target = 1.0;
+        if !was_blend {
+            self.uweight_rate = if fade > 0.0001 { 1.0 / fade } else { 1_000_000.0 };
+        }
+    }
+
     /// Fade the upper-body overlay back out over `fade` seconds (arms return to the base clip).
     pub fn stop_upper(&mut self, fade: f32) {
         self.uweight_target = 0.0;
         self.uweight_rate = if fade > 0.0001 { 1.0 / fade } else { 1_000_000.0 };
+    }
+
+    /// The single clip + time currently dominating the upper overlay (the crossfade source): the
+    /// higher-weighted clip of an aim blend, else the single overlay clip.
+    fn upper_dominant(&self) -> (usize, f32) {
+        if self.ublend_on && self.ublend >= 0.5 {
+            (self.uclip2, self.utime)
+        } else {
+            (self.uclip, self.utime)
+        }
+    }
+
+    /// Jump the upper-overlay playback to `t` seconds (e.g. skip a clip's wind-up). Clamped >= 0.
+    pub fn seek_upper(&mut self, t: f32) {
+        self.utime = t.max(0.0);
     }
 
     /// Advance playback (and any crossfade) by `dt` seconds.
@@ -132,14 +243,26 @@ impl AnimPlayer {
     }
 
     pub fn advance(&mut self, model: &Model, dt: f32) {
-        advance_time(&mut self.time, model.clips.get(self.clip), dt * self.speed, self.looping);
+        // In a sustained base blend, clip A (e.g. idle) keeps its natural cadence while clip B (e.g.
+        // run) is SPEED-WARPED by `speed`, so its footfalls track ground speed and don't slide. Plain
+        // single-clip playback uses `speed` directly.
+        let base_spd = if self.bblend_on { 1.0 } else { self.speed };
+        advance_time(&mut self.time, model.clips.get(self.clip), dt * base_spd, self.looping);
         if self.blend < 1.0 {
             // Keep the outgoing clip moving for a smooth blend.
-            advance_time(&mut self.prev_time, model.clips.get(self.prev_clip), dt * self.speed, true);
+            advance_time(&mut self.prev_time, model.clips.get(self.prev_clip), dt * base_spd, true);
             self.blend = (self.blend + self.blend_rate * dt).min(1.0);
+        }
+        if self.bblend_on {
+            advance_time(&mut self.btime2, model.clips.get(self.bclip2), dt * self.speed, true);
         }
         if self.upper {
             advance_time(&mut self.utime, model.clips.get(self.uclip), dt * self.uspeed, self.ulooping);
+            if self.ufade < 1.0 {
+                // Keep the outgoing overlay clip moving while it crossfades out.
+                advance_time(&mut self.uprev_time, model.clips.get(self.uprev_clip), dt * self.uspeed, true);
+                self.ufade = (self.ufade + self.ufade_rate * dt).min(1.0);
+            }
             if self.uweight < self.uweight_target {
                 self.uweight = (self.uweight + self.uweight_rate * dt).min(self.uweight_target);
             } else if self.uweight > self.uweight_target {
@@ -151,12 +274,41 @@ impl AnimPlayer {
         }
     }
 
+    /// Sample the sustained two-clip base blend (e.g. idle<->run by speed), additionally crossfading
+    /// IN from the previous single clip while `blend` < 1 so entering the blend (e.g. on landing from
+    /// a jump) eases in instead of popping.
+    fn sample_base_blend(&self, skel: &Skeleton, model: &Model) -> (Vec<Vec3>, Vec<Quat>, Vec<Vec3>) {
+        let (ta, ra, sa) = sample_locals(skel, model.clips.get(self.clip), self.time);
+        let (tb, rb, sb) = sample_locals(skel, model.clips.get(self.bclip2), self.btime2);
+        let w = self.bblend.clamp(0.0, 1.0);
+        let mut t = ta;
+        let mut r = ra;
+        let mut s = sa;
+        for i in 0..r.len() {
+            t[i] = t[i].lerp(tb[i], w);
+            r[i] = r[i].slerp(rb[i], w);
+            s[i] = s[i].lerp(sb[i], w);
+        }
+        if self.blend < 1.0 {
+            let (pt, pr, ps) = sample_locals(skel, model.clips.get(self.prev_clip), self.prev_time);
+            let b = self.blend;
+            for i in 0..r.len() {
+                t[i] = pt[i].lerp(t[i], b);
+                r[i] = pr[i].slerp(r[i], b);
+                s[i] = ps[i].lerp(s[i], b);
+            }
+        }
+        (t, r, s)
+    }
+
     /// The skinning matrices for the current (possibly blended) pose. Empty if
     /// the model has no skeleton.
-    pub fn matrices(&self, model: &Model) -> Vec<Mat4> {
+    pub fn matrices(&self, model: &Model, hidden: u64) -> Vec<Mat4> {
         let Some(skel) = &model.skeleton else { return Vec::new() };
         // Base (full-body) local pose, crossfaded if mid-transition.
-        let (mut t, mut r, mut s) = if self.blend >= 1.0 {
+        let (mut t, mut r, mut s) = if self.bblend_on {
+            self.sample_base_blend(skel, model)
+        } else if self.blend >= 1.0 {
             sample_locals(skel, model.clips.get(self.clip), self.time)
         } else {
             blended_locals(
@@ -171,7 +323,27 @@ impl AnimPlayer {
         // Upper-body overlay: replace the masked joints' local TRS with the overlay clip's,
         // weighted by the fade. Lower body is untouched, so the legs keep the base locomotion.
         if self.upper && self.uweight > 0.001 {
-            let (ut, ur, us) = sample_locals(skel, model.clips.get(self.uclip), self.utime);
+            let (mut ut, mut ur, mut us) = sample_locals(skel, model.clips.get(self.uclip), self.utime);
+            if self.ublend_on {
+                // Blend a SECOND upper clip in (aim look up/down) before masking onto the body.
+                let (ut2, ur2, us2) = sample_locals(skel, model.clips.get(self.uclip2), self.utime);
+                let b = self.ublend.clamp(0.0, 1.0);
+                for i in 0..ur.len() {
+                    ut[i] = ut[i].lerp(ut2[i], b);
+                    ur[i] = ur[i].slerp(ur2[i], b);
+                    us[i] = us[i].lerp(us2[i], b);
+                }
+            }
+            if self.ufade < 1.0 {
+                // Crossfade FROM the previous overlay clip into this one (smooth katana<->aim<->reload).
+                let (pt, pr, ps) = sample_locals(skel, model.clips.get(self.uprev_clip), self.uprev_time);
+                let f = self.ufade.clamp(0.0, 1.0);
+                for i in 0..ur.len() {
+                    ut[i] = pt[i].lerp(ut[i], f);
+                    ur[i] = pr[i].slerp(ur[i], f);
+                    us[i] = ps[i].lerp(us[i], f);
+                }
+            }
             let mask = upper_mask(skel, self.umask_root);
             let w = self.uweight.clamp(0.0, 1.0);
             for i in 0..skel.joints.len() {
@@ -190,7 +362,7 @@ impl AnimPlayer {
                 r[j] = q * r[j];
             }
         }
-        locals_to_skin(skel, &t, &r, &s)
+        locals_to_skin(skel, &t, &r, &s, hidden)
     }
 
     /// Model-space global transform of one joint in the CURRENT pose (NOT skinned - no
@@ -200,7 +372,9 @@ impl AnimPlayer {
         if joint >= skel.joints.len() {
             return None;
         }
-        let (mut t, mut r, mut s) = if self.blend >= 1.0 {
+        let (mut t, mut r, mut s) = if self.bblend_on {
+            self.sample_base_blend(skel, model)
+        } else if self.blend >= 1.0 {
             sample_locals(skel, model.clips.get(self.clip), self.time)
         } else {
             blended_locals(
@@ -213,7 +387,27 @@ impl AnimPlayer {
             )
         };
         if self.upper && self.uweight > 0.001 {
-            let (ut, ur, us) = sample_locals(skel, model.clips.get(self.uclip), self.utime);
+            let (mut ut, mut ur, mut us) = sample_locals(skel, model.clips.get(self.uclip), self.utime);
+            if self.ublend_on {
+                // Blend a SECOND upper clip in (aim look up/down) before masking onto the body.
+                let (ut2, ur2, us2) = sample_locals(skel, model.clips.get(self.uclip2), self.utime);
+                let b = self.ublend.clamp(0.0, 1.0);
+                for i in 0..ur.len() {
+                    ut[i] = ut[i].lerp(ut2[i], b);
+                    ur[i] = ur[i].slerp(ur2[i], b);
+                    us[i] = us[i].lerp(us2[i], b);
+                }
+            }
+            if self.ufade < 1.0 {
+                // Crossfade FROM the previous overlay clip into this one (smooth katana<->aim<->reload).
+                let (pt, pr, ps) = sample_locals(skel, model.clips.get(self.uprev_clip), self.uprev_time);
+                let f = self.ufade.clamp(0.0, 1.0);
+                for i in 0..ur.len() {
+                    ut[i] = pt[i].lerp(ut[i], f);
+                    ur[i] = pr[i].slerp(ur[i], f);
+                    us[i] = ps[i].lerp(us[i], f);
+                }
+            }
             let mask = upper_mask(skel, self.umask_root);
             let w = self.uweight.clamp(0.0, 1.0);
             for i in 0..skel.joints.len() {
@@ -279,8 +473,12 @@ fn sample_locals(
     (t, r, s)
 }
 
-/// Turn per-joint local TRS into skinning matrices (`global * inverse_bind`).
-fn locals_to_skin(skel: &Skeleton, t: &[Vec3], r: &[Quat], s: &[Vec3]) -> Vec<Mat4> {
+/// Turn per-joint local TRS into skinning matrices (`global * inverse_bind`). Joints whose bit is
+/// set in `hidden` are COLLAPSED: their matrix maps every bound vertex to the joint's own world
+/// position, so geometry exclusive to them shrinks to a point AT THE BONE (a nearby spot in the
+/// body), and seam vertices shared with a visible joint only pull a little toward that bone -
+/// instead of streaking to the far model origin. Used for first-person arms (hide torso/head/legs).
+fn locals_to_skin(skel: &Skeleton, t: &[Vec3], r: &[Quat], s: &[Vec3], hidden: u64) -> Vec<Mat4> {
     let n = skel.joints.len();
     let local: Vec<Mat4> =
         (0..n).map(|i| Mat4::from_scale_rotation_translation(s[i], r[i], t[i])).collect();
@@ -288,13 +486,23 @@ fn locals_to_skin(skel: &Skeleton, t: &[Vec3], r: &[Quat], s: &[Vec3]) -> Vec<Ma
     for i in 0..n {
         resolve_global(skel, &local, i, &mut global);
     }
-    (0..n).map(|i| global[i].unwrap_or(Mat4::IDENTITY) * skel.joints[i].inverse_bind).collect()
+    (0..n)
+        .map(|i| {
+            let g = global[i].unwrap_or(Mat4::IDENTITY);
+            if i < 64 && (hidden >> i) & 1 == 1 {
+                // Collapse to the bone position: zero linear part, translation = bone world pos.
+                Mat4::from_cols(Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, g.w_axis)
+            } else {
+                g * skel.joints[i].inverse_bind
+            }
+        })
+        .collect()
 }
 
 /// Pose `skel` from `clip` at `time` and return per-joint skinning matrices.
 pub fn skin_matrices(skel: &Skeleton, clip: Option<&crate::model::Clip>, time: f32) -> Vec<Mat4> {
     let (t, r, s) = sample_locals(skel, clip, time);
-    locals_to_skin(skel, &t, &r, &s)
+    locals_to_skin(skel, &t, &r, &s, 0)
 }
 
 /// Blend two clips' poses by weight `w` (0 = clip a, 1 = clip b) and return the
@@ -329,7 +537,7 @@ pub fn skin_matrices_blended(
     w: f32,
 ) -> Vec<Mat4> {
     let (t, r, s) = blended_locals(skel, a, ta, b, tb, w);
-    locals_to_skin(skel, &t, &r, &s)
+    locals_to_skin(skel, &t, &r, &s, 0)
 }
 
 /// Mask of joints that are `root` or descend from it (the upper-body overlay set).
