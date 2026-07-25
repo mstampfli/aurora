@@ -9,6 +9,8 @@ license.workspace = true
 # linked into AOT executables so the same symbols resolve at link time.
 
 [dependencies]
+# The one builtin table: `force_link` is generated from it.
+aurora-abi.workspace = true
 aurora-gfx.workspace = true
 aurora-audio.workspace = true
 aurora-window.workspace = true

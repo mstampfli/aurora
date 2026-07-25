@@ -668,9 +668,9 @@ impl Typeck {
     /// callee position without being a `fn` item is enumerated here:
     ///
     /// * a **runtime builtin** (`println`, `r3d_draw`, `net_host`, ...): several
-    ///   hundred names the backend lowers to host calls, listed once in
-    ///   [`aurora_ast::BUILTINS`], which is the same list the backend uses, so
-    ///   the two can never disagree;
+    ///   hundred names the backend lowers to host calls, declared once in
+    ///   `aurora-abi`'s table (re-exported as [`aurora_ast::is_builtin`]), from
+    ///   which the backend generates its lowering, so the two cannot disagree;
     /// * an **`@extern` import**: bodiless, but still a `fn` item, so it is in
     ///   `self.fns` already and never reaches here;
     /// * a **local or parameter holding a closure** (`let f = |x| x + 1; f(2)`);

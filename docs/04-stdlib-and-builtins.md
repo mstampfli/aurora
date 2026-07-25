@@ -36,6 +36,21 @@ A `@vertex` / `@fragment` / `@compute` function is GPU code lowered to WGSL, so
 it is exempt: it is not compiled as CPU code, and its intrinsics are not resolved
 against CPU declarations.
 
+### Where builtins come from
+
+Every builtin below is one row of a single table, `for_each_builtin!` in
+`crates/aurora-abi/src/lib.rs`: its Aurora name, the `aurora_*` runtime symbol
+that implements it, and its parameter/return types. The front end's name list,
+the backend's JIT symbol table, host imports and call-site signatures, and the
+AOT link keeper are all generated from that one table, so they cannot drift
+apart, and a row that names a runtime function that does not exist - or gives it
+a signature it does not have - fails to compile.
+
+Adding a builtin is therefore: write the `aurora_<name>` function in
+`aurora-runtime`, add one row, and document it here. A test fails if a new row
+is left undocumented, and another checks the argument list written here against
+the table for every builtin whose arguments are plain numbers.
+
 ---
 
 ## Core builtins

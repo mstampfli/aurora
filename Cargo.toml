@@ -9,6 +9,7 @@ license = "MIT OR Apache-2.0"
 rust-version = "1.85"
 
 [workspace.dependencies]
+aurora-abi = { path = "crates/aurora-abi" }
 aurora-span = { path = "crates/aurora-span" }
 aurora-diag = { path = "crates/aurora-diag" }
 aurora-lexer = { path = "crates/aurora-lexer" }

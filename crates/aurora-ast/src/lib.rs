@@ -8,7 +8,7 @@ use aurora_lexer::{FloatTy, IntTy};
 use aurora_span::Span;
 
 mod builtins;
-pub use builtins::{is_builtin, BUILTINS};
+pub use builtins::{builtin_names, is_builtin};
 mod monomorphize;
 pub use monomorphize::monomorphize;
 mod schedule;

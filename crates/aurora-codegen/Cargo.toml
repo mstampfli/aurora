@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+aurora-abi.workspace = true
 aurora-ast.workspace = true
 aurora-lexer.workspace = true
 aurora-span.workspace = true

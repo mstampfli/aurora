@@ -1,0 +1,11 @@
+[package]
+name = "aurora-abi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The single source of truth for Aurora's runtime builtins: one declarative
+# table, expanded by the front end, the backend, and the runtime. It depends on
+# NOTHING so all three can sit above it without pulling in each other.
+
+[dependencies]
