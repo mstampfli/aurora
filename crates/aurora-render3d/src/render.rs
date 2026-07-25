@@ -8,6 +8,17 @@ use bytemuck::{Pod, Zeroable};
 use glam::{Mat3, Mat4, Vec3};
 
 use crate::mesh::{GpuMesh, MeshData, Vertex};
+use crate::slot::SlotMap;
+
+/// Handle to a GPU mesh registered with [`Renderer3D::add_mesh`].
+///
+/// Generation-tagged, so freeing a mesh invalidates every outstanding handle to
+/// it instead of letting the next `add_mesh` silently inherit them.
+pub type MeshId = crate::slot::Key<GpuMesh>;
+
+/// Handle to a material registered with [`Renderer3D::add_material`]. Same
+/// lifetime rules as [`MeshId`].
+pub type MaterialId = crate::slot::Key<Material>;
 
 /// Maximum joints per skinned mesh (fits a 16 KiB uniform: 128 * 64 B = 8 KiB).
 pub const MAX_JOINTS: usize = 128;
@@ -98,8 +109,8 @@ pub struct Material {
 }
 
 struct DrawCmd {
-    mesh: usize,
-    material: usize,
+    mesh: MeshId,
+    material: MaterialId,
     model: Mat4,
     // Skinning matrices, shared via Arc so a model's primitives reference ONE allocation instead
     // of deep-copying the full 128-matrix array per primitive each frame.
@@ -190,7 +201,7 @@ pub struct Renderer3D {
     inst_shadow_pipeline: wgpu::RenderPipeline,
     inst_buf: wgpu::Buffer,
     inst_cap: u64,
-    inst_cmds: Vec<(usize, usize, Vec<InstanceRaw>)>,
+    inst_cmds: Vec<(MeshId, MaterialId, Vec<InstanceRaw>)>,
     // SSAO.
     ssao_on: bool,
     prepass_pipeline: wgpu::RenderPipeline,
@@ -211,9 +222,21 @@ pub struct Renderer3D {
     pshadow_depth: wgpu::TextureView,
     pshadow_bg: wgpu::BindGroup,
 
-    meshes: Vec<GpuMesh>,
-    mesh_radius: Vec<f32>,
-    materials: Vec<Material>,
+    /// Generation-tagged mesh store. Freed slots are reused, so a game that
+    /// loads and unloads assets occupies bounded address space; the generation
+    /// is what stops the reuse from silently aliasing a handle the game still
+    /// holds.
+    meshes: SlotMap<GpuMesh>,
+    /// Running total of [`GpuMesh::bytes`] over the live meshes, maintained on
+    /// every add/free/reupload so [`Self::mesh_bytes`] is O(1). The terrain tile
+    /// cache reads it every frame to stay inside its budget.
+    mesh_bytes: u64,
+    materials: SlotMap<Material>,
+    /// A plain white material, created at startup and never freeable. A draw
+    /// whose material has gone away binds this instead, which is the same
+    /// stand-in the old "index 0" fallback provided - but as an explicit id, so
+    /// the fallback is O(1) and cannot itself be released out from under a draw.
+    default_material: MaterialId,
 
     frustum_cull: bool,
     /// When true, draws are flagged as viewmodel (skip shadow + SSAO passes). Toggled around the
@@ -1111,18 +1134,24 @@ impl Renderer3D {
             pshadow_face_views,
             pshadow_depth,
             pshadow_bg,
-            meshes: Vec::new(),
-            mesh_radius: Vec::new(),
-            materials: Vec::new(),
+            meshes: SlotMap::new(),
+            mesh_bytes: 0,
+            materials: SlotMap::new(),
+            // Replaced immediately below, once `build_material` can borrow the
+            // fully-formed renderer for its bind group layout.
+            default_material: MaterialId::PLACEHOLDER,
             frustum_cull: true,
             vm_mode: false,
             last_drawn: 0,
             globals,
             queue_cmds: Vec::new(),
         };
-        // Material 0: a plain white default.
+        // The first material slot is a plain white default. `free_material`
+        // refuses to release it, so it is always available as the stand-in for
+        // a draw whose own material has gone away - the same material the old
+        // "index 0" fallback picked.
         let m0 = r.build_material(device, queue, &MaterialDesc::flat([1.0; 4]));
-        r.materials.push(m0);
+        r.default_material = r.materials.insert(m0);
         r
     }
 
@@ -1209,10 +1238,44 @@ impl Renderer3D {
         }
     }
 
-    pub fn add_mesh(&mut self, device: &wgpu::Device, mesh: &MeshData) -> usize {
-        self.meshes.push(GpuMesh::upload(device, mesh));
-        self.mesh_radius.push(bounding_radius(mesh));
-        self.meshes.len() - 1
+    pub fn add_mesh(&mut self, device: &wgpu::Device, mesh: &MeshData) -> MeshId {
+        let gpu = GpuMesh::upload(device, mesh);
+        self.mesh_bytes += gpu.bytes();
+        self.meshes.insert(gpu)
+    }
+
+    /// Release a mesh's GPU buffers and invalidate `id`.
+    ///
+    /// Returns whether anything was freed, so a double free reads as `false`
+    /// rather than tearing down whatever moved into that slot in between. Draws
+    /// already queued against `id` this frame are skipped by [`Self::render`]
+    /// instead of indexing a hole.
+    pub fn free_mesh(&mut self, id: MeshId) -> bool {
+        match self.meshes.remove(id) {
+            Some(gpu) => {
+                self.mesh_bytes -= gpu.bytes();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Release a material's bind group, textures, and uniform buffer, and
+    /// invalidate `id`. Returns whether anything was freed.
+    ///
+    /// The default material is never released: it is the stand-in every other
+    /// draw falls back to, so freeing it would leave a draw with nothing to
+    /// bind at group 2.
+    pub fn free_material(&mut self, id: MaterialId) -> bool {
+        if id == self.default_material {
+            return false;
+        }
+        self.materials.remove(id).is_some()
+    }
+
+    /// The always-present white material a draw falls back to.
+    pub fn default_material(&self) -> MaterialId {
+        self.default_material
     }
 
     /// Replace an existing mesh's geometry, keeping its id (and so every draw
@@ -1220,23 +1283,28 @@ impl Renderer3D {
     /// new geometry fits and only reallocates when it grows, which is what makes
     /// per-frame terrain level-of-detail changes cheap.
     ///
-    /// Ignores an unknown id or empty geometry: a zero-length buffer is not a
+    /// Ignores a stale id or empty geometry: a zero-length buffer is not a
     /// valid wgpu allocation, and silently keeping the old mesh is better than
     /// tearing down a live one.
     pub fn update_mesh(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        id: usize,
+        id: MeshId,
         mesh: &MeshData,
     ) {
-        if id >= self.meshes.len() || mesh.vertices.is_empty() || mesh.indices.is_empty() {
+        if mesh.vertices.is_empty() || mesh.indices.is_empty() {
             return;
         }
-        if !self.meshes[id].write(queue, mesh) {
-            self.meshes[id] = GpuMesh::upload(device, mesh);
+        let Some(slot) = self.meshes.get_mut(id) else {
+            return;
+        };
+        let before = slot.bytes();
+        if !slot.write(queue, mesh) {
+            *slot = GpuMesh::upload(device, mesh);
         }
-        self.mesh_radius[id] = bounding_radius(mesh);
+        let after = slot.bytes();
+        self.mesh_bytes = self.mesh_bytes - before + after;
     }
 
     pub fn set_frustum_cull(&mut self, on: bool) {
@@ -1268,10 +1336,9 @@ impl Renderer3D {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         desc: &MaterialDesc,
-    ) -> usize {
+    ) -> MaterialId {
         let m = self.build_material(device, queue, desc);
-        self.materials.push(m);
-        self.materials.len() - 1
+        self.materials.insert(m)
     }
 
     fn build_material(
@@ -1359,11 +1426,37 @@ impl Renderer3D {
         Mat4::from_cols_array_2d(&self.globals.view_proj)
     }
 
+    /// Number of LIVE materials (freed ones do not count).
     pub fn material_count(&self) -> usize {
         self.materials.len()
     }
+    /// Number of LIVE meshes (freed ones do not count).
     pub fn mesh_count(&self) -> usize {
         self.meshes.len()
+    }
+    /// Mesh slots ever allocated, live or free. A create/destroy workload keeps
+    /// this flat while [`Self::mesh_count`] cycles; a growing gap between the
+    /// two is the signature of a leak, so tests assert on it directly.
+    pub fn mesh_slot_count(&self) -> usize {
+        self.meshes.slot_count()
+    }
+    /// Material slots ever allocated, live or free. See [`Self::mesh_slot_count`].
+    pub fn material_slot_count(&self) -> usize {
+        self.materials.slot_count()
+    }
+    /// Bytes of GPU buffer one mesh holds, or 0 if `id` is stale. Lets an owner
+    /// of many meshes (the terrain tile cache) account for its own share
+    /// without a second copy of the size arithmetic.
+    pub fn mesh_bytes_of(&self, id: MeshId) -> u64 {
+        self.meshes.get(id).map_or(0, |m| m.bytes())
+    }
+    /// Total bytes of GPU vertex + index buffer held by the live meshes.
+    ///
+    /// This is the real resource being bounded - entry counts only stand in for
+    /// it - so the terrain tile budget and the leak tests are both stated in
+    /// these units.
+    pub fn mesh_bytes(&self) -> u64 {
+        self.mesh_bytes
     }
 
     pub fn begin(&mut self) {
@@ -1374,80 +1467,87 @@ impl Renderer3D {
 
     pub fn draw(
         &mut self,
-        mesh: usize,
-        material: usize,
+        mesh: MeshId,
+        material: MaterialId,
         model: Mat4,
         joints: Option<Arc<Vec<Mat4>>>,
     ) {
         self.draw_tint(mesh, material, model, joints, [0.0, 0.0, 0.0]);
     }
 
+    /// The material a draw should actually bind: the requested one when it is
+    /// live, otherwise the never-freed default. Mirrors the old "fall back to
+    /// index 0" behaviour, but without depending on an index existing.
+    fn resolve_material(&self, material: MaterialId) -> MaterialId {
+        if self.materials.contains(material) {
+            material
+        } else {
+            self.default_material
+        }
+    }
+
     /// Like [`draw`] but adds a per-draw RGB `tint` OFFSET to the albedo (identity (0,0,0)).
     pub fn draw_tint(
         &mut self,
-        mesh: usize,
-        material: usize,
+        mesh: MeshId,
+        material: MaterialId,
         model: Mat4,
         joints: Option<Arc<Vec<Mat4>>>,
         tint: [f32; 3],
     ) {
-        if mesh < self.meshes.len() {
-            let material = if material < self.materials.len() {
-                material
-            } else {
-                0
-            };
-            self.queue_cmds.push(DrawCmd {
-                mesh,
-                material,
-                model,
-                joints,
-                tint,
-                shield: [0.0, 0.0],
-                viewmodel: self.vm_mode,
-            });
+        if !self.meshes.contains(mesh) {
+            return;
         }
+        let material = self.resolve_material(material);
+        self.queue_cmds.push(DrawCmd {
+            mesh,
+            material,
+            model,
+            joints,
+            tint,
+            shield: [0.0, 0.0],
+            viewmodel: self.vm_mode,
+        });
     }
 
     /// Like [`draw`] but adds an energy-shield Fresnel rim (cyan crackle, `strength` 0..1,
     /// animated by `time`). Tint stays neutral.
     pub fn draw_shield(
         &mut self,
-        mesh: usize,
-        material: usize,
+        mesh: MeshId,
+        material: MaterialId,
         model: Mat4,
         joints: Option<Arc<Vec<Mat4>>>,
         strength: f32,
         time: f32,
     ) {
-        if mesh < self.meshes.len() {
-            let material = if material < self.materials.len() {
-                material
-            } else {
-                0
-            };
-            self.queue_cmds.push(DrawCmd {
-                mesh,
-                material,
-                model,
-                joints,
-                tint: [0.0, 0.0, 0.0],
-                shield: [strength, time],
-                viewmodel: self.vm_mode,
-            });
+        if !self.meshes.contains(mesh) {
+            return;
         }
+        let material = self.resolve_material(material);
+        self.queue_cmds.push(DrawCmd {
+            mesh,
+            material,
+            model,
+            joints,
+            tint: [0.0, 0.0, 0.0],
+            shield: [strength, time],
+            viewmodel: self.vm_mode,
+        });
     }
 
     /// Draw `mesh`/`material` once per instance in a single instanced draw call.
-    pub fn draw_instanced(&mut self, mesh: usize, material: usize, instances: Vec<InstanceRaw>) {
-        if mesh < self.meshes.len() && !instances.is_empty() {
-            let material = if material < self.materials.len() {
-                material
-            } else {
-                0
-            };
-            self.inst_cmds.push((mesh, material, instances));
+    pub fn draw_instanced(
+        &mut self,
+        mesh: MeshId,
+        material: MaterialId,
+        instances: Vec<InstanceRaw>,
+    ) {
+        if instances.is_empty() || !self.meshes.contains(mesh) {
+            return;
         }
+        let material = self.resolve_material(material);
+        self.inst_cmds.push((mesh, material, instances));
     }
 
     pub fn render(
@@ -1556,7 +1656,7 @@ impl Renderer3D {
         // Flatten instanced batches into one instance buffer (reused scratch).
         let mut inst_flat: Vec<InstanceRaw> = std::mem::take(&mut self.inst_scratch);
         inst_flat.clear();
-        let mut inst_ranges: Vec<(usize, usize, u32, u32)> = Vec::new();
+        let mut inst_ranges: Vec<(MeshId, MaterialId, u32, u32)> = Vec::new();
         for (mesh, material, insts) in &self.inst_cmds {
             let start = inst_flat.len() as u32;
             inst_flat.extend_from_slice(insts);
@@ -1580,9 +1680,14 @@ impl Renderer3D {
         self.inst_scratch = inst_flat;
         let cam = Vec3::from_slice(&self.globals.cam_pos[..3]);
         let mut order: Vec<usize> = (0..self.queue_cmds.len()).collect();
+        let transparent = |c: &DrawCmd| {
+            self.materials
+                .get(c.material)
+                .is_some_and(|m| m.transparent)
+        };
         order.sort_by(|&a, &b| {
-            let ta = self.materials[self.queue_cmds[a].material].transparent;
-            let tb = self.materials[self.queue_cmds[b].material].transparent;
+            let ta = transparent(&self.queue_cmds[a]);
+            let tb = transparent(&self.queue_cmds[b]);
             if ta != tb {
                 return ta.cmp(&tb); // opaque (false) first
             }
@@ -1645,15 +1750,17 @@ impl Renderer3D {
                     if cmd.viewmodel {
                         continue;
                     } // viewmodels never cast world shadows
-                      // Skip objects whose shadow can't land in this cascade's footprint (kept for
-                      // every cascade they DO reach, so no shadow is lost - see caster_in_cascade).
+                    let Some(m) = self.meshes.get(cmd.mesh) else {
+                        continue;
+                    };
+                    // Skip objects whose shadow can't land in this cascade's footprint (kept for
+                    // every cascade they DO reach, so no shadow is lost - see caster_in_cascade).
                     if self.frustum_cull {
-                        let (center, radius) = cull_bounds(&cmd.model, self.mesh_radius[cmd.mesh]);
+                        let (center, radius) = cull_bounds(&cmd.model, m.radius);
                         if !caster_in_cascade(center, radius, shadow_cam, shadow_light, e) {
                             continue;
                         }
                     }
-                    let m = &self.meshes[cmd.mesh];
                     sp.set_bind_group(1, &self.obj_bg, &[obj_off, joint_off]);
                     sp.set_vertex_buffer(0, m.vbuf.slice(..));
                     sp.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
@@ -1664,7 +1771,9 @@ impl Renderer3D {
                     sp.set_bind_group(0, &self.shadow_globals_bg, &[off]);
                     sp.set_vertex_buffer(1, self.inst_buf.slice(..));
                     for (mesh, _, start, count) in &inst_ranges {
-                        let m = &self.meshes[*mesh];
+                        let Some(m) = self.meshes.get(*mesh) else {
+                            continue;
+                        };
                         sp.set_vertex_buffer(0, m.vbuf.slice(..));
                         sp.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
                         sp.draw_indexed(0..m.index_count, 0, *start..*start + *count);
@@ -1704,14 +1813,16 @@ impl Renderer3D {
                     if cmd.viewmodel {
                         continue;
                     } // viewmodels don't belong in the AO geometry
-                      // SSAO only affects on-screen pixels - cull to the camera frustum like the main pass.
+                    let Some(m) = self.meshes.get(cmd.mesh) else {
+                        continue;
+                    };
+                    // SSAO only affects on-screen pixels - cull to the camera frustum like the main pass.
                     if self.frustum_cull {
-                        let (center, radius) = cull_bounds(&cmd.model, self.mesh_radius[cmd.mesh]);
+                        let (center, radius) = cull_bounds(&cmd.model, m.radius);
                         if !sphere_in_frustum(&cam_planes, center, radius) {
                             continue;
                         }
                     }
-                    let m = &self.meshes[cmd.mesh];
                     pp.set_bind_group(1, &self.obj_bg, &[obj_off, joint_off]);
                     pp.set_vertex_buffer(0, m.vbuf.slice(..));
                     pp.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
@@ -1722,7 +1833,9 @@ impl Renderer3D {
                     pp.set_bind_group(0, &self.globals_bg, &[]);
                     pp.set_vertex_buffer(1, self.inst_buf.slice(..));
                     for (mesh, _, start, count) in &inst_ranges {
-                        let m = &self.meshes[*mesh];
+                        let Some(m) = self.meshes.get(*mesh) else {
+                            continue;
+                        };
                         pp.set_vertex_buffer(0, m.vbuf.slice(..));
                         pp.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
                         pp.draw_indexed(0..m.index_count, 0, *start..*start + *count);
@@ -1820,7 +1933,9 @@ impl Renderer3D {
                 fp.set_pipeline(&self.pshadow_pipeline);
                 fp.set_bind_group(0, &self.pshadow_g_bg, &[off]);
                 for (ci, &(obj_off, joint_off)) in offsets.iter().enumerate() {
-                    let m = &self.meshes[self.queue_cmds[ci].mesh];
+                    let Some(m) = self.meshes.get(self.queue_cmds[ci].mesh) else {
+                        continue;
+                    };
                     fp.set_bind_group(1, &self.obj_bg, &[obj_off, joint_off]);
                     fp.set_vertex_buffer(0, m.vbuf.slice(..));
                     fp.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
@@ -1878,17 +1993,21 @@ impl Renderer3D {
         let mut drawn = 0usize;
         for &ci in &order {
             let cmd = &self.queue_cmds[ci];
+            let (Some(m), Some(mat)) =
+                (self.meshes.get(cmd.mesh), self.materials.get(cmd.material))
+            else {
+                continue;
+            };
             // Frustum cull by the mesh's bounding sphere (scaled by the model).
             if self.frustum_cull {
-                let (center, radius) = cull_bounds(&cmd.model, self.mesh_radius[cmd.mesh]);
+                let (center, radius) = cull_bounds(&cmd.model, m.radius);
                 if !sphere_in_frustum(&cam_planes, center, radius) {
                     continue;
                 }
             }
             let (obj_off, joint_off) = offsets[ci];
-            let m = &self.meshes[cmd.mesh];
             pass.set_bind_group(1, &self.obj_bg, &[obj_off, joint_off]);
-            pass.set_bind_group(2, &self.materials[cmd.material].bind_group, &[]);
+            pass.set_bind_group(2, &mat.bind_group, &[]);
             pass.set_vertex_buffer(0, m.vbuf.slice(..));
             pass.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..m.index_count, 0, 0..1);
@@ -1906,8 +2025,11 @@ impl Renderer3D {
             pass.set_bind_group(4, &self.pshadow_bg, &[]);
             pass.set_vertex_buffer(1, self.inst_buf.slice(..));
             for (mesh, material, start, count) in &inst_ranges {
-                let m = &self.meshes[*mesh];
-                pass.set_bind_group(2, &self.materials[*material].bind_group, &[]);
+                let (Some(m), Some(mat)) = (self.meshes.get(*mesh), self.materials.get(*material))
+                else {
+                    continue;
+                };
+                pass.set_bind_group(2, &mat.bind_group, &[]);
                 pass.set_vertex_buffer(0, m.vbuf.slice(..));
                 pass.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..m.index_count, 0, *start..*start + *count);
@@ -1962,17 +2084,6 @@ fn cull_bounds(model: &Mat4, mesh_radius: f32) -> (Vec3, f32) {
         .max(model.y_axis.truncate().length())
         .max(model.z_axis.truncate().length());
     (center, mesh_radius * scale)
-}
-
-/// Radius of the origin-centred sphere containing `mesh`, as the frustum and
-/// shadow-cascade culls use it. Never zero, so a single-point mesh still has a
-/// testable bound.
-fn bounding_radius(mesh: &MeshData) -> f32 {
-    mesh.vertices
-        .iter()
-        .map(|v| Vec3::from(v.pos).length())
-        .fold(0.0f32, f32::max)
-        .max(0.001)
 }
 
 pub(crate) fn frustum_planes(vp: Mat4) -> [glam::Vec4; 6] {

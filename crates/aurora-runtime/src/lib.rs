@@ -1774,6 +1774,19 @@ pub unsafe extern "C" fn aurora_r3d_load_model(ptr: *const u8, len: i64) -> i64 
     let path = String::from_utf8_lossy(s);
     aurora_window::imm_r3d_load_model(&path)
 }
+/// Release a model/primitive handle and every GPU buffer behind it.
+///
+/// Returns 1 when the handle was live and is now freed, 0 when it was already
+/// freed or was never valid. The handle is dead afterwards: drawing with it
+/// does nothing rather than drawing whatever is loaded into its slot next,
+/// because handles carry a generation the freed slot no longer answers to.
+///
+/// This is what lets a level change actually release its assets. Without it the
+/// only way to reclaim a model was to end the process.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_free_model(handle: i64) -> i64 {
+    aurora_window::imm_r3d_free_model(handle)
+}
 #[no_mangle]
 pub extern "C" fn aurora_r3d_make_box(r: f64, g: f64, b: f64) -> i64 {
     aurora_window::imm_r3d_make_box(r as f32, g as f32, b as f32)

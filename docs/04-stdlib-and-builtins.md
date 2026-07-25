@@ -282,6 +282,7 @@ window. Colors are 0..1 floats; angles are radians; handles are `i64`.
 | Builtin | Signature | Notes |
 |---|---|---|
 | `r3d_load_model(path) -> i64` | load `.gltf`/`.glb`/`.obj` | meshes, materials, skeleton, clips; -1 on failure |
+| `r3d_free_model(h) -> i64` | release a model/primitive handle | frees its GPU meshes and materials; 1 if freed, 0 if the handle was already dead |
 | `r3d_make_box(r,g,b) -> i64` | unit cube primitive | greybox geometry |
 | `r3d_make_sphere(segments,r,g,b) -> i64` | UV sphere primitive | |
 | `r3d_make_plane(size,tiles,r,g,b) -> i64` | ground plane in XZ | `tiles` repeats the UVs |
@@ -319,6 +320,26 @@ More rendering controls:
 The CPU framebuffer (`clear`/`pixel`/`triangle`/`draw_text`) is composited over
 the 3D scene as a **HUD** each `r3d_present()`, with pure black as the
 transparent key (clear to black, draw the crosshair/ammo in color).
+
+### Asset lifetime
+
+`r3d_load_model` and the `r3d_make_*` primitives each upload their own GPU
+buffers, so a program that loads assets in a loop - or a game that changes level
+- has to release them, with `r3d_free_model(h)`. Nothing is freed implicitly;
+handles live until you free them or the process ends.
+
+A handle is not an index. It carries the generation of the slot it was issued
+from, so after `r3d_free_model(h)` the value in `h` is **dead**: drawing,
+animating, or freeing with it does nothing and returns 0, even after a later
+load has reused that slot. A stale handle can never resolve to a different
+asset, which is what makes freeing safe to do mid-game.
+
+```aurora
+let level = r3d_load_model("assets/level1.glb")
+// ...play the level...
+r3d_free_model(level)          // 1: the GPU buffers are gone
+r3d_draw(level, 0.0,0.0,0.0, 0.0,0.0,0.0, 1.0)   // no-op, not a wrong model
+```
 
 ## FPS input
 

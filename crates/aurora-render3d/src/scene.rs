@@ -10,12 +10,13 @@ use glam::{Mat4, Vec3};
 use crate::anim::AnimPlayer;
 use crate::mesh::MeshData;
 use crate::model::Model;
-use crate::render::{MaterialDesc, Renderer3D};
+use crate::render::{MaterialDesc, MaterialId, MeshId, Renderer3D};
+use crate::slot::{Key, SlotMap};
 
 /// One drawable: a set of (mesh, material) primitives, with an optional skeleton
 /// and animation player when it came from an animated model.
 struct Renderable {
-    prims: Vec<(usize, usize)>, // (mesh id, material id) in the renderer
+    prims: Vec<(MeshId, MaterialId)>,
     model: Option<Model>,
     player: AnimPlayer,
     skinned: bool,
@@ -36,9 +37,16 @@ struct Camera {
     far: f32,
 }
 
+/// Internal handle to a scene item. Aurora programs hold the `i64` form (see
+/// [`Key::to_i64`]); nothing outside this module ever sees the typed key.
+type ItemId = Key<Renderable>;
+
 pub struct Scene {
     pub renderer: Renderer3D,
-    items: Vec<Renderable>,
+    /// Registered drawables, generation-tagged: [`Scene::free_model`] releases
+    /// an item's GPU meshes and materials and invalidates its handle, and a
+    /// later load reusing that slot cannot be reached by the old handle.
+    items: SlotMap<Renderable>,
     cam: Camera,
     size: (u32, u32),
     clear: [f32; 4],
@@ -61,7 +69,7 @@ impl Scene {
     ) -> Scene {
         let mut s = Scene {
             renderer: Renderer3D::new(device, queue, format, w, h, samples),
-            items: Vec::new(),
+            items: SlotMap::new(),
             cam: Camera {
                 eye: Vec3::new(0.0, 2.0, 6.0),
                 target: Vec3::ZERO,
@@ -192,14 +200,45 @@ impl Scene {
             prims.push((mesh, mat));
             skinned |= p.skinned;
         }
-        self.items.push(Renderable {
-            prims,
-            model: Some(model),
-            player: AnimPlayer::new(),
-            skinned,
-            hidden_joints: 0,
-        });
-        (self.items.len() - 1) as i64
+        self.items
+            .insert(Renderable {
+                prims,
+                model: Some(model),
+                player: AnimPlayer::new(),
+                skinned,
+                hidden_joints: 0,
+            })
+            .to_i64()
+    }
+
+    /// Release a model or primitive handle: every GPU mesh and material it
+    /// owns, and the handle itself.
+    ///
+    /// Returns whether anything was freed. A stale handle - one already freed,
+    /// or never issued - returns `false` and touches nothing; it cannot free
+    /// whatever was loaded into that slot afterwards, because the handle
+    /// carries the generation the slot was at when it was issued.
+    ///
+    /// Meshes and materials are per-item here (each `load_model` uploads its
+    /// own copies), so there is no sharing to reference-count: freeing an item
+    /// frees exactly what that item created.
+    pub fn free_model(&mut self, handle: i64) -> bool {
+        let Some(key) = ItemId::from_i64(handle) else {
+            return false;
+        };
+        let Some(item) = self.items.remove(key) else {
+            return false;
+        };
+        for (mesh, mat) in item.prims {
+            self.renderer.free_mesh(mesh);
+            self.renderer.free_material(mat);
+        }
+        true
+    }
+
+    /// Number of live model/primitive handles.
+    pub fn model_count(&self) -> usize {
+        self.items.len()
     }
 
     /// Register a primitive mesh with a flat color. Returns a handle.
@@ -214,14 +253,15 @@ impl Scene {
         let mat = self
             .renderer
             .add_material(device, queue, &MaterialDesc::flat(color));
-        self.items.push(Renderable {
-            prims: vec![(m, mat)],
-            model: None,
-            player: AnimPlayer::new(),
-            skinned: false,
-            hidden_joints: 0,
-        });
-        (self.items.len() - 1) as i64
+        self.items
+            .insert(Renderable {
+                prims: vec![(m, mat)],
+                model: None,
+                player: AnimPlayer::new(),
+                skinned: false,
+                hidden_joints: 0,
+            })
+            .to_i64()
     }
 
     pub fn make_box(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, color: [f32; 4]) -> i64 {
@@ -262,14 +302,15 @@ impl Scene {
             emissive_tex: None,
         };
         let mat = self.renderer.add_material(device, queue, &desc);
-        self.items.push(Renderable {
-            prims: vec![(m, mat)],
-            model: None,
-            player: AnimPlayer::new(),
-            skinned: false,
-            hidden_joints: 0,
-        });
-        (self.items.len() - 1) as i64
+        self.items
+            .insert(Renderable {
+                prims: vec![(m, mat)],
+                model: None,
+                player: AnimPlayer::new(),
+                skinned: false,
+                hidden_joints: 0,
+            })
+            .to_i64()
     }
     pub fn make_sphere(
         &mut self,
@@ -324,14 +365,15 @@ impl Scene {
             emissive_tex: None,
         };
         let mat = self.renderer.add_material(device, queue, &desc);
-        self.items.push(Renderable {
-            prims: vec![(m, mat)],
-            model: None,
-            player: AnimPlayer::new(),
-            skinned: false,
-            hidden_joints: 0,
-        });
-        (self.items.len() - 1) as i64
+        self.items
+            .insert(Renderable {
+                prims: vec![(m, mat)],
+                model: None,
+                player: AnimPlayer::new(),
+                skinned: false,
+                hidden_joints: 0,
+            })
+            .to_i64()
     }
 
     /// Draw a sprite handle as a camera-facing billboard of side `size` at `pos`.
@@ -355,11 +397,10 @@ impl Scene {
     /// Draw a handle many times in a single GPU instanced draw call per
     /// primitive (one draw for all `transforms`, not N draws).
     pub fn draw_instances(&mut self, handle: i64, transforms: &[Mat4]) {
-        let idx = match self.resolve(handle) {
-            Some(i) => i,
-            None => return,
+        let Some(item) = self.item(handle) else {
+            return;
         };
-        let prims = self.items[idx].prims.clone();
+        let prims = item.prims.clone();
         let insts: Vec<crate::render::InstanceRaw> = transforms
             .iter()
             .map(|&t| crate::render::InstanceRaw::new(t, [1.0; 4]))
@@ -573,41 +614,49 @@ impl Scene {
     /// geometry to the model origin). Accumulates; clear with [`show_joints`]. Used by first-person
     /// arms to drop the torso/head/legs so only the arms render.
     pub fn hide_joint(&mut self, handle: i64, joint: i64) {
-        if let Some(idx) = self.resolve(handle) {
+        if let Some(r) = self.item_mut(handle) {
             if (0..64).contains(&joint) {
-                self.items[idx].hidden_joints |= 1u64 << joint;
+                r.hidden_joints |= 1u64 << joint;
             }
         }
     }
 
     /// Show all joints again (clear the hidden mask).
     pub fn show_joints(&mut self, handle: i64) {
-        if let Some(idx) = self.resolve(handle) {
-            self.items[idx].hidden_joints = 0;
+        if let Some(r) = self.item_mut(handle) {
+            r.hidden_joints = 0;
         }
     }
 
+    /// What every `draw*` variant needs from a handle: the shared skinning
+    /// matrices and the primitives to issue. `None` for a stale handle, which
+    /// is how a freed model stops drawing instead of drawing something else.
+    ///
+    /// The skinning matrices are computed ONCE and shared across the item's
+    /// primitives via `Arc` (a refcount bump per primitive instead of a deep
+    /// copy of the 128-matrix array).
+    #[allow(clippy::type_complexity)]
+    fn draw_parts(
+        &self,
+        handle: i64,
+    ) -> Option<(Option<Arc<Vec<Mat4>>>, Vec<(MeshId, MaterialId)>)> {
+        let r = self.item(handle)?;
+        let joints = if r.skinned {
+            r.model
+                .as_ref()
+                .map(|m| r.player.matrices(m, r.hidden_joints))
+                .filter(|v| !v.is_empty())
+                .map(Arc::new)
+        } else {
+            None
+        };
+        Some((joints, r.prims.clone()))
+    }
+
     pub fn draw(&mut self, handle: i64, transform: Mat4) {
-        let idx = match self.resolve(handle) {
-            Some(i) => i,
-            None => return,
+        let Some((joints, prims)) = self.draw_parts(handle) else {
+            return;
         };
-        // Compute skinning matrices ONCE, then share them across all primitives via Arc (a cheap
-        // refcount bump per prim instead of deep-copying the 128-matrix array each time).
-        let mask = self.items[idx].hidden_joints;
-        let joints = {
-            let r = &self.items[idx];
-            if r.skinned {
-                r.model
-                    .as_ref()
-                    .map(|m| r.player.matrices(m, mask))
-                    .filter(|v| !v.is_empty())
-                    .map(Arc::new)
-            } else {
-                None
-            }
-        };
-        let prims = self.items[idx].prims.clone();
         for (mesh, mat) in prims {
             self.renderer.draw(mesh, mat, transform, joints.clone());
         }
@@ -615,24 +664,9 @@ impl Scene {
 
     /// Like [`draw`] but shifts the model's albedo by `tint` (RGB additive offset).
     pub fn draw_tint(&mut self, handle: i64, transform: Mat4, tint: [f32; 3]) {
-        let idx = match self.resolve(handle) {
-            Some(i) => i,
-            None => return,
+        let Some((joints, prims)) = self.draw_parts(handle) else {
+            return;
         };
-        let mask = self.items[idx].hidden_joints;
-        let joints = {
-            let r = &self.items[idx];
-            if r.skinned {
-                r.model
-                    .as_ref()
-                    .map(|m| r.player.matrices(m, mask))
-                    .filter(|v| !v.is_empty())
-                    .map(Arc::new)
-            } else {
-                None
-            }
-        };
-        let prims = self.items[idx].prims.clone();
         for (mesh, mat) in prims {
             self.renderer
                 .draw_tint(mesh, mat, transform, joints.clone(), tint);
@@ -642,24 +676,9 @@ impl Scene {
     /// Like [`draw`] but with an energy-shield Fresnel rim (cyan, `strength` 0..1, animated
     /// by `time`).
     pub fn draw_shield(&mut self, handle: i64, transform: Mat4, strength: f32, time: f32) {
-        let idx = match self.resolve(handle) {
-            Some(i) => i,
-            None => return,
+        let Some((joints, prims)) = self.draw_parts(handle) else {
+            return;
         };
-        let mask = self.items[idx].hidden_joints;
-        let joints = {
-            let r = &self.items[idx];
-            if r.skinned {
-                r.model
-                    .as_ref()
-                    .map(|m| r.player.matrices(m, mask))
-                    .filter(|v| !v.is_empty())
-                    .map(Arc::new)
-            } else {
-                None
-            }
-        };
-        let prims = self.items[idx].prims.clone();
         for (mesh, mat) in prims {
             self.renderer
                 .draw_shield(mesh, mat, transform, joints.clone(), strength, time);
@@ -679,9 +698,8 @@ impl Scene {
         local: Mat4,
     ) {
         let g = self
-            .resolve(host)
-            .and_then(|idx| {
-                let r = &self.items[idx];
+            .item(host)
+            .and_then(|r| {
                 r.model
                     .as_ref()
                     .and_then(|m| r.player.joint_global(m, joint.max(0) as usize))
@@ -694,8 +712,7 @@ impl Scene {
     /// pose (what `draw_on_joint` composes with). Tooling uses it to draw
     /// attachment gnomons and to solve socket transforms.
     pub fn joint_global_mat(&self, host: i64, joint: i64) -> Option<Mat4> {
-        let idx = self.resolve(host)?;
-        let r = &self.items[idx];
+        let r = self.item(host)?;
         r.model
             .as_ref()
             .and_then(|m| r.player.joint_global(m, joint.max(0) as usize))
@@ -705,8 +722,7 @@ impl Scene {
     /// global transform, before the draw transform). Lets a first-person rig cancel the bone offset
     /// so a bone-attached weapon lands at a fixed camera-space spot. None if missing.
     pub fn joint_pos(&self, host: i64, joint: i64) -> Option<[f32; 3]> {
-        let idx = self.resolve(host)?;
-        let r = &self.items[idx];
+        let r = self.item(host)?;
         let g = r
             .model
             .as_ref()
@@ -719,14 +735,13 @@ impl Scene {
     /// given world transform, for headless rig/hitbox visual audits. Uses the
     /// current animation pose. No-op if the model has no skeleton.
     pub fn debug_skeleton(&mut self, host: i64, host_xform: Mat4, color: Vec3) {
-        let Some(idx) = self.resolve(host) else {
-            return;
-        };
         // Collect (parent_world, child_world) segments first (immutable borrow),
         // then draw (mutable borrow of the renderer).
         let mut segs: Vec<(Vec3, Vec3)> = Vec::new();
         {
-            let r = &self.items[idx];
+            let Some(r) = self.item(host) else {
+                return;
+            };
             let Some(model) = r.model.as_ref() else {
                 return;
             };
@@ -753,11 +768,11 @@ impl Scene {
 
     /// Print every joint index + name of `host` to stdout (bone-discovery helper).
     pub fn dump_joints(&self, host: i64) {
-        let Some(idx) = self.resolve(host) else {
+        let Some(item) = self.item(host) else {
             println!("joint dump: bad handle {host}");
             return;
         };
-        let Some(model) = self.items[idx].model.as_ref() else {
+        let Some(model) = item.model.as_ref() else {
             println!("joint dump: no model");
             return;
         };
@@ -782,18 +797,16 @@ impl Scene {
             .render(device, queue, encoder, view, self.clear);
     }
 
-    fn resolve(&self, handle: i64) -> Option<usize> {
-        let i = handle as usize;
-        if handle >= 0 && i < self.items.len() {
-            Some(i)
-        } else {
-            None
-        }
-    }
+    /// The item `handle` names, or `None` when it was never issued or has been
+    /// freed. Every handle-taking method goes through here or its `_mut`
+    /// counterpart, so a stale handle is refused in exactly one place.
     fn item(&self, handle: i64) -> Option<&Renderable> {
-        self.resolve(handle).map(|i| &self.items[i])
+        self.items.get(ItemId::from_i64(handle)?)
     }
     fn item_mut(&mut self, handle: i64) -> Option<&mut Renderable> {
-        self.resolve(handle).map(|i| &mut self.items[i])
+        self.items.get_mut(ItemId::from_i64(handle)?)
     }
 }
+
+#[cfg(test)]
+mod tests;

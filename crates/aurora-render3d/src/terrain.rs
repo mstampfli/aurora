@@ -608,7 +608,7 @@ impl Default for TileLod {
 /// at all for the rest.
 pub struct TerrainRender {
     field: Arc<Heightfield>,
-    material: usize,
+    material: crate::render::MaterialId,
     color: [f32; 3],
     tiles_per_side: u32,
     tiles: Vec<TerrainTile>,
@@ -622,7 +622,7 @@ pub struct TerrainRender {
 
 struct TerrainTile {
     /// Renderer mesh id, allocated the first time the tile is drawn.
-    mesh: Option<usize>,
+    mesh: Option<crate::render::MeshId>,
     /// The level of detail currently IN that mesh.
     built: TileLod,
     centre: Vec3,

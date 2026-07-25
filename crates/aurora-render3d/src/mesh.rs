@@ -271,6 +271,12 @@ pub struct GpuMesh {
     pub vbuf: wgpu::Buffer,
     pub ibuf: wgpu::Buffer,
     pub index_count: u32,
+    /// Radius of the origin-centred sphere containing this geometry, for the
+    /// frustum and shadow-cascade culls. It lives HERE rather than in a
+    /// parallel `Vec` beside the mesh store: a parallel array is one more thing
+    /// that can fall out of step with the store it indexes, and the store now
+    /// reuses freed slots.
+    pub radius: f32,
     /// Allocated byte capacity of `vbuf` and `ibuf`. Geometry that is rebuilt
     /// while the game runs (terrain LOD tiles) is rewritten in place whenever
     /// the new data still fits, so a steady-state level-of-detail change costs
@@ -280,6 +286,16 @@ pub struct GpuMesh {
 }
 
 impl GpuMesh {
+    /// Bytes of GPU buffer this mesh holds: the vertex and index allocations.
+    ///
+    /// This is the ALLOCATED capacity, not the bytes currently in use, because
+    /// that is what the driver is actually holding. A tile rebuilt at a coarser
+    /// level of detail keeps its buffers (see [`GpuMesh::write`]), so its cost
+    /// stays at the high-water mark until the mesh is freed.
+    pub fn bytes(&self) -> u64 {
+        self.vcap + self.icap
+    }
+
     pub fn upload(device: &wgpu::Device, mesh: &MeshData) -> GpuMesh {
         let vdata: &[u8] = bytemuck::cast_slice(&mesh.vertices);
         let idata: &[u8] = bytemuck::cast_slice(&mesh.indices);
@@ -297,6 +313,7 @@ impl GpuMesh {
             vbuf,
             ibuf,
             index_count: mesh.indices.len() as u32,
+            radius: bounding_radius(mesh),
             vcap: vdata.len() as u64,
             icap: idata.len() as u64,
         }
@@ -313,6 +330,18 @@ impl GpuMesh {
         queue.write_buffer(&self.vbuf, 0, vdata);
         queue.write_buffer(&self.ibuf, 0, idata);
         self.index_count = mesh.indices.len() as u32;
+        self.radius = bounding_radius(mesh);
         true
     }
+}
+
+/// Radius of the origin-centred sphere containing `mesh`, as the frustum and
+/// shadow-cascade culls use it. Never zero, so a single-point mesh still has a
+/// testable bound.
+fn bounding_radius(mesh: &MeshData) -> f32 {
+    mesh.vertices
+        .iter()
+        .map(|v| glam::Vec3::from(v.pos).length())
+        .fold(0.0f32, f32::max)
+        .max(0.001)
 }

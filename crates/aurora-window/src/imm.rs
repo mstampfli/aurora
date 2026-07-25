@@ -567,6 +567,16 @@ pub fn r3d_load_model(path: &str) -> i64 {
     })
 }
 
+/// Release a model or primitive handle and every GPU buffer it owns. Returns 1
+/// when something was freed, 0 for a handle that was already freed or never
+/// valid.
+pub fn r3d_free_model(handle: i64) -> i64 {
+    with_gfx(0, |g| {
+        let (_, _, s) = g.scene_mut();
+        s.free_model(handle) as i64
+    })
+}
+
 pub fn r3d_make_box(r: f32, g: f32, b: f32) -> i64 {
     with_gfx(-1, |gf| {
         let (d, q, s) = gf.scene_mut();

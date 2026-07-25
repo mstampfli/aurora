@@ -12,6 +12,7 @@ mod mesh;
 mod model;
 mod render;
 mod scene;
+pub mod slot;
 pub mod terrain;
 
 pub use anim::{skin_matrices, skin_matrices_blended, AnimPlayer};
@@ -19,9 +20,11 @@ pub use glam::{Mat4, Quat, Vec3};
 pub use mesh::{GpuMesh, MeshData, Vertex};
 pub use model::{Channel, Clip, Interp, Joint, Model, Path, Primitive, Skeleton};
 pub use render::{
-    InstanceRaw, Material, MaterialDesc, Renderer3D, DEPTH_FORMAT, MAX_JOINTS, MAX_LIGHTS,
+    InstanceRaw, Material, MaterialDesc, MaterialId, MeshId, Renderer3D, DEPTH_FORMAT, MAX_JOINTS,
+    MAX_LIGHTS,
 };
 pub use scene::Scene;
+pub use slot::SlotMap;
 pub use terrain::{Heightfield, TerrainRender, TileLod};
 
 /// A right-handed perspective projection with a wgpu-style depth range (z in

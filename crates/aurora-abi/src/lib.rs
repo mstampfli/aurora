@@ -331,6 +331,7 @@ macro_rules! for_each_builtin {
 
         // 3D rendering.
         [special,  r3d_load_model,                aurora_r3d_load_model,                 [Ptr, I64],                                      I64]
+        [scalar,   r3d_free_model,                aurora_r3d_free_model,                 [I64],                                           I64]
         [scalar,   r3d_make_box,                  aurora_r3d_make_box,                   [F64, F64, F64],                                 I64]
         [scalar,   r3d_make_box_sized,            aurora_r3d_make_box_sized,             [F64, F64, F64, F64, F64, F64],                  I64]
         [scalar,   r3d_make_box_emissive,         aurora_r3d_make_box_emissive,          [F64, F64, F64, F64, F64, F64],                  I64]
