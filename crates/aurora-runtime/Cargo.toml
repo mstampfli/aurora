@@ -11,6 +11,9 @@ license.workspace = true
 [dependencies]
 # The one builtin table: `force_link` is generated from it.
 aurora-abi.workspace = true
+# Handle storage for physics bodies and JSON nodes: generation-tagged slots, so
+# a freed handle is rejected instead of aliasing whatever reuses its slot.
+aurora-slot.workspace = true
 aurora-gfx.workspace = true
 aurora-audio.workspace = true
 aurora-window.workspace = true

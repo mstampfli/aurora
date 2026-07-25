@@ -272,6 +272,7 @@ dependencies = [
 name = "aurora-lsp"
 version = "0.1.0"
 dependencies = [
+ "aurora-abi",
  "aurora-check",
  "aurora-diag",
  "aurora-parser",
@@ -323,6 +324,7 @@ dependencies = [
  "aurora-gpu",
  "aurora-net",
  "aurora-render3d",
+ "aurora-slot",
  "aurora-window",
  "fontdue",
  "hound",

@@ -701,8 +701,13 @@ pub extern "C" fn aurora_draw_int(x: i64, y: i64, n: i64, px: i64, color: i64) {
 //
 // A stateful physics world backed by Rapier: rigid bodies, colliders, gravity,
 // continuous collision - far beyond the hand-rolled AABB resolver in the stdlib.
-// Bodies are referenced by an i64 handle (an index into `handles`). Positions
-// are the body centre, in whatever units the program uses (e.g. pixels).
+// Positions are the body centre, in whatever units the program uses (pixels,
+// say).
+//
+// A body handle is a generation-tagged `aurora_slot::Key` packed into an i64,
+// not an index: `phys_remove` bumps its slot's generation, so the handle is
+// refused from then on instead of being inherited by the next `phys_add` that
+// lands in the freed slot. Same reasoning, same primitive, as `phys3d`.
 
 struct Phys {
     gravity: rapier2d::prelude::Vector<rapier2d::prelude::Real>,
@@ -717,32 +722,50 @@ struct Phys {
     multibody: rapier2d::prelude::MultibodyJointSet,
     ccd: rapier2d::prelude::CCDSolver,
     query: rapier2d::prelude::QueryPipeline,
-    handles: Vec<rapier2d::prelude::RigidBodyHandle>,
+    /// Aurora-visible bodies, keyed by the handle the program holds.
+    registry: aurora_slot::SlotMap<rapier2d::prelude::RigidBodyHandle>,
 }
 thread_local! {
     static PHYS: RefCell<Option<Phys>> = const { RefCell::new(None) };
 }
 
+/// The `i64` an Aurora program holds for a 2D body.
+type Body2 = aurora_slot::Key<rapier2d::prelude::RigidBodyHandle>;
+
+/// The Rapier body `h` names, or `None` for a stale, never-issued, or negative
+/// handle. Every 2D accessor goes through this.
+fn rb2_of(p: &Phys, h: i64) -> Option<rapier2d::prelude::RigidBodyHandle> {
+    p.registry.get(Body2::from_i64(h)?).copied()
+}
+
 /// Create (or reset) the physics world with gravity (gx, gy).
+///
+/// Handles from the previous world are invalidated rather than carried over:
+/// the registry is cleared, which bumps every live slot's generation. See
+/// `aurora_phys3d_init` for why a fresh registry would be wrong.
 #[no_mangle]
 pub extern "C" fn aurora_phys_init(gx: f64, gy: f64) {
     use rapier2d::prelude::*;
-    let p = Phys {
-        gravity: vector![gx as Real, gy as Real],
-        params: IntegrationParameters::default(),
-        pipeline: PhysicsPipeline::new(),
-        islands: IslandManager::new(),
-        broad: DefaultBroadPhase::new(),
-        narrow: NarrowPhase::new(),
-        bodies: RigidBodySet::new(),
-        colliders: ColliderSet::new(),
-        impulse: ImpulseJointSet::new(),
-        multibody: MultibodyJointSet::new(),
-        ccd: CCDSolver::new(),
-        query: QueryPipeline::new(),
-        handles: Vec::new(),
-    };
-    PHYS.with(|x| *x.borrow_mut() = Some(p));
+    PHYS.with(|x| {
+        let mut cell = x.borrow_mut();
+        let mut registry = cell.take().map(|p| p.registry).unwrap_or_default();
+        registry.clear();
+        *cell = Some(Phys {
+            gravity: vector![gx as Real, gy as Real],
+            params: IntegrationParameters::default(),
+            pipeline: PhysicsPipeline::new(),
+            islands: IslandManager::new(),
+            broad: DefaultBroadPhase::new(),
+            narrow: NarrowPhase::new(),
+            bodies: RigidBodySet::new(),
+            colliders: ColliderSet::new(),
+            impulse: ImpulseJointSet::new(),
+            multibody: MultibodyJointSet::new(),
+            ccd: CCDSolver::new(),
+            query: QueryPipeline::new(),
+            registry,
+        });
+    });
 }
 
 /// Add a box body (half-extents hw,hh) at centre (x,y); `dynamic` 1=moving,
@@ -765,8 +788,51 @@ pub extern "C" fn aurora_phys_add(x: f64, y: f64, hw: f64, hh: f64, dynamic: i64
         let h = p.bodies.insert(rb);
         let col = ColliderBuilder::cuboid(hw as Real, hh as Real).build();
         p.colliders.insert_with_parent(col, h, &mut p.bodies);
-        p.handles.push(h);
-        (p.handles.len() - 1) as i64
+        p.registry.insert(h).to_i64()
+    })
+}
+
+/// Destroy a body and the collider attached to it, and invalidate `h`. Returns
+/// 1 if a body was destroyed, 0 if `h` was already freed or never named one.
+///
+/// Without this, a 2D game that spawns and kills bullets or enemies grows
+/// Rapier's body and collider sets for as long as it runs. `h` is not recycled:
+/// a later `phys_add` may land in the same slot, but at a higher generation, so
+/// the old handle keeps reading as dead.
+#[no_mangle]
+pub extern "C" fn aurora_phys_remove(h: i64) -> i64 {
+    PHYS.with(|p| {
+        let mut p = p.borrow_mut();
+        let Some(p) = p.as_mut() else { return 0 };
+        let Some(key) = Body2::from_i64(h) else {
+            return 0;
+        };
+        let Some(body) = p.registry.remove(key) else {
+            return 0;
+        };
+        // `true` = remove the attached colliders with it, so nothing is left
+        // in the collider set parented to a body that no longer exists.
+        p.bodies.remove(
+            body,
+            &mut p.islands,
+            &mut p.colliders,
+            &mut p.impulse,
+            &mut p.multibody,
+            true,
+        );
+        1
+    })
+}
+
+/// Whether `h` still names a live body (1) or has been removed / was never
+/// valid (0). `phys_x`/`phys_y` answer 0.0 for a dead handle, which a body at
+/// the origin also answers, so this is how the two are told apart.
+#[no_mangle]
+pub extern "C" fn aurora_phys_alive(h: i64) -> i64 {
+    PHYS.with(|p| {
+        p.borrow()
+            .as_ref()
+            .map_or(0, |p| rb2_of(p, h).is_some() as i64)
     })
 }
 
@@ -801,11 +867,7 @@ fn phys_pos(h: i64, axis: usize) -> f64 {
     PHYS.with(|p| {
         let p = p.borrow();
         let Some(p) = p.as_ref() else { return 0.0 };
-        match p
-            .handles
-            .get(h.max(0) as usize)
-            .and_then(|&hd| p.bodies.get(hd))
-        {
+        match rb2_of(p, h).and_then(|hd| p.bodies.get(hd)) {
             Some(b) => b.translation()[axis] as f64,
             None => 0.0,
         }
@@ -827,12 +889,7 @@ pub extern "C" fn aurora_phys_set_vel(h: i64, vx: f64, vy: f64) {
     PHYS.with(|p| {
         let mut p = p.borrow_mut();
         let Some(p) = p.as_mut() else { return };
-        if let Some(b) = p
-            .handles
-            .get(h.max(0) as usize)
-            .copied()
-            .and_then(|hd| p.bodies.get_mut(hd))
-        {
+        if let Some(b) = rb2_of(p, h).and_then(|hd| p.bodies.get_mut(hd)) {
             b.set_linvel(vector![vx as Real, vy as Real], true);
         }
     });
@@ -841,11 +898,10 @@ pub extern "C" fn aurora_phys_set_vel(h: i64, vx: f64, vy: f64) {
 fn phys_vel(h: i64, axis: usize) -> f64 {
     PHYS.with(|p| {
         let p = p.borrow();
-        match p.as_ref().and_then(|p| {
-            p.handles
-                .get(h.max(0) as usize)
-                .and_then(|&hd| p.bodies.get(hd))
-        }) {
+        match p
+            .as_ref()
+            .and_then(|p| rb2_of(p, h).and_then(|hd| p.bodies.get(hd)))
+        {
             Some(b) => b.linvel()[axis] as f64,
             None => 0.0,
         }
@@ -867,12 +923,7 @@ pub extern "C" fn aurora_phys_apply_impulse(h: i64, ix: f64, iy: f64) {
     PHYS.with(|p| {
         let mut p = p.borrow_mut();
         let Some(p) = p.as_mut() else { return };
-        if let Some(b) = p
-            .handles
-            .get(h.max(0) as usize)
-            .copied()
-            .and_then(|hd| p.bodies.get_mut(hd))
-        {
+        if let Some(b) = rb2_of(p, h).and_then(|hd| p.bodies.get_mut(hd)) {
             b.apply_impulse(vector![ix as Real, iy as Real], true);
         }
     });
@@ -885,12 +936,7 @@ pub extern "C" fn aurora_phys_apply_force(h: i64, fx: f64, fy: f64) {
     PHYS.with(|p| {
         let mut p = p.borrow_mut();
         let Some(p) = p.as_mut() else { return };
-        if let Some(b) = p
-            .handles
-            .get(h.max(0) as usize)
-            .copied()
-            .and_then(|hd| p.bodies.get_mut(hd))
-        {
+        if let Some(b) = rb2_of(p, h).and_then(|hd| p.bodies.get_mut(hd)) {
             b.add_force(vector![fx as Real, fy as Real], true);
         }
     });
@@ -903,12 +949,7 @@ pub extern "C" fn aurora_phys_set_pos(h: i64, x: f64, y: f64) {
     PHYS.with(|p| {
         let mut p = p.borrow_mut();
         let Some(p) = p.as_mut() else { return };
-        if let Some(b) = p
-            .handles
-            .get(h.max(0) as usize)
-            .copied()
-            .and_then(|hd| p.bodies.get_mut(hd))
-        {
+        if let Some(b) = rb2_of(p, h).and_then(|hd| p.bodies.get_mut(hd)) {
             b.set_translation(vector![x as Real, y as Real], true);
         }
     });
@@ -3392,5 +3433,147 @@ mod par_world_tests {
             count, 4,
             "nested batch writes must land in the outer owner's world"
         );
+    }
+}
+
+#[cfg(test)]
+mod phys2d_tests {
+    use super::*;
+
+    /// Rapier's own sets plus the handle store, which is where the memory is.
+    fn census() -> (usize, usize, usize, usize) {
+        PHYS.with(|p| {
+            let p = p.borrow();
+            match p.as_ref() {
+                Some(p) => (
+                    p.bodies.len(),
+                    p.colliders.len(),
+                    p.registry.len(),
+                    p.registry.slot_count(),
+                ),
+                None => (0, 0, 0, 0),
+            }
+        })
+    }
+
+    /// 500 spawn/despawn cycles - a bullet or an enemy per frame - must leave
+    /// the world exactly as they found it. Before `phys_remove` existed there
+    /// was no way to take a 2D body back out at all.
+    #[test]
+    fn create_and_destroy_cycles_leave_the_world_bounded() {
+        aurora_phys_init(0.0, 900.0);
+        aurora_phys_add(50.0, 200.0, 60.0, 10.0, 0);
+        let start = census();
+        assert_eq!(start, (1, 1, 1, 1), "just the floor");
+
+        for i in 0..500 {
+            let bullet = aurora_phys_add(10.0, 10.0, 2.0, 2.0, 1);
+            aurora_phys_set_vel(bullet, 100.0, 0.0);
+            aurora_phys_step(0.016);
+            assert_eq!(aurora_phys_remove(bullet), 1, "cycle {i}: not removed");
+        }
+
+        let end = census();
+        assert_eq!(end.0, start.0, "Rapier rigid bodies grew to {}", end.0);
+        assert_eq!(end.1, start.1, "Rapier colliders grew to {}", end.1);
+        assert_eq!(end.2, start.2, "live handles grew to {}", end.2);
+        assert_eq!(end.3, 2, "handle slots grew to {}", end.3);
+    }
+
+    #[test]
+    fn removing_a_body_takes_its_collider_down_with_it() {
+        aurora_phys_init(0.0, 0.0);
+        let wall = aurora_phys_add(0.0, 0.0, 5.0, 5.0, 0);
+        aurora_phys_step(0.016);
+        assert_eq!(census(), (1, 1, 1, 1));
+        assert!(aurora_phys_raycast(-50.0, 0.0, 1.0, 0.0, 100.0) > 0.0);
+
+        assert_eq!(aurora_phys_remove(wall), 1);
+        assert_eq!(census(), (0, 0, 0, 1), "an orphaned collider was left");
+        assert_eq!(
+            aurora_phys_raycast(-50.0, 0.0, 1.0, 0.0, 100.0),
+            -1.0,
+            "a removed body still answered a raycast"
+        );
+    }
+
+    /// The old handle must be refused, not aliased onto whatever takes its slot.
+    #[test]
+    fn a_removed_handle_is_refused_by_every_accessor_that_takes_one() {
+        aurora_phys_init(0.0, 0.0);
+        let dead = aurora_phys_add(1.0, 2.0, 1.0, 1.0, 1);
+        assert_eq!(aurora_phys_remove(dead), 1);
+        let live = aurora_phys_add(30.0, 40.0, 1.0, 1.0, 1);
+        assert_eq!(
+            Body2::from_i64(dead).unwrap().slot(),
+            Body2::from_i64(live).unwrap().slot(),
+            "the freed slot must be reused for this test to mean anything"
+        );
+        assert_ne!(dead, live);
+        aurora_phys_step(0.016);
+
+        assert_eq!(aurora_phys_alive(dead), 0);
+        assert_eq!(aurora_phys_alive(live), 1);
+        assert_eq!(aurora_phys_x(dead), 0.0, "a dead handle read a live body");
+        assert_eq!(aurora_phys_y(dead), 0.0);
+        assert_eq!(aurora_phys_vel_x(dead), 0.0);
+        assert_eq!(aurora_phys_vel_y(dead), 0.0);
+        assert_eq!(aurora_phys_x(live), 30.0);
+        assert_eq!(aurora_phys_y(live), 40.0);
+
+        let before = (
+            aurora_phys_x(live),
+            aurora_phys_y(live),
+            aurora_phys_vel_x(live),
+            aurora_phys_vel_y(live),
+        );
+        aurora_phys_set_pos(dead, -900.0, -900.0);
+        aurora_phys_set_vel(dead, 77.0, 77.0);
+        aurora_phys_apply_impulse(dead, 500.0, 500.0);
+        aurora_phys_apply_force(dead, 500.0, 500.0);
+        assert_eq!(
+            (
+                aurora_phys_x(live),
+                aurora_phys_y(live),
+                aurora_phys_vel_x(live),
+                aurora_phys_vel_y(live),
+            ),
+            before,
+            "a write through a dead handle reached the body that took its slot"
+        );
+
+        assert_eq!(
+            aurora_phys_remove(dead),
+            0,
+            "double free must report nothing"
+        );
+        assert_eq!(aurora_phys_remove(-1), 0);
+        assert_eq!(aurora_phys_remove(0), 0);
+        assert_eq!(aurora_phys_alive(live), 1, "the removal hit the wrong body");
+    }
+
+    #[test]
+    fn a_handle_from_the_previous_world_is_refused() {
+        aurora_phys_init(0.0, 0.0);
+        let old = aurora_phys_add(1.0, 2.0, 1.0, 1.0, 0);
+        aurora_phys_init(0.0, 0.0);
+        assert_eq!(aurora_phys_alive(old), 0, "a handle outlived its world");
+        let new = aurora_phys_add(60.0, 70.0, 1.0, 1.0, 0);
+        assert_ne!(old, new, "the new world reissued the old world's handle");
+        assert_eq!(aurora_phys_x(old), 0.0, "the old handle read a new body");
+        assert_eq!(aurora_phys_x(new), 60.0);
+        assert_eq!(aurora_phys_remove(old), 0);
+        assert_eq!(aurora_phys_alive(new), 1);
+    }
+
+    #[test]
+    fn resetting_the_world_in_a_loop_is_bounded() {
+        for _ in 0..200 {
+            aurora_phys_init(0.0, 900.0);
+            aurora_phys_add(0.0, 0.0, 5.0, 5.0, 0);
+            aurora_phys_add(0.0, 50.0, 2.0, 2.0, 1);
+            aurora_phys_step(0.016);
+        }
+        assert_eq!(census(), (2, 2, 2, 2), "a world reset grew the store");
     }
 }

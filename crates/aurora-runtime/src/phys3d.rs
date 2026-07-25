@@ -3,15 +3,47 @@
 //! kinematic capsule character controller that slides along walls - the core of
 //! a fluid 3D movement shooter.
 //!
-//! Bodies are referenced by an `i64` handle (insertion order). State lives in a
-//! thread-local, matching the single-threaded program the runtime serves.
+//! State lives in a thread-local, matching the single-threaded program the
+//! runtime serves.
+//!
+//! # Body handles
+//!
+//! A body handle is a generation-tagged [`aurora_slot::Key`] packed into the
+//! `i64` a program holds, NOT an index. `phys3d_remove` bumps its slot's
+//! generation, so the handle is rejected by every accessor from then on, even
+//! once a later `phys3d_add_*` lands in that same slot. The alternative - an
+//! index into a `Vec` - has only bad endings: never remove (a world that grows
+//! for as long as the process runs) or remove and let the next body inherit the
+//! hole, which silently turns one actor's handle into another actor's position.
+//! Rapier's own handles work the same way, so this layer matches rather than
+//! fights the engine underneath it.
+//!
+//! Handles are therefore no longer small integers. They are `i64` and must be
+//! kept in one; a program that stashes a handle in an `f32` (a netcode state
+//! blob, say) loses the generation bits and gets a handle that is REJECTED
+//! rather than one that silently points somewhere else.
 
 use std::cell::RefCell;
 
+use aurora_slot::{Key, SlotMap};
 use rapier3d::control::{CharacterLength, KinematicCharacterController};
 use rapier3d::na::{DMatrix, Quaternion, UnitQuaternion};
 use rapier3d::parry::query::ShapeCastOptions;
 use rapier3d::prelude::*;
+
+/// Everything one Aurora-visible body owns. Held in a [`SlotMap`], so freeing
+/// one invalidates its handle instead of shuffling every other body's.
+struct Body3 {
+    body: RigidBodyHandle,
+    /// The single collider attached to `body`. Kept so a query can be told to
+    /// skip it and so removal can be checked to have taken it down.
+    collider: ColliderHandle,
+    /// Last result from the character controller, read by `phys3d_grounded`.
+    grounded: bool,
+}
+
+/// The `i64` an Aurora program holds for a body.
+type BodyId = Key<Body3>;
 
 struct Phys3 {
     gravity: Vector<Real>,
@@ -26,9 +58,8 @@ struct Phys3 {
     multibody: MultibodyJointSet,
     ccd: CCDSolver,
     query: QueryPipeline,
-    handles: Vec<RigidBodyHandle>,
-    cols: Vec<ColliderHandle>,
-    grounded: Vec<bool>,
+    /// Aurora-visible bodies, keyed by the handle the program holds.
+    registry: SlotMap<Body3>,
     controller: KinematicCharacterController,
     // Last raycast/shapecast hit (for `phys3d_hit_*`).
     hit_point: [f64; 3],
@@ -41,6 +72,11 @@ thread_local! {
 }
 
 /// Create (or reset) the 3D physics world with gravity `(gx, gy, gz)`.
+///
+/// Handles issued by the PREVIOUS world are invalidated, not silently carried
+/// over: the registry is cleared rather than replaced, which bumps every live
+/// slot's generation. A fresh registry would restart generations at 1 and hand
+/// the new world's first body exactly the `i64` the old world's first body had.
 #[no_mangle]
 pub extern "C" fn aurora_phys3d_init(gx: f64, gy: f64, gz: f64) {
     let controller = KinematicCharacterController {
@@ -50,37 +86,71 @@ pub extern "C" fn aurora_phys3d_init(gx: f64, gy: f64, gz: f64) {
         snap_to_ground: Some(CharacterLength::Absolute(0.3)),
         ..Default::default()
     };
-    let p = Phys3 {
-        gravity: vector![gx as Real, gy as Real, gz as Real],
-        params: IntegrationParameters::default(),
-        pipeline: PhysicsPipeline::new(),
-        islands: IslandManager::new(),
-        broad: DefaultBroadPhase::new(),
-        narrow: NarrowPhase::new(),
-        bodies: RigidBodySet::new(),
-        colliders: ColliderSet::new(),
-        impulse: ImpulseJointSet::new(),
-        multibody: MultibodyJointSet::new(),
-        ccd: CCDSolver::new(),
-        query: QueryPipeline::new(),
-        handles: Vec::new(),
-        cols: Vec::new(),
-        grounded: Vec::new(),
-        controller,
-        hit_point: [0.0; 3],
-        hit_normal: [0.0; 3],
-        hit_body: -1,
-    };
-    PHYS3.with(|x| *x.borrow_mut() = Some(p));
+    PHYS3.with(|x| {
+        let mut cell = x.borrow_mut();
+        let mut registry = cell.take().map(|p| p.registry).unwrap_or_default();
+        registry.clear();
+        *cell = Some(Phys3 {
+            gravity: vector![gx as Real, gy as Real, gz as Real],
+            params: IntegrationParameters::default(),
+            pipeline: PhysicsPipeline::new(),
+            islands: IslandManager::new(),
+            broad: DefaultBroadPhase::new(),
+            narrow: NarrowPhase::new(),
+            bodies: RigidBodySet::new(),
+            colliders: ColliderSet::new(),
+            impulse: ImpulseJointSet::new(),
+            multibody: MultibodyJointSet::new(),
+            ccd: CCDSolver::new(),
+            query: QueryPipeline::new(),
+            registry,
+            controller,
+            hit_point: [0.0; 3],
+            hit_normal: [0.0; 3],
+            hit_body: -1,
+        });
+    });
 }
 
 fn push_body(p: &mut Phys3, rb: RigidBody, col: Collider) -> i64 {
-    let h = p.bodies.insert(rb);
-    let c = p.colliders.insert_with_parent(col, h, &mut p.bodies);
-    p.handles.push(h);
-    p.cols.push(c);
-    p.grounded.push(false);
-    (p.handles.len() - 1) as i64
+    let body = p.bodies.insert(rb);
+    let collider = p.colliders.insert_with_parent(col, body, &mut p.bodies);
+    let id = p.registry.insert(Body3 {
+        body,
+        collider,
+        grounded: false,
+    });
+    // Stamp the handle into the collider. A query answers with a collider, and
+    // the program wants a body handle back; reading it out of `user_data` is
+    // O(1), where the linear scan of every body this replaces cost O(n) on
+    // every single raycast.
+    if let Some(c) = p.colliders.get_mut(collider) {
+        c.user_data = id.to_i64() as u128;
+    }
+    id.to_i64()
+}
+
+/// The body `h` names, or `None` when `h` is stale (its body was removed, and
+/// possibly replaced), was never issued, or is the runtime's `-1` "no body"
+/// sentinel.
+///
+/// Every accessor goes through this or one of the two helpers below, which is
+/// what makes "a freed handle cannot read a live body" a property of the file
+/// rather than of each function remembering to check.
+fn body_of(p: &Phys3, h: i64) -> Option<&Body3> {
+    p.registry.get(Key::from_i64(h)?)
+}
+
+/// The Rapier rigid body `h` names. Copied out so the caller can then borrow
+/// `p.bodies` mutably.
+fn rb_of(p: &Phys3, h: i64) -> Option<RigidBodyHandle> {
+    body_of(p, h).map(|b| b.body)
+}
+
+/// The collider `h`'s body owns. `None` for a stale or negative handle, which
+/// is what "I have no body to skip" has to mean for a query filter.
+fn col_of(p: &Phys3, h: i64) -> Option<ColliderHandle> {
+    body_of(p, h).map(|b| b.collider)
 }
 
 fn body_builder(x: f64, y: f64, z: f64, dynamic: i64) -> RigidBodyBuilder {
@@ -416,11 +486,10 @@ pub extern "C" fn aurora_phys3d_step(dt: f64) {
 fn axis(h: i64, i: usize) -> f64 {
     PHYS3.with(|p| {
         let p = p.borrow();
-        match p.as_ref().and_then(|p| {
-            p.handles
-                .get(h.max(0) as usize)
-                .and_then(|&hd| p.bodies.get(hd))
-        }) {
+        match p
+            .as_ref()
+            .and_then(|p| rb_of(p, h).and_then(|hd| p.bodies.get(hd)))
+        {
             Some(b) => b.translation()[i] as f64,
             None => 0.0,
         }
@@ -442,11 +511,10 @@ pub extern "C" fn aurora_phys3d_z(h: i64) -> f64 {
 fn vaxis(h: i64, i: usize) -> f64 {
     PHYS3.with(|p| {
         let p = p.borrow();
-        match p.as_ref().and_then(|p| {
-            p.handles
-                .get(h.max(0) as usize)
-                .and_then(|&hd| p.bodies.get(hd))
-        }) {
+        match p
+            .as_ref()
+            .and_then(|p| rb_of(p, h).and_then(|hd| p.bodies.get(hd)))
+        {
             Some(b) => b.linvel()[i] as f64,
             None => 0.0,
         }
@@ -470,12 +538,7 @@ pub extern "C" fn aurora_phys3d_set_vel(h: i64, vx: f64, vy: f64, vz: f64) {
     PHYS3.with(|p| {
         let mut p = p.borrow_mut();
         let Some(p) = p.as_mut() else { return };
-        if let Some(b) = p
-            .handles
-            .get(h.max(0) as usize)
-            .copied()
-            .and_then(|hd| p.bodies.get_mut(hd))
-        {
+        if let Some(b) = rb_of(p, h).and_then(|hd| p.bodies.get_mut(hd)) {
             b.set_linvel(vector![vx as Real, vy as Real, vz as Real], true);
         }
     });
@@ -486,13 +549,7 @@ pub extern "C" fn aurora_phys3d_set_pos(h: i64, x: f64, y: f64, z: f64) {
     PHYS3.with(|p| {
         let mut p = p.borrow_mut();
         let Some(p) = p.as_mut() else { return };
-        let idx = h.max(0) as usize;
-        if let Some(b) = p
-            .handles
-            .get(idx)
-            .copied()
-            .and_then(|hd| p.bodies.get_mut(hd))
-        {
+        if let Some(b) = rb_of(p, h).and_then(|hd| p.bodies.get_mut(hd)) {
             let t = vector![x as Real, y as Real, z as Real];
             if b.is_kinematic() {
                 b.set_next_kinematic_translation(t);
@@ -510,15 +567,67 @@ pub extern "C" fn aurora_phys3d_apply_impulse(h: i64, ix: f64, iy: f64, iz: f64)
     PHYS3.with(|p| {
         let mut p = p.borrow_mut();
         let Some(p) = p.as_mut() else { return };
-        if let Some(b) = p
-            .handles
-            .get(h.max(0) as usize)
-            .copied()
-            .and_then(|hd| p.bodies.get_mut(hd))
-        {
+        if let Some(b) = rb_of(p, h).and_then(|hd| p.bodies.get_mut(hd)) {
             b.apply_impulse(vector![ix as Real, iy as Real, iz as Real], true);
         }
     });
+}
+
+/// Destroy a body: its Rapier rigid body, the collider attached to it, and the
+/// handle. Returns 1 if a body was destroyed, 0 if `h` was already freed or
+/// never named one, so a double free reads as 0 rather than tearing down
+/// whatever moved into that slot in between.
+///
+/// `h` is invalidated, not recycled: the slot's generation is bumped, so every
+/// later `phys3d_x`, `phys3d_grounded`, raycast filter and so on refuses it,
+/// including after a `phys3d_add_*` lands in the same slot. Without a removal
+/// path, a game that respawns actors or reloads a level grows the Rapier sets
+/// for as long as the process runs.
+///
+/// A query run between this and the next `phys3d_step` simply does not see the
+/// body: the query pipeline's tree still holds the collider handle until the
+/// next step rebuilds it, but Rapier's handles are generation-tagged too, so a
+/// removed one resolves to nothing rather than to whatever took its place.
+#[no_mangle]
+pub extern "C" fn aurora_phys3d_remove(h: i64) -> i64 {
+    PHYS3.with(|p| {
+        let mut p = p.borrow_mut();
+        let Some(p) = p.as_mut() else { return 0 };
+        let Some(key) = Key::from_i64(h) else {
+            return 0;
+        };
+        let Some(body) = p.registry.remove(key) else {
+            return 0;
+        };
+        // `true` = take the attached colliders down with the body. Removing the
+        // body alone leaves its collider in the set parented to a dead body -
+        // an orphan that still answers raycasts and still costs broad-phase
+        // work, which is most of what makes an unremoved body expensive.
+        p.bodies.remove(
+            body.body,
+            &mut p.islands,
+            &mut p.colliders,
+            &mut p.impulse,
+            &mut p.multibody,
+            true,
+        );
+        1
+    })
+}
+
+/// Whether `h` still names a live body (1) or has been removed / was never
+/// valid (0).
+///
+/// Position and velocity reads answer 0.0 for a dead handle, which a body
+/// genuinely sitting at the origin also answers, so this is how a program tells
+/// "gone" from "at the origin" without guessing.
+#[no_mangle]
+pub extern "C" fn aurora_phys3d_alive(h: i64) -> i64 {
+    PHYS3.with(|p| {
+        p.borrow()
+            .as_ref()
+            .map_or(0, |p| body_of(p, h).is_some() as i64)
+    })
 }
 
 /// Move a character capsule by `(dx,dy,dz)` this frame, sliding along walls.
@@ -528,8 +637,7 @@ pub extern "C" fn aurora_phys3d_move_character(h: i64, dx: f64, dy: f64, dz: f64
     PHYS3.with(|p| {
         let mut p = p.borrow_mut();
         let Some(p) = p.as_mut() else { return };
-        let idx = h.max(0) as usize;
-        let (Some(&col_h), Some(&body_h)) = (p.cols.get(idx), p.handles.get(idx)) else {
+        let (Some(col_h), Some(body_h)) = (col_of(p, h), rb_of(p, h)) else {
             return;
         };
         let desired = vector![dx as Real, dy as Real, dz as Real];
@@ -573,7 +681,11 @@ pub extern "C" fn aurora_phys3d_move_character(h: i64, dx: f64, dy: f64, dz: f64
             );
             (pos.translation.vector + mvt.translation, mvt.grounded, hits)
         };
-        p.grounded[idx] = grounded;
+        if let Some(k) = Key::from_i64(h) {
+            if let Some(b) = p.registry.get_mut(k) {
+                b.grounded = grounded;
+            }
+        }
         // Resolve the dynamic bodies (crates) we ran into + read their velocities, so we can do BOTH
         // directions: the character shoves the box, AND a fast-moving box shoves the character a bit
         // (a flying crate "kinda blocks you but not like a hard wall" - it carries you along).
@@ -629,8 +741,8 @@ pub extern "C" fn aurora_phys3d_grounded(h: i64) -> i64 {
     PHYS3.with(|p| {
         p.borrow()
             .as_ref()
-            .and_then(|p| p.grounded.get(h.max(0) as usize))
-            .map(|&g| g as i64)
+            .and_then(|p| body_of(p, h))
+            .map(|b| b.grounded as i64)
             .unwrap_or(0)
     })
 }
@@ -667,23 +779,21 @@ pub extern "C" fn aurora_phys3d_raycast(
     })
 }
 
-fn col_index(p: &Phys3, ch: ColliderHandle) -> i64 {
-    p.cols
-        .iter()
-        .position(|&c| c == ch)
-        .map(|i| i as i64)
-        .unwrap_or(-1)
-}
-
-/// The collider a query should skip for body handle `h`, or `None` when there
-/// is nothing to skip. A negative handle is the callers' "no body" sentinel and
-/// must exclude NOTHING: reading it as index 0 quietly hides the first body
-/// added, which is normally the ground or the terrain.
-fn excluded_collider(p: &Phys3, h: i64) -> Option<ColliderHandle> {
-    if h < 0 {
-        return None;
+/// The body handle a query result belongs to, or -1.
+///
+/// [`push_body`] stamps the handle into the collider's `user_data`, so this is
+/// O(1) rather than the linear scan of every body in the world it replaces.
+/// The value is re-validated against the registry so that a collider Aurora did
+/// not create (`user_data` 0) reads as "no body" instead of as handle 0.
+fn body_handle_of(p: &Phys3, ch: ColliderHandle) -> i64 {
+    let Some(col) = p.colliders.get(ch) else {
+        return -1;
+    };
+    let raw = col.user_data as i64;
+    match BodyId::from_i64(raw) {
+        Some(k) if p.registry.contains(k) => raw,
+        _ => -1,
     }
-    p.cols.get(h as usize).copied()
 }
 
 /// Cast a ray and record the hit: returns the hit body handle (or -1) and stores
@@ -722,7 +832,7 @@ pub extern "C" fn aurora_phys3d_raycast_full(
                     inter.normal.y as f64,
                     inter.normal.z as f64,
                 ];
-                p.hit_body = col_index(p, ch);
+                p.hit_body = body_handle_of(p, ch);
                 p.hit_body
             }
             None => {
@@ -754,7 +864,7 @@ pub extern "C" fn aurora_phys3d_raycast_ex(
     PHYS3.with(|p| {
         let mut p = p.borrow_mut();
         let Some(p) = p.as_mut() else { return -1 };
-        let filter = match excluded_collider(p, exclude) {
+        let filter = match col_of(p, exclude) {
             Some(ch) => QueryFilter::default().exclude_collider(ch),
             None => QueryFilter::default(),
         };
@@ -779,7 +889,7 @@ pub extern "C" fn aurora_phys3d_raycast_ex(
                     inter.normal.y as f64,
                     inter.normal.z as f64,
                 ];
-                p.hit_body = col_index(p, ch);
+                p.hit_body = body_handle_of(p, ch);
                 p.hit_body
             }
             None => {
@@ -815,7 +925,7 @@ pub extern "C" fn aurora_phys3d_raycast_world(
         // reasoning in `move_character`.
         let mut filter =
             QueryFilter::default().groups(InteractionGroups::new(Group::GROUP_1, Group::GROUP_1));
-        if let Some(ch) = excluded_collider(p, exclude) {
+        if let Some(ch) = col_of(p, exclude) {
             filter = filter.exclude_collider(ch);
         }
         let ray = Ray::new(
@@ -839,7 +949,7 @@ pub extern "C" fn aurora_phys3d_raycast_world(
                     inter.normal.y as f64,
                     inter.normal.z as f64,
                 ];
-                p.hit_body = col_index(p, ch);
+                p.hit_body = body_handle_of(p, ch);
                 p.hit_body
             }
             None => {
@@ -941,7 +1051,7 @@ pub extern "C" fn aurora_phys3d_overlap_sphere(x: f64, y: f64, z: f64, radius: f
             &shape,
             QueryFilter::default(),
         ) {
-            Some(ch) => col_index(p, ch),
+            Some(ch) => body_handle_of(p, ch),
             None => -1,
         }
     })
@@ -953,12 +1063,7 @@ pub extern "C" fn aurora_phys3d_apply_force(h: i64, fx: f64, fy: f64, fz: f64) {
     PHYS3.with(|p| {
         let mut p = p.borrow_mut();
         let Some(p) = p.as_mut() else { return };
-        if let Some(b) = p
-            .handles
-            .get(h.max(0) as usize)
-            .copied()
-            .and_then(|hd| p.bodies.get_mut(hd))
-        {
+        if let Some(b) = rb_of(p, h).and_then(|hd| p.bodies.get_mut(hd)) {
             b.add_force(vector![fx as Real, fy as Real, fz as Real], true);
         }
     });
@@ -970,12 +1075,7 @@ pub extern "C" fn aurora_phys3d_apply_torque(h: i64, tx: f64, ty: f64, tz: f64) 
     PHYS3.with(|p| {
         let mut p = p.borrow_mut();
         let Some(p) = p.as_mut() else { return };
-        if let Some(b) = p
-            .handles
-            .get(h.max(0) as usize)
-            .copied()
-            .and_then(|hd| p.bodies.get_mut(hd))
-        {
+        if let Some(b) = rb_of(p, h).and_then(|hd| p.bodies.get_mut(hd)) {
             b.add_torque(vector![tx as Real, ty as Real, tz as Real], true);
         }
     });
@@ -987,12 +1087,7 @@ pub extern "C" fn aurora_phys3d_set_angvel(h: i64, ax: f64, ay: f64, az: f64) {
     PHYS3.with(|p| {
         let mut p = p.borrow_mut();
         let Some(p) = p.as_mut() else { return };
-        if let Some(b) = p
-            .handles
-            .get(h.max(0) as usize)
-            .copied()
-            .and_then(|hd| p.bodies.get_mut(hd))
-        {
+        if let Some(b) = rb_of(p, h).and_then(|hd| p.bodies.get_mut(hd)) {
             b.set_angvel(vector![ax as Real, ay as Real, az as Real], true);
         }
     });
@@ -1004,12 +1099,7 @@ pub extern "C" fn aurora_phys3d_set_rot(h: i64, qx: f64, qy: f64, qz: f64, qw: f
     PHYS3.with(|p| {
         let mut p = p.borrow_mut();
         let Some(p) = p.as_mut() else { return };
-        if let Some(b) = p
-            .handles
-            .get(h.max(0) as usize)
-            .copied()
-            .and_then(|hd| p.bodies.get_mut(hd))
-        {
+        if let Some(b) = rb_of(p, h).and_then(|hd| p.bodies.get_mut(hd)) {
             let q = UnitQuaternion::from_quaternion(Quaternion::new(
                 qw as Real, qx as Real, qy as Real, qz as Real,
             ));
@@ -1021,11 +1111,10 @@ pub extern "C" fn aurora_phys3d_set_rot(h: i64, qx: f64, qy: f64, qz: f64, qw: f
 fn rot_comp(h: i64, i: usize) -> f64 {
     PHYS3.with(|p| {
         let p = p.borrow();
-        match p.as_ref().and_then(|p| {
-            p.handles
-                .get(h.max(0) as usize)
-                .and_then(|&hd| p.bodies.get(hd))
-        }) {
+        match p
+            .as_ref()
+            .and_then(|p| rb_of(p, h).and_then(|hd| p.bodies.get(hd)))
+        {
             Some(b) => {
                 let q = b.rotation();
                 [q.i, q.j, q.k, q.w][i] as f64
@@ -1051,9 +1140,266 @@ pub extern "C" fn aurora_phys3d_rot_qw(h: i64) -> f64 {
     rot_comp(h, 3)
 }
 
+/// What the world is holding: Rapier's own rigid-body and collider counts, the
+/// number of live handles, and the number of handle slots ever allocated.
+///
+/// The leak tests are stated in these units because Rapier's sets are where the
+/// memory actually is: a registry that plateaus while `RigidBodySet` grows would
+/// still be a leak, so both are asserted rather than one standing in for the
+/// other. `slot_count` is the fourth because a store that reused nothing would
+/// keep the first three flat and still grow.
+#[cfg(test)]
+pub(crate) fn census() -> (usize, usize, usize, usize) {
+    PHYS3.with(|p| {
+        let p = p.borrow();
+        match p.as_ref() {
+            Some(p) => (
+                p.bodies.len(),
+                p.colliders.len(),
+                p.registry.len(),
+                p.registry.slot_count(),
+            ),
+            None => (0, 0, 0, 0),
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 500 create/destroy cycles must leave the world exactly as they found it.
+    ///
+    /// Before removal existed, `handles`/`cols`/`grounded` and Rapier's own
+    /// `RigidBodySet`/`ColliderSet` all grew by one per body for the life of the
+    /// process, because nothing in the file could take a body back out.
+    #[test]
+    fn create_and_destroy_cycles_leave_the_world_bounded() {
+        aurora_phys3d_init(0.0, -9.81, 0.0);
+        aurora_phys3d_add_box(0.0, -0.5, 0.0, 50.0, 0.5, 50.0, 0);
+        let start = census();
+        assert_eq!(start, (1, 1, 1, 1), "just the ground");
+
+        for i in 0..500 {
+            let ball = aurora_phys3d_add_sphere(0.0, 5.0, 0.0, 0.5, 1);
+            let actor = aurora_phys3d_add_character(2.0, 2.0, 0.0, 0.7, 0.4);
+            aurora_phys3d_move_character(actor, 0.1, -0.1, 0.0, 0.016);
+            aurora_phys3d_step(0.016);
+            assert_eq!(aurora_phys3d_remove(ball), 1, "cycle {i}: ball not removed");
+            assert_eq!(
+                aurora_phys3d_remove(actor),
+                1,
+                "cycle {i}: actor not removed"
+            );
+        }
+
+        let end = census();
+        assert_eq!(
+            end.0, start.0,
+            "Rapier rigid bodies grew from {} to {}",
+            start.0, end.0
+        );
+        assert_eq!(
+            end.1, start.1,
+            "Rapier colliders grew from {} to {}",
+            start.1, end.1
+        );
+        assert_eq!(end.2, start.2, "live handles grew");
+        // Three slots serve all 500 cycles: the ground plus the two the cycle
+        // allocates once and then reuses forever.
+        assert_eq!(end.3, 3, "handle slots grew to {}", end.3);
+    }
+
+    /// Removal must take the collider down WITH the body. A collider left in
+    /// the set still answers raycasts and still costs broad-phase work, which
+    /// is most of the cost of a body that was supposed to be gone.
+    #[test]
+    fn removing_a_body_takes_its_collider_down_with_it() {
+        aurora_phys3d_init(0.0, 0.0, 0.0);
+        let wall = aurora_phys3d_add_box(0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0);
+        aurora_phys3d_step(0.016);
+        assert_eq!(census(), (1, 1, 1, 1));
+        assert!(
+            aurora_phys3d_raycast(0.0, 5.0, 0.0, 0.0, -1.0, 0.0, 20.0) > 0.0,
+            "the ray should hit the wall while it exists"
+        );
+
+        assert_eq!(aurora_phys3d_remove(wall), 1);
+        assert_eq!(
+            census(),
+            (0, 0, 0, 1),
+            "an orphaned collider was left behind"
+        );
+        // Immediately, with NO step in between: the query pipeline's tree still
+        // holds the collider handle, but it must resolve to nothing.
+        assert_eq!(
+            aurora_phys3d_raycast(0.0, 5.0, 0.0, 0.0, -1.0, 0.0, 20.0),
+            -1.0,
+            "a removed body still answered a raycast"
+        );
+        assert_eq!(
+            aurora_phys3d_raycast_full(0.0, 5.0, 0.0, 0.0, -1.0, 0.0, 20.0),
+            -1
+        );
+        assert_eq!(aurora_phys3d_overlap_sphere(0.0, 0.0, 0.0, 0.5), -1);
+        assert_eq!(
+            aurora_phys3d_spherecast(0.0, 5.0, 0.0, 0.0, -1.0, 0.0, 0.25, 20.0),
+            -1.0
+        );
+        // ...and after a step too, once the tree has actually been rebuilt.
+        aurora_phys3d_step(0.016);
+        assert_eq!(
+            aurora_phys3d_raycast(0.0, 5.0, 0.0, 0.0, -1.0, 0.0, 20.0),
+            -1.0
+        );
+    }
+
+    #[test]
+    fn a_double_remove_is_refused() {
+        aurora_phys3d_init(0.0, 0.0, 0.0);
+        let b = aurora_phys3d_add_sphere(0.0, 0.0, 0.0, 1.0, 1);
+        assert_eq!(aurora_phys3d_alive(b), 1);
+        assert_eq!(aurora_phys3d_remove(b), 1);
+        assert_eq!(aurora_phys3d_alive(b), 0);
+        assert_eq!(
+            aurora_phys3d_remove(b),
+            0,
+            "double free must report nothing"
+        );
+        assert_eq!(aurora_phys3d_remove(-1), 0, "the -1 sentinel is not a body");
+        assert_eq!(aurora_phys3d_remove(0), 0, "a zeroed handle is not a body");
+        assert_eq!(aurora_phys3d_alive(-1), 0);
+        assert_eq!(aurora_phys3d_alive(0), 0);
+    }
+
+    /// The property the whole change turns on: after a body is removed and its
+    /// SLOT is handed to a new body, the old handle must be REFUSED by every
+    /// accessor - never quietly answer with the new body's state.
+    #[test]
+    fn a_removed_handle_is_refused_by_every_accessor_that_takes_one() {
+        aurora_phys3d_init(0.0, 0.0, 0.0);
+        let dead = aurora_phys3d_add_box(1.0, 2.0, 3.0, 0.5, 0.5, 0.5, 1);
+        assert_eq!(aurora_phys3d_remove(dead), 1);
+        // The replacement lands in the freed slot. That is exactly the case a
+        // bare index gets wrong, so the test is worthless unless it happens.
+        let live = aurora_phys3d_add_box(7.0, 8.0, 9.0, 0.5, 0.5, 0.5, 1);
+        assert_eq!(
+            BodyId::from_i64(dead).unwrap().slot(),
+            BodyId::from_i64(live).unwrap().slot(),
+            "the freed slot must be reused for this test to mean anything"
+        );
+        assert_ne!(dead, live, "reuse must still change the handle");
+        aurora_phys3d_step(0.016);
+
+        // Readers answer the documented "no such body" value, not `live`'s.
+        assert_eq!(aurora_phys3d_alive(dead), 0);
+        assert_eq!(aurora_phys3d_alive(live), 1);
+        for (name, read) in [
+            ("x", aurora_phys3d_x as extern "C" fn(i64) -> f64),
+            ("y", aurora_phys3d_y),
+            ("z", aurora_phys3d_z),
+            ("vel_x", aurora_phys3d_vel_x),
+            ("vel_y", aurora_phys3d_vel_y),
+            ("vel_z", aurora_phys3d_vel_z),
+            ("rot_qx", aurora_phys3d_rot_qx),
+            ("rot_qy", aurora_phys3d_rot_qy),
+            ("rot_qz", aurora_phys3d_rot_qz),
+        ] {
+            assert_eq!(read(dead), 0.0, "phys3d_{name} answered for a dead handle");
+        }
+        assert_eq!(
+            aurora_phys3d_rot_qw(dead),
+            1.0,
+            "identity rotation expected"
+        );
+        assert_eq!(aurora_phys3d_grounded(dead), 0);
+        // `live` is genuinely somewhere else, so "0.0" above cannot be `live`.
+        assert_eq!(aurora_phys3d_x(live), 7.0);
+        assert_eq!(aurora_phys3d_y(live), 8.0);
+        assert_eq!(aurora_phys3d_z(live), 9.0);
+
+        // Writers must not land on `live` either.
+        let before = (
+            aurora_phys3d_x(live),
+            aurora_phys3d_y(live),
+            aurora_phys3d_z(live),
+            aurora_phys3d_vel_x(live),
+            aurora_phys3d_rot_qw(live),
+        );
+        aurora_phys3d_set_pos(dead, -100.0, -100.0, -100.0);
+        aurora_phys3d_set_vel(dead, 50.0, 50.0, 50.0);
+        aurora_phys3d_apply_impulse(dead, 500.0, 500.0, 500.0);
+        aurora_phys3d_apply_force(dead, 500.0, 500.0, 500.0);
+        aurora_phys3d_apply_torque(dead, 500.0, 500.0, 500.0);
+        aurora_phys3d_set_angvel(dead, 9.0, 9.0, 9.0);
+        aurora_phys3d_set_rot(dead, 1.0, 0.0, 0.0, 0.0);
+        aurora_phys3d_move_character(dead, 5.0, 5.0, 5.0, 0.016);
+        assert_eq!(
+            (
+                aurora_phys3d_x(live),
+                aurora_phys3d_y(live),
+                aurora_phys3d_z(live),
+                aurora_phys3d_vel_x(live),
+                aurora_phys3d_rot_qw(live),
+            ),
+            before,
+            "a write through a dead handle reached the body that took its slot"
+        );
+        assert_eq!(aurora_phys3d_grounded(dead), 0, "move_character wrote back");
+
+        // Query filters: excluding a dead body must exclude NOTHING, exactly as
+        // the -1 sentinel does. Excluding it as if it were `live` would hide a
+        // body the caller never asked to hide.
+        let over = |h: i64| aurora_phys3d_raycast_ex(h, 7.0, 40.0, 9.0, 0.0, -1.0, 0.0, 80.0);
+        assert_eq!(over(-1), live, "the ray must reach `live` at all");
+        assert_eq!(over(dead), live, "a dead exclude hid a live body");
+        assert_eq!(over(live), -1, "a live exclude must still exclude");
+        let world = |h: i64| aurora_phys3d_raycast_world(h, 7.0, 40.0, 9.0, 0.0, -1.0, 0.0, 80.0);
+        assert_eq!(world(dead), live, "a dead exclude hid a live body");
+        assert_eq!(world(live), -1);
+
+        // Queries hand back the LIVE handle, never the stale one.
+        assert_eq!(
+            aurora_phys3d_raycast_full(7.0, 40.0, 9.0, 0.0, -1.0, 0.0, 80.0),
+            live
+        );
+        assert_eq!(aurora_phys3d_hit_body(), live);
+        assert_eq!(aurora_phys3d_overlap_sphere(7.0, 8.0, 9.0, 0.3), live);
+    }
+
+    /// `phys3d_init` builds a new world; handles from the old one must not
+    /// resolve in it. A fresh registry would restart generations at 1 and hand
+    /// the new world's first body the exact `i64` the old world's first had.
+    #[test]
+    fn a_handle_from_the_previous_world_is_refused() {
+        aurora_phys3d_init(0.0, 0.0, 0.0);
+        let old = aurora_phys3d_add_box(1.0, 1.0, 1.0, 0.5, 0.5, 0.5, 0);
+        aurora_phys3d_init(0.0, 0.0, 0.0);
+        assert_eq!(aurora_phys3d_alive(old), 0, "a handle outlived its world");
+        let new = aurora_phys3d_add_box(4.0, 5.0, 6.0, 0.5, 0.5, 0.5, 0);
+        assert_ne!(old, new, "the new world reissued the old world's handle");
+        assert_eq!(aurora_phys3d_alive(old), 0);
+        assert_eq!(aurora_phys3d_x(old), 0.0, "the old handle read a new body");
+        assert_eq!(aurora_phys3d_x(new), 4.0);
+        assert_eq!(aurora_phys3d_remove(old), 0);
+        assert_eq!(
+            aurora_phys3d_alive(new),
+            1,
+            "the removal hit the wrong body"
+        );
+    }
+
+    /// Resetting the world in a loop must not grow the handle store either.
+    #[test]
+    fn resetting_the_world_in_a_loop_is_bounded() {
+        for _ in 0..200 {
+            aurora_phys3d_init(0.0, -9.81, 0.0);
+            aurora_phys3d_add_box(0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0);
+            aurora_phys3d_add_sphere(0.0, 3.0, 0.0, 0.5, 1);
+            aurora_phys3d_step(0.016);
+        }
+        assert_eq!(census(), (2, 2, 2, 2), "a world reset grew the store");
+    }
 
     #[test]
     fn raycast_full_reports_body_point_and_normal() {

@@ -2843,16 +2843,32 @@ mod meta_replication_test {
     #[test]
     fn reconcile_with_physics_does_not_fly() {
         use crate::phys3d::*;
+        // A body handle is an i64 and does not survive an f32: it carries a
+        // generation above bit 32, and f32 only holds integers exactly to 2^24.
+        // The state blob is f32, so the blob carries a small dense ACTOR SLOT
+        // and the real handle lives here. That is the pattern a game needs too;
+        // truncating a handle into a float gets it rejected (not silently
+        // aimed at another actor's body), which is the whole point of the
+        // generation tag.
+        thread_local! {
+            static BODIES: RefCell<Vec<i64>> = const { RefCell::new(Vec::new()) };
+        }
         extern "C" fn phys_fall_sim(_env: i64, state_ptr: i64, input_ptr: i64) {
             let s = unsafe { &mut *(state_ptr as *mut [f32; STATE_MAX]) };
             let inp = unsafe { &*(input_ptr as *const [f32; INPUT_MAX]) };
             let dt = 0.016f64;
-            let mut player = s[21] as i64 - 1;
-            if player < 0 {
-                player =
+            let mut slot = s[21] as usize;
+            if slot == 0 {
+                let body =
                     aurora_phys3d_add_character(s[0] as f64, s[1] as f64, s[2] as f64, 0.6, 0.3);
-                s[21] = (player + 1) as f32;
+                slot = BODIES.with(|b| {
+                    let mut b = b.borrow_mut();
+                    b.push(body);
+                    b.len() // slot = index + 1, so 0 stays "not spawned yet"
+                });
+                s[21] = slot as f32;
             }
+            let player = BODIES.with(|b| b.borrow()[slot - 1]);
             let (px, py, pz) = (s[0] as f64, s[1] as f64, s[2] as f64);
             aurora_phys3d_set_pos(player, px, py, pz);
             let grounded =

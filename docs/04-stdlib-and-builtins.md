@@ -255,6 +255,8 @@ game uses (e.g. pixels). Bodies are referenced by an `i64` handle.
 |---|---|---|
 | `phys_init(gx, gy)` | create/reset the world with gravity | |
 | `phys_add(x, y, hw, hh, dynamic) -> i64` | box (half-extents); `dynamic` 1/0 | returns a handle |
+| `phys_remove(h) -> i64` | destroy a body and its collider | 1 if removed, 0 if `h` was already dead; `h` stays dead afterwards |
+| `phys_alive(h) -> i64` | is `h` still a live body | 1/0; tells "removed" from "sitting at the origin" |
 | `phys_step(dt)` | advance the simulation | |
 | `phys_x(h) -> f64` / `phys_y(h) -> f64` | body centre | |
 | `phys_vel_x(h)` / `phys_vel_y(h) -> f64` | linear velocity | |
@@ -395,6 +397,8 @@ along walls (the core of a fluid movement shooter). Bodies are `i64` handles.
 | `phys3d_add_capsule(x,y,z, hh, r, dynamic) -> i64` | upright capsule | |
 | `phys3d_add_character(x,y,z, hh, r) -> i64` | kinematic character capsule | move with `move_character` |
 | `phys3d_add_trimesh(verts, indices) -> i64` | static mesh collider | `[f64;N]` xyz verts, `[i64;M]` indices |
+| `phys3d_remove(h) -> i64` | destroy a body and its collider | 1 if removed, 0 if `h` was already dead; `h` stays dead afterwards |
+| `phys3d_alive(h) -> i64` | is `h` still a live body | 1/0; tells "removed" from "sitting at the origin" |
 | `phys3d_step(dt)` | advance the simulation | |
 | `phys3d_x/y/z(h) -> f64` | body position | |
 | `phys3d_vel_x/y/z(h) -> f64` | linear velocity | |
@@ -412,6 +416,42 @@ along walls (the core of a fluid movement shooter). Bodies are `i64` handles.
 | `phys3d_overlap_sphere(x,y,z, r) -> i64` | first overlapping body, or -1 | triggers, pickups, blasts |
 | `phys3d_apply_force/apply_torque(h, x,y,z)` / `phys3d_set_angvel(h, x,y,z)` | dynamic forces | |
 | `phys3d_set_rot(h, qx,qy,qz,qw)` / `phys3d_rot_qx/qy/qz/qw(h) -> f64` | orientation quaternion | |
+
+### Body handles and removal
+
+A body handle is an **opaque `i64`**, not an index. It carries a generation
+alongside the slot, so `phys3d_remove` (and `phys_remove` in 2D) does not just
+free the body - it makes the handle **invalid for good**. A later
+`phys3d_add_*` may land in the freed slot, but it gets a different handle, and
+the old one keeps reading as dead:
+
+```aurora
+let bullet = phys3d_add_sphere(0.0, 2.0, 0.0, 0.1, 1)
+phys3d_remove(bullet)          // 1
+let enemy = phys3d_add_box(9.0, 9.0, 9.0, 1.0, 1.0, 1.0, 1)
+phys3d_alive(bullet)           // 0  - not "the enemy"
+phys3d_x(bullet)               // 0.0, never enemy's 9.0
+phys3d_remove(bullet)          // 0  - a double free takes nothing with it
+```
+
+That is the point: with a plain index, `bullet` would silently become a second
+name for `enemy`, and a stray `phys3d_set_pos(bullet, ...)` would teleport the
+wrong actor. Reads on a dead handle answer the same "nothing there" value they
+answer for `-1` (0.0 for position and velocity, identity for rotation, 0 for
+`grounded`), so use `phys3d_alive` when you need to tell that apart from a body
+genuinely at the origin.
+
+Two consequences worth knowing:
+
+* **Keep a handle in an `i64`.** A handle no longer fits in an `f32` (only
+  integers below 2^24 do), so stashing one in a float array - a netcode state
+  blob, say - truncates the generation and the handle is REJECTED. Put a small
+  dense actor id in the blob and keep the real handle in your own table.
+* **Removal is immediate.** A raycast run between `phys3d_remove` and the next
+  `phys3d_step` already does not see the body.
+
+Nothing changes for a program that never removes anything: without a
+`phys3d_remove` no slot is ever reused, and the simulation is bit-identical.
 
 ## Heightmap terrain (`terrain_*`)
 
