@@ -43,8 +43,6 @@ const UNDOCUMENTED: &[&str] = &[
     "play_ambience",
     "ambience_volume",
     "ambience_stop",
-    "phys3d_raycast_ex",
-    "phys3d_raycast_world",
     "net_serve",
     "save_settings",
     "load_settings",

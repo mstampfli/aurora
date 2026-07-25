@@ -383,6 +383,8 @@ along walls (the core of a fluid movement shooter). Bodies are `i64` handles.
 | `phys3d_grounded(h) -> i64` | is the character on the ground | 1/0 |
 | `phys3d_raycast(x,y,z, dx,dy,dz, max) -> f64` | distance to first hit, or -1 | shooting, ground checks |
 | `phys3d_raycast_full(x,y,z, dx,dy,dz, max) -> i64` | hit body handle (-1 none) | then read the hit below |
+| `phys3d_raycast_ex(exclude, x,y,z, dx,dy,dz, max) -> i64` | like `raycast_full`, skipping one body | probe outward from your own centre; a NEGATIVE `exclude` skips nothing |
+| `phys3d_raycast_world(exclude, x,y,z, dx,dy,dz, max) -> i64` | like `raycast_ex`, but WORLD geometry only | for movement: ground checks, walls, mantle. Ignores other character capsules, so a player cannot stand on a player |
 | `phys3d_hit_x/y/z() -> f64` / `phys3d_hit_nx/ny/nz() -> f64` | last hit point + normal | decals, impacts |
 | `phys3d_hit_body() -> i64` | last hit body handle | |
 | `phys3d_spherecast(x,y,z, dx,dy,dz, r, max) -> f64` | swept-sphere distance, or -1 | thick projectiles |

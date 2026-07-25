@@ -629,6 +629,17 @@ fn col_index(p: &Phys3, ch: ColliderHandle) -> i64 {
         .unwrap_or(-1)
 }
 
+/// The collider a query should skip for body handle `h`, or `None` when there
+/// is nothing to skip. A negative handle is the callers' "no body" sentinel and
+/// must exclude NOTHING: reading it as index 0 quietly hides the first body
+/// added, which is normally the ground or the terrain.
+fn excluded_collider(p: &Phys3, h: i64) -> Option<ColliderHandle> {
+    if h < 0 {
+        return None;
+    }
+    p.cols.get(h as usize).copied()
+}
+
 /// Cast a ray and record the hit: returns the hit body handle (or -1) and stores
 /// the hit point + surface normal for `phys3d_hit_*`. For shooting and grapples.
 #[no_mangle]
@@ -679,6 +690,10 @@ pub extern "C" fn aurora_phys3d_raycast_full(
 /// Like `raycast_full`, but excludes one character/body's own collider (by its
 /// handle). Lets a body probe outward from its own centre - e.g. a wallrun side
 /// cast - without immediately hitting itself. Records hit point + normal too.
+///
+/// A NEGATIVE handle excludes nothing, which is what "I have no body to skip"
+/// has to mean: clamping it to 0 instead would silently drop body 0 from the
+/// cast, and body 0 is usually the ground (or, now, the terrain).
 #[no_mangle]
 pub extern "C" fn aurora_phys3d_raycast_ex(
     exclude: i64,
@@ -693,7 +708,7 @@ pub extern "C" fn aurora_phys3d_raycast_ex(
     PHYS3.with(|p| {
         let mut p = p.borrow_mut();
         let Some(p) = p.as_mut() else { return -1 };
-        let filter = match p.cols.get(exclude.max(0) as usize).copied() {
+        let filter = match excluded_collider(p, exclude) {
             Some(ch) => QueryFilter::default().exclude_collider(ch),
             None => QueryFilter::default(),
         };
@@ -735,7 +750,7 @@ pub extern "C" fn aurora_phys3d_raycast_ex(
 /// `move_character`). Using the plain raycast there made a player read as "grounded" when
 /// another player's capsule happened to be below them, cancelling gravity (float + infinite
 /// jump). Records hit point + normal like `raycast_ex`. Shooting still uses the plain raycast
-/// (which DOES hit characters).
+/// (which DOES hit characters). As in `raycast_ex`, a NEGATIVE `exclude` skips nothing.
 #[no_mangle]
 pub extern "C" fn aurora_phys3d_raycast_world(
     exclude: i64,
@@ -754,7 +769,7 @@ pub extern "C" fn aurora_phys3d_raycast_world(
         // reasoning in `move_character`.
         let mut filter =
             QueryFilter::default().groups(InteractionGroups::new(Group::GROUP_1, Group::GROUP_1));
-        if let Some(&ch) = p.cols.get(exclude.max(0) as usize) {
+        if let Some(ch) = excluded_collider(p, exclude) {
             filter = filter.exclude_collider(ch);
         }
         let ray = Ray::new(
@@ -1011,6 +1026,32 @@ mod tests {
             aurora_phys3d_hit_ny() > 0.9,
             "normal should point up, got {}",
             aurora_phys3d_hit_ny()
+        );
+    }
+
+    /// A negative "exclude" handle means "skip nothing". Clamping it to 0 hid
+    /// the FIRST body added - normally the ground - from every probe that had no
+    /// body of its own to skip.
+    #[test]
+    fn a_negative_exclude_handle_skips_nothing() {
+        aurora_phys3d_init(0.0, -9.81, 0.0);
+        let ground = aurora_phys3d_add_box(0.0, 0.0, 0.0, 20.0, 1.0, 20.0, 0); // handle 0
+        aurora_phys3d_step(0.016);
+        assert_eq!(
+            aurora_phys3d_raycast_ex(-1, 0.0, 5.0, 0.0, 0.0, -1.0, 0.0, 20.0),
+            ground,
+            "exclude = -1 must not hide body 0"
+        );
+        assert_eq!(
+            aurora_phys3d_raycast_world(-1, 0.0, 5.0, 0.0, 0.0, -1.0, 0.0, 20.0),
+            ground,
+            "exclude = -1 must not hide body 0 from a world probe either"
+        );
+        // ...but a real handle still excludes that body.
+        assert_eq!(
+            aurora_phys3d_raycast_ex(ground, 0.0, 5.0, 0.0, 0.0, -1.0, 0.0, 20.0),
+            -1,
+            "excluding the ground must make the ray miss"
         );
     }
 
