@@ -16,6 +16,22 @@ fn compile_call_f64(src: &str, entry: &str, args: &[f64]) -> f64 {
     jit_call_f64(&module, entry, args).unwrap_or_else(|e| panic!("jit error: {e}"))
 }
 
+/// `assert` is a documented builtin the front end accepts, so the backend must
+/// have a callee for it. It had none: every program calling `assert` failed to
+/// lower, and before stubbing became loud the whole enclosing function silently
+/// did nothing. Only the passing path can run in-process - a failing assert
+/// aborts the process by design.
+#[test]
+fn assert_lowers_to_a_runtime_call() {
+    let src = "fn twice(n: i64) -> i64 {\n assert(n > 0)\n n * 2\n }
+    fn main() { println(twice(21)) }";
+    let (module, diags) = parse_str(src);
+    assert!(!diags.iter().any(|d| d.is_error()), "parse failed");
+    let (_, failed) = build_object(&module).expect("object emission failed");
+    assert!(failed.is_empty(), "`assert` did not lower: {failed:?}");
+    assert_eq!(compile_call(src, "twice", &[21]), 42);
+}
+
 #[test]
 fn build_object_emits_aot_object_with_entry_symbol() {
     // AOT path: lowering to a native object file must succeed and embed the

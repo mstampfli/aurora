@@ -58,7 +58,7 @@ the table for every builtin whose arguments are plain numbers.
 | Builtin | Signature | Notes |
 |---|---|---|
 | `print` / `println` | `(value)` | print a scalar/string (with/without newline) |
-| `assert` | `(cond)` | abort if `cond` is 0 |
+| `assert` | `(cond)` | abort if `cond` is 0 (`panic: assertion failed`, exit 101) |
 | `str` | `(int\|float) -> str` | format a number |
 | `len` | `(str\|array) -> i64` | length |
 | `char_at` / `substr` / `starts_with` | string ops | |

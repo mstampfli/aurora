@@ -145,6 +145,19 @@ pub extern "C" fn aurora_oob(idx: i64, len: i64) {
     std::process::exit(101);
 }
 
+/// `assert(cond)`: abort unless `cond` holds, matching the interpreter's
+/// "assertion failed" and the documented "abort if `cond` is 0".
+#[no_mangle]
+pub extern "C" fn aurora_assert(cond: i64) {
+    if cond != 0 {
+        return;
+    }
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    eprintln!("panic: assertion failed");
+    std::process::exit(101);
+}
+
 /// Clean panic for integer division/remainder by zero, in place of a raw CPU
 /// trap (SIGFPE / "illegal instruction"), matching the interpreter's behavior.
 #[no_mangle]

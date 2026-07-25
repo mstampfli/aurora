@@ -505,6 +505,9 @@ macro_rules! for_each_builtin {
         [special,  mouse_y,                       aurora_mouse_y,                        [],                                              I64]
         [special,  mouse_down,                    aurora_mouse_down,                     [],                                              I64]
 
+        // Assertions.
+        [scalar,   assert,                        aurora_assert,                         [I64],                                           void]
+
         // Native debugger hooks (only *called* when `debug`, but always importable).
         [internal, dbg_enter,                     aurora_dbg_enter,                      [Ptr, I64],                                      void]
         [internal, dbg_leave,                     aurora_dbg_leave,                      [],                                              void]
@@ -516,7 +519,6 @@ macro_rules! for_each_builtin {
         // polymorphic math/bit ops, string ops, ECS spawn, and `run_systems`.
         [inline,   print,                         none,                                  [],                                              void]
         [inline,   println,                       none,                                  [],                                              void]
-        [inline,   assert,                        none,                                  [],                                              void]
         [inline,   sqrt,                          none,                                  [],                                              void]
         [inline,   floor,                         none,                                  [],                                              void]
         [inline,   ceil,                          none,                                  [],                                              void]
