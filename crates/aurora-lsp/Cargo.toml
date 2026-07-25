@@ -18,6 +18,9 @@ name = "aurora-lsp"
 path = "src/main.rs"
 
 [dependencies]
+# The ONE builtin table, so completion cannot drift from what the compiler
+# actually accepts.
+aurora-abi.workspace = true
 aurora-span.workspace = true
 aurora-diag.workspace = true
 aurora-parser.workspace = true
