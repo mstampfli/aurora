@@ -954,32 +954,67 @@ thread_local! {
 //
 // Normally every ECS host fn touches the *calling thread's* thread_local
 // `WORLD`. During `aurora_run_parallel`, systems run on worker threads whose own
-// thread_local world is empty, so their world access is routed to the single
-// shared world owned by the main thread. `PAR_WORLD`, when non-null, points at a
-// `ParWorld` living on the main thread's stack for the duration of one batch.
+// thread_local world is empty, so their world access must be routed back to the
+// world owned by the thread that started the batch.
 //
-// SAFETY rests on the Â§6.2 data-race-freedom theorem the compiler already
-// enforces: two systems run concurrently only when their component access sets
-// don't conflict, so no two threads ever touch the same component buffer
-// mutably. The `Mutex` serialises only *structural* map access (lookup/insert);
-// component data is then written through raw pointers into heap-stable
-// `Box<[u8]>` buffers, which unrelated inserts never reallocate.
+// That routing is a property of *the thread doing the work*, never of the
+// process: a thread that is not part of a batch must keep using its own world.
+// `PAR_WORLD` is therefore thread-local and is written only by the scoped
+// workers `aurora_run_parallel` spawns, which inherit their parent's world
+// pointer explicitly. A process-global slot would reroute every unrelated
+// thread's ECS access into whichever world happened to be running a batch, and
+// its save/restore would be racy across threads (leaving a pointer to a dead
+// stack frame behind).
+//
+// Lifetime: the pointer is only ever observed by threads created inside the
+// `thread::scope` that owns the `ParWorld`, and `thread::scope` joins them all
+// before that owner's frame returns. So a live `PAR_WORLD` always points at a
+// live `ParWorld`, by construction, with no save/restore protocol at all.
+//
+// SAFETY also rests on the section 6.2 data-race-freedom theorem the compiler
+// already enforces: two systems run concurrently only when their component
+// access sets don't conflict, so no two threads ever touch the same component
+// buffer mutably. The `Mutex` serialises only *structural* map access
+// (lookup/insert); component data is then written through raw pointers into
+// heap-stable `Box<[u8]>` buffers, which unrelated inserts never reallocate.
 struct ParWorld {
     lock: std::sync::Mutex<()>,
     world: *mut World,
 }
-static PAR_WORLD: std::sync::atomic::AtomicPtr<ParWorld> =
-    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
 
-/// Route ECS world access: the shared world under a lock during a parallel
-/// batch, otherwise the calling thread's thread_local world.
+/// A `*const ParWorld` that may be moved into a scoped worker thread.
+///
+/// SAFETY: the pointee is only reached through `ParWorld`'s own `Mutex`, and
+/// `thread::scope` joins every holder before the pointee's frame ends.
+#[derive(Clone, Copy)]
+struct ParWorldPtr(*const ParWorld);
+unsafe impl Send for ParWorldPtr {}
+impl ParWorldPtr {
+    /// Read the pointer back out. Taking `self` by value keeps closures
+    /// capturing the whole `Send` wrapper rather than the bare pointer field.
+    fn get(self) -> *const ParWorld {
+        self.0
+    }
+}
+
+thread_local! {
+    /// Non-null only while *this* thread is executing systems for a parallel
+    /// batch; then it points at the `ParWorld` of the thread that owns the
+    /// batch. Threads outside a batch always see null and use their own world.
+    static PAR_WORLD: std::cell::Cell<*const ParWorld> =
+        const { std::cell::Cell::new(std::ptr::null()) };
+}
+
+/// Route ECS world access: the batch's shared world under a lock while this
+/// thread is inside a parallel batch, otherwise this thread's own world.
 fn with_world<R>(f: impl FnOnce(&mut World) -> R) -> R {
-    let p = PAR_WORLD.load(std::sync::atomic::Ordering::Acquire);
+    let p = PAR_WORLD.with(|c| c.get());
     if p.is_null() {
         WORLD.with(|w| f(&mut w.borrow_mut()))
     } else {
-        // SAFETY: `p` points at a `ParWorld` on the main thread's stack that
-        // outlives the `thread::scope` in `aurora_run_parallel`; the lock guards
+        // SAFETY: `p` was installed by `run_batch` on this very thread and the
+        // owning `thread::scope` cannot return until this thread is joined, so
+        // the `ParWorld` and its world are still alive. The lock guards
         // concurrent structural access to the shared world.
         let par = unsafe { &*p };
         let _guard = par.lock.lock().unwrap();
@@ -1041,8 +1076,9 @@ pub extern "C" fn aurora_entity_count() -> i64 {
 }
 
 /// Run a batch of zero-arg system functions concurrently over the shared ECS
-/// world. The Â§6.2 scheduler check guarantees the systems handed to one batch
-/// have non-conflicting component access, so concurrent execution is race-free.
+/// world. The section 6.2 scheduler check guarantees the systems handed to one
+/// batch have non-conflicting component access, so concurrent execution is
+/// race-free. Each worker is bound to the caller's world for the batch.
 /// `fns` is an array of `n` raw function addresses (each an `extern "C" fn()`).
 #[no_mangle]
 pub extern "C" fn aurora_run_parallel(fns: *const usize, n: i64) {
@@ -1057,24 +1093,41 @@ pub extern "C" fn aurora_run_parallel(fns: *const usize, n: i64) {
         f();
         return;
     }
+    // A batch nested inside another batch keeps running against the world this
+    // thread is already bound to, reusing the *same* `ParWorld` so every worker
+    // under it contends on one lock (two locks over one world would not exclude
+    // each other).
+    let inherited = PAR_WORLD.with(|c| c.get());
+    if !inherited.is_null() {
+        run_batch(ParWorldPtr(inherited), &addrs);
+        return;
+    }
     WORLD.with(|w| {
         // `as_ptr` yields `*mut World` without taking a RefCell borrow, so the
         // worker threads (which route through `PAR_WORLD` + lock) are the only
-        // accessors during the scope.
-        let mut par = ParWorld { lock: std::sync::Mutex::new(()), world: w.as_ptr() };
-        let prev = PAR_WORLD.swap(&mut par as *mut ParWorld, std::sync::atomic::Ordering::AcqRel);
-        std::thread::scope(|scope| {
-            for &a in &addrs {
-                scope.spawn(move || {
-                    // SAFETY: `a` is a finalized native function address; `usize`
-                    // is `Send`. System bodies access the world only through the
-                    // routing layer above.
-                    let f: extern "C" fn() = unsafe { std::mem::transmute(a) };
-                    f();
-                });
-            }
-        });
-        PAR_WORLD.store(prev, std::sync::atomic::Ordering::Release);
+        // accessors during the scope; this thread just blocks in the join.
+        let par = ParWorld { lock: std::sync::Mutex::new(()), world: w.as_ptr() };
+        run_batch(ParWorldPtr(&par), &addrs);
+    });
+}
+
+/// Run `addrs` concurrently, each worker bound to `par` for the duration.
+///
+/// The binding is installed on the worker threads only, so no thread outside
+/// this scope can ever observe it, and `thread::scope` guarantees every worker
+/// is joined before `par`'s frame goes away.
+fn run_batch(par: ParWorldPtr, addrs: &[usize]) {
+    std::thread::scope(|scope| {
+        for &a in addrs {
+            scope.spawn(move || {
+                PAR_WORLD.with(|c| c.set(par.get()));
+                // SAFETY: `a` is a finalized native function address; `usize` is
+                // `Send`. System bodies access the world only through the
+                // routing layer above.
+                let f: extern "C" fn() = unsafe { std::mem::transmute(a) };
+                f();
+            });
+        }
     });
 }
 
@@ -1097,8 +1150,9 @@ pub extern "C" fn aurora_scene_save(ptr: *const u8, len: i64) -> i64 {
         let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
         String::from_utf8_lossy(s).into_owned()
     };
-    let bytes = WORLD.with(|w| {
-        let w = w.borrow();
+    // Routed like every other world access, so saving from inside a parallel
+    // batch snapshots the batch's world instead of an empty thread-local one.
+    let bytes = with_world(|w| {
         let mut b = Vec::new();
         b.extend_from_slice(b"ASCN"); // magic
         put_i64(&mut b, w.next);
@@ -1154,7 +1208,7 @@ pub extern "C" fn aurora_scene_load(ptr: *const u8, len: i64) -> i64 {
     };
     match parse() {
         Some(w) => {
-            WORLD.with(|world| *world.borrow_mut() = w);
+            with_world(|world| *world = w);
             1
         }
         None => 0,
@@ -2596,5 +2650,106 @@ mod arena_tests {
         let bytes = unsafe { std::slice::from_raw_parts(first, 4) };
         assert_eq!(bytes, b"abcd");
         aurora_frame_reset();
+    }
+}
+
+/// Parallel-batch world routing must stay bound to the thread doing the work.
+///
+/// These pin down the ownership rule that `PAR_WORLD` is per-thread: a batch
+/// running on one thread must never redirect ECS access on any other thread.
+/// Both tests hold the racy window open deliberately, so they fail every time
+/// against a process-global routing slot instead of only under load.
+#[cfg(test)]
+mod par_world_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Systems are bare `extern "C" fn()`, so the batches below coordinate
+    /// through statics. Spin waits are bounded so a regression fails the test
+    /// instead of hanging the suite.
+    fn wait_for(what: &str, cond: impl Fn() -> bool) {
+        let start = std::time::Instant::now();
+        while !cond() {
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(30),
+                "timed out waiting for {what}"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    static HELD: AtomicUsize = AtomicUsize::new(0);
+    static RELEASE: AtomicUsize = AtomicUsize::new(0);
+
+    /// Announce arrival, then park inside the batch so the window stays open.
+    extern "C" fn hold_open() {
+        HELD.fetch_add(1, Ordering::SeqCst);
+        wait_for("the test to release the batch", || RELEASE.load(Ordering::SeqCst) != 0);
+    }
+
+    #[test]
+    fn parallel_batch_does_not_capture_another_threads_world() {
+        // Thread A owns a world with 5 entities and parks two systems inside a
+        // parallel batch. While that batch is wide open, an unrelated thread B
+        // does ordinary ECS work. B's entities belong in B's world, and A's
+        // world must not absorb them.
+        let a = std::thread::spawn(|| {
+            for _ in 0..5 {
+                aurora_spawn_entity();
+            }
+            let fns = [hold_open as usize, hold_open as usize];
+            aurora_run_parallel(fns.as_ptr(), 2);
+            aurora_entity_count()
+        });
+        wait_for("both systems to enter the batch", || HELD.load(Ordering::SeqCst) == 2);
+
+        let b = std::thread::spawn(|| {
+            for _ in 0..3 {
+                aurora_spawn_entity();
+            }
+            aurora_entity_count()
+        });
+        let b_count = b.join().expect("bystander thread panicked");
+
+        // Release before asserting, so a failure cannot wedge thread A.
+        RELEASE.store(1, Ordering::SeqCst);
+        let a_count = a.join().expect("batch owner thread panicked");
+
+        assert_eq!(b_count, 3, "a thread outside the batch must see only its own entities");
+        assert_eq!(a_count, 5, "the batch's world must not absorb another thread's entities");
+    }
+
+    static GATE: std::sync::OnceLock<std::sync::Barrier> = std::sync::OnceLock::new();
+
+    /// Wait until every system of both batches is live, then spawn into
+    /// whichever world this thread is routed to.
+    extern "C" fn spawn_two() {
+        GATE.get_or_init(|| std::sync::Barrier::new(4)).wait();
+        aurora_spawn_entity();
+        aurora_spawn_entity();
+    }
+
+    #[test]
+    fn concurrent_batches_keep_their_worlds_separate() {
+        // Two threads run a two-system batch each, forced to overlap by the
+        // barrier. Each system spawns 2 entities into its own batch's world, so
+        // both owners must end with exactly 4: one shared routing slot would
+        // funnel all 8 spawns into a single world.
+        let batch = || {
+            std::thread::spawn(|| {
+                let fns = [spawn_two as usize, spawn_two as usize];
+                aurora_run_parallel(fns.as_ptr(), 2);
+                aurora_entity_count()
+            })
+        };
+        let a = batch();
+        let b = batch();
+        let a_count = a.join().expect("batch A panicked");
+        let b_count = b.join().expect("batch B panicked");
+        assert_eq!(
+            (a_count, b_count),
+            (4, 4),
+            "each concurrent batch must stay inside its own owner's world"
+        );
     }
 }
