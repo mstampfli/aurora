@@ -677,6 +677,78 @@ fn cmd_native(path: &str, args: &[String]) -> ExitCode {
     }
 }
 
+/// Deletes a file when dropped, so a build leaves no object behind on any exit
+/// path including an early error return.
+struct TempFile(std::path::PathBuf);
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// A cross-process lock guarding the link-and-copy step of `aurorac build`.
+///
+/// Held from before `cargo build -p aurora-exe` until after the produced binary
+/// has been copied to its destination, because cargo writes a single shared
+/// `target/release/aurora-exe` that concurrent builds would otherwise overwrite
+/// under each other.
+///
+/// Implemented with an exclusive-create lock file rather than a crate, to avoid
+/// a dependency for one call site. A lock older than `STALE` is broken, so a
+/// build killed mid-link cannot wedge every later build forever.
+struct LinkLock(std::path::PathBuf);
+
+impl LinkLock {
+    const STALE: std::time::Duration = std::time::Duration::from_secs(900);
+    const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
+
+    fn acquire(dir: &std::path::Path) -> Result<LinkLock, String> {
+        let path = dir.join("link.lock");
+        let start = std::time::Instant::now();
+        loop {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(mut f) => {
+                    use std::io::Write;
+                    let _ = writeln!(f, "{}", std::process::id());
+                    return Ok(LinkLock(path));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    // Break a lock left behind by a build that died mid-link.
+                    if let Ok(md) = std::fs::metadata(&path) {
+                        if let Ok(age) = md.modified().and_then(|m| m.elapsed().map_err(|_| {
+                            std::io::Error::new(std::io::ErrorKind::Other, "clock went backwards")
+                        })) {
+                            if age > Self::STALE {
+                                let _ = std::fs::remove_file(&path);
+                                continue;
+                            }
+                        }
+                    }
+                    if start.elapsed() > Self::TIMEOUT {
+                        return Err(format!(
+                            "timed out waiting for the link lock at {}",
+                            path.display()
+                        ));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                Err(e) => return Err(format!("cannot create {}: {e}", path.display())),
+            }
+        }
+    }
+}
+
+impl Drop for LinkLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// Compile an Aurora program to a standalone native executable.
 ///
 /// Pipeline: parse + check → emit a native object (`aurora-codegen::build_object`)
@@ -755,14 +827,49 @@ fn cmd_build(path: &str, rest: &[String]) -> ExitCode {
         eprintln!("build error: cannot create {}: {e}", obj_dir.display());
         return ExitCode::FAILURE;
     }
+    // The object file name is unique per invocation. It used to be `<stem>.obj`,
+    // so two builds of programs that happened to share a file stem - `main.aur`
+    // is the common case - overwrote each other's object.
     let obj_ext = if cfg!(windows) { "obj" } else { "o" };
-    let obj_path = obj_dir.join(format!("{stem}.{obj_ext}"));
+    let obj_path = obj_dir.join(format!("{stem}-{}.{obj_ext}", std::process::id()));
     if let Err(e) = std::fs::write(&obj_path, &obj) {
         eprintln!("build error: cannot write {}: {e}", obj_path.display());
         return ExitCode::FAILURE;
     }
+    // Remove the object however this function exits.
+    let _obj_guard = TempFile(obj_path.clone());
 
-    // Link via cargo: build the `aurora-exe` crate with our object spliced in.
+    let exe_name = if cfg!(windows) {
+        "aurora-exe.exe"
+    } else {
+        "aurora-exe"
+    };
+    let built = root.join("target").join("release").join(exe_name);
+    let out_path = out.unwrap_or_else(|| {
+        if cfg!(windows) {
+            format!("{stem}.exe")
+        } else {
+            stem.to_string()
+        }
+    });
+
+    // Linking and copying are ONE critical section, held across both steps.
+    //
+    // Unique object names alone do not make this safe. Every build shells out to
+    // `cargo build -p aurora-exe`, and cargo writes one shared
+    // `target/release/aurora-exe`. Two concurrent builds therefore race even
+    // with different source names: A links its object, B relinks over the same
+    // output, then A copies and ships B's program. That is not theoretical - it
+    // produced a game binary that ran an unrelated test program and failed every
+    // check for reasons that had nothing to do with the game.
+    let _link_guard = match LinkLock::acquire(&obj_dir) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("build error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
     let status = std::process::Command::new("cargo")
         .current_dir(&root)
         .args(["build", "--release", "-p", "aurora-exe"])
@@ -780,19 +887,6 @@ fn cmd_build(path: &str, rest: &[String]) -> ExitCode {
         }
     }
 
-    let exe_name = if cfg!(windows) {
-        "aurora-exe.exe"
-    } else {
-        "aurora-exe"
-    };
-    let built = root.join("target").join("release").join(exe_name);
-    let out_path = out.unwrap_or_else(|| {
-        if cfg!(windows) {
-            format!("{stem}.exe")
-        } else {
-            stem.to_string()
-        }
-    });
     if let Err(e) = std::fs::copy(&built, &out_path) {
         eprintln!(
             "build error: cannot copy {} -> {out_path}: {e}",
