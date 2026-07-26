@@ -73,6 +73,25 @@ impl LagComp {
         ring.retain(|s| s.tick >= cutoff);
     }
 
+    /// Forget an entity completely, dropping its snapshot ring.
+    ///
+    /// `record` only ever evicts inside the ring it is writing, so an entity that
+    /// stops being recorded keeps its whole `Vec` for the life of the process. On a
+    /// server that stays up while players rotate through it that is unbounded growth,
+    /// and it is a correctness bug too: `raycast_at_tick` scans every entry in `hist`,
+    /// so a departed player's last recorded capsule lingers as an invisible hitbox
+    /// that rewound shots keep hitting. Call this from the actual departure event -
+    /// a timeout, a leave, a retired slot - never from a timer that guesses.
+    pub fn remove(&mut self, entity: u64) {
+        self.hist.remove(&entity);
+    }
+
+    /// How many entities currently have a history ring. The bound this structure is
+    /// supposed to hold: it must track live entities, not every entity ever seen.
+    pub fn tracked_entities(&self) -> usize {
+        self.hist.len()
+    }
+
     /// The collider position of `entity` as of `tick` (the most recent snapshot
     /// at or before `tick`).
     pub fn position_at_tick(&self, entity: u64, tick: u64) -> Option<V3> {
@@ -264,6 +283,50 @@ mod lag_tests {
         // Way over the head (y=2.2, above cap top 1.8): misses.
         let over = lag.raycast_at_tick([0.0, 2.2, -5.0], [0.0, 0.0, 1.0], 0, 99);
         assert!(over.is_none(), "a shot above the capsule must miss");
+    }
+
+    // A departed entity must take its whole ring with it. `record` only evicts inside the
+    // ring it is writing, so an entity that stops being recorded is never touched again:
+    // its Vec is retained forever (unbounded on a server that stays up while players
+    // rotate) AND its last capsule keeps blocking rewound shots as an invisible hitbox.
+    #[test]
+    fn a_departed_entity_leaves_no_ring_and_no_phantom_hitbox() {
+        const PLAYERS: u64 = 200;
+        const WINDOW: u64 = 64;
+        let mut lag = LagComp::new(WINDOW);
+        // A resident that never leaves, plus players cycling through one at a time.
+        let mut ring_bytes = 0usize;
+        for p in 0..PLAYERS {
+            let id = 10 + p;
+            for t in 0..8 {
+                let tick = p * 8 + t;
+                lag.record(tick, 1, [0.0, 0.0, 0.0], 0.6, 0.3); // the resident
+                lag.record(tick, id, [50.0, 0.0, 0.0], 0.6, 0.3); // the visitor
+            }
+            lag.remove(id); // ...who then leaves
+            ring_bytes = ring_bytes.max(lag.tracked_entities());
+        }
+        eprintln!(
+            "lag-comp rings after {PLAYERS} players cycled through: {} (peak {ring_bytes}); \
+             without removal it would be {}",
+            lag.tracked_entities(),
+            PLAYERS + 1
+        );
+        assert_eq!(
+            lag.tracked_entities(),
+            1,
+            "only the resident should still have a ring"
+        );
+
+        // The correctness half: a departed player must not keep absorbing shots. Fire down
+        // +X at the spot the last visitor stood; only the resident (at the origin, which
+        // this ray starts inside of... so aim from behind it) may be hit.
+        let ghost = lag.raycast_at_tick([40.0, 0.0, 0.0], [1.0, 0.0, 0.0], u64::MAX, 1);
+        assert!(
+            ghost.is_none(),
+            "a departed player left a phantom hitbox at {:?}",
+            ghost
+        );
     }
 
     #[test]

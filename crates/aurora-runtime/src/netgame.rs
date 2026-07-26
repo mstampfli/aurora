@@ -694,7 +694,7 @@ impl Session {
             // loop = "remote players keep dying"), and their slot never frees for a bot to return.
             let cutoff = self.server_tick.saturating_sub(180);
             // never time out a local bot; drop_actors also sheds the departed id from every
-            // surviving client's delta baseline.
+            // surviving client's delta baseline and from lag-comp.
             self.drop_actors(|c| !c.local && c.last_seen < cutoff);
             let st = self.server_tick;
             let r = self.hit_radius;
@@ -850,8 +850,10 @@ impl Session {
     ///
     /// Net ids are monotonic and never recycled, so anything keyed by one and not shed
     /// on departure grows forever on a server that stays up while players rotate:
-    /// Every surviving client's `last_sent` delta baseline keeps a ~250-byte `Player`
-    /// for each actor that ever entered its interest range.
+    ///   - every surviving client's `last_sent` delta baseline keeps a ~250-byte `Player`
+    ///     for each actor that ever entered its interest range;
+    ///   - the lag-comp ring keeps the departed actor's history, which is also a phantom
+    ///     hitbox that rewound shots keep hitting (see `LagComp::remove`).
     ///
     /// Departure is rare and this is O(surviving clients x departed) only when something
     /// actually left; the guard makes the common no-op frame a single cheap scan with no
@@ -871,6 +873,9 @@ impl Session {
             for id in &ids {
                 c.last_sent.remove(id);
             }
+        }
+        for id in ids {
+            self.lag.remove(id as u64);
         }
     }
 
@@ -1361,6 +1366,12 @@ impl Session {
             self.objects
                 .resize(n, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]);
         } else {
+            // Retiring a crate is a departure too: drop its lag-comp ring, or its last recorded
+            // sphere stays forever, both as memory and as a phantom blocker rewound shots hit.
+            // Empty (so free) on the overwhelmingly common frame where the count is unchanged.
+            for i in n..self.objects.len() {
+                self.lag.remove(OBJ_ID_BASE + i as u64);
+            }
             self.objects.truncate(n);
         }
     }
@@ -3663,6 +3674,73 @@ mod growth_bounds_tests {
         assert_eq!(
             after_bots, after,
             "retiring the bots must take their baseline entries with them"
+        );
+    }
+
+    // LEAK 3: `LagComp::hist` keeps a snapshot ring per entity and only ever evicts inside
+    // a ring it is actively writing, so an entity that departs keeps its whole Vec - and,
+    // because the rewound raycast scans every ring, its last capsule stays in the world as
+    // an invisible hitbox. Same departure hook as leak 2.
+    #[test]
+    fn departed_players_are_shed_from_lag_compensation() {
+        const VISITORS: usize = 40;
+        let mut host = Session::host(0).expect("host bind");
+        let mut resident = Session::join(host.local_addr()).expect("resident bind");
+        rotate_visitors(&mut host, &mut resident, VISITORS);
+
+        // The host records itself (id 0) plus every live client each tick.
+        let live = host.clients.len() + 1;
+        let tracked = host.lag.tracked_entities();
+        eprintln!(
+            "lag-comp rings after {VISITORS} join/leave cycles: {tracked} \
+             ({live} actors are actually live); unshed would be {}",
+            live + VISITORS
+        );
+        assert!(
+            tracked <= live,
+            "lag-comp tracks {tracked} entities but only {live} are live"
+        );
+
+        // Retiring a world object is a departure too: its ring must go with it.
+        host.set_object_count(6);
+        for i in 0..6 {
+            host.set_object(i, i as f64 * 3.0, 0.5, 0.0);
+        }
+        pump(&mut host, &mut [&mut resident], 4);
+        let with_objects = host.lag.tracked_entities();
+        host.set_object_count(1);
+        pump(&mut host, &mut [&mut resident], 4);
+        let after_objects = host.lag.tracked_entities();
+        eprintln!(
+            "lag-comp rings with 6 crates: {with_objects}; after retiring 5: {after_objects}"
+        );
+        assert_eq!(
+            after_objects,
+            with_objects - 5,
+            "five retired crates must take five rings with them"
+        );
+
+        // And a retired BOT slot, the departure route that fires most often in a real
+        // match (the host frees a bot per human that joins).
+        for _ in 0..5 {
+            host.set_bot_count(5);
+            pump(&mut host, &mut [&mut resident], 1);
+        }
+        let with_bots = host.lag.tracked_entities();
+        for _ in 0..5 {
+            host.set_bot_count(0);
+            pump(&mut host, &mut [&mut resident], 1);
+        }
+        let after_bots = host.lag.tracked_entities();
+        eprintln!("lag-comp rings with 5 bots: {with_bots}; after retiring them: {after_bots}");
+        assert_eq!(
+            with_bots,
+            after_objects + 5,
+            "the five bots should have been recorded"
+        );
+        assert_eq!(
+            after_bots, after_objects,
+            "retiring the bots must take their rings with them"
         );
     }
 
