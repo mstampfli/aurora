@@ -62,6 +62,45 @@ const NAME_MAX: usize = 20; // per-player display name: a fixed byte field (NOT 
 const INTERP_DELAY: f32 = 0.05;
 const INTERP_TICKS: u32 = 3;
 
+/// A client is considered disconnected once it has gone this long (seconds) without
+/// a snapshot. `connected()` reports it and the game bails to the menu on it.
+const SNAPSHOT_TIMEOUT: f32 = 5.0;
+
+/// Hard cap on the client's unacknowledged-input queue (`Session::pending`).
+///
+/// `pending` drains only when a snapshot acknowledges an input sequence, so a host
+/// that stops acking - a hang, a partition, a NAT timeout, or an uplink that loses
+/// our packets while its downlink still delivers snapshots - would otherwise grow it
+/// by one entry (100 bytes) per frame forever: ~21 MB/hour at 60 Hz. Worse, a
+/// reconcile REPLAYS every queued input, so in the uplink-loss case the per-snapshot
+/// replay grows with the queue and the client gets slower the further behind it is.
+/// Bounded here at 256 entries = 25.6 KB, which is 4.3 s of input at 60 Hz and 1.8 s
+/// at 144 Hz; a healthy session sits at round-trip depth (a handful of entries) and
+/// never comes near it. It also caps the worst-case reconcile at 256 sim steps.
+///
+/// POLICY on overflow: drop the OLDEST entry, and report the session as no longer
+/// connected. Oldest rather than newest because
+///   (a) the drain loop relies on `pending` being ONE ascending run of sequence
+///       numbers, which a front-drop preserves and a back-drop silently breaks;
+///   (b) the oldest entries are precisely the ones an ack would have removed first,
+///       so when the loss is one-way (our inputs never arrive, snapshots do) the
+///       host is not simulating them either and discarding them agrees with the
+///       authoritative state instead of fighting it;
+///   (c) the newest entry is the input local prediction was just computed from, so
+///       discarding that guarantees divergence on the very frame it happens.
+///
+/// The deeper question is whether to drop the CONNECTION instead, since a client
+/// 256 frames without an acknowledgement is gone. It is - and `connected()` now says
+/// so, which is the signal the game already acts on. But this code does NOT tear the
+/// socket down itself: a stall shorter than the disconnect window must still recover,
+/// `Session` has no re-join path, so closing would turn a recoverable hiccup into a
+/// permanent failure. Bounding memory is the engine's job; ending the session is the
+/// game's, and it now has an honest input to decide on. Note this catches a case the
+/// snapshot-freshness timeout structurally cannot: when snapshots keep arriving but
+/// none of them ever acks an input, the session is dead in the direction that matters
+/// and only the unacked depth reveals it.
+const PENDING_MAX: usize = 256;
+
 /// The Aurora sim closure's native ABI: `(env, state_ptr_bits, input_ptr_bits)`,
 /// matching how compiled Aurora closures are called (see `aurora_par_for`).
 type SimFn = extern "C" fn(i64, i64, i64) -> i64;
@@ -438,11 +477,19 @@ impl Session {
         self.rejected
     }
     /// Are we still in contact? The host is always connected; a client is connected once it has
-    /// received a snapshot AND heard from the host within the last 5s. The game uses this to (a)
-    /// hold a guest in "joining..." until its first snapshot, and (b) show "disconnected" + bail to
-    /// the menu if the host vanishes.
+    /// received a snapshot AND heard from the host within the last 5s AND the host is still
+    /// acknowledging our input. The game uses this to (a) hold a guest in "joining..." until its
+    /// first snapshot, and (b) show "disconnected" + bail to the menu if the host vanishes.
+    ///
+    /// The unacked-depth term is not redundant with the freshness term: snapshots can keep
+    /// arriving while none of them ever acks an input (our uplink is the half that died), and
+    /// then we are being replicated but not simulated - dead in the direction that matters.
+    /// It is derived, not sticky, so the moment an ack drains the queue we are connected again.
     pub fn connected(&self) -> bool {
-        self.is_server || (self.got_snap && (self.tick - self.last_snap_tick) < 5.0)
+        self.is_server
+            || (self.got_snap
+                && (self.tick - self.last_snap_tick) < SNAPSHOT_TIMEOUT
+                && self.pending.len() < PENDING_MAX)
     }
     pub fn set_spawn(&mut self, x: f32, y: f32, z: f32) {
         // Set the local player's starting position, and remember it as the spawn
@@ -482,6 +529,12 @@ impl Session {
             // sent on the wire below, so our intent signals (respawn/heal/melee/grapple) reach the host.
             self.pred.name = self.local_name;
             self.pending.push_back((seq, blob));
+            // Hard bound: see PENDING_MAX for the cap and the drop-oldest reasoning. A `while`
+            // (not an `if`) so the invariant holds however this queue is fed in future; one
+            // push per call means it is a single O(1) pop in practice.
+            while self.pending.len() > PENDING_MAX {
+                self.pending.pop_front();
+            }
             if let Some(addr) = self.server_addr {
                 let _ = self.sock.send_to(
                     &encode_input(
@@ -1021,9 +1074,19 @@ impl Session {
                 {
                     self.pending.pop_front();
                 }
-                let pend: Vec<(u32, InputBlob)> = self.pending.iter().copied().collect();
-                for (_, inp) in pend {
-                    run_sim(self.sim_fn, self.sim_env, &mut self.pred.s, &inp);
+                // Replay IN PLACE. This used to collect the whole deque into a fresh Vec first
+                // (a heap allocation plus a 100-byte-per-entry copy, on every single snapshot)
+                // purely to get around borrowing `self` twice; splitting the two fields apart
+                // borrows them disjointly and does the identical replay with neither.
+                let Session {
+                    pending,
+                    pred,
+                    sim_fn,
+                    sim_env,
+                    ..
+                } = &mut *self;
+                for (_, inp) in pending.iter() {
+                    run_sim(*sim_fn, *sim_env, &mut pred.s, inp);
                 }
                 // Re-base the easing offset so the camera stays exactly where it was this frame, then
                 // glides to the freshly reconciled physics position (decayed in update()). A big
@@ -3341,5 +3404,222 @@ mod meta_replication_test {
         assert!((client.fx_field(0, 3) - 1.0).abs() < 0.01, "drop kind");
         assert!((client.fx_field(1, 0) - 9.0).abs() < 0.01, "rocket x");
         assert!((client.fx_field(1, 3) - 3.0).abs() < 0.01, "rocket kind");
+    }
+}
+
+/// Growth bounds. Every structure here is keyed by something that only ever grows
+/// (a frame, a net id), so each test drives the leaking path for many iterations and
+/// asserts the structure PLATEAUS. Failing means a persistent server leaks.
+#[cfg(test)]
+mod growth_bounds_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// One queued input, in bytes: the unit every `pending` measurement is reported in.
+    const PENDING_ENTRY: usize = std::mem::size_of::<(u32, InputBlob)>();
+
+    /// Counts sim invocations so a test can MEASURE per-snapshot replay work directly
+    /// rather than timing it - the replay is one sim call per queued input, so the count
+    /// is the cost, and it is deterministic so it cannot flake on a loaded machine.
+    /// Used by exactly one test, which is what makes a process-global counter sound.
+    static SIM_CALLS: AtomicU64 = AtomicU64::new(0);
+    extern "C" fn counting_sim(_env: i64, state_bits: i64, input_bits: i64) -> i64 {
+        SIM_CALLS.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: the netcode hands us its own state/input buffers, as the real ABI does.
+        unsafe {
+            *(state_bits as *mut f32) += *(input_bits as *const f32);
+        }
+        0
+    }
+
+    // LEAK 1: `Session::pending` grows one entry per frame and is drained only by an ack.
+    //
+    // The scenario is a host that keeps SENDING but never acknowledges: our uplink is the
+    // half that died (loss, a NAT that stopped forwarding, a stalled server input thread).
+    // That is the worst case on purpose, because snapshots still arrive, so the reconcile
+    // replays the whole queue every single one of them - the queue is a memory leak AND a
+    // per-frame cost that grows with it. Snapshots are injected directly instead of coming
+    // off a socket so the measurement is exact and the test cannot flake.
+    #[test]
+    fn unacked_input_queue_is_bounded_and_replay_cost_stays_flat() {
+        // Port 9 is discard; nothing on the far end will ever ack, which is the point.
+        let dead = SocketAddr::from(([127, 0, 0, 1], 9));
+        let mut client = Session::join(dead).expect("client bind");
+        client.set_sim(counting_sim as usize, 0, 4, 3);
+
+        const FRAMES: usize = 3000;
+        let mut depth = Vec::with_capacity(FRAMES);
+        let mut replay = Vec::with_capacity(FRAMES);
+        for f in 0..FRAMES {
+            client.send_input(&[1.0, 0.0, 0.0]);
+            // The host answers every frame, but `acked` never advances past 0.
+            let snap =
+                encode_snapshot(1, 0, f as f32 * 0.016, f as u32, 4, &[(1, Player::spawn())]);
+            let before = SIM_CALLS.load(Ordering::Relaxed);
+            client.on_client_packet(&snap);
+            replay.push(SIM_CALLS.load(Ordering::Relaxed) - before);
+            depth.push(client.pending.len());
+        }
+
+        let peak = *depth.iter().max().unwrap();
+        eprintln!(
+            "pending after {FRAMES} unacked frames: {} entries = {} bytes (peak {peak}); \
+             unbounded would be {FRAMES} entries = {} bytes",
+            depth[FRAMES - 1],
+            depth[FRAMES - 1] * PENDING_ENTRY,
+            FRAMES * PENDING_ENTRY
+        );
+        eprintln!(
+            "replay sim-calls per snapshot: frame 100 = {}, frame 1000 = {}, frame {} = {}",
+            replay[100],
+            replay[1000],
+            FRAMES - 1,
+            replay[FRAMES - 1]
+        );
+
+        // MEMORY: the queue plateaus at the cap instead of growing with the frame count.
+        assert!(
+            peak <= PENDING_MAX,
+            "pending grew to {peak} entries ({} bytes); cap is {PENDING_MAX}",
+            peak * PENDING_ENTRY
+        );
+        assert_eq!(
+            depth[FRAMES - 1],
+            PENDING_MAX,
+            "a permanently unacked queue should sit exactly at the cap"
+        );
+
+        // PER-FRAME COST: the replay is one sim call per queued input, so a bounded queue
+        // means a FLAT per-snapshot cost. Once past the cap every frame must cost the same;
+        // unbounded, frame N costs N and the run is quadratic.
+        let tail = &replay[PENDING_MAX + 1..];
+        let (lo, hi) = (tail.iter().min().unwrap(), tail.iter().max().unwrap());
+        assert_eq!(
+            (lo, hi),
+            (&(PENDING_MAX as u64), &(PENDING_MAX as u64)),
+            "per-snapshot replay must be flat at {PENDING_MAX}, measured {lo}..{hi}"
+        );
+        assert!(
+            replay[FRAMES - 1] <= replay[PENDING_MAX + 1],
+            "per-snapshot cost still scales with elapsed frames"
+        );
+
+        // POLICY: a queue pinned at the cap means the host has acknowledged nothing for
+        // hundreds of frames, so the session is reported dead even though snapshots keep
+        // arriving (the freshness timeout alone cannot see a one-way failure).
+        assert!(
+            !client.connected(),
+            "a client the host never acks must not report as connected"
+        );
+        // ...and it is derived, not sticky: one real ack and we are live again.
+        let last_seq = client.next_seq - 1;
+        let snap = encode_snapshot(
+            1,
+            last_seq,
+            FRAMES as f32 * 0.016,
+            FRAMES as u32,
+            4,
+            &[(1, Player::spawn())],
+        );
+        client.on_client_packet(&snap);
+        assert_eq!(client.pending.len(), 0, "a full ack should drain the queue");
+        assert!(
+            client.connected(),
+            "the session must recover the moment the host acks again"
+        );
+    }
+
+    /// A deterministic integrator whose f32 arithmetic is EXACT (integer-valued adds), so
+    /// the settled result does not depend on how the reconcile happened to group the replay.
+    /// That is what makes a bit-exact before/after fingerprint meaningful over a real socket.
+    extern "C" fn exact_sim(_env: i64, state_bits: i64, input_bits: i64) -> i64 {
+        let s = state_bits as *mut f32;
+        let inp = input_bits as *const f32;
+        // SAFETY: the netcode hands us its own state/input buffers, as the real ABI does.
+        unsafe {
+            *s += *inp;
+            *s.add(2) += *inp.add(1);
+        }
+        0
+    }
+
+    // Bounding `pending` and dropping the per-snapshot copy must be INERT for a healthy
+    // session: client prediction and server reconciliation both run through that queue, so
+    // any change here would show up in play as rubber-banding rather than as a red test.
+    // This drives a deterministic 3-client session, prints every resulting position as raw
+    // f32 bits so a before/after run diffs exactly, and pins the two properties that make
+    // the change inert: prediction still lands EXACTLY on the host's authority, and a
+    // healthy queue never comes near the cap that would drop anything.
+    #[test]
+    fn healthy_multi_client_session_behaviour_is_unchanged() {
+        const CLIENTS: usize = 3;
+        // Deliberately coprime with both input cycles (7 and 5) so no client's displacement
+        // sums back to a trivial zero - a fingerprint of 0.0 would prove nothing.
+        const FRAMES: usize = 303;
+        let mut host = Session::host(0).expect("host bind");
+        host.set_sim(exact_sim as usize, 0, 4, 3);
+        let addr = host.local_addr();
+        let mut cs: Vec<Session> = (0..CLIENTS)
+            .map(|_| {
+                let mut c = Session::join(addr).expect("client bind");
+                c.set_sim(exact_sim as usize, 0, 4, 3);
+                c
+            })
+            .collect();
+
+        let mut peak_pending = 0usize;
+        for f in 0..FRAMES {
+            for (i, c) in cs.iter_mut().enumerate() {
+                // A fixed per-client cycle: deterministic, zero-mean, and small enough that
+                // every actor stays inside the default interest radius (so culling is live).
+                let vx = ((f + i) % 7) as f32 - 3.0;
+                let vz = ((f + 2 * i) % 5) as f32 - 2.0;
+                c.send_input(&[vx, vz, 0.0]);
+                peak_pending = peak_pending.max(c.pending.len());
+            }
+            host.send_input(&[0.0, 0.0, 0.0]);
+            for c in cs.iter_mut() {
+                c.update(0.016);
+            }
+            host.update(0.016);
+            for c in cs.iter_mut() {
+                c.update(0.016);
+            }
+        }
+        // Settle with no further input so every outstanding ack lands. Prediction and
+        // authority are then the same sum of the same inputs, which is a fingerprint of the
+        // whole predict/reconcile path that does not depend on packet timing.
+        for _ in 0..60 {
+            for c in cs.iter_mut() {
+                c.update(0.016);
+            }
+            host.update(0.016);
+            for c in cs.iter_mut() {
+                c.update(0.016);
+            }
+        }
+
+        for c in cs.iter() {
+            let id = c.my_id();
+            let auth = (
+                (host.px(id) as f32).to_bits(),
+                (host.pz(id) as f32).to_bits(),
+            );
+            let pred = ((c.px(id) as f32).to_bits(), (c.pz(id) as f32).to_bits());
+            eprintln!(
+                "FINGERPRINT id={id} authority=({:#010x},{:#010x}) predicted=({:#010x},{:#010x})",
+                auth.0, auth.1, pred.0, pred.1
+            );
+            assert_eq!(
+                auth, pred,
+                "client {id} prediction must land exactly on the host's authority"
+            );
+            assert_eq!(c.pending.len(), 0, "a settled queue should be empty");
+        }
+        eprintln!("FINGERPRINT peak_pending={peak_pending} entries (cap {PENDING_MAX})");
+        assert!(
+            peak_pending * 8 < PENDING_MAX,
+            "a healthy session must sit far below the cap, saw {peak_pending}"
+        );
     }
 }
