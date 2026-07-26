@@ -693,7 +693,9 @@ impl Session {
             // this they linger forever as ghosts the host keeps re-simulating (they fall + respawn-
             // loop = "remote players keep dying"), and their slot never frees for a bot to return.
             let cutoff = self.server_tick.saturating_sub(180);
-            self.clients.retain(|c| c.local || c.last_seen >= cutoff); // never time out a local bot
+            // never time out a local bot; drop_actors also sheds the departed id from every
+            // surviving client's delta baseline.
+            self.drop_actors(|c| !c.local && c.last_seen < cutoff);
             let st = self.server_tick;
             let r = self.hit_radius;
             let hh = self.hit_half;
@@ -841,6 +843,37 @@ impl Session {
         // combat has pushed its own + bots' + relayed client shots for this frame.
     }
 
+    /// Remove every actor `gone` selects, and shed all trace of it from the structures
+    /// keyed by its net id. THE one departure path: a timeout, an explicit leave and a
+    /// retired bot slot all funnel through here rather than each hand-rolling a `retain`,
+    /// so a future exit route cannot forget half the cleanup.
+    ///
+    /// Net ids are monotonic and never recycled, so anything keyed by one and not shed
+    /// on departure grows forever on a server that stays up while players rotate:
+    /// Every surviving client's `last_sent` delta baseline keeps a ~250-byte `Player`
+    /// for each actor that ever entered its interest range.
+    ///
+    /// Departure is rare and this is O(surviving clients x departed) only when something
+    /// actually left; the guard makes the common no-op frame a single cheap scan with no
+    /// allocation, which matters because `set_bot_count` calls this every frame.
+    fn drop_actors(&mut self, gone: impl Fn(&SClient) -> bool) {
+        if !self.clients.iter().any(&gone) {
+            return;
+        }
+        let ids: Vec<u32> = self
+            .clients
+            .iter()
+            .filter(|c| gone(c))
+            .map(|c| c.id)
+            .collect();
+        self.clients.retain(|c| !gone(c));
+        for c in &mut self.clients {
+            for id in &ids {
+                c.last_sent.remove(id);
+            }
+        }
+    }
+
     /// Find (or admit) a client by address. Returns None if it is NEW and the lobby is
     /// already full (caller then rejects it) - so presized game arrays can never overflow.
     fn ensure_client(&mut self, from: SocketAddr) -> Option<usize> {
@@ -984,7 +1017,7 @@ impl Session {
             Some(TAG_LEAVE) => {
                 // The client quit: remove it immediately so its slot frees (a bot returns) and it
                 // doesn't linger until the timeout.
-                self.clients.retain(|c| c.addr != from);
+                self.drop_actors(|c| c.addr == from);
             }
             _ => {}
         }
@@ -1241,8 +1274,9 @@ impl Session {
     /// `n` (ids BOT_ID_BASE+0..n) alongside the networked clients in the one array.
     pub fn set_bot_count(&mut self, n: usize) {
         self.bot_count = n;
-        self.clients
-            .retain(|c| !c.local || ((c.id - BOT_ID_BASE) as usize) < n);
+        // A retired bot slot is a departure like any other (and bot ids ARE reused, so a stale
+        // delta baseline would also make the next bot in that slot look "unchanged").
+        self.drop_actors(|c| c.local && ((c.id - BOT_ID_BASE) as usize) >= n);
         for i in 0..n {
             let id = BOT_ID_BASE + i as u32;
             if !self.clients.iter().any(|c| c.local && c.id == id) {
@@ -3526,6 +3560,109 @@ mod growth_bounds_tests {
         assert!(
             client.connected(),
             "the session must recover the moment the host acks again"
+        );
+    }
+
+    /// Drive a host and its clients for `frames` lockstep frames over real loopback UDP.
+    fn pump(host: &mut Session, clients: &mut [&mut Session], frames: usize) {
+        let input = [0.0f32; 4];
+        for _ in 0..frames {
+            for c in clients.iter_mut() {
+                c.send_input(&input);
+            }
+            host.send_input(&input);
+            for c in clients.iter_mut() {
+                c.update(0.016);
+            }
+            host.update(0.016);
+            for c in clients.iter_mut() {
+                c.update(0.016);
+            }
+        }
+    }
+
+    /// Rotate `visitors` clients through the lobby one at a time, each joining, being
+    /// replicated to the long-lived resident, then leaving explicitly. The shape of a
+    /// persistent server: one structure keyed by a never-recycled net id per departure.
+    /// Returns the resident's net id.
+    fn rotate_visitors(host: &mut Session, resident: &mut Session, visitors: usize) -> u32 {
+        let addr = host.local_addr();
+        pump(host, &mut [resident], 10);
+        let rid = resident.my_id();
+        assert!(rid >= 1, "the resident should have been admitted");
+        for _ in 0..visitors {
+            let mut visitor = Session::join(addr).expect("visitor bind");
+            pump(host, &mut [resident, &mut visitor], 8);
+            visitor.leave();
+            pump(host, &mut [resident], 6);
+        }
+        // Absorb any visitor whose LEAVE datagram was lost, via the 180-tick timeout, so
+        // what we measure is the steady state and not packets still in flight.
+        pump(host, &mut [resident], 200);
+        rid
+    }
+
+    // LEAK 2: `SClient::last_sent` is the per-client delta baseline, keyed by a monotonic
+    // net id that is never recycled. Every actor that ever entered a client's interest
+    // range leaves a Player behind in it, so a long-lived client on a server with rotating
+    // players accumulates one forever. Cleanup has to ride the DEPARTURE, which is what
+    // `drop_actors` is for.
+    #[test]
+    fn departed_players_are_shed_from_the_delta_baselines() {
+        const BASELINE_ENTRY: usize = std::mem::size_of::<(u32, Player)>();
+        const VISITORS: usize = 40;
+        let mut host = Session::host(0).expect("host bind");
+        let mut resident = Session::join(host.local_addr()).expect("resident bind");
+        let rid = rotate_visitors(&mut host, &mut resident, VISITORS);
+        let baseline = |h: &Session| -> usize {
+            h.clients
+                .iter()
+                .find(|c| c.id == rid)
+                .map(|c| c.last_sent.len())
+                .expect("the resident should still be connected")
+        };
+
+        // Steady state is the host plus the resident itself; every visitor must be gone.
+        let live = host.clients.len() + 1;
+        let after = baseline(&host);
+        eprintln!(
+            "resident delta baseline after {VISITORS} join/leave cycles: {after} entries \
+             = {} bytes ({live} actors are actually live); unshed would be {} entries = {} bytes",
+            after * BASELINE_ENTRY,
+            live + VISITORS,
+            (live + VISITORS) * BASELINE_ENTRY
+        );
+        assert!(
+            after <= live,
+            "the delta baseline holds {after} entries ({} bytes) but only {live} actors are live",
+            after * BASELINE_ENTRY
+        );
+
+        // A RETIRED BOT SLOT is the third departure route, and the one that fires most
+        // often in a real match (the host frees a bot per human that joins). Bot ids are
+        // reused, so a stale baseline here is a correctness bug on top of the leak: the
+        // next bot in the slot would read as "unchanged" and not be sent.
+        for _ in 0..5 {
+            host.set_bot_count(5);
+            pump(&mut host, &mut [&mut resident], 1);
+        }
+        let with_bots = baseline(&host);
+        for _ in 0..5 {
+            host.set_bot_count(0);
+            pump(&mut host, &mut [&mut resident], 1);
+        }
+        let after_bots = baseline(&host);
+        eprintln!(
+            "resident delta baseline with 5 bots: {with_bots}; after retiring them: {after_bots}"
+        );
+        assert_eq!(
+            with_bots,
+            after + 5,
+            "the five bots should have entered the baseline"
+        );
+        assert_eq!(
+            after_bots, after,
+            "retiring the bots must take their baseline entries with them"
         );
     }
 
