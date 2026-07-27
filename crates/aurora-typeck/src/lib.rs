@@ -450,9 +450,9 @@ impl Typeck {
             ExprKind::Field { base, .. } => {
                 // The head of a dotted access may be a type or module with no CPU
                 // declaration, so a bare name here is not judged.
-                self.lenient_names = self.lenient_names + 1;
+                self.lenient_names += 1;
                 self.infer(base);
-                self.lenient_names = self.lenient_names - 1;
+                self.lenient_names -= 1;
                 Ty::Error // field types require nominal field resolution (later)
             }
             ExprKind::Range { start, end, .. } => {

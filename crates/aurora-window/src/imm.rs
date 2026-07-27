@@ -772,9 +772,6 @@ pub fn terrain_draw(field: Arc<aurora_render3d::Heightfield>, color: [f32; 3]) {
     });
 }
 
-/// Queue a model at position (px,py,pz), Euler rotation (yaw,pitch,roll radians),
-/// and uniform `scale`.
-#[allow(clippy::too_many_arguments)]
 /// Like [`r3d_draw`] but with a per-axis scale, so ONE unit-cube mesh can serve as
 /// every wall, floor slab and pillar in a level.
 ///
@@ -805,6 +802,9 @@ pub fn r3d_draw_scaled(
     });
 }
 
+/// Queue a model at position (px,py,pz), Euler rotation (yaw,pitch,roll radians),
+/// and uniform `scale`.
+#[allow(clippy::too_many_arguments)]
 pub fn r3d_draw(
     handle: i64,
     px: f32,

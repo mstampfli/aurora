@@ -2847,33 +2847,14 @@ pub unsafe extern "C" fn aurora_play_wav(ptr: *const u8, len: i64) -> i64 {
     if headless_audio() {
         return std::path::Path::new(&path).exists() as i64;
     }
-    let Ok(mut reader) = hound::WavReader::open(&path) else {
+    // Same decoder as load_sound, so a format that one accepts the other does too.
+    let Some((mono, rate)) = decode_audio_mono(&path) else {
         return 0;
-    };
-    let spec = reader.spec();
-    let ch = spec.channels.max(1) as usize;
-    let raw: Vec<f32> = match spec.sample_format {
-        hound::SampleFormat::Float => reader.samples::<f32>().filter_map(|s| s.ok()).collect(),
-        hound::SampleFormat::Int => {
-            let max = (1i64 << (spec.bits_per_sample - 1).max(1)) as f32;
-            reader
-                .samples::<i32>()
-                .filter_map(|s| s.ok())
-                .map(|s| s as f32 / max)
-                .collect()
-        }
-    };
-    let mono: Vec<f32> = if ch <= 1 {
-        raw
-    } else {
-        raw.chunks(ch)
-            .map(|c| c.iter().sum::<f32>() / ch as f32)
-            .collect()
     };
     if mono.is_empty() {
         return 0;
     }
-    aurora_audio::play_mixed(&mono, spec.sample_rate, false);
+    aurora_audio::play_mixed(&mono, rate, false);
     1
 }
 
@@ -2902,23 +2883,36 @@ fn resample_mono(src: &[f32], src_rate: u32, dst_rate: u32) -> Vec<f32> {
         .collect()
 }
 
-/// Decode a WAV file ONCE (mono, normalized f32) and cache it, returning a handle for
-/// play_sound_handle / play_sound_handle_at. Returns -1 on failure. Backs `load_sound` - this is
-/// how a game loads real SFX at startup without re-opening/decoding the file on every play.
-///
-/// # Safety
-/// `ptr` must point to `len` initialized bytes.
-#[no_mangle]
-pub unsafe extern "C" fn aurora_load_sound(ptr: *const u8, len: i64) -> i64 {
-    let path = {
-        let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
-        String::from_utf8_lossy(s).into_owned()
-    };
-    let Ok(mut reader) = hound::WavReader::open(&path) else {
-        return -1;
-    };
+/// Fold interleaved frames down to one channel, APPENDING to `out`. Music and SFX are
+/// played through a mono mixer, so this is where a stereo file loses its image - once,
+/// at load. One implementation, shared by every decoder below.
+fn fold_into(interleaved: &[f32], channels: usize, out: &mut Vec<f32>) {
+    if channels <= 1 {
+        out.extend_from_slice(interleaved);
+        return;
+    }
+    out.reserve(interleaved.len() / channels);
+    out.extend(
+        interleaved
+            .chunks(channels)
+            .map(|c| c.iter().sum::<f32>() / c.len() as f32),
+    );
+}
+
+/// Owning form of [`fold_into`], which keeps an already-mono buffer copy-free.
+fn fold_to_mono(interleaved: Vec<f32>, channels: usize) -> Vec<f32> {
+    if channels <= 1 {
+        return interleaved;
+    }
+    let mut out = Vec::with_capacity(interleaved.len() / channels);
+    fold_into(&interleaved, channels, &mut out);
+    out
+}
+
+/// Decode a WAV via hound: lossless, no probing, and the format most SFX ship in.
+fn decode_wav_mono(path: &str) -> Option<(Vec<f32>, u32)> {
+    let mut reader = hound::WavReader::open(path).ok()?;
     let spec = reader.spec();
-    let ch = spec.channels.max(1) as usize;
     let raw: Vec<f32> = match spec.sample_format {
         hound::SampleFormat::Float => reader.samples::<f32>().filter_map(|s| s.ok()).collect(),
         hound::SampleFormat::Int => {
@@ -2930,18 +2924,122 @@ pub unsafe extern "C" fn aurora_load_sound(ptr: *const u8, len: i64) -> i64 {
                 .collect()
         }
     };
-    let mono: Vec<f32> = if ch <= 1 {
-        raw
-    } else {
-        raw.chunks(ch)
-            .map(|c| c.iter().sum::<f32>() / ch as f32)
-            .collect()
+    Some((
+        fold_to_mono(raw, spec.channels.max(1) as usize),
+        spec.sample_rate,
+    ))
+}
+
+/// Decode any compressed format Symphonia can read - MP3, OGG/Vorbis, FLAC, M4A/AAC.
+///
+/// Music is distributed compressed, so requiring WAV meant every track had to be
+/// converted by hand before a game could load it. The container is identified by
+/// CONTENT, not by extension, so a mislabelled file still loads.
+fn decode_compressed_mono(path: &str) -> Option<(Vec<f32>, u32)> {
+    use symphonia::core::codecs::audio::AudioDecoderOptions;
+    use symphonia::core::formats::probe::Hint;
+    use symphonia::core::formats::{FormatOptions, TrackType};
+    use symphonia::core::io::MediaSourceStream;
+    use symphonia::core::meta::MetadataOptions;
+
+    let file = std::fs::File::open(path).ok()?;
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    // The extension is only a HINT that speeds up probing; content still decides.
+    let mut hint = Hint::new();
+    if let Some(ext) = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+    {
+        hint.with_extension(ext);
+    }
+    let mut format = symphonia::default::get_probe()
+        .probe(
+            &hint,
+            mss,
+            FormatOptions::default(),
+            MetadataOptions::default(),
+        )
+        .ok()?;
+    let track = format.default_track(TrackType::Audio)?;
+    let track_id = track.id;
+    let codec_params = track.codec_params.as_ref()?.audio()?;
+    let mut rate = codec_params.sample_rate.unwrap_or(0);
+    let mut decoder = symphonia::default::get_codecs()
+        .make_audio_decoder(codec_params, &AudioDecoderOptions::default())
+        .ok()?;
+
+    let mut mono: Vec<f32> = Vec::new();
+    // One scratch buffer, reused for every packet: copy_to_vec_interleaved resizes
+    // rather than appending, so this decodes a whole track with no per-packet alloc.
+    let mut inter: Vec<f32> = Vec::new();
+    loop {
+        let packet = match format.next_packet() {
+            Ok(Some(p)) => p,
+            // End of stream, or a container that ends mid-packet: keep what decoded.
+            Ok(None) | Err(_) => break,
+        };
+        if packet.track_id != track_id {
+            continue;
+        }
+        let decoded = match decoder.decode(&packet) {
+            Ok(d) => d,
+            // A corrupt frame is survivable in audio: skip it rather than lose the file.
+            Err(_) => continue,
+        };
+        if rate == 0 {
+            rate = decoded.spec().rate();
+        }
+        let channels = decoded.spec().channels().count().max(1);
+        // Symphonia owns the sample-format conversion (every integer width, signed and
+        // unsigned, normalized correctly). Hand-rolling that per variant is exactly the
+        // kind of arithmetic that silently gets one case wrong.
+        decoded.copy_to_vec_interleaved(&mut inter);
+        fold_into(&inter, channels, &mut mono);
+    }
+    if rate == 0 {
+        return None;
+    }
+    Some((mono, rate))
+}
+
+/// Decode an audio file to mono f32 at its own rate. WAV takes the direct path;
+/// anything else goes through Symphonia.
+fn decode_audio_mono(path: &str) -> Option<(Vec<f32>, u32)> {
+    let is_wav = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("wav") || e.eq_ignore_ascii_case("wave"));
+    if is_wav {
+        if let Some(pcm) = decode_wav_mono(path) {
+            return Some(pcm);
+        }
+        // A .wav hound cannot read (e.g. a compressed payload in a RIFF wrapper, or a
+        // misnamed file) still gets the Symphonia attempt rather than failing outright.
+    }
+    decode_compressed_mono(path)
+}
+
+/// Decode an audio file ONCE (mono, normalized f32) and cache it, returning a handle for
+/// play_sound_handle / play_sound_handle_at. Returns -1 on failure. Backs `load_sound` - this is
+/// how a game loads real SFX and music at startup without re-opening/decoding on every play.
+/// WAV, MP3, OGG/Vorbis, FLAC and M4A/AAC are all accepted.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
+#[no_mangle]
+pub unsafe extern "C" fn aurora_load_sound(ptr: *const u8, len: i64) -> i64 {
+    let path = {
+        let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
+        String::from_utf8_lossy(s).into_owned()
+    };
+    let Some((mono, src_rate)) = decode_audio_mono(&path) else {
+        return -1;
     };
     if mono.is_empty() {
         return -1;
     }
     // Match the device rate ONCE so every play is a copy-free Arc share (fixes the sustained-fire hitch).
-    let buf = resample_mono(&mono, spec.sample_rate, aurora_audio::device_rate());
+    let buf = resample_mono(&mono, src_rate, aurora_audio::device_rate());
     if buf.is_empty() {
         return -1;
     }
@@ -3674,5 +3772,88 @@ mod phys2d_tests {
             aurora_phys_step(0.016);
         }
         assert_eq!(census(), (2, 2, 2, 2), "a world reset grew the store");
+    }
+}
+
+#[cfg(test)]
+mod audio_decode_tests {
+    use super::{decode_audio_mono, fold_into, fold_to_mono};
+
+    fn fixture(name: &str) -> String {
+        format!("{}/tests/fixtures/{}", env!("CARGO_MANIFEST_DIR"), name)
+    }
+
+    /// Root-mean-square of the decoded signal. A decoder that returns silence, or
+    /// noise, or the wrong sample scaling, fails this where a "did it return Some"
+    /// check would pass.
+    fn rms(v: &[f32]) -> f32 {
+        (v.iter().map(|s| s * s).sum::<f32>() / v.len().max(1) as f32).sqrt()
+    }
+
+    #[test]
+    fn fold_averages_channels_and_keeps_mono_intact() {
+        let mut out = Vec::new();
+        fold_into(&[1.0, 0.0, 0.0, 1.0], 2, &mut out);
+        assert_eq!(out, vec![0.5, 0.5]);
+
+        // Mono passes through untouched, including the owning form's copy-free path.
+        let mono = vec![0.25, -0.75];
+        assert_eq!(fold_to_mono(mono.clone(), 1), mono);
+        assert_eq!(fold_to_mono(vec![1.0, 0.0, 0.0, 1.0], 2), vec![0.5, 0.5]);
+
+        // A trailing partial frame is averaged over what is actually there, never
+        // divided by the channel count (which would attenuate the last frame).
+        let mut odd = Vec::new();
+        fold_into(&[1.0, 1.0, 1.0], 2, &mut odd);
+        assert_eq!(odd, vec![1.0, 1.0]);
+    }
+
+    /// The same half-second 440 Hz tone in four containers must decode to the same
+    /// signal. Comparing the compressed formats AGAINST the WAV is what makes this a
+    /// real check: a decoder that produced silence, half-speed audio, or samples off
+    /// by a scale factor would diverge from the reference.
+    #[test]
+    fn decodes_wav_mp3_ogg_and_flac_to_the_same_tone() {
+        let (wav, wav_rate) = decode_audio_mono(&fixture("tone.wav")).expect("wav decodes");
+        assert_eq!(wav_rate, 44100);
+        // 0.5 s at 44.1 kHz.
+        assert!(
+            (wav.len() as i64 - 22050).abs() < 128,
+            "wav length {}",
+            wav.len()
+        );
+        let reference = rms(&wav);
+        // A 0.5-amplitude sine has RMS 0.354 - confirmed against an independent read
+        // of the fixture outside this crate, so it pins the sample SCALING, not just
+        // "something came back". An off-by-a-power-of-two normalization fails here.
+        assert!(
+            (reference - 0.354).abs() < 0.02,
+            "reference rms {reference}"
+        );
+
+        for name in ["tone.mp3", "tone.ogg", "tone.flac"] {
+            let (pcm, rate) = decode_audio_mono(&fixture(name)).unwrap_or_else(|| {
+                panic!("{name} must decode - load_sound accepts compressed audio")
+            });
+            assert_eq!(rate, 44100, "{name} sample rate");
+            // Lossy encoders pad the stream, so length is close rather than exact.
+            assert!(
+                (pcm.len() as i64 - 22050).abs() < 4410,
+                "{name} length {}",
+                pcm.len()
+            );
+            let got = rms(&pcm);
+            assert!(
+                (got - reference).abs() < 0.05,
+                "{name} rms {got} vs reference {reference}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_what_it_cannot_decode() {
+        assert!(decode_audio_mono(&fixture("does_not_exist.mp3")).is_none());
+        // A real file that is not audio must fail rather than yield garbage samples.
+        assert!(decode_audio_mono(&format!("{}/Cargo.toml", env!("CARGO_MANIFEST_DIR"))).is_none());
     }
 }

@@ -98,8 +98,34 @@ run in parallel** (the §6.2 checker proves they can't race). `despawn(e)`,
 | `load_font(path) -> i64` | load a TrueType/OpenType font | `fontdue` |
 | `draw_text(x, y, str, px, color)` | rasterize text (alpha-blended) | `fontdue` |
 | `play_note(semitone, ms)` / `play_sound(...)` | synth audio | `aurora-audio` |
-| `play_wav(path) -> i64` | decode + play a **WAV** file | `hound` |
+| `play_wav(path) -> i64` | decode + play an audio file once (1 = played) | `hound` / `symphonia` |
 | `scene_save(path)` / `scene_load(path)` | persist the ECS world | built-in |
+
+### Real audio assets
+
+`load_sound` decodes a file ONCE into a cached mono buffer and hands back a handle, so
+playing a sound costs no decode and no allocation. Accepted formats: **WAV, MP3,
+OGG/Vorbis, FLAC, M4A/AAC, MKV, AIFF, CAF, ALAC, ADPCM** - the container is identified
+by content, so a mislabelled extension still loads. WAV goes through `hound`; everything
+else through `symphonia`. Returns `-1` if the file is missing or undecodable, and every
+play function treats a negative handle as a no-op, so a missing asset degrades to silence
+instead of a crash.
+
+Buffers are resampled to the device rate at load, and playback shares them by `Arc`, so
+sustained fire re-plays the same buffer with no copy.
+
+| Builtin | Meaning |
+|---|---|
+| `load_sound(path) -> i64` | decode + cache, returns a handle (`-1` on failure) |
+| `play_sound_handle(h, vol)` | play a loaded sound (`vol` 0..100) |
+| `play_sound_handle_at(h, vol, x, y, z)` | the same, positioned for the 3D listener |
+| `play_music(h, vol)` | start a looping music bed (replaces any current bed) |
+| `music_volume(vol)` | change the bed's level WITHOUT restarting it |
+| `music_stop()` | stop the bed |
+| `play_ambience(h, vol)` | start a looping ambience layer, mixed under music |
+
+Because `music_volume` does not restart playback, a long track can stay continuous while
+the game moves its level - which is what you want for a score that reacts to state.
 
 ## Determinism & data
 

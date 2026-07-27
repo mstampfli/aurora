@@ -35,3 +35,7 @@ serde_json = { version = "1", features = ["preserve_order"] }
 rapier2d = "0.22"
 rapier3d = "0.22"
 pathfinding = "4"
+# Audio decoding for load_sound. "all" is deliberate: a game engine should load
+# whatever file the developer actually has - mp3, ogg, flac, m4a, wav - rather than
+# make them convert it first. "opt-simd" keeps the decode fast.
+symphonia = { version = "0.6.0", default-features = false, features = ["all", "opt-simd"] }
