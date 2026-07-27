@@ -343,3 +343,55 @@ fn a_used_import_is_not_an_unknown_function() {
         "a `use`d name was reported as unknown, got {errs:?}"
     );
 }
+
+/// A call to a function a MODULE does not have must be caught by the checker.
+///
+/// Module items are flattened to `module::name`, and only single-segment callees
+/// were validated - so `hud::banner()` with no such function passed `check` and
+/// failed later in the backend, pointing at a function rather than a line.
+#[test]
+fn a_missing_module_function_is_caught() {
+    let errs = errors(
+        "mod hud { fn draw() { } fn label() { } }
+         fn main() { hud::banner() }",
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("has no function `banner`")),
+        "a missing module fn must be reported, got {errs:?}"
+    );
+}
+
+/// ...and a call that DOES exist in the module must stay silent.
+#[test]
+fn a_present_module_function_is_not_reported() {
+    let errs = errors(
+        "mod hud { fn draw() { } }
+         fn main() { hud::draw() }",
+    );
+    assert!(
+        errs.is_empty(),
+        "a real module call must not error, got {errs:?}"
+    );
+}
+
+/// The guard must not fire on qualified paths that are not module calls at all:
+/// an enum variant constructor, or an unknown prefix with no module behind it.
+#[test]
+fn qualified_paths_that_are_not_module_calls_are_left_alone() {
+    let errs = errors(
+        "enum Opt { Some(i32), None }
+         fn main() { let a = Opt::Some(1) }",
+    );
+    assert!(
+        errs.is_empty(),
+        "enum variant construction must not error, got {errs:?}"
+    );
+
+    // No function anywhere is qualified with `Thing`, so `Thing` is not known to be
+    // a module and the checker must stay lenient rather than guess.
+    let errs2 = errors("fn main() { let x = Thing::make() }");
+    assert!(
+        !errs2.iter().any(|e| e.contains("has no function")),
+        "an unknown prefix must not be reported as a module, got {errs2:?}"
+    );
+}

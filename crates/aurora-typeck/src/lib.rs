@@ -644,6 +644,9 @@ impl Typeck {
         // else (methods, builtins, imports) is treated as unknown for TYPING
         // purposes, but a plain name still has to resolve to something.
         if let ExprKind::Path(p) = &callee.kind {
+            if !p.is_single() {
+                self.report_unknown_qualified_callee(p);
+            }
             if p.is_single() {
                 let name = &p.segments[0].ident.name;
                 if !self.fns.contains_key(name) {
@@ -725,6 +728,45 @@ impl Typeck {
     /// here: resolving those needs variant and associated-item tables this pass
     /// does not build. They are still caught by the backend, which now refuses
     /// to stub a function it could not compile.
+    /// Report a call to `module::missing(..)` where `module` demonstrably exists.
+    ///
+    /// Module functions are flattened to `module::name`, so a call to one that does
+    /// not exist used to reach the backend and fail there with a codegen message
+    /// and no source location - or, before `run` learned to refuse stubs, compile
+    /// to a function that silently did nothing.
+    ///
+    /// The guard is deliberately narrow: it fires only when at least one OTHER
+    /// function is qualified with the same prefix. That means the prefix really is
+    /// a module rather than an enum (`Opt::Some`), a type with associated
+    /// functions, or a trait path - so a typo in a module call is caught while
+    /// nothing else is at risk of a false error.
+    fn report_unknown_qualified_callee(&mut self, p: &aurora_ast::Path) {
+        if self.in_shader || p.segments.len() != 2 {
+            return;
+        }
+        let prefix = &p.segments[0].ident.name;
+        let name = &p.segments[1].ident.name;
+        let joined = format!("{prefix}::{name}");
+        if self.fns.contains_key(&joined)
+            || self.imported.contains(&joined)
+            || self.user_types.contains(prefix)
+            || self.imported.contains(prefix)
+            || aurora_ast::is_builtin(&joined)
+        {
+            return;
+        }
+        // Is `prefix` a module at all? Only complain if it has other functions.
+        let prefix_dots = format!("{prefix}::");
+        if !self.fns.keys().any(|k| k.starts_with(&prefix_dots)) {
+            return;
+        }
+        self.diags.push(
+            Diagnostic::error(format!("module `{prefix}` has no function `{name}`"))
+                .with_code("E0313")
+                .primary(p.span, "not a function in that module"),
+        );
+    }
+
     fn report_unknown_callee(&mut self, name: &str, span: Span) {
         if self.in_shader
             || aurora_ast::is_builtin(name)
