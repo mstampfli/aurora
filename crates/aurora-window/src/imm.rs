@@ -775,6 +775,36 @@ pub fn terrain_draw(field: Arc<aurora_render3d::Heightfield>, color: [f32; 3]) {
 /// Queue a model at position (px,py,pz), Euler rotation (yaw,pitch,roll radians),
 /// and uniform `scale`.
 #[allow(clippy::too_many_arguments)]
+/// Like [`r3d_draw`] but with a per-axis scale, so ONE unit-cube mesh can serve as
+/// every wall, floor slab and pillar in a level.
+///
+/// Without this, a level built from boxes needs a separate mesh per distinct size,
+/// which turns "make this room resident" into GPU uploads - the thing a streaming
+/// level design most needs to avoid.
+#[allow(clippy::too_many_arguments)]
+pub fn r3d_draw_scaled(
+    handle: i64,
+    px: f32,
+    py: f32,
+    pz: f32,
+    yaw: f32,
+    pitch: f32,
+    roll: f32,
+    sx: f32,
+    sy: f32,
+    sz: f32,
+) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        let m = Mat4::from_scale_rotation_translation(
+            Vec3::new(sx, sy, sz),
+            Quat::from_euler(EulerRot::YXZ, yaw, pitch, roll),
+            Vec3::new(px, py, pz),
+        );
+        s.draw(handle, m);
+    });
+}
+
 pub fn r3d_draw(
     handle: i64,
     px: f32,

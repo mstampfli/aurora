@@ -2061,6 +2061,34 @@ pub extern "C" fn aurora_r3d_draw_on_joint(
         oscale as f32,
     );
 }
+/// Per-axis scaled draw: one unit mesh, any box size. Lets a streamed level draw
+/// every wall from a single handle instead of uploading a mesh per size.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_draw_scaled(
+    h: i64,
+    x: f64,
+    y: f64,
+    z: f64,
+    yaw: f64,
+    pitch: f64,
+    roll: f64,
+    sx: f64,
+    sy: f64,
+    sz: f64,
+) {
+    aurora_window::imm_r3d_draw_scaled(
+        h,
+        x as f32,
+        y as f32,
+        z as f32,
+        yaw as f32,
+        pitch as f32,
+        roll as f32,
+        sx as f32,
+        sy as f32,
+        sz as f32,
+    );
+}
 #[no_mangle]
 pub extern "C" fn aurora_r3d_draw_skinned(
     armor: i64,

@@ -348,6 +348,7 @@ macro_rules! for_each_builtin {
         [scalar,   r3d_begin,                     aurora_r3d_begin,                      [],                                              void]
         [scalar,   r3d_draw,                      aurora_r3d_draw,                       [I64, F64, F64, F64, F64, F64, F64, F64],        void]
         [scalar,   r3d_draw_quat,                 aurora_r3d_draw_quat,                  [I64, F64, F64, F64, F64, F64, F64, F64, F64],   void]
+        [scalar,   r3d_draw_scaled,               aurora_r3d_draw_scaled,                [I64, F64, F64, F64, F64, F64, F64, F64, F64, F64], void]
         [scalar,   r3d_draw_tint,                 aurora_r3d_draw_tint,                  [I64, F64, F64, F64, F64, F64, F64, F64, F64, F64, F64], void]
         [scalar,   r3d_draw_shield,               aurora_r3d_draw_shield,                [I64, F64, F64, F64, F64, F64, F64, F64, F64, F64], void]
         [scalar,   r3d_draw_on_joint,             aurora_r3d_draw_on_joint,              [I64, I64, I64, F64, F64, F64, F64, F64, F64, F64, F64, F64, F64, F64, F64, F64, F64], void]
