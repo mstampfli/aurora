@@ -643,7 +643,9 @@ fn resolve_global(
     }
     let g = match skel.joints[i].parent {
         Some(p) if p != i => resolve_global(skel, local, p, global) * local[i],
-        _ => local[i],
+        // A root joint's parent is the node the skeleton hangs off, NOT the world:
+        // glTF resolves a joint's global transform through the whole node tree.
+        _ => skel.root * local[i],
     };
     global[i] = Some(g);
     g

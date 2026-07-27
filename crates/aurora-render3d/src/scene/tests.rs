@@ -287,6 +287,9 @@ fn every_handle_accessor_refuses_a_stale_handle() {
     // Both of draw_skinned's handles are stale here: the armour it would queue
     // and the host whose pose would skin it.
     s.draw_skinned(a, a, Mat4::IDENTITY);
+    s.show_joints(a);
+    assert_eq!(s.clip_name(a, 0), None);
+    assert_eq!(s.clip_index(a, "Walk"), -1);
     s.debug_skeleton(a, Mat4::IDENTITY, Vec3::ONE);
     let img = crate::render_offscreen(
         &mut s.renderer,
@@ -395,4 +398,136 @@ fn freeing_a_model_does_not_strand_its_queued_draws() {
         .all(|p| p[0] == 0 && p[1] == 0 && p[2] == 0));
     // Arc is dropped with the queue, not held forever.
     let _ = Arc::new(0u8);
+}
+
+/// A skinned model whose joints hang off an ARMATURE node must be posed through
+/// that node's transform.
+///
+/// This is the Blender/glTF shape: the exporter parents the skeleton to an
+/// `Armature` node carrying the Z-up -> Y-up rotation and the unit scale, and
+/// glTF resolves a joint's global transform through the whole node tree. Walking
+/// only the joint subtree drops it, and the symptom is silent - the character
+/// renders lying on its back at 1/100th size, with no error anywhere.
+///
+/// The fixture is a one-joint skin under an armature node scaled 4x and rotated
+/// -90 degrees about X, so the expected skin matrix is exactly that transform.
+#[test]
+fn a_skeleton_under_an_armature_node_inherits_its_transform() {
+    use crate::anim::skin_matrices;
+    use crate::model::Model;
+
+    // Minimal glTF: RootNode -> Armature(scale 4, rot -90 X) -> Joint, plus a
+    // skinned triangle. Buffers are inline base64 so the test needs no asset.
+    // 12 floats of position (3 verts), then 4 joint indices + 4 weights per vert.
+    let gltf = r#"{
+      "asset": {"version": "2.0"},
+      "scene": 0,
+      "scenes": [{"nodes": [0]}],
+      "nodes": [
+        {"name": "RootNode", "children": [1, 3]},
+        {"name": "Armature", "children": [2],
+         "scale": [4.0, 4.0, 4.0],
+         "rotation": [-0.7071068, 0.0, 0.0, 0.7071068]},
+        {"name": "Joint"},
+        {"name": "Mesh", "mesh": 0, "skin": 0}
+      ],
+      "skins": [{"skeleton": 2, "joints": [2], "inverseBindMatrices": 3}],
+      "meshes": [{"primitives": [{"attributes":
+        {"POSITION": 0, "JOINTS_0": 1, "WEIGHTS_0": 2}}]}],
+      "accessors": [
+        {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
+         "min": [0,0,0], "max": [1,1,0]},
+        {"bufferView": 1, "componentType": 5123, "count": 3, "type": "VEC4"},
+        {"bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC4"},
+        {"bufferView": 3, "componentType": 5126, "count": 1, "type": "MAT4"}
+      ],
+      "bufferViews": [
+        {"buffer": 0, "byteOffset": 0,   "byteLength": 36},
+        {"buffer": 0, "byteOffset": 36,  "byteLength": 24},
+        {"buffer": 0, "byteOffset": 60,  "byteLength": 48},
+        {"buffer": 0, "byteOffset": 108, "byteLength": 64}
+      ],
+      "buffers": [{"byteLength": 172, "uri": "data:application/octet-stream;base64,BUF"}]
+    }"#;
+
+    // Positions (3 verts), joint indices (u16 x4 each), weights (f32 x4 each),
+    // and an identity inverse-bind matrix.
+    let mut buf: Vec<u8> = Vec::new();
+    for v in [[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]] {
+        for c in v {
+            buf.extend_from_slice(&c.to_le_bytes());
+        }
+    }
+    for _ in 0..3 {
+        for j in [0u16, 0, 0, 0] {
+            buf.extend_from_slice(&j.to_le_bytes());
+        }
+    }
+    for _ in 0..3 {
+        for w in [1.0f32, 0.0, 0.0, 0.0] {
+            buf.extend_from_slice(&w.to_le_bytes());
+        }
+    }
+    for c in Mat4::IDENTITY.to_cols_array() {
+        buf.extend_from_slice(&c.to_le_bytes());
+    }
+    assert_eq!(
+        buf.len(),
+        172,
+        "fixture buffer length must match the header"
+    );
+
+    let b64 = {
+        // Small inline base64 encoder: avoids adding a dependency for one fixture.
+        const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for c in buf.chunks(3) {
+            let (b0, b1, b2) = (
+                c[0] as u32,
+                *c.get(1).unwrap_or(&0) as u32,
+                *c.get(2).unwrap_or(&0) as u32,
+            );
+            let n = (b0 << 16) | (b1 << 8) | b2;
+            out.push(T[(n >> 18 & 63) as usize] as char);
+            out.push(T[(n >> 12 & 63) as usize] as char);
+            out.push(if c.len() > 1 {
+                T[(n >> 6 & 63) as usize] as char
+            } else {
+                '='
+            });
+            out.push(if c.len() > 2 {
+                T[(n & 63) as usize] as char
+            } else {
+                '='
+            });
+        }
+        out
+    };
+
+    let path = std::env::temp_dir().join("aurora_armature_fixture.gltf");
+    std::fs::write(&path, gltf.replace("BUF", &b64)).expect("write fixture");
+    let model = Model::load(path.to_str().expect("utf8")).expect("fixture must load");
+    let _ = std::fs::remove_file(&path);
+
+    let skel = model.skeleton.as_ref().expect("fixture has a skin");
+    assert_eq!(skel.joints.len(), 1);
+
+    // With no clip, the single joint's skin matrix IS the armature transform.
+    let m = skin_matrices(skel, None, 0.0)[0];
+
+    // The 4x scale must survive: a point 1 unit out along the joint's X lands 4 out.
+    let px = m.transform_point3(Vec3::X);
+    assert!(
+        (px.length() - 4.0).abs() < 1e-3,
+        "armature scale was dropped: |{px:?}| = {}, want 4",
+        px.length()
+    );
+
+    // The -90 degrees about X must survive: +Y maps to -Z (up becomes forward),
+    // which is exactly the difference between standing and lying on your back.
+    let py = m.transform_point3(Vec3::Y);
+    assert!(
+        (py - Vec3::new(0.0, 0.0, -4.0)).length() < 1e-3,
+        "armature rotation was dropped: +Y mapped to {py:?}, want (0,0,-4)"
+    );
 }

@@ -41,6 +41,15 @@ pub struct Joint {
 /// A skeleton: joints in skinning order with their default local transforms.
 pub struct Skeleton {
     pub joints: Vec<Joint>,
+    /// World transform of the node the joint hierarchy HANGS OFF - the ancestors
+    /// above the root joint that are not themselves joints.
+    ///
+    /// Exporters put real transforms there: Blender emits an `Armature` node
+    /// carrying the Z-up -> Y-up correction and the unit scale, and glTF says a
+    /// joint's global transform runs through the full node tree, not just the
+    /// joint subtree. Dropping it makes a character lie on its back at the wrong
+    /// size, so it is captured once here and applied to every root joint.
+    pub root: Mat4,
 }
 
 impl Skeleton {
@@ -176,6 +185,10 @@ impl Model {
             gltf::import(path).map_err(|e| format!("load gltf {path}: {e}"))?;
         let buf = |b: gltf::Buffer| buffers.get(b.index()).map(|d| &d.0[..]);
 
+        // Node world transforms, needed both for baking static geometry and for
+        // the transform above the joint hierarchy (see Skeleton::root).
+        let globals = node_global_transforms(&doc);
+
         // --- skeleton (first skin) ---
         // Map glTF node index -> joint index, and record each joint's parent.
         let mut node_to_joint: HashMap<usize, usize> = HashMap::new();
@@ -214,11 +227,19 @@ impl Model {
                     name: n.name().unwrap_or("").to_string(),
                 });
             }
-            skeleton = Some(Skeleton { joints });
-        }
+            // The transform above the joint hierarchy. Find a joint whose parent
+            // is not itself a joint - that parent is the armature node - and take
+            // its WORLD transform, so any chain of non-joint ancestors above it is
+            // included too. Identity when the joints sit at the scene root.
+            let root = joints_nodes
+                .iter()
+                .filter_map(|n| node_parent.get(&n.index()))
+                .find(|pi| !node_to_joint.contains_key(pi))
+                .and_then(|pi| globals.get(pi).copied())
+                .unwrap_or(Mat4::IDENTITY);
 
-        // --- node global transforms (for baking static geometry) ---
-        let globals = node_global_transforms(&doc);
+            skeleton = Some(Skeleton { joints, root });
+        }
 
         // --- primitives ---
         let mut primitives = Vec::new();
