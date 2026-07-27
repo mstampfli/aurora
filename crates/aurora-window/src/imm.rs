@@ -1022,6 +1022,16 @@ pub fn r3d_hide_joint(handle: i64, joint: i64) {
         s.hide_joint(handle, joint);
     });
 }
+
+/// Show every joint again, undoing `r3d_hide_joint`. Hiding accumulates into a
+/// mask, so without this a model handle could never get its body back and a
+/// pooled character had to be reloaded from disk to be reused.
+pub fn r3d_show_joints(handle: i64) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.show_joints(handle);
+    });
+}
 pub fn r3d_anim_stop_upper(handle: i64, fade: f32) {
     with_gfx((), |gf| {
         let (_, _, s) = gf.scene_mut();
@@ -1032,6 +1042,38 @@ pub fn r3d_clip_count(handle: i64) -> i64 {
     with_gfx(0, |gf| {
         let (_, _, s) = gf.scene_mut();
         s.clip_count(handle)
+    })
+}
+
+/// The asset's own name for clip `i`, or "" for a stale handle / bad index.
+pub fn r3d_clip_name(handle: i64, i: i64) -> String {
+    with_gfx(String::new(), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.clip_name(handle, i).unwrap_or("").to_string()
+    })
+}
+
+/// Index of the clip called `name`, or -1 when the model has no such clip.
+pub fn r3d_clip_index(handle: i64, name: &str) -> i64 {
+    with_gfx(-1, |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.clip_index(handle, name)
+    })
+}
+
+/// Index of the joint called `name`, or -1 when the model has no such joint.
+pub fn r3d_joint_index(handle: i64, name: &str) -> i64 {
+    with_gfx(-1, |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.joint_index(handle, name)
+    })
+}
+
+/// The name of joint `i`, or "" for a stale handle / bad index.
+pub fn r3d_joint_name(handle: i64, i: i64) -> String {
+    with_gfx(String::new(), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.joint_name(handle, i).unwrap_or("").to_string()
     })
 }
 

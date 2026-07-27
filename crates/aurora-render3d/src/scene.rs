@@ -13,6 +13,36 @@ use crate::model::Model;
 use crate::render::{MaterialDesc, MaterialId, MeshId, Renderer3D};
 use aurora_slot::{Key, SlotMap};
 
+/// Resolve a name against a model's clip or joint names, returning an index or -1.
+///
+/// The rule, in order: an exact (case-insensitive) match, then a match on the
+/// segment after the last `|`. Exporters prefix clips with the armature they came
+/// from (`CharacterArmature|Walk`), and that prefix is an export setting rather
+/// than authored intent, so a game asking for `"Walk"` must find it. Exact wins
+/// over suffix so a model that really does have a clip named `Walk` is never
+/// beaten by some other armature's `Rig|Walk`.
+///
+/// Split out from [`Scene::clip_index`] / [`Scene::joint_index`] so the rule is
+/// testable without a GPU, and so clips and joints cannot drift to two rules.
+fn match_name<'a, I>(names: I, want: &str) -> i64
+where
+    I: Iterator<Item = &'a str> + Clone,
+{
+    let want = want.trim();
+    for (i, n) in names.clone().enumerate() {
+        if n.eq_ignore_ascii_case(want) {
+            return i as i64;
+        }
+    }
+    for (i, n) in names.enumerate() {
+        let tail = n.rsplit('|').next().unwrap_or(n);
+        if tail.eq_ignore_ascii_case(want) {
+            return i as i64;
+        }
+    }
+    -1
+}
+
 /// One drawable: a set of (mesh, material) primitives, with an optional skeleton
 /// and animation player when it came from an animated model.
 struct Renderable {
@@ -418,6 +448,32 @@ impl Scene {
             .unwrap_or(0)
     }
 
+    /// The name of clip `i` as the asset declares it, or `None` for a stale
+    /// handle or an out-of-range index. Clip names are loaded already; without a
+    /// way to read them a game can only address animations by bare index, which
+    /// silently plays the WRONG motion the moment an artist re-exports the model
+    /// with its clips in a different order.
+    pub fn clip_name(&self, handle: i64, i: i64) -> Option<&str> {
+        let m = self.item(handle)?.model.as_ref()?;
+        if i < 0 {
+            return None;
+        }
+        m.clips.get(i as usize).map(|c| c.name.as_str())
+    }
+
+    /// Index of the clip called `name`, or -1 if this model has no such clip.
+    ///
+    /// Exporters routinely prefix a clip with its armature (Blender/glTF emit
+    /// `CharacterArmature|Walk`), so an exact match is tried first and then the
+    /// segment after the last `|`. Matching is case-insensitive because that
+    /// prefix and the casing are export settings, not authored intent.
+    pub fn clip_index(&self, handle: i64, name: &str) -> i64 {
+        let Some(m) = self.item(handle).and_then(|r| r.model.as_ref()) else {
+            return -1;
+        };
+        match_name(m.clips.iter().map(|c| c.name.as_str()), name)
+    }
+
     /// Start (or crossfade to) an animation clip on a model handle, blending from
     /// the current pose over `fade` seconds (0 = instant).
     pub fn anim_play(&mut self, handle: i64, clip: i64, looping: bool, speed: f32, fade: f32) {
@@ -768,6 +824,33 @@ impl Scene {
         r.model
             .as_ref()
             .and_then(|m| r.player.joint_global(m, joint.max(0) as usize))
+    }
+
+    /// Index of the joint called `name`, or -1 when this model has no such joint.
+    ///
+    /// The counterpart of [`Scene::clip_index`], and the same argument applies
+    /// with more force: a game that hardcodes `hand_joint = 29` breaks silently
+    /// into a weapon welded to a shin the first time the rig changes. Matching
+    /// tolerates an armature prefix and ignores case.
+    pub fn joint_index(&self, host: i64, name: &str) -> i64 {
+        let Some(skel) = self
+            .item(host)
+            .and_then(|r| r.model.as_ref())
+            .and_then(|m| m.skeleton.as_ref())
+        else {
+            return -1;
+        };
+        match_name(skel.joints.iter().map(|j| j.name.as_str()), name)
+    }
+
+    /// The name of joint `i`, or `None` for a stale handle or a bad index. The
+    /// discovery counterpart of [`Scene::joint_index`].
+    pub fn joint_name(&self, host: i64, i: i64) -> Option<&str> {
+        let skel = self.item(host)?.model.as_ref()?.skeleton.as_ref()?;
+        if i < 0 {
+            return None;
+        }
+        skel.joints.get(i as usize).map(|j| j.name.as_str())
     }
 
     /// The model-space position of `joint` in the host's CURRENT pose (the translation of its

@@ -33,6 +33,7 @@ pub use imm::{
     r3d_camera_roll as imm_r3d_camera_roll, r3d_capture as imm_r3d_capture,
     r3d_clear as imm_r3d_clear, r3d_clear_lights as imm_r3d_clear_lights,
     r3d_clear_pose as imm_r3d_clear_pose, r3d_clip_count as imm_r3d_clip_count,
+    r3d_clip_index as imm_r3d_clip_index, r3d_clip_name as imm_r3d_clip_name,
     r3d_debug_line as imm_r3d_debug_line, r3d_debug_skeleton as imm_r3d_debug_skeleton,
     r3d_draw as imm_r3d_draw, r3d_draw_billboard as imm_r3d_draw_billboard,
     r3d_draw_on_joint as imm_r3d_draw_on_joint, r3d_draw_quat as imm_r3d_draw_quat,
@@ -40,6 +41,7 @@ pub use imm::{
     r3d_draw_tint as imm_r3d_draw_tint, r3d_fog as imm_r3d_fog,
     r3d_free_model as imm_r3d_free_model, r3d_frustum_cull as imm_r3d_frustum_cull,
     r3d_hide_joint as imm_r3d_hide_joint, r3d_joint_dump as imm_r3d_joint_dump,
+    r3d_joint_index as imm_r3d_joint_index, r3d_joint_name as imm_r3d_joint_name,
     r3d_joint_pos as imm_r3d_joint_pos, r3d_light as imm_r3d_light,
     r3d_load_model as imm_r3d_load_model, r3d_make_box as imm_r3d_make_box,
     r3d_make_box_emissive as imm_r3d_make_box_emissive,
@@ -47,11 +49,11 @@ pub use imm::{
     r3d_make_sphere as imm_r3d_make_sphere, r3d_make_sprite as imm_r3d_make_sprite,
     r3d_point_light as imm_r3d_point_light, r3d_point_shadows as imm_r3d_point_shadows,
     r3d_pose_bone as imm_r3d_pose_bone, r3d_present as imm_r3d_present,
-    r3d_shadows as imm_r3d_shadows, r3d_sky as imm_r3d_sky, r3d_ssao as imm_r3d_ssao,
-    r3d_viewmodel as imm_r3d_viewmodel, r3d_world_to_screen as imm_r3d_world_to_screen,
-    scroll as imm_scroll, speedlines as imm_speedlines, surface_h as imm_surface_h,
-    surface_w as imm_surface_w, terrain_draw as imm_terrain_draw,
-    window_fullscreen as imm_window_fullscreen,
+    r3d_shadows as imm_r3d_shadows, r3d_show_joints as imm_r3d_show_joints, r3d_sky as imm_r3d_sky,
+    r3d_ssao as imm_r3d_ssao, r3d_viewmodel as imm_r3d_viewmodel,
+    r3d_world_to_screen as imm_r3d_world_to_screen, scroll as imm_scroll,
+    speedlines as imm_speedlines, surface_h as imm_surface_h, surface_w as imm_surface_w,
+    terrain_draw as imm_terrain_draw, window_fullscreen as imm_window_fullscreen,
 };
 pub use input::{Input, Key};
 

@@ -303,7 +303,13 @@ window. Colors are 0..1 floats; angles are radians; handles are `i64`.
 | `r3d_begin()` | start a frame (clear the draw queue) | call once per frame |
 | `r3d_draw(h, px,py,pz, yaw,pitch,roll, scale)` | queue a model at a transform | Euler radians, uniform scale |
 | `r3d_draw_skinned(armor, host, px,py,pz, yaw,pitch,roll, scale)` | queue `armor` deformed by `host`'s current pose | for gear that must move with a character without owning a skeleton: the `armor` mesh carries per-vertex joint weights in the HOST's joint order, and this feeds it the host's skin matrices. Skins from the host's FULL pose, so `r3d_hide_joint` on the host (hiding covered body parts) never collapses the gear worn over them |
-| `r3d_hide_joint(h, joint)` | hide one skin joint's geometry | zeroes that joint's skinning matrix, collapsing its geometry to the model origin: first-person arms drop the torso/head/legs, and a body part covered by gear stops clipping through it. Joints 0..63 only (the mask is 64 bits), and it ACCUMULATES with no builtin to undo it - reload the model with `r3d_load_model` to get an unhidden copy |
+| `r3d_clip_name(h, i) -> str` | the asset's own name for clip `i` | `""` for a stale handle or an out-of-range index. Use it to discover what a model actually contains |
+| `r3d_clip_index(h, name) -> i64` | find a clip BY NAME | -1 when the model has no such clip. Prefer this to a literal index: exporters emit clips in whatever order they like, and a stale index silently plays the WRONG animation instead of failing. An armature prefix is tolerated, so `"Walk"` matches `"CharacterArmature|Walk"`, and matching is case-insensitive |
+| `r3d_show_joints(h)` | undo every `r3d_hide_joint` on a model | lets a pooled character be reused without reloading it |
+| `r3d_joint_index(h, name) -> i64` | find a JOINT by name | -1 when the model has no such joint. The bone-attachment counterpart of `r3d_clip_index`, and the reason to prefer it is the same: a hardcoded joint index welds a weapon to the wrong bone the moment the rig is re-exported. Tolerates an armature prefix, ignores case |
+| `r3d_joint_name(h, i) -> str` | the name of joint `i` | `""` for a stale handle or a bad index; pair it with `r3d_joint_dump` when discovering a rig |
+| `r3d_joint_dump(h)` | print every joint index, name and parent to stdout | rig discovery: run it once to see what a model's skeleton is called, then bind by name |
+| `r3d_hide_joint(h, joint)` | hide one skin joint's geometry | zeroes that joint's skinning matrix, collapsing its geometry to the model origin: first-person arms drop the torso/head/legs, and a body part covered by gear stops clipping through it. Joints 0..63 only (the mask is 64 bits), and it ACCUMULATES: clear it with `r3d_show_joints` |
 | `r3d_anim_play(h, clip, looping, speed, fade)` | start an animation clip | `looping`/`speed`; `fade` crossfades from the current clip over that many seconds (0 = snap) |
 | `r3d_anim_update(h, dt)` | advance the current clip | per frame |
 | `r3d_clip_count(h) -> i64` | number of animation clips | |
@@ -417,7 +423,7 @@ along walls (the core of a fluid movement shooter). Bodies are `i64` handles.
 | `phys3d_apply_impulse(h, ix,iy,iz)` | instantaneous (jumps, knockback) | dynamic bodies |
 | `phys3d_move_character(h, dx,dy,dz, dt)` | move + slide a character | read position after `step` |
 | `phys3d_grounded(h) -> i64` | is the character on the ground | 1/0 |
-| `phys3d_raycast(x,y,z, dx,dy,dz, max) -> f64` | distance to first hit, or -1 | shooting, ground checks |
+| `phys3d_raycast(x,y,z, dx,dy,dz, max) -> f64` | distance to first hit, or -1 | it hits ANY body, INCLUDING the one the ray starts inside: fired from a character's own centre it returns 0 and every shot silently stops at the muzzle. For shooting or ground probes from a body, use `phys3d_raycast_ex` / `phys3d_raycast_world` and pass that body as `exclude` |
 | `phys3d_raycast_full(x,y,z, dx,dy,dz, max) -> i64` | hit body handle (-1 none) | then read the hit below |
 | `phys3d_raycast_ex(exclude, x,y,z, dx,dy,dz, max) -> i64` | like `raycast_full`, skipping one body | probe outward from your own centre; a NEGATIVE `exclude` skips nothing |
 | `phys3d_raycast_world(exclude, x,y,z, dx,dy,dz, max) -> i64` | like `raycast_ex`, but WORLD geometry only | for movement: ground checks, walls, mantle. Ignores other character capsules, so a player cannot stand on a player |

@@ -400,6 +400,43 @@ fn freeing_a_model_does_not_strand_its_queued_draws() {
     let _ = Arc::new(0u8);
 }
 
+/// The clip-name matching rule, which is what lets a game bind animations by
+/// name instead of by a magic index. Needs no GPU, so it runs everywhere.
+#[test]
+fn names_resolve_by_prefix_and_case() {
+    // What a Quaternius/Blender glTF export actually looks like.
+    let names = ["CharacterArmature|Death", "CharacterArmature|Walk", "Idle"];
+    let at = |want: &str| super::match_name(names.iter().copied(), want);
+
+    // The armature prefix is an export setting, so the bare name must match.
+    assert_eq!(at("Walk"), 1);
+    assert_eq!(at("walk"), 1, "matching must not depend on export casing");
+    assert_eq!(
+        at("CharacterArmature|Death"),
+        0,
+        "the full name must match too"
+    );
+    assert_eq!(at("Idle"), 2);
+    assert_eq!(
+        at("  Walk  "),
+        1,
+        "surrounding whitespace must not defeat a match"
+    );
+
+    // A clip that is not there must FAIL rather than resolve to something else:
+    // silently playing clip 0 is the bug this whole builtin exists to prevent.
+    assert_eq!(at("Sprint"), -1);
+    assert_eq!(at(""), -1);
+
+    // An exact name beats another armature's suffix.
+    let shadowed = ["Rig|Walk", "Walk"];
+    assert_eq!(
+        super::match_name(shadowed.iter().copied(), "Walk"),
+        1,
+        "an exact match must win over a suffix match"
+    );
+}
+
 /// A skinned model whose joints hang off an ARMATURE node must be posed through
 /// that node's transform.
 ///

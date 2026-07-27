@@ -2161,6 +2161,12 @@ pub extern "C" fn aurora_r3d_clear_pose(h: i64) {
 pub extern "C" fn aurora_r3d_hide_joint(h: i64, joint: i64) {
     aurora_window::imm_r3d_hide_joint(h, joint);
 }
+/// Undo every `r3d_hide_joint` on a model, so a pooled character can be reused
+/// without reloading it from disk.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_show_joints(h: i64) {
+    aurora_window::imm_r3d_show_joints(h);
+}
 #[no_mangle]
 pub extern "C" fn aurora_r3d_anim_stop_upper(h: i64, fade: f64) {
     aurora_window::imm_r3d_anim_stop_upper(h, fade as f32);
@@ -2168,6 +2174,47 @@ pub extern "C" fn aurora_r3d_anim_stop_upper(h: i64, fade: f64) {
 #[no_mangle]
 pub extern "C" fn aurora_r3d_clip_count(h: i64) -> i64 {
     aurora_window::imm_r3d_clip_count(h)
+}
+/// `r3d_clip_name(h, i) -> str`: the asset's own name for clip `i`, or "" for a
+/// stale handle or an out-of-range index.
+///
+/// # Safety
+/// `out` must be valid for writes of two `i64`s.
+#[no_mangle]
+pub unsafe extern "C" fn aurora_r3d_clip_name(out: *mut i64, h: i64, i: i64) {
+    let name = aurora_window::imm_r3d_clip_name(h, i);
+    unsafe { write_str(out, name.into_bytes()) };
+}
+/// `r3d_joint_index(h, name) -> i64`: the index of the joint called `name`, or
+/// -1. Lets a game attach props and hitboxes by BONE NAME instead of by a magic
+/// index that silently moves when a rig is re-exported.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
+#[no_mangle]
+pub unsafe extern "C" fn aurora_r3d_joint_index(h: i64, ptr: *const u8, len: i64) -> i64 {
+    let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
+    aurora_window::imm_r3d_joint_index(h, &String::from_utf8_lossy(s))
+}
+/// `r3d_joint_name(h, i) -> str`: the name of joint `i`, or "".
+///
+/// # Safety
+/// `out` must be valid for writes of two `i64`s.
+#[no_mangle]
+pub unsafe extern "C" fn aurora_r3d_joint_name(out: *mut i64, h: i64, i: i64) {
+    let name = aurora_window::imm_r3d_joint_name(h, i);
+    unsafe { write_str(out, name.into_bytes()) };
+}
+/// `r3d_clip_index(h, name) -> i64`: the index of the clip called `name`, or -1.
+/// Lets a game bind animations by NAME instead of by a magic index that silently
+/// selects the wrong motion when a model is re-exported.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
+#[no_mangle]
+pub unsafe extern "C" fn aurora_r3d_clip_index(h: i64, ptr: *const u8, len: i64) -> i64 {
+    let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
+    aurora_window::imm_r3d_clip_index(h, &String::from_utf8_lossy(s))
 }
 #[no_mangle]
 pub extern "C" fn aurora_r3d_present() -> i64 {
