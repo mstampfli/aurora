@@ -302,6 +302,8 @@ window. Colors are 0..1 floats; angles are radians; handles are `i64`.
 | `r3d_clear(r,g,b)` | background color | |
 | `r3d_begin()` | start a frame (clear the draw queue) | call once per frame |
 | `r3d_draw(h, px,py,pz, yaw,pitch,roll, scale)` | queue a model at a transform | Euler radians, uniform scale |
+| `r3d_draw_skinned(armor, host, px,py,pz, yaw,pitch,roll, scale)` | queue `armor` deformed by `host`'s current pose | for gear that must move with a character without owning a skeleton: the `armor` mesh carries per-vertex joint weights in the HOST's joint order, and this feeds it the host's skin matrices. Skins from the host's FULL pose, so `r3d_hide_joint` on the host (hiding covered body parts) never collapses the gear worn over them |
+| `r3d_hide_joint(h, joint)` | hide one skin joint's geometry | zeroes that joint's skinning matrix, collapsing its geometry to the model origin: first-person arms drop the torso/head/legs, and a body part covered by gear stops clipping through it. Joints 0..63 only (the mask is 64 bits), and it ACCUMULATES with no builtin to undo it - reload the model with `r3d_load_model` to get an unhidden copy |
 | `r3d_anim_play(h, clip, looping, speed, fade)` | start an animation clip | `looping`/`speed`; `fade` crossfades from the current clip over that many seconds (0 = snap) |
 | `r3d_anim_update(h, dt)` | advance the current clip | per frame |
 | `r3d_clip_count(h) -> i64` | number of animation clips | |

@@ -689,6 +689,31 @@ impl Scene {
         }
     }
 
+    /// Draw `armor`'s mesh skinned by `host`'s CURRENT pose. The armor mesh
+    /// carries per-vertex joint indices/weights (in the host's skinning order);
+    /// this feeds the HOST's skin matrices to those weights, so an attached piece
+    /// of gear deforms exactly with the character without owning a skeleton.
+    pub fn draw_skinned(&mut self, armor: i64, host: i64, transform: Mat4) {
+        // Skin the armour from the host's FULL pose - never the host's hidden mask.
+        // hide_joint hides the host's OWN covered mesh (so the body can't clip through
+        // the armour); the armour worn over it must still render in full, otherwise
+        // hiding the body under a gauntlet would collapse the gauntlet too.
+        let host_joints = self.item(host).and_then(|r| {
+            r.model
+                .as_ref()
+                .map(|m| r.player.matrices(m, 0))
+                .filter(|v| !v.is_empty())
+                .map(Arc::new)
+        });
+        let Some(prims) = self.item(armor).map(|r| r.prims.clone()) else {
+            return;
+        };
+        for (mesh, mat) in prims {
+            self.renderer
+                .draw(mesh, mat, transform, host_joints.clone());
+        }
+    }
+
     /// Like [`draw`] but shifts the model's albedo by `tint` (RGB additive offset).
     pub fn draw_tint(&mut self, handle: i64, transform: Mat4, tint: [f32; 3]) {
         let Some((joints, prims)) = self.draw_parts(handle) else {

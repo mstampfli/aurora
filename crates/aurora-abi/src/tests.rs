@@ -28,7 +28,6 @@ const UNDOCUMENTED: &[&str] = &[
     "r3d_anim_blend",
     "r3d_anim_seek_upper",
     "r3d_pose_bone",
-    "r3d_hide_joint",
     "r3d_clear_pose",
     "r3d_anim_stop_upper",
     "r3d_speedlines",

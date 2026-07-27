@@ -284,6 +284,9 @@ fn every_handle_accessor_refuses_a_stale_handle() {
     s.draw_billboard(a, Vec3::ZERO, 1.0);
     s.draw_instances(a, &[Mat4::IDENTITY, Mat4::IDENTITY]);
     s.draw_on_joint(a, a, 0, Mat4::IDENTITY, Mat4::IDENTITY);
+    // Both of draw_skinned's handles are stale here: the armour it would queue
+    // and the host whose pose would skin it.
+    s.draw_skinned(a, a, Mat4::IDENTITY);
     s.debug_skeleton(a, Mat4::IDENTITY, Vec3::ONE);
     let img = crate::render_offscreen(
         &mut s.renderer,

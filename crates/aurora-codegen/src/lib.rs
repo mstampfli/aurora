@@ -3837,10 +3837,12 @@ fn tr_call(
     }
 
     let (id, ret, sret, params) = {
-        let info = env
-            .fns
-            .get(&name)
-            .ok_or_else(|| format!("call to non-scalar/uncompiled function `{name}`"))?;
+        let info = env.fns.get(&name).ok_or_else(|| {
+            format!(
+                "cannot find function `{name}` (not a user fn, local binding, or builtin) - \
+                     run `aurorac check` for the source location"
+            )
+        })?;
         (info.id, info.ret.clone(), info.sret, info.params.clone())
     };
     if typed.len() != params.len() {

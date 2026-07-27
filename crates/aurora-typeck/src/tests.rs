@@ -83,7 +83,7 @@ fn unknown_names_do_not_false_positive() {
         "@extern fn load(path: str) -> Handle
          fn main() {
             let app = App.new(\"x\", 1, 2)
-            let cube: Handle = load(\"c.glb\")
+            let cube = load(\"c.glb\")
             app.run()
          }",
     );
