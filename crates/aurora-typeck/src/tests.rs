@@ -447,3 +447,43 @@ fn legitimate_bare_names_are_not_reported() {
         "closure params and loop variables must not be reported, got {errs2:?}"
     );
 }
+
+/// A local that shadows a PARAMETER of a different type must be warned about.
+///
+/// This is legal Aurora and usually deliberate, so it is a warning - but the
+/// different-type case silently breaks calls. A `let m = h.model[i]` (an i64)
+/// inside a function taking `m: Warren` made every later `m` the handle, so a
+/// callee expecting a struct pointer received an integer and the program
+/// segfaulted with no diagnostic anywhere.
+#[test]
+fn a_local_shadowing_a_parameter_of_another_type_warns() {
+    let src = "struct Warren { n: i32 }
+               fn go(m: Warren, i: i32) -> i32 {
+                  let m = i
+                  m
+               }";
+    let (module, _) = parse_str(src);
+    let diags = check_types(&module);
+    assert!(
+        diags
+            .iter()
+            .any(|d| !d.is_error() && d.message.contains("shadows the parameter")),
+        "expected a shadowing warning, got {:?}",
+        diags.iter().map(|d| d.message.clone()).collect::<Vec<_>>()
+    );
+    // And it must NOT be an error: shadowing stays legal.
+    assert!(
+        !diags.iter().any(|d| d.is_error()),
+        "shadowing must warn, not fail the build"
+    );
+}
+
+/// Shadowing with the SAME type is idiomatic and must stay silent.
+#[test]
+fn shadowing_with_the_same_type_is_silent() {
+    let errs = errors("fn go(n: i32) -> i32 { let n = n + 1\n n }");
+    assert!(
+        errs.is_empty(),
+        "same-type shadowing must not complain, got {errs:?}"
+    );
+}

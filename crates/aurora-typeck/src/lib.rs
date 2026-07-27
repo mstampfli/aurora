@@ -70,6 +70,9 @@ struct Typeck {
     /// GPU intrinsics and bound globals that have no CPU declaration, so callee
     /// resolution is off inside them.
     in_shader: bool,
+    /// Parameters of the function being checked, so a local that shadows one with a
+    /// DIFFERENT type can be warned about.
+    cur_params: HashMap<String, Ty>,
     /// Depth of "do not judge bare names here" nesting. Raised while inferring the
     /// BASE of a field/method access, whose head may be a type or module the checker
     /// cannot see (`App.new(..)`) - the same leniency the crate docs describe for
@@ -97,6 +100,7 @@ impl Typeck {
             consts: std::collections::HashSet::new(),
             imported: std::collections::HashSet::new(),
             in_shader: false,
+            cur_params: HashMap::new(),
             lenient_names: 0,
             cur_ret: None,
         }
@@ -252,10 +256,12 @@ impl Typeck {
     fn check_fn(&mut self, f: &aurora_ast::FnDecl) {
         let Some(body) = &f.body else { return };
         self.push();
+        self.cur_params.clear();
         for p in &f.params {
             match p {
                 Param::Normal { name, ty, .. } => {
                     let t = convert::type_to_ty(ty, &mut self.cx, &self.user_types);
+                    self.cur_params.insert(name.name.clone(), t.clone());
                     self.bind(&name.name, t);
                 }
                 Param::SelfParam { .. } => self.bind("self", Ty::Named("Self".into())),
@@ -357,7 +363,39 @@ impl Typeck {
             (None, Some((_, i))) => i.clone(),
             (None, None) => self.cx.fresh(),
         };
+        self.warn_shadowed_param(&l.pat, &bind_ty);
         self.bind_pat(&l.pat, &bind_ty);
+    }
+
+    /// Warn when a local shadows a PARAMETER of a different type.
+    ///
+    /// Shadowing is legal and often deliberate, so this is a warning and only fires
+    /// when the types genuinely differ - which is the case that silently breaks
+    /// things. A `let m = h.model[i]` (an `i64`) inside a function taking
+    /// `m: Warren` made every later `m` the handle, so the struct pointer a callee
+    /// expected arrived as an integer and the program segfaulted with nothing in
+    /// the way of a diagnostic.
+    fn warn_shadowed_param(&mut self, pat: &Pat, bind_ty: &Ty) {
+        let PatKind::Binding { name, sub: None } = &pat.kind else {
+            return;
+        };
+        let Some(param_ty) = self.cur_params.get(&name.name).cloned() else {
+            return;
+        };
+        let a = self.cx.resolve_deep(&param_ty);
+        let b = self.cx.resolve_deep(bind_ty);
+        // Only complain when both types are actually known and disagree.
+        if is_unknown(&a) || is_unknown(&b) || a == b {
+            return;
+        }
+        self.diags.push(
+            Diagnostic::warning(format!(
+                "local `{}` shadows the parameter `{}` and has a different type",
+                name.name, name.name
+            ))
+            .with_code("W0101")
+            .primary(pat.span, "this shadows a parameter of another type"),
+        );
     }
 
     // --- expression inference ------------------------------------------------
