@@ -60,6 +60,9 @@ struct Typeck {
     fn_bounds: HashMap<String, Vec<(String, String)>>,
     /// User-defined type names (structs/components/enums) — shadow builtins.
     user_types: std::collections::HashSet<String>,
+    /// Top-level `const` names, so a bare use of one is not mistaken for an
+    /// undefined value.
+    consts: std::collections::HashSet<String>,
     /// Names brought into scope by `use`. We cannot see the other module, so a
     /// call to one of these is not judged.
     imported: std::collections::HashSet<String>,
@@ -67,6 +70,11 @@ struct Typeck {
     /// GPU intrinsics and bound globals that have no CPU declaration, so callee
     /// resolution is off inside them.
     in_shader: bool,
+    /// Depth of "do not judge bare names here" nesting. Raised while inferring the
+    /// BASE of a field/method access, whose head may be a type or module the checker
+    /// cannot see (`App.new(..)`) - the same leniency the crate docs describe for
+    /// unresolved method and field access.
+    lenient_names: i64,
     /// The declared return type of the function currently being checked, if it
     /// was written explicitly — used to check `return expr` against it.
     cur_ret: Option<Ty>,
@@ -86,8 +94,10 @@ impl Typeck {
             trait_impls: std::collections::HashSet::new(),
             fn_bounds: HashMap::new(),
             user_types: std::collections::HashSet::new(),
+            consts: std::collections::HashSet::new(),
             imported: std::collections::HashSet::new(),
             in_shader: false,
+            lenient_names: 0,
             cur_ret: None,
         }
     }
@@ -103,6 +113,9 @@ impl Typeck {
                 }
                 ItemKind::Enum(e) => {
                     self.user_types.insert(e.name.name.clone());
+                }
+                ItemKind::Const(c) => {
+                    self.consts.insert(c.name.name.clone());
                 }
                 _ => {}
             }
@@ -359,7 +372,14 @@ impl Typeck {
             ExprKind::SelfExpr => self.lookup("self").unwrap_or(Ty::Error),
             ExprKind::Path(p) => {
                 if p.is_single() {
-                    self.lookup(&p.segments[0].ident.name).unwrap_or(Ty::Error)
+                    let name = &p.segments[0].ident.name;
+                    match self.lookup(name) {
+                        Some(t) => t,
+                        None => {
+                            self.report_unknown_value(name, p.span);
+                            Ty::Error
+                        }
+                    }
                 } else {
                     Ty::Error
                 }
@@ -390,7 +410,11 @@ impl Typeck {
                 self.cx.fresh()
             }
             ExprKind::Field { base, .. } => {
+                // The head of a dotted access may be a type or module with no CPU
+                // declaration, so a bare name here is not judged.
+                self.lenient_names = self.lenient_names + 1;
                 self.infer(base);
+                self.lenient_names = self.lenient_names - 1;
                 Ty::Error // field types require nominal field resolution (later)
             }
             ExprKind::Range { start, end, .. } => {
@@ -764,6 +788,35 @@ impl Typeck {
             Diagnostic::error(format!("module `{prefix}` has no function `{name}`"))
                 .with_code("E0313")
                 .primary(p.span, "not a function in that module"),
+        );
+    }
+
+    /// Report a bare name that resolves to no value at all.
+    ///
+    /// An undefined variable used to pass `check` and fail in the backend as
+    /// "unknown variable `x` in JIT" - no line, no column, and only if you ran it.
+    /// A misspelled or out-of-order local is one of the easiest mistakes to make in
+    /// a large program, so it belongs in the checker.
+    ///
+    /// Everything a bare name can legitimately be is excluded first: a local or
+    /// parameter (checked by the caller), a top-level fn used as a value, a `const`,
+    /// a type name, an `@extern` or `use`d import, and a builtin. Shader bodies are
+    /// skipped, since their intrinsics are not CPU declarations.
+    fn report_unknown_value(&mut self, name: &str, span: Span) {
+        if self.lenient_names > 0
+            || self.in_shader
+            || self.fns.contains_key(name)
+            || self.consts.contains(name)
+            || self.user_types.contains(name)
+            || self.imported.contains(name)
+            || aurora_ast::is_builtin(name)
+        {
+            return;
+        }
+        self.diags.push(
+            Diagnostic::error(format!("cannot find value `{name}` in this scope"))
+                .with_code("E0314")
+                .primary(span, "not a local, parameter, const, or import"),
         );
     }
 

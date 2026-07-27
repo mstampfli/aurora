@@ -395,3 +395,55 @@ fn qualified_paths_that_are_not_module_calls_are_left_alone() {
         "an unknown prefix must not be reported as a module, got {errs2:?}"
     );
 }
+
+/// An undefined variable must be caught by the checker, not by the backend.
+///
+/// This used to pass `check` and then fail as "unknown variable `x` in JIT" - no
+/// line, no column, and only if you ran it. A misspelled or out-of-order local is
+/// among the easiest mistakes to make in a large program.
+#[test]
+fn an_undefined_value_is_caught() {
+    let errs = errors("fn main() { let a = 1\n let b = a + nope }");
+    assert!(
+        errs.iter().any(|e| e.contains("cannot find value `nope`")),
+        "an undefined value must be reported, got {errs:?}"
+    );
+}
+
+/// Using a local BEFORE it is declared is the same mistake and must also be caught.
+#[test]
+fn a_value_used_before_declaration_is_caught() {
+    let errs = errors("fn main() { let a = later\n let later = 3 }");
+    assert!(
+        errs.iter().any(|e| e.contains("cannot find value `later`")),
+        "use-before-declaration must be reported, got {errs:?}"
+    );
+}
+
+/// Everything a bare name may legitimately be must stay silent: a const, a
+/// function used as a value, a parameter, a type name, and a declared extern.
+#[test]
+fn legitimate_bare_names_are_not_reported() {
+    let errs = errors(
+        "const LIMIT: i32 = 4
+         @extern fn ext_thing() -> i32
+         fn helper(q: i32) -> i32 { q }
+         fn main() {
+            let a = LIMIT
+            let b = helper
+            let c = ext_thing()
+            let d = helper(LIMIT)
+         }",
+    );
+    assert!(
+        !errs.iter().any(|e| e.contains("cannot find value")),
+        "consts, fn values, params and externs must not be reported, got {errs:?}"
+    );
+
+    // A closure's parameter and a loop variable are locals too.
+    let errs2 = errors("fn main() { let f = |q| q + 1\n for i in 0..3 { let z = i } }");
+    assert!(
+        !errs2.iter().any(|e| e.contains("cannot find value")),
+        "closure params and loop variables must not be reported, got {errs2:?}"
+    );
+}
