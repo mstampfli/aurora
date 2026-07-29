@@ -2,7 +2,7 @@
 //! texture), skeletons (joints, inverse-bind matrices, hierarchy), and skeletal
 //! animation clips.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use glam::{Mat4, Quat, Vec3};
 
@@ -41,15 +41,6 @@ pub struct Joint {
 /// A skeleton: joints in skinning order with their default local transforms.
 pub struct Skeleton {
     pub joints: Vec<Joint>,
-    /// World transform of the node the joint hierarchy HANGS OFF - the ancestors
-    /// above the root joint that are not themselves joints.
-    ///
-    /// Exporters put real transforms there: Blender emits an `Armature` node
-    /// carrying the Z-up -> Y-up correction and the unit scale, and glTF says a
-    /// joint's global transform runs through the full node tree, not just the
-    /// joint subtree. Dropping it makes a character lie on its back at the wrong
-    /// size, so it is captured once here and applied to every root joint.
-    pub root: Mat4,
 }
 
 impl Skeleton {
@@ -211,34 +202,78 @@ impl Model {
                 .map(|it| it.map(|m| Mat4::from_cols_array_2d(&m)).collect())
                 .unwrap_or_else(|| vec![Mat4::IDENTITY; joints_nodes.len()]);
 
-            let mut joints = Vec::with_capacity(joints_nodes.len());
-            for (ji, n) in joints_nodes.iter().enumerate() {
-                let (t, r, s) = n.transform().decomposed();
-                let parent = node_parent
-                    .get(&n.index())
-                    .and_then(|pi| node_to_joint.get(pi))
-                    .copied();
+            // Local transform of one node, as a matrix.
+            let node_local = |ni: usize| -> (Vec3, Quat, Vec3) {
+                let (t, r, sc) = doc
+                    .nodes()
+                    .nth(ni)
+                    .map(|n| n.transform().decomposed())
+                    .unwrap_or(([0.0; 3], [0.0, 0.0, 0.0, 1.0], [1.0; 3]));
+                (Vec3::from(t), Quat::from_array(r), Vec3::from(sc))
+            };
+            let node_name = |ni: usize| -> String {
+                doc.nodes()
+                    .nth(ni)
+                    .and_then(|n| n.name().map(String::from))
+                    .unwrap_or_default()
+            };
+
+            // The skeleton spans the FULL BONE TREE, not just the skin's joint list.
+            //
+            // A skin lists only the joints that deform vertices. Real rigs put other
+            // nodes in between: an exporter emits L_Foot under L_Calf under L_Thigh under
+            // Pelvis while weighting vertices only to the twist bones, so L_Thigh and
+            // L_Calf are absent from the joint list. Building the skeleton from that list
+            // alone left every limb bone a SIBLING of the hip - the chain was gone, so an
+            // animation channel on L_Thigh had nowhere to go and posing a thigh could not
+            // carry its calf and foot.
+            //
+            // Skin joints keep indices 0..N-1 exactly as the skin orders them, because
+            // that is what the mesh's JOINTS_0 attribute indexes. Intermediate and
+            // ancestor nodes are APPENDED after them, so skinning is untouched while the
+            // parent chain becomes real and every bone is addressable by name.
+            let mut order: Vec<usize> = joints_nodes.iter().map(|n| n.index()).collect();
+            let mut seen: HashSet<usize> = order.iter().copied().collect();
+            let mut queue: Vec<usize> = order.clone();
+            while let Some(ni) = queue.pop() {
+                let mut up = node_parent.get(&ni).copied();
+                while let Some(pi) = up {
+                    if !seen.insert(pi) {
+                        break;
+                    }
+                    order.push(pi);
+                    up = node_parent.get(&pi).copied();
+                }
+            }
+            let index_of: HashMap<usize, usize> =
+                order.iter().enumerate().map(|(i, n)| (*n, i)).collect();
+            // Animation channels are resolved through this map too. It held only the
+            // SKIN's joints, so a channel targeting a bone that deforms nothing itself -
+            // an upper arm or a thigh, whose twist children carry the weights - was
+            // silently dropped and that limb never moved. The skeleton spans those bones,
+            // so the channel map must span them as well or the clip is half applied.
+            node_to_joint = index_of.clone();
+
+            let mut joints = Vec::with_capacity(order.len());
+            for (ji, ni) in order.iter().enumerate() {
+                let (t, r, sc) = node_local(*ni);
                 joints.push(Joint {
-                    parent,
-                    inverse_bind: ibm.get(ji).copied().unwrap_or(Mat4::IDENTITY),
-                    t: Vec3::from(t),
-                    r: Quat::from_array(r),
-                    s: Vec3::from(s),
-                    name: n.name().unwrap_or("").to_string(),
+                    parent: node_parent.get(ni).and_then(|pi| index_of.get(pi)).copied(),
+                    // Only skin joints deform anything; the appended bones exist to carry
+                    // the chain, so their bind matrix is never read.
+                    inverse_bind: if ji < joints_nodes.len() {
+                        ibm.get(ji).copied().unwrap_or(Mat4::IDENTITY)
+                    } else {
+                        Mat4::IDENTITY
+                    },
+                    t,
+                    r,
+                    s: sc,
+                    name: node_name(*ni),
                 });
             }
-            // The transform above the joint hierarchy. Find a joint whose parent
-            // is not itself a joint - that parent is the armature node - and take
-            // its WORLD transform, so any chain of non-joint ancestors above it is
-            // included too. Identity when the joints sit at the scene root.
-            let root = joints_nodes
-                .iter()
-                .filter_map(|n| node_parent.get(&n.index()))
-                .find(|pi| !node_to_joint.contains_key(pi))
-                .and_then(|pi| globals.get(pi).copied())
-                .unwrap_or(Mat4::IDENTITY);
 
-            skeleton = Some(Skeleton { joints, root });
+            skeleton = Some(Skeleton { joints });
         }
 
         // --- primitives ---

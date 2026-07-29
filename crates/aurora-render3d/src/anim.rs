@@ -645,7 +645,9 @@ fn resolve_global(
         Some(p) if p != i => resolve_global(skel, local, p, global) * local[i],
         // A root joint's parent is the node the skeleton hangs off, NOT the world:
         // glTF resolves a joint's global transform through the whole node tree.
-        _ => skel.root * local[i],
+        // A parentless joint's local already includes every non-joint ancestor above
+        // it (the armature and any helper nodes), folded in at load.
+        _ => local[i],
     };
     global[i] = Some(g);
     g

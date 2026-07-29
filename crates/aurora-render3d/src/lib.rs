@@ -717,7 +717,6 @@ mod tests {
                 s: Vec3::ONE,
                 name: String::new(),
             }],
-            root: Mat4::IDENTITY,
         };
         let clip = Clip {
             name: "move".into(),
@@ -755,7 +754,6 @@ mod tests {
                 s: Vec3::ONE,
                 name: String::new(),
             }],
-            root: Mat4::IDENTITY,
         };
         let still = Clip {
             name: "a".into(),

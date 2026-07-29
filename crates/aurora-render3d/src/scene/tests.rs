@@ -547,7 +547,11 @@ fn a_skeleton_under_an_armature_node_inherits_its_transform() {
     let _ = std::fs::remove_file(&path);
 
     let skel = model.skeleton.as_ref().expect("fixture has a skin");
-    assert_eq!(skel.joints.len(), 1);
+    // The skeleton spans the whole bone tree, so it holds the armature above the joint as
+    // well as the joint itself. What must hold is that SKIN joints keep the skin's own
+    // ordering at indices 0..N-1, because that is what the mesh's JOINTS_0 indexes.
+    assert!(!skel.joints.is_empty());
+    assert_eq!(skel.joints[0].name, "Joint");
 
     // With no clip, the single joint's skin matrix IS the armature transform.
     let m = skin_matrices(skel, None, 0.0)[0];
