@@ -105,8 +105,15 @@ const PENDING_MAX: usize = 256;
 /// World-state entries per datagram. 240 f32s is 960 bytes of payload plus an 11-byte header,
 /// comfortably inside a 1200-byte safe MTU, so a chunk is never fragmented by the network.
 const WORLD_CHUNK: usize = 240;
-/// Hard cap on the world array: 64 chunks, which is what the completeness mask holds.
+/// Hard cap on one world array: 64 chunks, which is what the completeness mask holds.
 const WORLD_MAX: usize = WORLD_CHUNK * 64;
+/// How many independent world arrays a game gets.
+///
+/// One array would force everything the host owns to be re-published whenever any of it moved:
+/// MARROW's warren is ~900 entries that change a few times a round, and its horde is ~170 that
+/// change every frame, so sharing an array would send the warren sixty times a second to carry
+/// the horde. Separate channels, one mechanism.
+const WORLD_CH: usize = 4;
 
 /// The Aurora sim closure's native ABI: `(env, state_ptr_bits, input_ptr_bits)`,
 /// matching how compiled Aurora closures are called (see `aurora_par_for`).
@@ -271,17 +278,17 @@ pub struct Session {
     /// ordering and replay-on-join, and gets all three wrong the first time. Re-publishing the
     /// whole array is idempotent: a lost chunk self-heals on the next keyframe, a client that
     /// joins late is not a special case, and there is no acknowledgement to get wrong.
-    world: Vec<f32>,
+    world: [Vec<f32>; WORLD_CH],
     /// Bumped on every change, so a client can tell a complete new version from a torn mix of
     /// two. Chunks of different generations are never combined.
-    world_gen: u32,
-    last_sent_world: Vec<f32>,
+    world_gen: [u32; WORLD_CH],
+    last_sent_world: [Vec<f32>; WORLD_CH],
     /// CLIENT: the generation being assembled, its buffer, and which chunks have arrived. The
     /// array is published to the game only once every chunk of one generation is in - a warren
     /// built from half of one version and half of another is not a warren.
-    world_stage_gen: u32,
-    world_stage: Vec<f32>,
-    world_stage_got: u64,
+    world_stage_gen: [u32; WORLD_CH],
+    world_stage: [Vec<f32>; WORLD_CH],
+    world_stage_got: [u64; WORLD_CH],
     objects: Vec<[f32; 10]>,
     /// Host change-detection: objects are static until shot/bumped, so we only resend when moved.
     last_sent_objects: Vec<[f32; 10]>,
@@ -457,12 +464,12 @@ impl Session {
             clients: Vec::new(),
             host: Player::spawn(),
             bot_count: 0,
-            world: Vec::new(),
-            world_gen: 0,
-            last_sent_world: Vec::new(),
-            world_stage_gen: 0,
-            world_stage: Vec::new(),
-            world_stage_got: 0,
+            world: std::array::from_fn(|_| Vec::new()),
+            world_gen: [0; WORLD_CH],
+            last_sent_world: std::array::from_fn(|_| Vec::new()),
+            world_stage_gen: [0; WORLD_CH],
+            world_stage: std::array::from_fn(|_| Vec::new()),
+            world_stage_got: [0; WORLD_CH],
             objects: Vec::new(),
             last_sent_objects: Vec::new(),
             fx: Vec::new(),
@@ -928,29 +935,39 @@ impl Session {
             let pkt = encode_snapshot(cid, acked, tick, stick, slen, &included);
             let _ = self.sock.send_to(&pkt, c.addr);
         }
-        // The world-state array: sent whole (in chunks) whenever it changes, and again on every
+        // The world arrays: each sent whole (in chunks) whenever it changes, and again on every
         // keyframe so a lost chunk and a late joiner are the same non-problem.
-        if self.world != self.last_sent_world || keyframe {
-            if self.world != self.last_sent_world {
-                self.world_gen = self.world_gen.wrapping_add(1);
-                self.last_sent_world = self.world.clone();
+        for ch in 0..WORLD_CH {
+            if self.world[ch] == self.last_sent_world[ch] && !keyframe {
+                continue;
             }
-            let total = self.world.len();
+            if self.world[ch] != self.last_sent_world[ch] {
+                self.world_gen[ch] = self.world_gen[ch].wrapping_add(1);
+                self.last_sent_world[ch] = self.world[ch].clone();
+            }
+            let total = self.world[ch].len();
+            if total == 0 {
+                // An emptied array still has to be announced, or clients keep the last one.
+                let pkt = encode_world(ch, self.world_gen[ch], 0, 0, &[]);
+                for c in &self.clients {
+                    let _ = self.sock.send_to(&pkt, c.addr);
+                }
+                continue;
+            }
             let mut off = 0;
             while off < total {
                 let end = (off + WORLD_CHUNK).min(total);
-                let pkt = encode_world(self.world_gen, total, off, &self.world[off..end]);
+                let pkt = encode_world(
+                    ch,
+                    self.world_gen[ch],
+                    total,
+                    off,
+                    &self.world[ch][off..end],
+                );
                 for c in &self.clients {
                     let _ = self.sock.send_to(&pkt, c.addr);
                 }
                 off = end;
-            }
-            // An emptied array still has to be announced, or clients keep the last one forever.
-            if total == 0 {
-                let pkt = encode_world(self.world_gen, 0, 0, &[]);
-                for c in &self.clients {
-                    let _ = self.sock.send_to(&pkt, c.addr);
-                }
             }
         }
         // Replicate world-object (crate) positions to every client when they move (boxes are
@@ -1199,8 +1216,8 @@ impl Session {
             return;
         }
         if pkt.first().copied() == Some(TAG_WORLD) {
-            if let Some((gen, total, offset, vals)) = decode_world(pkt) {
-                self.take_world_chunk(gen, total, offset, &vals);
+            if let Some((ch, gen, total, offset, vals)) = decode_world(pkt) {
+                self.take_world_chunk(ch, gen, total, offset, &vals);
             }
             return;
         }
@@ -1610,51 +1627,58 @@ impl Session {
 
     // --- world state: the host publishes an array; clients read it whole or not at all ---
 
-    /// HOST: set the length of the world-state array (entries beyond the old length are 0).
-    pub fn set_world_len(&mut self, n: usize) {
-        if !self.is_server {
+    /// HOST: set the length of world array `ch` (entries beyond the old length are 0).
+    pub fn set_world_len(&mut self, ch: usize, n: usize) {
+        if !self.is_server || ch >= WORLD_CH {
             return;
         }
-        self.world.resize(n.min(WORLD_MAX), 0.0);
+        self.world[ch].resize(n.min(WORLD_MAX), 0.0);
     }
     /// HOST: write one entry. Out-of-range indices are ignored, not silently resized: a write
     /// past the end is a bug in the caller's layout, and growing behind its back would hide it.
-    pub fn set_world(&mut self, i: usize, v: f64) {
-        if !self.is_server {
+    pub fn set_world(&mut self, ch: usize, i: usize, v: f64) {
+        if !self.is_server || ch >= WORLD_CH {
             return;
         }
-        if let Some(slot) = self.world.get_mut(i) {
+        if let Some(slot) = self.world[ch].get_mut(i) {
             *slot = v as f32;
         }
     }
-    /// Length of the world-state array as this peer knows it. On a client this is 0 until a
-    /// COMPLETE generation has arrived, so a game can use it as the "do I have the world yet?"
-    /// question without a second flag.
-    pub fn world_len(&self) -> usize {
-        self.world.len()
+    /// Length of world array `ch` as this peer knows it. On a client this is 0 until a COMPLETE
+    /// generation has arrived, so a game can use it as the "do I have this yet?" question without
+    /// a second flag.
+    pub fn world_len(&self, ch: usize) -> usize {
+        self.world.get(ch).map(|w| w.len()).unwrap_or(0)
     }
     /// Read one entry; 0 outside the array.
-    pub fn world(&self, i: usize) -> f64 {
-        self.world.get(i).copied().unwrap_or(0.0) as f64
+    pub fn world(&self, ch: usize, i: usize) -> f64 {
+        self.world
+            .get(ch)
+            .and_then(|w| w.get(i))
+            .copied()
+            .unwrap_or(0.0) as f64
     }
-    /// How many complete world generations this peer has adopted. A client watches this to notice
-    /// "the world changed" without diffing the array itself.
-    pub fn world_gen(&self) -> u32 {
-        self.world_gen
+    /// How many complete generations of `ch` this peer has adopted. A client watches this to
+    /// notice "it changed" without diffing the array itself.
+    pub fn world_gen(&self, ch: usize) -> u32 {
+        self.world_gen.get(ch).copied().unwrap_or(0)
     }
 
     /// CLIENT: fold one chunk into the generation being assembled, publishing it once whole.
-    fn take_world_chunk(&mut self, gen: u32, total: usize, offset: usize, vals: &[f32]) {
-        if gen != self.world_stage_gen || self.world_stage.len() != total {
-            self.world_stage_gen = gen;
-            self.world_stage = vec![0.0; total];
-            self.world_stage_got = 0;
+    fn take_world_chunk(&mut self, ch: usize, gen: u32, total: usize, offset: usize, vals: &[f32]) {
+        if ch >= WORLD_CH {
+            return;
+        }
+        if gen != self.world_stage_gen[ch] || self.world_stage[ch].len() != total {
+            self.world_stage_gen[ch] = gen;
+            self.world_stage[ch] = vec![0.0; total];
+            self.world_stage_got[ch] = 0;
         }
         let end = (offset + vals.len()).min(total);
-        self.world_stage[offset..end].copy_from_slice(&vals[..end - offset]);
+        self.world_stage[ch][offset..end].copy_from_slice(&vals[..end - offset]);
         let chunk = offset / WORLD_CHUNK;
         if chunk < 64 {
-            self.world_stage_got |= 1u64 << chunk;
+            self.world_stage_got[ch] |= 1u64 << chunk;
         }
         let want = total.div_ceil(WORLD_CHUNK);
         let full = if want == 0 {
@@ -1664,9 +1688,9 @@ impl Session {
         } else {
             (1u64 << want) - 1
         };
-        if self.world_stage_got == full {
-            self.world = self.world_stage.clone();
-            self.world_gen = gen;
+        if self.world_stage_got[ch] == full {
+            self.world[ch] = self.world_stage[ch].clone();
+            self.world_gen[ch] = gen;
         }
     }
 
@@ -2187,9 +2211,10 @@ fn decode_fx(b: &[u8]) -> Option<Vec<[f32; 4]>> {
 }
 /// One chunk of the world-state array: which generation, how long the whole array is, where this
 /// piece starts, and the piece itself.
-fn encode_world(gen: u32, total: usize, offset: usize, vals: &[f32]) -> Vec<u8> {
-    let mut b = Vec::with_capacity(11 + vals.len() * 4);
+fn encode_world(ch: usize, gen: u32, total: usize, offset: usize, vals: &[f32]) -> Vec<u8> {
+    let mut b = Vec::with_capacity(12 + vals.len() * 4);
     b.push(TAG_WORLD);
+    b.push(ch as u8);
     put_u32(&mut b, gen);
     b.extend_from_slice(&(total as u16).to_be_bytes());
     b.extend_from_slice(&(offset as u16).to_be_bytes());
@@ -2199,22 +2224,23 @@ fn encode_world(gen: u32, total: usize, offset: usize, vals: &[f32]) -> Vec<u8> 
     }
     b
 }
-/// `(generation, total length, offset, values)` as [`encode_world`] wrote it.
-type DecodedWorld = (u32, usize, usize, Vec<f32>);
+/// `(channel, generation, total length, offset, values)` as [`encode_world`] wrote it.
+type DecodedWorld = (usize, u32, usize, usize, Vec<f32>);
 
 fn decode_world(b: &[u8]) -> Option<DecodedWorld> {
-    if b.len() < 11 || b[0] != TAG_WORLD {
+    if b.len() < 12 || b[0] != TAG_WORLD {
         return None;
     }
-    let gen = rd_u32(b, 1);
-    let total = u16::from_be_bytes([b[5], b[6]]) as usize;
-    let offset = u16::from_be_bytes([b[7], b[8]]) as usize;
-    let count = u16::from_be_bytes([b[9], b[10]]) as usize;
-    if total > WORLD_MAX || offset + count > total || 11 + count * 4 > b.len() {
+    let ch = b[1] as usize;
+    let gen = rd_u32(b, 2);
+    let total = u16::from_be_bytes([b[6], b[7]]) as usize;
+    let offset = u16::from_be_bytes([b[8], b[9]]) as usize;
+    let count = u16::from_be_bytes([b[10], b[11]]) as usize;
+    if ch >= WORLD_CH || total > WORLD_MAX || offset + count > total || 12 + count * 4 > b.len() {
         return None;
     }
-    let vals = (0..count).map(|i| rd_f32(b, 11 + i * 4)).collect();
-    Some((gen, total, offset, vals))
+    let vals = (0..count).map(|i| rd_f32(b, 12 + i * 4)).collect();
+    Some((ch, gen, total, offset, vals))
 }
 
 fn encode_objects(objs: &[[f32; 10]]) -> Vec<u8> {
@@ -2772,30 +2798,34 @@ pub extern "C" fn aurora_net_owned_movement(on: i64) {
 /// events: re-sending the whole array is idempotent, so a lost packet self-heals on the next
 /// keyframe and a client that joins late is not a special case.
 #[no_mangle]
-pub extern "C" fn aurora_net_set_world_len(n: i64) {
-    with((), |s| s.set_world_len(n.max(0) as usize))
+pub extern "C" fn aurora_net_set_world_len(ch: i64, n: i64) {
+    with((), |s| {
+        s.set_world_len(ch.max(0) as usize, n.max(0) as usize)
+    })
 }
 /// HOST: write one entry of the world-state array.
 #[no_mangle]
-pub extern "C" fn aurora_net_set_world(i: i64, v: f64) {
-    with((), |s| s.set_world(i.max(0) as usize, v))
+pub extern "C" fn aurora_net_set_world(ch: i64, i: i64, v: f64) {
+    with((), |s| {
+        s.set_world(ch.max(0) as usize, i.max(0) as usize, v)
+    })
 }
 /// Length of the world-state array. On a client this stays 0 until a COMPLETE version has
 /// arrived, so it doubles as "do I have the world yet?".
 #[no_mangle]
-pub extern "C" fn aurora_net_world_len() -> i64 {
-    read(0, |s| s.world_len() as i64)
+pub extern "C" fn aurora_net_world_len(ch: i64) -> i64 {
+    read(0, |s| s.world_len(ch.max(0) as usize) as i64)
 }
 /// Read one entry of the world-state array; 0 outside it.
 #[no_mangle]
-pub extern "C" fn aurora_net_world(i: i64) -> f64 {
-    read(0.0, |s| s.world(i.max(0) as usize))
+pub extern "C" fn aurora_net_world(ch: i64, i: i64) -> f64 {
+    read(0.0, |s| s.world(ch.max(0) as usize, i.max(0) as usize))
 }
 /// How many complete world versions this peer has adopted - watch it to notice a change without
 /// diffing the array.
 #[no_mangle]
-pub extern "C" fn aurora_net_world_gen() -> i64 {
-    read(0, |s| s.world_gen() as i64)
+pub extern "C" fn aurora_net_world_gen(ch: i64) -> i64 {
+    read(0, |s| s.world_gen(ch.max(0) as usize) as i64)
 }
 /// Publish this player's EXACT 64-bit tag, replicated verbatim to every peer.
 ///
@@ -3509,9 +3539,15 @@ mod meta_replication_test {
         let mut host = Session::host(0).expect("host bind");
         let host_addr = host.local_addr();
         let mut client = Session::join(host_addr).expect("client bind");
-        host.set_world_len(n);
+        host.set_world_len(0, n);
         for i in 0..n {
-            host.set_world(i, (i * 3 + 1) as f64);
+            host.set_world(0, i, (i * 3 + 1) as f64);
+        }
+        // A second channel, changing on its own: channels must not share a generation or a
+        // staging buffer, or a horde updating every frame would re-send the warren with it.
+        host.set_world_len(1, 3);
+        for i in 0..3 {
+            host.set_world(1, i, (900 + i) as f64);
         }
         let input = [0.0f32; 4];
         for _ in 0..60 {
@@ -3521,20 +3557,24 @@ mod meta_replication_test {
             host.update(0.016);
             client.update(0.016);
         }
-        assert_eq!(client.world_len(), n, "the client never adopted the world");
+        assert_eq!(client.world_len(0), n, "the client never adopted the world");
         for i in 0..n {
             assert_eq!(
-                client.world(i),
+                client.world(0, i),
                 (i * 3 + 1) as f64,
                 "entry {i} did not survive the trip"
             );
         }
+        assert_eq!(client.world_len(1), 3, "channel 1 never arrived");
+        assert_eq!(client.world(1, 2), 902.0);
 
-        // A CHANGED world must replace it wholesale, not patch it.
+        // A CHANGED world must replace it wholesale, not patch it - and touching channel 0 must
+        // leave channel 1's generation alone, which is the whole point of separate channels.
         for i in 0..n {
-            host.set_world(i, (i * 7 + 2) as f64);
+            host.set_world(0, i, (i * 7 + 2) as f64);
         }
-        let gen_before = client.world_gen();
+        let gen_before = client.world_gen(0);
+        let other_gen_before = client.world_gen(1);
         for _ in 0..60 {
             client.send_input(&input);
             host.send_input(&input);
@@ -3543,25 +3583,31 @@ mod meta_replication_test {
             client.update(0.016);
         }
         assert!(
-            client.world_gen() != gen_before,
+            client.world_gen(0) != gen_before,
             "the client did not notice a new world version"
         );
+        assert_eq!(
+            client.world_gen(1),
+            other_gen_before,
+            "changing channel 0 bumped channel 1"
+        );
         for i in 0..n {
-            assert_eq!(client.world(i), (i * 7 + 2) as f64, "entry {i} is stale");
+            assert_eq!(client.world(0, i), (i * 7 + 2) as f64, "entry {i} is stale");
         }
 
         // And a client must never adopt a MIX of two versions. Feeding it one chunk of the new
         // generation and none of the rest has to leave the old array standing.
-        let old: Vec<f64> = (0..n).map(|i| client.world(i)).collect();
+        let old: Vec<f64> = (0..n).map(|i| client.world(0, i)).collect();
         client.take_world_chunk(
-            client.world_gen().wrapping_add(9),
+            0,
+            client.world_gen(0).wrapping_add(9),
             n,
             0,
             &[42.0; WORLD_CHUNK],
         );
         for i in 0..n {
             assert_eq!(
-                client.world(i),
+                client.world(0, i),
                 old[i],
                 "entry {i} came from an incomplete version"
             );
@@ -3574,9 +3620,9 @@ mod meta_replication_test {
     fn a_late_joiner_receives_the_world() {
         let mut host = Session::host(0).expect("host bind");
         let host_addr = host.local_addr();
-        host.set_world_len(5);
+        host.set_world_len(0, 5);
         for i in 0..5 {
-            host.set_world(i, (100 + i) as f64);
+            host.set_world(0, i, (100 + i) as f64);
         }
         let input = [0.0f32; 4];
         // The host runs alone long enough for the array to be old news.
@@ -3592,8 +3638,8 @@ mod meta_replication_test {
             host.update(0.016);
             client.update(0.016);
         }
-        assert_eq!(client.world_len(), 5, "a late joiner never got the world");
-        assert_eq!(client.world(3), 103.0);
+        assert_eq!(client.world_len(0), 5, "a late joiner never got the world");
+        assert_eq!(client.world(0, 3), 103.0);
     }
 
     /// The tag must arrive BIT-FOR-BIT, both ways.

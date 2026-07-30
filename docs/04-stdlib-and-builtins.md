@@ -277,8 +277,8 @@ accessors.
 | `net_player_input(id, i) -> f64` | what a player is TRYING to do | the authority acts on this for doors, purchases and revives; answers for the local player too, so one code path drives the whole squad |
 | `net_set_local_state(slot, v)` | publish where THIS peer's body is | for a mover that lives in a physics world; call before `net_send_input` |
 | `net_owned_movement(on)` (host) | 1 = every peer owns its own body and the host relays it; 0 = the host re-simulates each client | default 0. Owned movement suits co-op PvE: it cannot drift, since a body has one simulator. Combat stays host-authoritative either way |
-| `net_set_world_len(n)` / `net_set_world(i, v)` (host) | publish the world-state array | level layout: what every peer must agree on exactly and no transform implies |
-| `net_world_len() -> i64` / `net_world(i) -> f64` / `net_world_gen() -> i64` | read it | on a client the length is 0 until a COMPLETE version arrives, so it doubles as "do I have the world yet?" |
+| `net_set_world_len(ch, n)` / `net_set_world(ch, i, v)` (host) | publish world array `ch` (0..3) | state every peer must agree on that no transform implies - level layout, entity tables. Separate channels so state that changes every frame does not drag along state that changes once a round |
+| `net_world_len(ch) -> i64` / `net_world(ch, i) -> f64` / `net_world_gen(ch) -> i64` | read one | on a client the length is 0 until a COMPLETE version of that channel arrives, so it doubles as "do I have it yet?" |
 | `net_set_tag(v)` / `net_player_tag(id) -> i64` | one EXACT 64-bit token per player | replicated verbatim - use it for fingerprints, seeds, ids and bitmasks, which an f32 meta slot silently rounds |
 
 Snapshots are **delta-compressed** (only changed, in-interest players, with periodic
