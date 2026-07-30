@@ -115,6 +115,14 @@ struct Player {
     meta: [f32; META_LEN],
     /// Display name, UTF-8 bytes, null-padded (len = bytes up to the first 0).
     name: [u8; NAME_MAX],
+    /// One EXACT 64-bit token per player, replicated verbatim.
+    ///
+    /// `meta` is f32 on the wire, which is right for gameplay scalars and wrong for anything
+    /// that must survive the trip bit-for-bit. A 32-bit world fingerprint sent through an f32
+    /// slot comes back rounded to a multiple of 128, so a peer comparing it against its own
+    /// reports a desync that never happened - and a game cannot tell that from a real one.
+    /// Ids, seeds, bitmasks and checksums go here instead.
+    tag: u64,
 }
 impl Player {
     fn spawn() -> Player {
@@ -122,6 +130,7 @@ impl Player {
             s: [0.0; STATE_MAX],
             meta: [0.0; META_LEN],
             name: [0u8; NAME_MAX],
+            tag: 0,
         }
     }
 }
@@ -311,6 +320,8 @@ pub struct Session {
     respreq_in: i32,
     /// The local player's outgoing metadata (set via net_set_meta), broadcast each frame.
     local_meta: [f32; META_LEN],
+    /// The LOCAL player's exact 64-bit tag (see `Player::tag`).
+    local_tag: u64,
     /// The local player's outgoing display name (set via net_set_name).
     local_name: [u8; NAME_MAX],
     /// Max simultaneously-connected clients the host accepts (set via net_max_clients).
@@ -436,6 +447,7 @@ impl Session {
             impulse_in: -1,
             respreq_in: -1,
             local_meta: [0.0; META_LEN],
+            local_tag: 0,
             local_name: [0u8; NAME_MAX],
             max_clients: 8,
             rejected: false,
@@ -521,6 +533,7 @@ impl Session {
             run_sim(self.sim_fn, self.sim_env, &mut self.host.s, &blob);
             self.host.meta = self.local_meta; // host owns its own metadata + name
             self.host.name = self.local_name;
+            self.host.tag = self.local_tag;
             0
         } else {
             let seq = self.next_seq;
@@ -549,6 +562,7 @@ impl Session {
                     &self.local_name,
                     &self.pred.s,
                     self.state_len,
+                    self.local_tag,
                 );
                 let sent = self.sock.send_to(&pkt, addr);
                 if std::env::var("AURORA_NET_TRACE").is_ok() {
@@ -836,6 +850,7 @@ impl Session {
                         state_differs(&p.s, &st.s, slen)
                             || meta_differs(&p.meta, &st.meta)
                             || p.name != st.name
+                            || p.tag != st.tag
                     })
                     .unwrap_or(true);
                 if changed || keyframe {
@@ -961,7 +976,7 @@ impl Session {
         match pkt.first().copied() {
             Some(TAG_INPUT) => {
                 let sl = self.state_len;
-                if let Some((seq, blob, meta, name, _cstate)) =
+                if let Some((seq, blob, meta, name, _cstate, tag)) =
                     decode_input(pkt, self.input_len, sl)
                 {
                     let Some(idx) = self.ensure_client(from) else {
@@ -988,6 +1003,10 @@ impl Session {
                         }
                     }
                     self.clients[idx].state.name = name;
+                    // The tag is the client's own exact token (its world fingerprint, say). The
+                    // host relays it verbatim - it is the client's claim ABOUT itself, and the
+                    // point of it is that peers can compare claims byte-for-byte.
+                    self.clients[idx].state.tag = tag;
                 }
             }
             Some(TAG_FIRE) => {
@@ -1260,7 +1279,27 @@ impl Session {
             self.local_meta[slot] = v as f32;
         }
     }
+    /// Set the LOCAL player's exact 64-bit tag, replicated verbatim (broadcast next frame).
+    ///
+    /// Use this, not a meta slot, for anything that must arrive bit-for-bit: a world
+    /// fingerprint, a seed, an id, a bitmask. Meta slots are f32 on the wire.
+    pub fn set_tag(&mut self, v: u64) {
+        self.local_tag = v;
+        if self.is_server {
+            self.host.tag = v;
+        } else {
+            self.pred.tag = v;
+        }
+    }
+    /// Read a player's replicated 64-bit tag. 0 when that player has not set one.
+    pub fn tag(&self, id: u32) -> u64 {
+        self.player_blob(id).0.tag
+    }
     /// Read a player's replicated metadata slot (hp/shield/etc.).
+    ///
+    /// Slots are f32 on the wire: they carry gameplay scalars (hp, shield, kills), and a value
+    /// needing more than 24 bits of mantissa comes back rounded. See [`Session::set_tag`] for
+    /// the exact channel.
     pub fn meta(&self, id: u32, slot: usize) -> f64 {
         if slot >= META_LEN {
             return 0.0;
@@ -1705,6 +1744,21 @@ fn put_u32(b: &mut Vec<u8>, v: u32) {
 fn put_f32(b: &mut Vec<u8>, v: f32) {
     b.extend_from_slice(&v.to_be_bytes());
 }
+fn put_u64(b: &mut Vec<u8>, v: u64) {
+    b.extend_from_slice(&v.to_be_bytes());
+}
+fn rd_u64(b: &[u8], o: usize) -> u64 {
+    u64::from_be_bytes([
+        b[o],
+        b[o + 1],
+        b[o + 2],
+        b[o + 3],
+        b[o + 4],
+        b[o + 5],
+        b[o + 6],
+        b[o + 7],
+    ])
+}
 fn rd_u32(b: &[u8], o: usize) -> u32 {
     u32::from_be_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
 }
@@ -1719,6 +1773,7 @@ fn meta_differs(a: &[f32; META_LEN], b: &[f32; META_LEN]) -> bool {
     (0..META_LEN).any(|i| (a[i] - b[i]).abs() > 1e-3)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn encode_input(
     seq: u32,
     blob: &InputBlob,
@@ -1727,8 +1782,9 @@ fn encode_input(
     name: &[u8; NAME_MAX],
     state: &[f32; STATE_MAX],
     slen: usize,
+    tag: u64,
 ) -> Vec<u8> {
-    let mut b = Vec::with_capacity(5 + len * 4 + META_LEN * 4 + NAME_MAX + slen * 4);
+    let mut b = Vec::with_capacity(13 + len * 4 + META_LEN * 4 + NAME_MAX + slen * 4);
     b.push(TAG_INPUT);
     put_u32(&mut b, seq);
     for v in blob.iter().take(len) {
@@ -1744,22 +1800,24 @@ fn encode_input(
     for v in state.iter().take(slen) {
         put_f32(&mut b, *v);
     }
+    put_u64(&mut b, tag);
     b
 }
 /// One decoded client->server input packet, in the order [`encode_input`] wrote
 /// it: the input sequence number, the input blob, the client's self-reported
 /// metadata, its display name, and its own predicted movement state (which the
-/// host does NOT trust - see `on_server_packet`).
+/// host does NOT trust - see `on_server_packet`), and its exact 64-bit tag.
 type DecodedInput = (
     u32,
     InputBlob,
     [f32; META_LEN],
     [u8; NAME_MAX],
     [f32; STATE_MAX],
+    u64,
 );
 
 fn decode_input(b: &[u8], len: usize, slen: usize) -> Option<DecodedInput> {
-    if b.len() < 5 + len * 4 + META_LEN * 4 + NAME_MAX + slen * 4 || b[0] != TAG_INPUT {
+    if b.len() < 13 + len * 4 + META_LEN * 4 + NAME_MAX + slen * 4 || b[0] != TAG_INPUT {
         return None;
     }
     let seq = rd_u32(b, 1);
@@ -1785,7 +1843,8 @@ fn decode_input(b: &[u8], len: usize, slen: usize) -> Option<DecodedInput> {
     for i in 0..slen {
         state[i] = rd_f32(b, so + i * 4);
     }
-    Some((seq, blob, meta, name, state))
+    let tag = rd_u64(b, so + slen * 4);
+    Some((seq, blob, meta, name, state, tag))
 }
 
 fn encode_snapshot(
@@ -1796,7 +1855,7 @@ fn encode_snapshot(
     slen: usize,
     players: &[(u32, Player)],
 ) -> Vec<u8> {
-    let mut b = Vec::with_capacity(19 + players.len() * (4 + (slen + META_LEN) * 4 + NAME_MAX));
+    let mut b = Vec::with_capacity(19 + players.len() * (12 + (slen + META_LEN) * 4 + NAME_MAX));
     b.push(TAG_SNAPSHOT);
     put_u32(&mut b, your_id);
     put_u32(&mut b, acked);
@@ -1813,6 +1872,7 @@ fn encode_snapshot(
             put_f32(&mut b, p.meta[i]);
         }
         b.extend_from_slice(&p.name);
+        put_u64(&mut b, p.tag);
     }
     b
 }
@@ -1832,7 +1892,7 @@ fn decode_snapshot(b: &[u8]) -> Option<DecodedSnapshot> {
     let stick = rd_u32(b, 13);
     let count = u16::from_be_bytes([b[17], b[18]]) as usize;
     let slen = (b[19] as usize).min(STATE_MAX);
-    let stride = 4 + (slen + META_LEN) * 4 + NAME_MAX;
+    let stride = 12 + (slen + META_LEN) * 4 + NAME_MAX;
     let mut players = Vec::with_capacity(count);
     let mut o = 20;
     for _ in 0..count {
@@ -1849,6 +1909,7 @@ fn decode_snapshot(b: &[u8]) -> Option<DecodedSnapshot> {
         }
         let no = o + 4 + (slen + META_LEN) * 4;
         p.name.copy_from_slice(&b[no..no + NAME_MAX]);
+        p.tag = rd_u64(b, no + NAME_MAX);
         players.push((id, p));
         o += stride;
     }
@@ -2360,9 +2421,27 @@ pub extern "C" fn aurora_net_set_player_meta(id: i64, slot: i64, v: f64) {
     })
 }
 /// Read a player's replicated metadata slot (works on host AND clients).
+///
+/// Metadata slots are f32 on the wire, so they carry gameplay scalars faithfully and anything
+/// wider than 24 bits of mantissa comes back rounded. Use `net_set_tag`/`net_player_tag` for a
+/// value that must arrive exactly.
 #[no_mangle]
 pub extern "C" fn aurora_net_player_meta(id: i64, slot: i64) -> f64 {
     read(0.0, |s| s.meta(id.max(0) as u32, slot.max(0) as usize))
+}
+/// Publish this player's EXACT 64-bit tag, replicated verbatim to every peer.
+///
+/// This exists because metadata slots are f32: a 32-bit world fingerprint sent through one
+/// comes back rounded to a multiple of 128, and a peer comparing it with its own then reports a
+/// desync that never happened. Fingerprints, seeds, ids and bitmasks belong here.
+#[no_mangle]
+pub extern "C" fn aurora_net_set_tag(v: i64) {
+    with((), |s| s.set_tag(v as u64))
+}
+/// Read a player's replicated 64-bit tag; 0 if that player has not published one.
+#[no_mangle]
+pub extern "C" fn aurora_net_player_tag(id: i64) -> i64 {
+    read(0, |s| s.tag(id.max(0) as u32) as i64)
 }
 /// Set the local player's display name (broadcast + replicated to everyone).
 ///
@@ -2891,6 +2970,65 @@ mod meta_replication_test {
     use super::*;
     // Two real Sessions (host + client) over the loopback UDP socket - a HEADLESS 2-player
     // test that the metadata channel replicates BOTH ways.
+    /// The tag must arrive BIT-FOR-BIT, both ways.
+    ///
+    /// This is the channel a desync check needs, and the reason it exists: MARROW published a
+    /// 32-bit warren fingerprint (1443110647) through an f32 meta slot, the peer read back
+    /// 1443110656 - the same number rounded to a multiple of 128 - and every frame reported a
+    /// desync in a session whose warrens were identical. So the values here are chosen to be
+    /// unrepresentable in both f32 AND f64-via-f32: if either end ever routes the tag through a
+    /// float, this fails.
+    #[test]
+    fn the_tag_replicates_exactly_both_ways() {
+        let host_tag: u64 = 0x0123_4567_89AB_CDEF;
+        let client_tag: u64 = 1_443_110_647; // the real fingerprint that started this
+        let mut host = Session::host(0).expect("host bind");
+        let host_addr = host.local_addr();
+        let mut client = Session::join(host_addr).expect("client bind");
+        host.set_tag(host_tag);
+        client.set_tag(client_tag);
+        let input = [0.0f32; 4];
+        for _ in 0..40 {
+            client.send_input(&input);
+            host.send_input(&input);
+            client.update(0.016);
+            host.update(0.016);
+            client.update(0.016);
+        }
+        let client_id = client.my_id();
+        assert_eq!(
+            client.tag(0),
+            host_tag,
+            "client read the host tag as {:#x}, expected {host_tag:#x}",
+            client.tag(0)
+        );
+        assert_eq!(
+            host.tag(client_id),
+            client_tag,
+            "host read the client tag as {}, expected {client_tag}",
+            host.tag(client_id)
+        );
+        // Premise: an f32 round-trip really would have lost these, so passing means the tag is
+        // not merely lucky.
+        assert_ne!(client_tag as f32 as u64, client_tag);
+        assert_ne!(host_tag as f32 as u64, host_tag);
+        // And a CHANGED tag has to propagate, or a fingerprint would freeze at its first value
+        // and a warren that diverged later would never be caught.
+        host.set_tag(host_tag ^ 0xFFFF);
+        for _ in 0..40 {
+            client.send_input(&input);
+            host.send_input(&input);
+            client.update(0.016);
+            host.update(0.016);
+            client.update(0.016);
+        }
+        assert_eq!(
+            client.tag(0),
+            host_tag ^ 0xFFFF,
+            "a changed tag did not replicate"
+        );
+    }
+
     #[test]
     fn metadata_replicates_host_and_client() {
         let mut host = Session::host(0).expect("host bind");

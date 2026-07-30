@@ -39,8 +39,6 @@ const UNDOCUMENTED: &[&str] = &[
     "load_settings",
     "net_leave",
     "net_player_state",
-    "net_set_meta",
-    "net_player_meta",
     "net_set_name",
     "net_player_name_len",
     "net_player_name_char",

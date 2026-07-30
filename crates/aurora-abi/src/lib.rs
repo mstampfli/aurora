@@ -446,6 +446,8 @@ macro_rules! for_each_builtin {
         [scalar,   net_player_state,              aurora_net_player_state,               [I64, I64],                                      F64]
         [scalar,   net_set_meta,                  aurora_net_set_meta,                   [I64, F64],                                      void]
         [scalar,   net_player_meta,               aurora_net_player_meta,                [I64, I64],                                      F64]
+        [scalar,   net_set_tag,                   aurora_net_set_tag,                    [I64],                                           void]
+        [scalar,   net_player_tag,                aurora_net_player_tag,                 [I64],                                           I64]
         [special,  net_set_name,                  aurora_net_set_name,                   [Ptr, I64],                                      void]
         [scalar,   net_player_name_len,           aurora_net_player_name_len,            [I64],                                           I64]
         [scalar,   net_player_name_char,          aurora_net_player_name_char,           [I64, I64],                                      I64]
