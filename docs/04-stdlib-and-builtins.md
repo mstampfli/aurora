@@ -348,6 +348,7 @@ window. Colors are 0..1 floats; angles are radians; handles are `i64`.
 | `r3d_hide_joint(h, joint)` | hide one skin joint's geometry | zeroes that joint's skinning matrix, collapsing its geometry to the model origin: first-person arms drop the torso/head/legs, and a body part covered by gear stops clipping through it. Joints 0..63 only (the mask is 64 bits), and it ACCUMULATES: clear it with `r3d_show_joints` |
 | `r3d_anim_play(h, clip, looping, speed, fade)` | start an animation clip | `looping`/`speed`; `fade` crossfades from the current clip over that many seconds (0 = snap) |
 | `r3d_anim_update(h, dt)` | advance the current clip | per frame |
+| `r3d_anim_seek(h, t)` | jump the current clip to `t` seconds | for state that is already true when you first see it - a body that went down ten seconds ago should be lying on the floor, not starting to fall over again. Cancels any crossfade in progress |
 | `r3d_clip_count(h) -> i64` | number of animation clips | |
 | `r3d_present() -> i64` | render the queue to the window | 1 while open, 0 when closed |
 

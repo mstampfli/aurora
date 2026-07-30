@@ -255,6 +255,19 @@ impl AnimPlayer {
         self.utime = t.max(0.0);
     }
 
+    /// Jump the BASE clip to `t` seconds, cancelling any crossfade in progress.
+    ///
+    /// For state that is already true when you first see it: a player who went down ten seconds
+    /// ago should be lying on the floor, not starting to fall over again, and a replicated body
+    /// arrives mid-animation by definition. Playing from zero is a lie about when it happened.
+    ///
+    /// The crossfade is cancelled because a fade blends from where the PREVIOUS clip was, and
+    /// after a deliberate jump that is a pose the game explicitly did not ask for.
+    pub fn seek(&mut self, t: f32) {
+        self.time = t.max(0.0);
+        self.blend = 1.0;
+    }
+
     /// Advance playback (and any crossfade) by `dt` seconds.
     /// Set a per-bone pose override: an extra local rotation pre-multiplied onto `joint` after the
     /// clip pose. Replaces any existing override for that joint. Call each frame; clear_pose() resets.

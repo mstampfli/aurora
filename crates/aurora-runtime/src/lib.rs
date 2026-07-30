@@ -2193,6 +2193,11 @@ pub extern "C" fn aurora_r3d_anim_blend(
     aurora_window::imm_r3d_anim_blend(h, clip_a, clip_b, weight as f32, speed as f32, fade as f32);
 }
 #[no_mangle]
+pub extern "C" fn aurora_r3d_anim_seek(h: i64, t: f64) {
+    aurora_window::imm_r3d_anim_seek(h, t as f32);
+}
+/// Jump the upper-body overlay to `t` seconds.
+#[no_mangle]
 pub extern "C" fn aurora_r3d_anim_seek_upper(h: i64, t: f64) {
     aurora_window::imm_r3d_anim_seek_upper(h, t as f32);
 }

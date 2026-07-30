@@ -1028,6 +1028,12 @@ pub fn r3d_anim_blend(handle: i64, clip_a: i64, clip_b: i64, weight: f32, speed:
         s.anim_blend(handle, clip_a, clip_b, weight, speed, fade);
     });
 }
+pub fn r3d_anim_seek(handle: i64, t: f32) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.anim_seek(handle, t);
+    });
+}
 pub fn r3d_anim_seek_upper(handle: i64, t: f32) {
     with_gfx((), |gf| {
         let (_, _, s) = gf.scene_mut();

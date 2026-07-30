@@ -652,6 +652,15 @@ impl Scene {
         }
     }
 
+    /// Jump a model's BASE clip to `t` seconds, for state that is already true when you first see
+    /// it - a replicated body arrives mid-animation by definition, and playing from zero says the
+    /// thing just happened.
+    pub fn anim_seek(&mut self, handle: i64, t: f32) {
+        if let Some(r) = self.item_mut(handle) {
+            r.player.seek(t);
+        }
+    }
+
     /// Jump a model's upper-body overlay playback to `t` seconds (skip a clip wind-up).
     pub fn anim_seek_upper(&mut self, handle: i64, t: f32) {
         if let Some(r) = self.item_mut(handle) {
