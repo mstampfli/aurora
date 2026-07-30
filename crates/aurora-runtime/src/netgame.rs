@@ -348,6 +348,9 @@ pub struct Session {
     local_meta: [f32; META_LEN],
     /// The LOCAL player's exact 64-bit tag (see `Player::tag`).
     local_tag: u64,
+    /// HOST: trust a client's reported transform rather than re-simulating it. See
+    /// [`Session::set_owned_movement`].
+    owned_movement: bool,
     /// The local player's outgoing display name (set via net_set_name).
     local_name: [u8; NAME_MAX],
     /// Max simultaneously-connected clients the host accepts (set via net_max_clients).
@@ -480,6 +483,7 @@ impl Session {
             respreq_in: -1,
             local_meta: [0.0; META_LEN],
             local_tag: 0,
+            owned_movement: false,
             local_name: [0u8; NAME_MAX],
             max_clients: 8,
             rejected: false,
@@ -562,7 +566,11 @@ impl Session {
             blob[i] = *v;
         }
         if self.is_server {
-            run_sim(self.sim_fn, self.sim_env, &mut self.host.s, &blob);
+            // The host's own body is owned too - by the host's game. Same reason as the client
+            // branch below: one simulator per body.
+            if !self.owned_movement {
+                run_sim(self.sim_fn, self.sim_env, &mut self.host.s, &blob);
+            }
             self.host.meta = self.local_meta; // host owns its own metadata + name
             self.host.name = self.local_name;
             self.host.tag = self.local_tag;
@@ -570,7 +578,12 @@ impl Session {
         } else {
             let seq = self.next_seq;
             self.next_seq += 1;
-            run_sim(self.sim_fn, self.sim_env, &mut self.pred.s, &blob);
+            // Under owned movement the GAME moves this body and publishes it with
+            // set_local_state; running the prediction sim here would be a second writer of the
+            // same slots, which is precisely the drift the model exists to remove.
+            if !self.owned_movement {
+                run_sim(self.sim_fn, self.sim_env, &mut self.pred.s, &blob);
+            }
             // NOTE: do NOT copy local_meta into pred.meta here. The client's own metadata
             // (hp/shield/kills/deaths/respawn-ack/...) is HOST-AUTHORITATIVE and arrives via the
             // snapshot reconcile. Overwriting it each frame with our outgoing local_meta (whose
@@ -718,6 +731,7 @@ impl Session {
             // host's own state (c.state.s), so the host - not the client - decides where everyone is.
             // Clients still predict locally and reconcile against this.
             let (sim_fn, sim_env) = (self.sim_fn, self.sim_env);
+            let owned = self.owned_movement;
             let sp_in = self.spawn_in;
             let imp_in = self.impulse_in;
             let rr_in = self.respreq_in;
@@ -766,7 +780,14 @@ impl Session {
                         inp[rr_in as usize] = 1.0;
                     }
                     do_resp = false;
-                    run_sim(sim_fn, sim_env, &mut c.state.s, &inp);
+                    // Under owned movement a NETWORKED client's body has exactly one simulator -
+                    // itself - and its report was already taken in on_server_packet. Re-running
+                    // the sim here would be a second simulator writing the same slots, which is
+                    // the drift this model exists to remove. Local actors (bots) are the host's
+                    // own and always stepped.
+                    if !owned || c.local {
+                        run_sim(sim_fn, sim_env, &mut c.state.s, &inp);
+                    }
                     c.acked_seq = seq;
                 }
             }
@@ -1033,7 +1054,7 @@ impl Session {
         match pkt.first().copied() {
             Some(TAG_INPUT) => {
                 let sl = self.state_len;
-                if let Some((seq, blob, meta, name, _cstate, tag)) =
+                if let Some((seq, blob, meta, name, cstate, tag)) =
                     decode_input(pkt, self.input_len, sl)
                 {
                     let Some(idx) = self.ensure_client(from) else {
@@ -1047,6 +1068,12 @@ impl Session {
                                                                     // state (_cstate) is NOT trusted - only its inputs are.
                     if seq > self.clients[idx].acked_seq {
                         self.clients[idx].inbox.push_back((seq, blob));
+                    }
+                    // Owned movement: this client simulates its own body, so its report IS the
+                    // truth about where that body is and the host's job is to relay it. Only the
+                    // replicated slots are taken; the rest of the blob stays the host's.
+                    if self.owned_movement && seq >= self.clients[idx].acked_seq {
+                        self.clients[idx].state.s[..sl].copy_from_slice(&cstate[..sl]);
                     }
                     // Relay the client's self-reported metadata, EXCEPT slots the host has taken
                     // authority over (hp/shield) - those keep the host's authoritative value.
@@ -1215,8 +1242,13 @@ impl Session {
                     self.pred.s[1] + self.smooth_err[1],
                     self.pred.s[2] + self.smooth_err[2],
                 ];
-                for i in 0..self.state_len {
-                    self.pred.s[i] = st.s[i];
+                // Owned movement: the host's copy of THIS body is our own report relayed back,
+                // so snapping to it and replaying inputs would fight the game for control of a
+                // body only the game moves. Metadata and name are still host-authoritative.
+                if !self.owned_movement {
+                    for i in 0..self.state_len {
+                        self.pred.s[i] = st.s[i];
+                    }
                 }
                 self.pred.meta = st.meta;
                 self.pred.name = st.name;
@@ -1234,15 +1266,17 @@ impl Session {
                 // (a heap allocation plus a 100-byte-per-entry copy, on every single snapshot)
                 // purely to get around borrowing `self` twice; splitting the two fields apart
                 // borrows them disjointly and does the identical replay with neither.
-                let Session {
-                    pending,
-                    pred,
-                    sim_fn,
-                    sim_env,
-                    ..
-                } = &mut *self;
-                for (_, inp) in pending.iter() {
-                    run_sim(*sim_fn, *sim_env, &mut pred.s, inp);
+                if !self.owned_movement {
+                    let Session {
+                        pending,
+                        pred,
+                        sim_fn,
+                        sim_env,
+                        ..
+                    } = &mut *self;
+                    for (_, inp) in pending.iter() {
+                        run_sim(*sim_fn, *sim_env, &mut pred.s, inp);
+                    }
                 }
                 // Re-base the easing offset so the camera stays exactly where it was this frame, then
                 // glides to the freshly reconciled physics position (decayed in update()). A big
@@ -1342,6 +1376,43 @@ impl Session {
             self.local_meta[slot] = v as f32;
         }
     }
+    /// Write one slot of the LOCAL player's own replicated state.
+    ///
+    /// The counterpart to reading `state(id, i)`: a peer publishing where its own body actually
+    /// is, rather than leaving that to the registered sim. A game whose movement runs in a
+    /// physics world - where a body cannot be re-simulated without its colliders resident - has
+    /// no way to express its transform through the sim blob alone, and this is that way.
+    ///
+    /// Call it BEFORE `send_input`, which is what puts a client's blob on the wire.
+    pub fn set_local_state(&mut self, slot: usize, v: f64) {
+        if slot >= STATE_MAX {
+            return;
+        }
+        if self.is_server {
+            self.host.s[slot] = v as f32;
+        } else {
+            self.pred.s[slot] = v as f32;
+        }
+    }
+
+    /// Declare the movement model. EVERY peer in the session must declare the same one, so this
+    /// is called at startup, before host/join, and never changed mid-session.
+    ///
+    /// Off - the default, and what a competitive game wants - the host re-simulates every client
+    /// from its inputs and its own state is the truth; clients predict and reconcile. On, every
+    /// peer OWNS its own body: it simulates it, publishes it with
+    /// [`set_local_state`](Self::set_local_state), and the host relays it to the others. A client
+    /// then neither predicts nor reconciles its own body, because there is nothing to predict -
+    /// it already knows where it is.
+    ///
+    /// Owned movement is the right answer when the mover lives in a physics world the host cannot
+    /// faithfully re-run for a remote body, and when there is no adversary to cheat - co-op PvE.
+    /// It also cannot drift, because a body has exactly one simulator. Combat is unaffected:
+    /// hits, health and death stay host-authoritative either way.
+    pub fn set_owned_movement(&mut self, on: bool) {
+        self.owned_movement = on;
+    }
+
     /// Set the LOCAL player's exact 64-bit tag, replicated verbatim (broadcast next frame).
     ///
     /// Use this, not a meta slot, for anything that must arrive bit-for-bit: a world
@@ -2586,6 +2657,26 @@ pub extern "C" fn aurora_net_set_player_meta(id: i64, slot: i64, v: f64) {
 pub extern "C" fn aurora_net_player_meta(id: i64, slot: i64) -> f64 {
     read(0.0, |s| s.meta(id.max(0) as u32, slot.max(0) as usize))
 }
+/// Write one slot of the LOCAL player's own replicated state - where this peer says its body is.
+///
+/// For a game whose mover lives in a physics world: a remote body cannot be faithfully
+/// re-simulated without its colliders resident, so the peer that owns it publishes it. Call this
+/// before `net_send_input`, which is what puts the blob on the wire.
+#[no_mangle]
+pub extern "C" fn aurora_net_set_local_state(slot: i64, v: f64) {
+    with((), |s| s.set_local_state(slot.max(0) as usize, v))
+}
+/// Declare the movement model - 1 = every peer owns its own body (it simulates and publishes it,
+/// the host relays it); 0 = the host re-simulates every client and decides where everyone is.
+/// Default 0. EVERY peer must declare the same value, at startup, before host/join.
+///
+/// Owned movement suits co-op PvE, where there is no adversary to cheat and the mover is a physics
+/// character the host cannot re-run for a remote. It cannot drift, because a body has exactly one
+/// simulator. Combat stays host-authoritative either way.
+#[no_mangle]
+pub extern "C" fn aurora_net_owned_movement(on: i64) {
+    with((), |s| s.set_owned_movement(on != 0))
+}
 /// HOST: set the length of the replicated world-state array.
 ///
 /// This is the channel for level layout - state every peer must agree on exactly, that changes
@@ -3159,6 +3250,126 @@ mod meta_replication_test {
     use super::*;
     // Two real Sessions (host + client) over the loopback UDP socket - a HEADLESS 2-player
     // test that the metadata channel replicates BOTH ways.
+    /// Under owned movement a peer's own transform IS the truth, and it must reach everyone else.
+    ///
+    /// MARROW moves players with a physics character controller, so the host cannot re-simulate a
+    /// remote body faithfully - it would need that body's colliders resident and its own
+    /// collision resolution to agree step for step. Instead each peer simulates its own body and
+    /// publishes it. This asserts both directions and, importantly, that the host does NOT
+    /// re-simulate over the top: a second simulator writing the same slots is exactly the drift
+    /// the model removes.
+    #[test]
+    fn owned_movement_relays_each_peer_own_transform() {
+        let mut host = Session::host(0).expect("host bind");
+        host.set_owned_movement(true);
+        let host_addr = host.local_addr();
+        let mut a = Session::join(host_addr).expect("a bind");
+        let mut b = Session::join(host_addr).expect("b bind");
+        // A sim that WOULD clobber the transform if the host re-ran it, so "the host left it
+        // alone" is a real assertion rather than a coincidence of an empty sim.
+        extern "C" fn clobber(_env: i64, state: i64, _input: i64) -> i64 {
+            unsafe {
+                let s = state as *mut f32;
+                *s = -999.0;
+                *s.add(1) = -999.0;
+                *s.add(2) = -999.0;
+            }
+            0
+        }
+        for s in [&mut host, &mut a, &mut b] {
+            s.set_sim(clobber as usize, 0, 4, 3);
+            // Every peer declares the same model, which is the contract.
+            s.set_owned_movement(true);
+        }
+        let input = [0.0f32; 3];
+        for i in 0..60 {
+            let t = i as f64;
+            host.set_local_state(0, 10.0 + t * 0.0);
+            host.set_local_state(1, 1.5);
+            host.set_local_state(2, -3.0);
+            a.set_local_state(0, 20.0);
+            a.set_local_state(1, 2.5);
+            a.set_local_state(2, 7.0);
+            b.set_local_state(0, 30.0);
+            b.set_local_state(1, 3.5);
+            b.set_local_state(2, 9.0);
+            a.send_input(&input);
+            b.send_input(&input);
+            host.send_input(&input);
+            a.update(0.016);
+            b.update(0.016);
+            host.update(0.016);
+            std::thread::sleep(std::time::Duration::from_micros(300));
+            a.update(0.016);
+            b.update(0.016);
+        }
+        let aid = a.my_id();
+        let bid = b.my_id();
+        assert!(aid >= 1 && bid >= 1 && aid != bid, "ids {aid} {bid}");
+        // The host relays what each client reported, and did not re-simulate over it.
+        assert!(
+            (host.px(aid) - 20.0).abs() < 0.01,
+            "host has A at x={}, expected 20 (was it re-simulated?)",
+            host.px(aid)
+        );
+        assert!(
+            (host.px(bid) - 30.0).abs() < 0.01,
+            "host has B at x={}, expected 30",
+            host.px(bid)
+        );
+        // A sees B where B says it is, and the host where the host says it is. Remotes are
+        // interpolated, so this is a tolerance and not an equality.
+        assert!(
+            (a.px(bid) - 30.0).abs() < 0.5,
+            "A sees B at x={}, expected about 30",
+            a.px(bid)
+        );
+        assert!(
+            (a.px(0) - 10.0).abs() < 0.5,
+            "A sees the host at x={}, expected about 10",
+            a.px(0)
+        );
+        // A's own body is its own: nobody overwrote it.
+        assert!(
+            (a.px(aid) - 20.0).abs() < 0.01,
+            "A's own x is {}, expected 20",
+            a.px(aid)
+        );
+    }
+
+    /// With owned movement OFF - the default - the host still re-simulates, so an existing
+    /// host-authoritative game is unaffected by the new switch.
+    #[test]
+    fn host_authority_is_still_the_default() {
+        let mut host = Session::host(0).expect("host bind");
+        let host_addr = host.local_addr();
+        let mut a = Session::join(host_addr).expect("a bind");
+        extern "C" fn park(_env: i64, state: i64, _input: i64) -> i64 {
+            unsafe {
+                *(state as *mut f32) = 4.25;
+            }
+            0
+        }
+        host.set_sim(park as usize, 0, 4, 3);
+        a.set_sim(park as usize, 0, 4, 3);
+        let input = [0.0f32; 3];
+        for _ in 0..60 {
+            a.set_local_state(0, 77.0); // a claim the host must ignore
+            a.send_input(&input);
+            host.send_input(&input);
+            a.update(0.016);
+            host.update(0.016);
+            std::thread::sleep(std::time::Duration::from_micros(300));
+            a.update(0.016);
+        }
+        let aid = a.my_id();
+        assert!(
+            (host.px(aid) - 4.25).abs() < 0.01,
+            "the host trusted a client's claim with owned movement off: x={}",
+            host.px(aid)
+        );
+    }
+
     /// The world-state array must arrive COMPLETE, or not at all.
     ///
     /// This is the channel MARROW's warren travels on, and a half-applied warren is worse than
