@@ -72,15 +72,33 @@ impl UdpEndpoint {
     /// Drain all pending datagrams: apply piggybacked acks and return any
     /// messages now deliverable, in order. Non-blocking — returns what's ready.
     pub fn poll(&mut self) -> Vec<Vec<u8>> {
+        let trace = std::env::var("AURORA_NET_TRACE").is_ok();
         let mut delivered = Vec::new();
         loop {
             match self.sock.recv(&mut self.buf) {
                 Ok(n) => {
+                    if trace {
+                        eprintln!(
+                            "net trace: poll recv {n} bytes on {:?}",
+                            self.sock.local_addr()
+                        );
+                    }
                     if let Some((ack, data)) = decode(&self.buf[..n]) {
                         self.chan.on_ack(ack);
                         if let Some((seq, payload)) = data {
-                            delivered.extend(self.chan.on_recv(seq, payload));
+                            let out = self.chan.on_recv(seq, payload);
+                            if trace {
+                                eprintln!(
+                                    "net trace: poll decoded seq={seq}, channel released {}",
+                                    out.len()
+                                );
+                            }
+                            delivered.extend(out);
+                        } else if trace {
+                            eprintln!("net trace: poll got an ack-only packet");
                         }
+                    } else if trace {
+                        eprintln!("net trace: poll could NOT decode {n} bytes");
                     }
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
