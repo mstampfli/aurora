@@ -236,6 +236,8 @@ that as BLOCKED, never as a pass.
 ## Networking (reliable UDP)
 
 `net_bind(port)`, `net_connect(host, port)`, `net_send(msg)`, `net_recv() -> str`.
+`net_bind` must come first: `net_connect` points an existing local endpoint at a peer, so
+without one there is nothing to point.
 
 ## Multiplayer (authoritative server + client prediction)
 

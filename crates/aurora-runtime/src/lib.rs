@@ -1105,14 +1105,34 @@ pub extern "C" fn aurora_net_bind(port: i64) -> i64 {
 /// # Safety
 /// `ptr` must point to `len` initialized bytes.
 #[no_mangle]
-pub unsafe extern "C" fn aurora_net_connect(ptr: *const u8, len: i64) -> i64 {
+pub unsafe extern "C" fn aurora_net_connect(ptr: *const u8, len: i64, port: i64) -> i64 {
+    // host and PORT, matching the documented net_connect(host, port) and net_join's row.
+    //
+    // The row used to be [Ptr, I64] - a bare string - so the port was dropped on the floor and
+    // the host alone was parsed as a socket address. "127.0.0.1" is not one, so every call
+    // failed with InvalidInput and the low-level API could never connect to anything.
     let addr = {
         let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
-        String::from_utf8_lossy(s).into_owned()
+        format!("{}:{}", String::from_utf8_lossy(s), port.clamp(0, 65535))
     };
     NET.with(|n| match n.borrow_mut().as_mut() {
-        Some(ep) => ep.connect(&addr).is_ok() as i64,
-        None => 0,
+        Some(ep) => match ep.connect(&addr) {
+            Ok(()) => 1,
+            Err(e) => {
+                // The error used to be discarded, which made a refused connect
+                // indistinguishable from "no endpoint" - report it, since the OS reason
+                // (permission, unreachable, bad address) is the whole diagnosis.
+                eprintln!(
+                    "aurora: net_connect to {addr} failed: {e} (kind {:?})",
+                    e.kind()
+                );
+                0
+            }
+        },
+        None => {
+            eprintln!("aurora: net_connect called before net_bind - no local endpoint");
+            0
+        }
     })
 }
 

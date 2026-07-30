@@ -204,7 +204,7 @@ macro_rules! for_each_builtin {
         [special,  par_for,                       aurora_par_for,                        [Ptr, I64, Ptr, Ptr],                            void]
         [internal, run_parallel,                  aurora_run_parallel,                   [Ptr, I64],                                      void]
         [special,  net_bind,                      aurora_net_bind,                       [I64],                                           I64]
-        [special,  net_connect,                   aurora_net_connect,                    [Ptr, I64],                                      I64]
+        [special,  net_connect,                   aurora_net_connect,                    [Ptr, I64, I64],                                 I64]
         [special,  net_send,                      aurora_net_send,                       [Ptr, I64],                                      I64]
         [special,  net_recv,                      aurora_net_recv,                       [Ptr],                                           void]
         [special,  frame_reset,                   aurora_frame_reset,                    [],                                              void]

@@ -178,3 +178,49 @@ fn schema_hash_detects_layout_change() {
     assert_ne!(a.schema_hash(), b.schema_hash());
     assert_eq!(a.schema_hash(), c.schema_hash());
 }
+
+/// `net_connect` must reach a peer named by host AND port.
+///
+/// The builtin's ABI row was `[Ptr, I64]` - a bare string - so the documented
+/// `net_connect(host, port)` dropped the port and the runtime parsed the host alone as a socket
+/// address. "127.0.0.1" is not one, so EVERY call failed with InvalidInput and the low-level API
+/// could not connect to anything. This pins the shape the fix restored: two endpoints in one
+/// process, connected by host and port, exchanging a message.
+#[test]
+fn an_endpoint_connects_by_host_and_port_and_delivers() {
+    use crate::UdpEndpoint;
+
+    let mut a = UdpEndpoint::bind(("127.0.0.1", 0)).expect("bind a");
+    let mut b = UdpEndpoint::bind(("127.0.0.1", 0)).expect("bind b");
+    let a_addr = a.local_addr().expect("addr a");
+    let b_addr = b.local_addr().expect("addr b");
+
+    // Exactly what the builtin now does: format host and port into one address.
+    let target = format!("{}:{}", b_addr.ip(), b_addr.port());
+    a.connect(target.as_str())
+        .expect("connect by host:port must succeed");
+    b.connect(format!("{}:{}", a_addr.ip(), a_addr.port()).as_str())
+        .expect("connect back");
+
+    a.queue(b"hello".to_vec());
+    a.flush().expect("flush");
+
+    // Retransmit a few times: the transport is unreliable underneath, and a test that depends on
+    // the first datagram surviving is a flaky test.
+    let mut got = None;
+    for _ in 0..200 {
+        if let Some(msg) = b.poll().into_iter().next() {
+            got = Some(msg);
+            break;
+        }
+        a.flush().expect("reflush");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert_eq!(got.as_deref(), Some(&b"hello"[..]), "message must arrive");
+
+    // A host with no port must still be rejected, rather than silently connecting to nothing.
+    assert!(
+        a.connect("127.0.0.1").is_err(),
+        "a bare host is not a socket address and must not connect"
+    );
+}

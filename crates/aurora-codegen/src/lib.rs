@@ -3469,14 +3469,18 @@ fn tr_call(
         let call = b.ins().call(f, &[port]);
         return Ok(Term::Val(b.inst_results(call)[0], Cty::I64));
     }
-    if name == "net_connect" || name == "net_send" {
+    if name == "net_send" {
         let (p, len) = str_arg(m, b, l, env, &args[0].value)?;
-        let f = m.declare_func_in_func(env.hosts[name.as_str()], b.func);
+        let f = m.declare_func_in_func(env.hosts["net_send"], b.func);
         let call = b.ins().call(f, &[p, len]);
         return Ok(Term::Val(b.inst_results(call)[0], Cty::I64));
     }
-    // `net_join(host_str, port)` - a host string plus a port int.
-    if name == "net_join" {
+    // `net_connect(host_str, port)` and `net_join(host_str, port)` - a host string plus a port.
+    //
+    // net_connect used to share net_send's branch, which passes a string and nothing else, so
+    // the port never reached the runtime and the host alone was parsed as a socket address -
+    // "127.0.0.1" is not one, so every call failed. It takes the same shape as net_join now.
+    if name == "net_connect" || name == "net_join" {
         let (p, len) = str_arg(m, b, l, env, &args[0].value)?;
         let (port, pt) = val(m, b, l, env, &args[1].value)?;
         let port = if pt == Cty::F32 || pt == Cty::F64 {
@@ -3484,7 +3488,7 @@ fn tr_call(
         } else {
             port
         };
-        let f = m.declare_func_in_func(env.hosts["net_join"], b.func);
+        let f = m.declare_func_in_func(env.hosts[name.as_str()], b.func);
         let call = b.ins().call(f, &[p, len, port]);
         return Ok(Term::Val(b.inst_results(call)[0], Cty::I64));
     }
