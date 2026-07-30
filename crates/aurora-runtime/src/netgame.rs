@@ -157,6 +157,13 @@ struct SClient {
     id: u32,
     state: Player,
     inbox: VecDeque<(u32, InputBlob)>,
+    /// The most recent input blob received from this actor, kept whatever the movement model is.
+    ///
+    /// The host needs a client's INTENT for things that are not movement - opening a door,
+    /// buying, reviving - and those are the authority's to perform. Relaying intent through the
+    /// sim's state blob only worked while the host re-simulated every client, so it is read
+    /// straight from the input here instead: one answer, and it survives both movement models.
+    last_input: InputBlob,
     acked_seq: u32,
     /// server_tick when we last heard from this client - used to drop it gracefully when it
     /// leaves/times out (so a flaky or reconnecting player doesn't leave a ghost that lingers).
@@ -348,6 +355,8 @@ pub struct Session {
     local_meta: [f32; META_LEN],
     /// The LOCAL player's exact 64-bit tag (see `Player::tag`).
     local_tag: u64,
+    /// This peer's own most recent input blob, so `player_input` answers for everyone.
+    local_input: InputBlob,
     /// HOST: trust a client's reported transform rather than re-simulating it. See
     /// [`Session::set_owned_movement`].
     owned_movement: bool,
@@ -423,6 +432,7 @@ impl Session {
         Ok(Session::base(sock, false, Some(addr)))
     }
     fn base(sock: UdpSocket, is_server: bool, server_addr: Option<SocketAddr>) -> Session {
+        let d = DECL.with(|d| *d.borrow());
         Session {
             sock,
             is_server,
@@ -438,10 +448,12 @@ impl Session {
             hit_radius: 0.6,
             hit_half: 0.3,
             trace_ticks: 0,
-            sim_fn: 0,
-            sim_env: 0,
-            state_len: 4,
-            input_len: 8,
+            // Whatever the game declared before it knew it would host or join.
+            sim_fn: d.sim_fn,
+            sim_env: d.sim_env,
+            state_len: d.state_len.clamp(4, STATE_MAX),
+            input_len: d.input_len.clamp(1, INPUT_MAX),
+            owned_movement: d.owned_movement,
             clients: Vec::new(),
             host: Player::spawn(),
             bot_count: 0,
@@ -483,7 +495,7 @@ impl Session {
             respreq_in: -1,
             local_meta: [0.0; META_LEN],
             local_tag: 0,
-            owned_movement: false,
+            local_input: [0.0; INPUT_MAX],
             local_name: [0u8; NAME_MAX],
             max_clients: 8,
             rejected: false,
@@ -565,6 +577,7 @@ impl Session {
         for (i, v) in input.iter().take(self.input_len).enumerate() {
             blob[i] = *v;
         }
+        self.local_input = blob;
         if self.is_server {
             // The host's own body is owned too - by the host's game. Same reason as the client
             // branch below: one simulator per body.
@@ -1035,6 +1048,7 @@ impl Session {
             id,
             state,
             inbox: VecDeque::new(),
+            last_input: [0.0; INPUT_MAX],
             acked_seq: 0,
             last_sent: std::collections::HashMap::new(),
             meta_owned: [false; META_LEN],
@@ -1068,6 +1082,7 @@ impl Session {
                                                                     // state (_cstate) is NOT trusted - only its inputs are.
                     if seq > self.clients[idx].acked_seq {
                         self.clients[idx].inbox.push_back((seq, blob));
+                        self.clients[idx].last_input = blob;
                     }
                     // Owned movement: this client simulates its own body, so its report IS the
                     // truth about where that body is and the host's job is to relay it. Only the
@@ -1425,6 +1440,31 @@ impl Session {
             self.pred.tag = v;
         }
     }
+    /// Read a slot of a player's most recent INPUT - what that player is trying to do.
+    ///
+    /// The authority needs this for everything that is not movement: opening a door, buying,
+    /// reviving. Those are the authority's to perform on behalf of the player who asked, so the
+    /// intent has to arrive as intent rather than as a result. Relaying it through the sim's
+    /// state blob only worked while the host re-simulated every client, and stopped meaning
+    /// anything under owned movement; this reads it straight from the input instead.
+    ///
+    /// Answers for the local player too, so a game can drive every squad member - local and
+    /// remote - through one code path instead of two.
+    pub fn player_input(&self, id: u32, i: usize) -> f64 {
+        if i >= INPUT_MAX {
+            return 0.0;
+        }
+        let me = if self.is_server { 0 } else { self.my_id };
+        if id == me {
+            return self.local_input[i] as f64;
+        }
+        self.clients
+            .iter()
+            .find(|c| c.id == id)
+            .map(|c| c.last_input[i] as f64)
+            .unwrap_or(0.0)
+    }
+
     /// Read a player's replicated 64-bit tag. 0 when that player has not set one.
     pub fn tag(&self, id: u32) -> u64 {
         self.player_blob(id).0.tag
@@ -1501,6 +1541,7 @@ impl Session {
                     id,
                     state: Player::spawn(),
                     inbox: VecDeque::new(),
+                    last_input: [0.0; INPUT_MAX],
                     acked_seq: 0,
                     last_sent: std::collections::HashMap::new(),
                     meta_owned: [false; META_LEN],
@@ -2367,6 +2408,42 @@ thread_local! {
     static NET: RefCell<Option<Session>> = const { RefCell::new(None) };
 }
 
+/// Declarations a game makes BEFORE it hosts or joins.
+///
+/// `net_sim` and `net_owned_movement` describe the session's shape - how long the state and input
+/// blobs are, and who owns a body - and a game naturally states them once at startup, before it
+/// knows whether it will host or join. They used to be written straight into the live Session,
+/// which does not exist yet at that point, so they were silently dropped: the wire fell back to
+/// the default 4 state floats and 8 input floats, and every declared slot past those went out as
+/// a zero. Silently, because a no-op has nothing to report.
+///
+/// So they are recorded here and applied when the Session is built - and to the live one too, so
+/// declaring mid-session still works.
+#[derive(Clone, Copy)]
+struct NetDecl {
+    sim_fn: usize,
+    sim_env: usize,
+    state_len: usize,
+    input_len: usize,
+    owned_movement: bool,
+}
+
+thread_local! {
+    static DECL: RefCell<NetDecl> = const {
+        RefCell::new(NetDecl {
+            sim_fn: 0,
+            sim_env: 0,
+            state_len: 4,
+            input_len: 8,
+            owned_movement: false,
+        })
+    };
+}
+
+fn decl(f: impl FnOnce(&mut NetDecl)) {
+    DECL.with(|d| f(&mut d.borrow_mut()));
+}
+
 fn with<R>(default: R, f: impl FnOnce(&mut Session) -> R) -> R {
     NET.with(|n| n.borrow_mut().as_mut().map(f).unwrap_or(default))
 }
@@ -2428,14 +2505,17 @@ pub unsafe extern "C" fn aurora_net_sim(
     state_len: i64,
     input_len: i64,
 ) {
-    with((), |s| {
-        s.set_sim(
-            sim_fn as usize,
-            sim_env as usize,
-            state_len.max(4) as usize,
-            input_len.max(1) as usize,
-        )
+    let (f, e) = (sim_fn as usize, sim_env as usize);
+    let (sl, il) = (state_len.max(4) as usize, input_len.max(1) as usize);
+    // Recorded for a session that does not exist yet, and applied to one that does. A game
+    // declares this at startup, before it knows whether it will host or join.
+    decl(|d| {
+        d.sim_fn = f;
+        d.sim_env = e;
+        d.state_len = sl;
+        d.input_len = il;
     });
+    with((), |s| s.set_sim(f, e, sl, il));
 }
 
 /// Run the authoritative SERVER loop on a dedicated thread. The thread gets its OWN thread-local
@@ -2657,6 +2737,13 @@ pub extern "C" fn aurora_net_set_player_meta(id: i64, slot: i64, v: f64) {
 pub extern "C" fn aurora_net_player_meta(id: i64, slot: i64) -> f64 {
     read(0.0, |s| s.meta(id.max(0) as u32, slot.max(0) as usize))
 }
+/// Read a slot of a player's latest INPUT - what that player is trying to do, as opposed to where
+/// they are. The authority acts on this for everything that is not movement: doors, purchases,
+/// revives. Answers for the local player too, so one code path can drive the whole squad.
+#[no_mangle]
+pub extern "C" fn aurora_net_player_input(id: i64, i: i64) -> f64 {
+    read(0.0, |s| s.player_input(id.max(0) as u32, i.max(0) as usize))
+}
 /// Write one slot of the LOCAL player's own replicated state - where this peer says its body is.
 ///
 /// For a game whose mover lives in a physics world: a remote body cannot be faithfully
@@ -2675,7 +2762,8 @@ pub extern "C" fn aurora_net_set_local_state(slot: i64, v: f64) {
 /// simulator. Combat stays host-authoritative either way.
 #[no_mangle]
 pub extern "C" fn aurora_net_owned_movement(on: i64) {
-    with((), |s| s.set_owned_movement(on != 0))
+    decl(|d| d.owned_movement = on != 0);
+    with((), |s| s.set_owned_movement(on != 0));
 }
 /// HOST: set the length of the replicated world-state array.
 ///
@@ -3368,6 +3456,44 @@ mod meta_replication_test {
             "the host trusted a client's claim with owned movement off: x={}",
             host.px(aid)
         );
+    }
+
+    /// A game declares the session's shape BEFORE it hosts or joins, and that must survive.
+    ///
+    /// net_sim and net_owned_movement used to write straight into a Session that did not exist
+    /// yet, so a game stating them at startup - the natural place, before it knows which it will
+    /// be - had them silently dropped. The wire then used the default 4 state floats and 8 input
+    /// floats, so MARROW's fifteenth input slot (the held-interact bit) went out as a zero and a
+    /// teammate could hold a barricade forever without boarding it. Nothing reported anything,
+    /// because a no-op has nothing to report.
+    #[test]
+    fn declarations_made_before_hosting_survive_into_the_session() {
+        extern "C" fn nop(_env: i64, _state: i64, _input: i64) -> i64 {
+            0
+        }
+        // Declared with no session in existence, exactly as a game's startup does it.
+        unsafe { aurora_net_sim(nop as *const u8, std::ptr::null(), 6, 15) };
+        aurora_net_owned_movement(1);
+        assert_eq!(aurora_net_host(0), 1);
+        let (sl, il, owned) = read((0, 0, false), |s| {
+            (s.state_len, s.input_len, s.owned_movement)
+        });
+        assert_eq!(sl, 6, "the declared state length was dropped");
+        assert_eq!(il, 15, "the declared input length was dropped");
+        assert!(owned, "the declared movement model was dropped");
+        // And the far slots really do travel, which is the thing the default lengths broke.
+        let input: [f64; 15] = {
+            let mut v = [0.0f64; 15];
+            v[14] = 1.0;
+            v
+        };
+        unsafe { aurora_net_send_input(input.as_ptr(), 15) };
+        let held = read(0.0, |s| s.player_input(0, 14));
+        assert_eq!(held, 1.0, "the fifteenth input slot did not survive");
+        aurora_net_leave();
+        // Leave the declaration as the other tests expect it.
+        aurora_net_owned_movement(0);
+        unsafe { aurora_net_sim(std::ptr::null(), std::ptr::null(), 4, 8) };
     }
 
     /// The world-state array must arrive COMPLETE, or not at all.
