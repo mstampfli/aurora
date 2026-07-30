@@ -274,6 +274,8 @@ accessors.
 | `net_fire(ox,oy,oz, dx,dy,dz, weapon)` | lag-compensated hitscan | server rewinds targets to the shooter's view; `weapon` is a 0..255 id carried through to `net_server_hit_weapon` so the server can apply per-weapon damage |
 | `net_hit_player() -> i64` / `net_hit_x/y/z() -> f64` | last validated hit | player id (-1 none) + world point |
 | `net_set_meta(slot, v)` / `net_player_meta(id, slot) -> f64` | per-player gameplay scalars (hp, shield, kills) | **f32 on the wire**: a value needing more than 24 bits of mantissa comes back rounded |
+| `net_set_world_len(n)` / `net_set_world(i, v)` (host) | publish the world-state array | level layout: what every peer must agree on exactly and no transform implies |
+| `net_world_len() -> i64` / `net_world(i) -> f64` / `net_world_gen() -> i64` | read it | on a client the length is 0 until a COMPLETE version arrives, so it doubles as "do I have the world yet?" |
 | `net_set_tag(v)` / `net_player_tag(id) -> i64` | one EXACT 64-bit token per player | replicated verbatim - use it for fingerprints, seeds, ids and bitmasks, which an f32 meta slot silently rounds |
 
 Snapshots are **delta-compressed** (only changed, in-interest players, with periodic
