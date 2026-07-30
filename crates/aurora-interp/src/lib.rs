@@ -918,7 +918,7 @@ impl<'a> Interp<'a> {
             )));
         };
         let mut frame: HashMap<String, Value> = env.into_iter().collect();
-        for (p, v) in params.iter().zip(argv.into_iter()) {
+        for (p, v) in params.iter().zip(argv) {
             frame.insert(p.clone(), v);
         }
         let saved = std::mem::replace(&mut self.scopes, vec![frame]);

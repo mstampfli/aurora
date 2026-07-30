@@ -166,6 +166,131 @@ fn loading_and_freeing_a_model_in_a_loop_is_bounded() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// The same file loaded N times must upload ONCE.
+///
+/// A game gives each body its own handle so each animates on its own clock, which is the
+/// only way to write a horde. That made the natural spelling of "24 zombies over 5 files"
+/// cost 24 uploads: MARROW spent about 4.7 GB of VRAM on it, enough that a second copy of
+/// the game could not fit on an 8 GB card at all - it stalled inside the driver's allocator
+/// instead of failing, which looks like a hang and reads like a netcode problem.
+///
+/// So the bytes are the assertion, not the handle count: loading again must add nothing.
+#[test]
+fn loading_one_file_many_times_uploads_it_once() {
+    let Some((device, queue)) = device() else {
+        eprintln!("no GPU adapter - skipping the shared-asset test");
+        return;
+    };
+    let _g = crate::gpu_guard();
+    let mut s = scene(&device, &queue, 64, 64);
+    let path = std::env::temp_dir().join("aurora_shared_asset_model.obj");
+    std::fs::write(
+        &path,
+        "v 0 0 0\nv 1 0 0\nv 0 1 0\nv 1 1 0\nf 1 2 3\nf 2 4 3\n",
+    )
+    .expect("write obj");
+    let path = path.to_str().expect("utf8 path").to_string();
+
+    let base_bytes = s.renderer.mesh_bytes();
+    let base_mats = s.renderer.material_count();
+    let first = s.load_model(&device, &queue, &path);
+    assert!(first >= 0, "the test model failed to load");
+    let one_copy = s.renderer.mesh_bytes();
+    assert!(one_copy > base_bytes, "the first load uploaded nothing");
+    let one_mats = s.renderer.material_count();
+
+    let mut handles = vec![first];
+    for _ in 0..23 {
+        let h = s.load_model(&device, &queue, &path);
+        assert!(h >= 0);
+        handles.push(h);
+    }
+    assert_eq!(
+        s.renderer.mesh_bytes(),
+        one_copy,
+        "24 handles uploaded more than one copy of the mesh"
+    );
+    assert_eq!(
+        s.renderer.material_count(),
+        one_mats,
+        "24 handles uploaded more than one copy of the material"
+    );
+    assert_eq!(s.asset_count(), 1, "one file should be one asset");
+    assert_eq!(s.model_count(), 24, "each body still needs its own handle");
+
+    // Freeing all but one must keep the survivor's geometry: sharing is only safe if the
+    // last user owns the release, not the first.
+    for h in handles.drain(1..) {
+        assert!(s.free_model(h));
+    }
+    assert_eq!(
+        s.renderer.mesh_bytes(),
+        one_copy,
+        "freeing a sharer released geometry the survivor still needs"
+    );
+    assert_eq!(s.asset_count(), 1);
+    assert!(s.free_model(first));
+    assert_eq!(
+        s.renderer.mesh_bytes(),
+        base_bytes,
+        "the last handle did not release the shared upload"
+    );
+    assert_eq!(
+        s.renderer.material_count(),
+        base_mats,
+        "the last handle did not release the shared material"
+    );
+    assert_eq!(s.asset_count(), 0, "the cache kept a dead asset alive");
+    assert_eq!(s.model_count(), 0);
+
+    // And the cache must not resurrect a freed asset by handing back stale ids: a reload
+    // after a full release has to upload again.
+    let again = s.load_model(&device, &queue, &path);
+    assert!(again >= 0);
+    assert_eq!(
+        s.renderer.mesh_bytes(),
+        one_copy,
+        "a reload after release did not re-upload"
+    );
+    assert!(s.free_model(again));
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Two spellings of one path are one asset. `models/x.obj` and `./models/x.obj` name the
+/// same file, and a cache that missed on the spelling would silently restore the old cost.
+#[test]
+fn the_asset_cache_is_keyed_by_the_resolved_file() {
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let _g = crate::gpu_guard();
+    let mut s = scene(&device, &queue, 64, 64);
+    let dir = std::env::temp_dir();
+    let path = dir.join("aurora_asset_key_model.obj");
+    std::fs::write(&path, "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n").expect("write obj");
+    let direct = path.to_str().expect("utf8").to_string();
+    let indirect = dir
+        .join(".")
+        .join("aurora_asset_key_model.obj")
+        .to_str()
+        .expect("utf8")
+        .to_string();
+
+    let a = s.load_model(&device, &queue, &direct);
+    let bytes = s.renderer.mesh_bytes();
+    let b = s.load_model(&device, &queue, &indirect);
+    assert!(a >= 0 && b >= 0);
+    assert_eq!(
+        s.renderer.mesh_bytes(),
+        bytes,
+        "the same file spelled two ways uploaded twice"
+    );
+    assert_eq!(s.asset_count(), 1);
+    assert!(s.free_model(a));
+    assert!(s.free_model(b));
+    let _ = std::fs::remove_file(&path);
+}
+
 /// A freed handle must be REFUSED, not resolved to whatever landed in its slot.
 ///
 /// This is the dangling-handle class of bug, and counting entries cannot catch

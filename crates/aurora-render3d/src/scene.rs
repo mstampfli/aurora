@@ -43,13 +43,29 @@ where
     -1
 }
 
-/// One drawable: a set of (mesh, material) primitives, with an optional skeleton
-/// and animation player when it came from an animated model.
-struct Renderable {
+/// The heavy half of a drawable: uploaded GPU meshes and materials, plus the parsed
+/// model (skeleton, clips, CPU mesh data). SHARED between every handle that loaded the
+/// same file, and reference-counted so the last handle to go frees the GPU memory.
+///
+/// This split exists because animation state is per-handle but GPU data is not, and
+/// conflating them made loading the same file N times cost N uploads. A horde of 24
+/// bodies over 5 distinct models needs 24 animation players and 5 uploads; before this
+/// it did 24 uploads and spent about 4.7 GB of VRAM to do it, which is more than a
+/// second copy of the game could fit on an 8 GB card.
+struct Asset {
     prims: Vec<(MeshId, MaterialId)>,
     model: Option<Model>,
-    player: AnimPlayer,
     skinned: bool,
+    /// The file this came from, and the key it is cached under. `None` for a primitive
+    /// built in code, which is cheap and never shared.
+    path: Option<String>,
+}
+
+/// One drawable: a shared [`Asset`] plus the state that must NOT be shared - where this
+/// particular body is in its animation, and which of its joints are hidden.
+struct Renderable {
+    asset: Arc<Asset>,
+    player: AnimPlayer,
     /// Bitmask of skin joints to HIDE: their skinning matrix is zeroed before drawing, so
     /// geometry weighted to them collapses to the model origin (used for first-person arms -
     /// hide the torso/head/legs so only the arms render). Bit i = joint i. 0 = show all.
@@ -77,6 +93,9 @@ pub struct Scene {
     /// an item's GPU meshes and materials and invalidates its handle, and a
     /// later load reusing that slot cannot be reached by the old handle.
     items: SlotMap<Renderable>,
+    /// Path-keyed asset cache. One entry per distinct model FILE, holding the only other
+    /// reference besides the live handles, so a file loaded twice is uploaded once.
+    assets: std::collections::HashMap<String, Arc<Asset>>,
     cam: Camera,
     size: (u32, u32),
     clear: [f32; 4],
@@ -100,6 +119,7 @@ impl Scene {
         let mut s = Scene {
             renderer: Renderer3D::new(device, queue, format, w, h, samples),
             items: SlotMap::new(),
+            assets: std::collections::HashMap::new(),
             cam: Camera {
                 eye: Vec3::new(0.0, 2.0, 6.0),
                 target: Vec3::ZERO,
@@ -198,7 +218,23 @@ impl Scene {
     }
 
     /// Load a model file (glTF/GLB/OBJ). Returns a handle or -1 on failure.
+    ///
+    /// Loading the SAME file again is cheap: the parsed model and its uploaded meshes and
+    /// materials are shared, and only a fresh animation player is created. So the natural
+    /// way to write a horde - one handle per body, so each animates independently - costs
+    /// one upload per distinct file instead of one per body.
     pub fn load_model(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, path: &str) -> i64 {
+        let key = Scene::asset_key(path);
+        if let Some(asset) = self.assets.get(&key) {
+            return self
+                .items
+                .insert(Renderable {
+                    asset: Arc::clone(asset),
+                    player: AnimPlayer::new(),
+                    hidden_joints: 0,
+                })
+                .to_i64();
+        }
         let model = match Model::load(path) {
             Ok(m) => m,
             Err(e) => {
@@ -230,28 +266,62 @@ impl Scene {
             prims.push((mesh, mat));
             skinned |= p.skinned;
         }
+        let asset = Arc::new(Asset {
+            prims,
+            model: Some(model),
+            skinned,
+            path: Some(key.clone()),
+        });
+        self.assets.insert(key, Arc::clone(&asset));
         self.items
             .insert(Renderable {
-                prims,
-                model: Some(model),
+                asset,
                 player: AnimPlayer::new(),
-                skinned,
                 hidden_joints: 0,
             })
             .to_i64()
     }
 
-    /// Release a model or primitive handle: every GPU mesh and material it
-    /// owns, and the handle itself.
+    /// The cache key for a model path: the canonical filesystem path when it resolves, and
+    /// the string as given otherwise.
     ///
-    /// Returns whether anything was freed. A stale handle - one already freed,
-    /// or never issued - returns `false` and touches nothing; it cannot free
-    /// whatever was loaded into that slot afterwards, because the handle
-    /// carries the generation the slot was at when it was issued.
+    /// Canonicalising matters because `models/x.glb` and `./models/x.glb` are the same
+    /// upload, and a cache that missed on the spelling would quietly hand back the old
+    /// per-call cost for no visible reason.
+    fn asset_key(path: &str) -> String {
+        match std::fs::canonicalize(path) {
+            Ok(p) => p.to_string_lossy().into_owned(),
+            Err(_) => path.to_string(),
+        }
+    }
+
+    /// Wrap freshly built GPU primitives as a one-off, unshared asset.
+    fn own_asset(&mut self, prims: Vec<(MeshId, MaterialId)>) -> i64 {
+        self.items
+            .insert(Renderable {
+                asset: Arc::new(Asset {
+                    prims,
+                    model: None,
+                    skinned: false,
+                    path: None,
+                }),
+                player: AnimPlayer::new(),
+                hidden_joints: 0,
+            })
+            .to_i64()
+    }
+
+    /// Release a model or primitive handle.
     ///
-    /// Meshes and materials are per-item here (each `load_model` uploads its
-    /// own copies), so there is no sharing to reference-count: freeing an item
-    /// frees exactly what that item created.
+    /// Returns whether anything was freed. A stale handle - one already freed, or never
+    /// issued - returns `false` and touches nothing; it cannot free whatever was loaded
+    /// into that slot afterwards, because the handle carries the generation the slot was
+    /// at when it was issued.
+    ///
+    /// GPU meshes and materials are SHARED between handles that loaded the same file, so
+    /// they are reference-counted: this always drops the handle, and frees the upload only
+    /// when the handle was the last user of it. Freeing one body of a horde therefore does
+    /// not pull the mesh out from under the other twenty-three.
     pub fn free_model(&mut self, handle: i64) -> bool {
         let Some(key) = ItemId::from_i64(handle) else {
             return false;
@@ -259,11 +329,28 @@ impl Scene {
         let Some(item) = self.items.remove(key) else {
             return false;
         };
-        for (mesh, mat) in item.prims {
-            self.renderer.free_mesh(mesh);
-            self.renderer.free_material(mat);
+        let asset = item.asset;
+        // Two references left (this one and the cache's) means no other handle is using it,
+        // so the cache entry goes too - otherwise the upload would outlive its last user
+        // and never be reclaimed.
+        if let Some(path) = asset.path.clone() {
+            if Arc::strong_count(&asset) == 2 {
+                self.assets.remove(&path);
+            }
+        }
+        if Arc::strong_count(&asset) == 1 {
+            for &(mesh, mat) in &asset.prims {
+                self.renderer.free_mesh(mesh);
+                self.renderer.free_material(mat);
+            }
         }
         true
+    }
+
+    /// How many distinct model FILES are uploaded. Handles can outnumber this freely: a
+    /// horde of 24 bodies over 5 files is 24 handles and 5 assets.
+    pub fn asset_count(&self) -> usize {
+        self.assets.len()
     }
 
     /// Number of live model/primitive handles.
@@ -283,15 +370,7 @@ impl Scene {
         let mat = self
             .renderer
             .add_material(device, queue, &MaterialDesc::flat(color));
-        self.items
-            .insert(Renderable {
-                prims: vec![(m, mat)],
-                model: None,
-                player: AnimPlayer::new(),
-                skinned: false,
-                hidden_joints: 0,
-            })
-            .to_i64()
+        self.own_asset(vec![(m, mat)])
     }
 
     pub fn make_box(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, color: [f32; 4]) -> i64 {
@@ -332,15 +411,7 @@ impl Scene {
             emissive_tex: None,
         };
         let mat = self.renderer.add_material(device, queue, &desc);
-        self.items
-            .insert(Renderable {
-                prims: vec![(m, mat)],
-                model: None,
-                player: AnimPlayer::new(),
-                skinned: false,
-                hidden_joints: 0,
-            })
-            .to_i64()
+        self.own_asset(vec![(m, mat)])
     }
     pub fn make_sphere(
         &mut self,
@@ -395,15 +466,7 @@ impl Scene {
             emissive_tex: None,
         };
         let mat = self.renderer.add_material(device, queue, &desc);
-        self.items
-            .insert(Renderable {
-                prims: vec![(m, mat)],
-                model: None,
-                player: AnimPlayer::new(),
-                skinned: false,
-                hidden_joints: 0,
-            })
-            .to_i64()
+        self.own_asset(vec![(m, mat)])
     }
 
     /// Draw a sprite handle as a camera-facing billboard of side `size` at `pos`.
@@ -430,7 +493,7 @@ impl Scene {
         let Some(item) = self.item(handle) else {
             return;
         };
-        let prims = item.prims.clone();
+        let prims = item.asset.prims.clone();
         let insts: Vec<crate::render::InstanceRaw> = transforms
             .iter()
             .map(|&t| crate::render::InstanceRaw::new(t, [1.0; 4]))
@@ -443,7 +506,7 @@ impl Scene {
     /// Number of animation clips on a model handle.
     pub fn clip_count(&self, handle: i64) -> i64 {
         self.item(handle)
-            .and_then(|r| r.model.as_ref())
+            .and_then(|r| r.asset.model.as_ref())
             .map(|m| m.clips.len() as i64)
             .unwrap_or(0)
     }
@@ -454,7 +517,7 @@ impl Scene {
     /// silently plays the WRONG motion the moment an artist re-exports the model
     /// with its clips in a different order.
     pub fn clip_name(&self, handle: i64, i: i64) -> Option<&str> {
-        let m = self.item(handle)?.model.as_ref()?;
+        let m = self.item(handle)?.asset.model.as_ref()?;
         if i < 0 {
             return None;
         }
@@ -468,7 +531,7 @@ impl Scene {
     /// segment after the last `|`. Matching is case-insensitive because that
     /// prefix and the casing are export settings, not authored intent.
     pub fn clip_index(&self, handle: i64, name: &str) -> i64 {
-        let Some(m) = self.item(handle).and_then(|r| r.model.as_ref()) else {
+        let Some(m) = self.item(handle).and_then(|r| r.asset.model.as_ref()) else {
             return -1;
         };
         match_name(m.clips.iter().map(|c| c.name.as_str()), name)
@@ -486,7 +549,7 @@ impl Scene {
     pub fn anim_update(&mut self, handle: i64, dt: f32) {
         // Split borrow: take the model out by reference for sampling.
         if let Some(r) = self.item_mut(handle) {
-            if let Some(model) = &r.model {
+            if let Some(model) = &r.asset.model {
                 r.player.advance(model, dt);
             }
         }
@@ -724,8 +787,9 @@ impl Scene {
         handle: i64,
     ) -> Option<(Option<Arc<Vec<Mat4>>>, Vec<(MeshId, MaterialId)>)> {
         let r = self.item(handle)?;
-        let joints = if r.skinned {
-            r.model
+        let joints = if r.asset.skinned {
+            r.asset
+                .model
                 .as_ref()
                 .map(|m| r.player.matrices(m, r.hidden_joints))
                 .filter(|v| !v.is_empty())
@@ -733,7 +797,7 @@ impl Scene {
         } else {
             None
         };
-        Some((joints, r.prims.clone()))
+        Some((joints, r.asset.prims.clone()))
     }
 
     pub fn draw(&mut self, handle: i64, transform: Mat4) {
@@ -755,13 +819,14 @@ impl Scene {
         // the armour); the armour worn over it must still render in full, otherwise
         // hiding the body under a gauntlet would collapse the gauntlet too.
         let host_joints = self.item(host).and_then(|r| {
-            r.model
+            r.asset
+                .model
                 .as_ref()
                 .map(|m| r.player.matrices(m, 0))
                 .filter(|v| !v.is_empty())
                 .map(Arc::new)
         });
-        let Some(prims) = self.item(armor).map(|r| r.prims.clone()) else {
+        let Some(prims) = self.item(armor).map(|r| r.asset.prims.clone()) else {
             return;
         };
         for (mesh, mat) in prims {
@@ -808,7 +873,8 @@ impl Scene {
         let g = self
             .item(host)
             .and_then(|r| {
-                r.model
+                r.asset
+                    .model
                     .as_ref()
                     .and_then(|m| r.player.joint_global(m, joint.max(0) as usize))
             })
@@ -821,7 +887,8 @@ impl Scene {
     /// attachment gnomons and to solve socket transforms.
     pub fn joint_global_mat(&self, host: i64, joint: i64) -> Option<Mat4> {
         let r = self.item(host)?;
-        r.model
+        r.asset
+            .model
             .as_ref()
             .and_then(|m| r.player.joint_global(m, joint.max(0) as usize))
     }
@@ -835,7 +902,7 @@ impl Scene {
     pub fn joint_index(&self, host: i64, name: &str) -> i64 {
         let Some(skel) = self
             .item(host)
-            .and_then(|r| r.model.as_ref())
+            .and_then(|r| r.asset.model.as_ref())
             .and_then(|m| m.skeleton.as_ref())
         else {
             return -1;
@@ -846,7 +913,7 @@ impl Scene {
     /// The name of joint `i`, or `None` for a stale handle or a bad index. The
     /// discovery counterpart of [`Scene::joint_index`].
     pub fn joint_name(&self, host: i64, i: i64) -> Option<&str> {
-        let skel = self.item(host)?.model.as_ref()?.skeleton.as_ref()?;
+        let skel = self.item(host)?.asset.model.as_ref()?.skeleton.as_ref()?;
         if i < 0 {
             return None;
         }
@@ -859,6 +926,7 @@ impl Scene {
     pub fn joint_pos(&self, host: i64, joint: i64) -> Option<[f32; 3]> {
         let r = self.item(host)?;
         let g = r
+            .asset
             .model
             .as_ref()
             .and_then(|m| r.player.joint_global(m, joint.max(0) as usize))?;
@@ -877,7 +945,7 @@ impl Scene {
             let Some(r) = self.item(host) else {
                 return;
             };
-            let Some(model) = r.model.as_ref() else {
+            let Some(model) = r.asset.model.as_ref() else {
                 return;
             };
             let Some(skel) = model.skeleton.as_ref() else {
@@ -907,7 +975,7 @@ impl Scene {
             println!("joint dump: bad handle {host}");
             return;
         };
-        let Some(model) = item.model.as_ref() else {
+        let Some(model) = item.asset.model.as_ref() else {
             println!("joint dump: no model");
             return;
         };

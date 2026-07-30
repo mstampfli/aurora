@@ -249,7 +249,7 @@ impl<'a> Lexer<'a> {
                 self.error(
                     span,
                     "integer suffix on a float literal",
-                    format!("`{}` cannot have an integer suffix", &clean),
+                    format!("`{clean}` cannot have an integer suffix"),
                 );
                 self.make_float(&clean, None, num_start)
             }
