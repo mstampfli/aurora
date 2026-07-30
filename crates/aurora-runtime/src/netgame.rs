@@ -226,6 +226,7 @@ pub struct Session {
     /// Capsule cylinder half-height for the lag-comp character hitbox (the
     /// matching shape to `hit_radius`). Players/bots are vertical capsules.
     hit_half: f32,
+    trace_ticks: u64,
     // The game's simulation step (registered from Aurora).
     sim_fn: usize,
     sim_env: usize,
@@ -367,6 +368,9 @@ impl Session {
         // set AURORA_NET_BIND=127.0.0.1 for a silent same-machine session.
         let sock = UdpSocket::bind((host_bind_addr().as_str(), port))?;
         sock.set_nonblocking(true)?;
+        if std::env::var("AURORA_NET_TRACE").is_ok() {
+            eprintln!("net trace: host bound to {:?}", sock.local_addr());
+        }
         Ok(Session::base(sock, true, None))
     }
     pub fn join(addr: SocketAddr) -> std::io::Result<Session> {
@@ -393,6 +397,7 @@ impl Session {
             // that used to clip a fat 1.0 sphere on the server but miss on the client now agrees.
             hit_radius: 0.6,
             hit_half: 0.3,
+            trace_ticks: 0,
             sim_fn: 0,
             sim_env: 0,
             state_len: 4,
@@ -536,21 +541,24 @@ impl Session {
                 self.pending.pop_front();
             }
             if let Some(addr) = self.server_addr {
-                if std::env::var("AURORA_NET_TRACE").is_ok() {
-                    eprintln!("net trace: client sending input seq={seq} to {addr}");
-                }
-                let _ = self.sock.send_to(
-                    &encode_input(
-                        seq,
-                        &blob,
-                        self.input_len,
-                        &self.local_meta,
-                        &self.local_name,
-                        &self.pred.s,
-                        self.state_len,
-                    ),
-                    addr,
+                let pkt = encode_input(
+                    seq,
+                    &blob,
+                    self.input_len,
+                    &self.local_meta,
+                    &self.local_name,
+                    &self.pred.s,
+                    self.state_len,
                 );
+                let sent = self.sock.send_to(&pkt, addr);
+                if std::env::var("AURORA_NET_TRACE").is_ok() {
+                    eprintln!(
+                        "net trace: client seq={seq} -> {addr} bytes={} result={:?} local={:?}",
+                        pkt.len(),
+                        sent,
+                        self.sock.local_addr()
+                    );
+                }
             }
             seq
         }
@@ -619,6 +627,17 @@ impl Session {
     }
 
     pub fn update(&mut self, dt: f32) {
+        if std::env::var("AURORA_NET_TRACE").is_ok() {
+            self.trace_ticks += 1;
+            if self.trace_ticks % 200000 == 1 {
+                eprintln!(
+                    "net trace: update tick={} server={} local={:?}",
+                    self.trace_ticks,
+                    self.is_server,
+                    self.sock.local_addr()
+                );
+            }
+        }
         loop {
             match self.sock.recv_from(&mut self.buf) {
                 Ok((n, from)) => {
@@ -639,7 +658,12 @@ impl Session {
                     }
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(_) => break,
+                Err(e) => {
+                    if std::env::var("AURORA_NET_TRACE").is_ok() {
+                        eprintln!("net trace: recv error {e:?}");
+                    }
+                    break;
+                }
             }
         }
 
