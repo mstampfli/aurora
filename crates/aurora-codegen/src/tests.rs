@@ -1506,3 +1506,53 @@ fn file_modules_lower_to_an_aot_object_with_nothing_stubbed() {
         "emitted object is missing the `aurora_user_main` entry symbol"
     );
 }
+
+/// An array-repeat count may be any compile-time integer, not only a literal.
+///
+/// It used to accept `ExprKind::Int` and nothing else, so `[0; N]` with `const N` failed
+/// to lower - and because a failure to lower stubs the whole enclosing function, a
+/// program using a perfectly ordinary named size silently did nothing. The value was
+/// always known; it just had a name.
+#[test]
+fn array_repeat_count_accepts_consts_and_arithmetic() {
+    // A plain named const.
+    let src = "const N: i64 = 6
+    fn main() -> i64 { let a = [7; N]; a[0] + a[5] + (len(a) as i64) }";
+    assert_eq!(compile_call(src, "main", &[]), 7 + 7 + 6);
+
+    // Arithmetic over consts, which is how a size is usually written.
+    let src = "const ROWS: i64 = 3
+    const COLS: i64 = 4
+    fn main() -> i64 { let a = [1; ROWS * COLS]; len(a) as i64 }";
+    assert_eq!(compile_call(src, "main", &[]), 12);
+
+    let src = "const N: i64 = 5
+    fn main() -> i64 { let a = [2; N + 1]; len(a) as i64 }";
+    assert_eq!(compile_call(src, "main", &[]), 6);
+
+    // A const defined from another const still folds.
+    let src = "const BASE: i64 = 4
+    const N: i64 = BASE * 2
+    fn main() -> i64 { let a = [0; N]; len(a) as i64 }";
+    assert_eq!(compile_call(src, "main", &[]), 8);
+
+    // And a literal keeps working.
+    let src = "fn main() -> i64 { let a = [3; 4]; len(a) as i64 }";
+    assert_eq!(compile_call(src, "main", &[]), 4);
+}
+
+/// A count that cannot be known at compile time must be a clear error, not a stub. Arrays
+/// are fixed-size in codegen, so a runtime length has no answer here.
+#[test]
+fn array_repeat_rejects_a_runtime_count() {
+    let src = "fn main(n: i64) -> i64 { let a = [0; n]; len(a) as i64 }";
+    let (module, diags) = aurora_parser::parse_str(src);
+    assert!(!diags.iter().any(|d| d.is_error()), "parse failed");
+    let err = crate::jit_call(&module, "main", &[3]).err();
+    // Either the call fails outright or the function is reported as not lowered; what
+    // must not happen is a silently wrong array.
+    assert!(
+        err.is_some(),
+        "a runtime array-repeat count must not compile"
+    );
+}

@@ -2298,8 +2298,53 @@ fn tr_tuple(
     Ok(Term::Val(ptr, Cty::Tuple(tys)))
 }
 
+/// Fold an expression to an integer AT COMPILE TIME, or None if it is not constant.
+///
+/// Array sizes are fixed in codegen, so a repeat count has to be known here. Accepting
+/// only a literal meant `const N: i64 = 6` could not be used as one - the value is
+/// perfectly well known, it just had a name - which forces a magic number into the source
+/// next to the constant it duplicates. This resolves named consts (including
+/// module-qualified ones) and folds the arithmetic a size expression is actually written
+/// with, so `[0; N]`, `[0; N + 1]` and `[0; ROWS * COLS]` all work.
+///
+/// `depth` bounds the recursion, so `const A = B` alongside `const B = A` reports as
+/// non-constant instead of exhausting the stack.
+fn const_int(env: &Env, e: &Expr, depth: u32) -> Option<i64> {
+    if depth > 32 {
+        return None;
+    }
+    match &e.kind {
+        ExprKind::Int(v, _) => i64::try_from(*v).ok(),
+        ExprKind::Path(p) => {
+            let joined = p
+                .segments
+                .iter()
+                .map(|s| s.ident.name.as_str())
+                .collect::<Vec<_>>()
+                .join("::");
+            const_int(env, env.consts.get(&joined)?, depth + 1)
+        }
+        ExprKind::Unary(UnOp::Neg, inner) => const_int(env, inner, depth + 1)?.checked_neg(),
+        ExprKind::Binary(op, lhs, rhs) => {
+            let a = const_int(env, lhs, depth + 1)?;
+            let b = const_int(env, rhs, depth + 1)?;
+            match op {
+                BinOp::Add => a.checked_add(b),
+                BinOp::Sub => a.checked_sub(b),
+                BinOp::Mul => a.checked_mul(b),
+                BinOp::Div => a.checked_div(b),
+                BinOp::Rem => a.checked_rem(b),
+                _ => None,
+            }
+        }
+        // A parenthesised or cast size expression is still a size.
+        ExprKind::Cast(inner, _) => const_int(env, inner, depth + 1),
+        _ => None,
+    }
+}
+
 /// `[value; count]` — a fixed array of `count` copies of `value`. `count` must
-/// be a constant integer literal (arrays are fixed-size in codegen).
+/// fold to a non-negative integer at compile time (arrays are fixed-size in codegen).
 fn tr_array_repeat(
     m: &mut dyn Module,
     b: &mut FunctionBuilder,
@@ -2308,9 +2353,18 @@ fn tr_array_repeat(
     value: &Expr,
     count: &Expr,
 ) -> Result<Term, String> {
-    let n = match &count.kind {
-        ExprKind::Int(v, _) => *v as usize,
-        _ => return Err("array-repeat count must be a constant in JIT".into()),
+    let n = match const_int(env, count, 0) {
+        Some(v) if v >= 0 => v as usize,
+        Some(v) => {
+            return Err(format!("array-repeat count must not be negative (got {v})"));
+        }
+        None => {
+            return Err(
+                "array-repeat count must be a compile-time integer: a literal, a const, \
+                 or arithmetic over them"
+                    .into(),
+            );
+        }
     };
     let (v, elem) = val(m, b, l, env, value)?;
     let stride = byte_size(env, &elem);

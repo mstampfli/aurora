@@ -536,6 +536,9 @@ impl Session {
                 self.pending.pop_front();
             }
             if let Some(addr) = self.server_addr {
+                if std::env::var("AURORA_NET_TRACE").is_ok() {
+                    eprintln!("net trace: client sending input seq={seq} to {addr}");
+                }
                 let _ = self.sock.send_to(
                     &encode_input(
                         seq,
@@ -620,6 +623,15 @@ impl Session {
             match self.sock.recv_from(&mut self.buf) {
                 Ok((n, from)) => {
                     let pkt = self.buf[..n].to_vec();
+                    if std::env::var("AURORA_NET_TRACE").is_ok() {
+                        eprintln!(
+                            "net trace: recv {} bytes tag={:?} from {} server={}",
+                            n,
+                            pkt.first(),
+                            from,
+                            self.is_server
+                        );
+                    }
                     if self.is_server {
                         self.on_server_packet(&pkt, from);
                     } else {
