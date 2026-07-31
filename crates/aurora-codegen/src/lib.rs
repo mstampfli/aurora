@@ -3658,6 +3658,7 @@ fn tr_call(
             | "scene_save"
             | "scene_load"
             | "r3d_load_model"
+            | "r3d_load_character"
     ) {
         let result = if let Some(a) = args.first() {
             let (ptr, len) = str_arg(m, b, l, env, &a.value)?;
@@ -3668,6 +3669,36 @@ fn tr_call(
             b.ins().iconst(types::I64, 0)
         };
         return Ok(Term::Val(result, Cty::I64));
+    }
+
+    // Builtins taking one string and returning nothing: gather a clip, name the
+    // rig it was authored on, name the bone allowed to carry root travel.
+    if matches!(
+        name.as_str(),
+        "r3d_clip_rig" | "r3d_clip_add" | "r3d_clip_root"
+    ) {
+        let (ptr, len) = str_arg(m, b, l, env, &args[0].value)?;
+        let f = m.declare_func_in_func(env.hosts[name.as_str()], b.func);
+        b.ins().call(f, &[ptr, len]);
+        return Ok(Term::Val(b.ins().iconst(types::I64, 0), Cty::I64));
+    }
+
+    // Two strings, returning nothing: a bone rename, an atlas by material name.
+    if matches!(name.as_str(), "r3d_bone_map" | "r3d_material_texture") {
+        let (ap, al) = str_arg(m, b, l, env, &args[0].value)?;
+        let (bp, bl) = str_arg(m, b, l, env, &args[1].value)?;
+        let f = m.declare_func_in_func(env.hosts[name.as_str()], b.func);
+        b.ins().call(f, &[ap, al, bp, bl]);
+        return Ok(Term::Val(b.ins().iconst(types::I64, 0), Cty::I64));
+    }
+
+    // `r3d_load_part(path, host) -> i64`: a string and a handle.
+    if name == "r3d_load_part" {
+        let (ptr, len) = str_arg(m, b, l, env, &args[0].value)?;
+        let (host, _) = val(m, b, l, env, &args[1].value)?;
+        let f = m.declare_func_in_func(env.hosts["r3d_load_part"], b.func);
+        let call = b.ins().call(f, &[ptr, len, host]);
+        return Ok(Term::Val(b.inst_results(call)[0], Cty::I64));
     }
 
     // `gpu_render("<wgsl>", time_ms)` — run a fragment shader into the framebuffer.
