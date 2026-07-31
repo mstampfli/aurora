@@ -67,6 +67,15 @@ fn run_cli() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        Some("asset") => match (args.get(1).map(String::as_str), args.get(2)) {
+            (Some("info"), Some(path)) => cmd_asset_info(path),
+            (Some("check"), Some(reference)) => cmd_asset_check(reference, &args[3..]),
+            _ => {
+                eprintln!("usage: aurorac asset info <model>");
+                eprintln!("       aurorac asset check <reference-rig> <dir>...");
+                ExitCode::from(2)
+            }
+        },
         Some("run") => {
             // First positional arg may be the file, or omitted to use the
             // manifest; everything after it belongs to the PROGRAM, not to us.
@@ -508,6 +517,191 @@ fn read_program(path: &str) -> Option<String> {
 }
 
 /// Scaffold a new project directory with a manifest and a hello-world program.
+/// Report what an importer actually produced from a model file.
+///
+/// Art arrives wrong far more often than code does, and the failures are quiet:
+/// a rig whose bind pose is not where its node transforms say, a clip file with
+/// no geometry, a mesh whose vertices are in centimetres. Reading the numbers
+/// out of the importer answers those without writing a program or opening a DCC.
+fn cmd_asset_info(path: &str) -> ExitCode {
+    let model = match aurora_asset::model::Model::load(path) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let verts: usize = model.primitives.iter().map(|p| p.mesh.vertices.len()).sum();
+    let tris: usize = model
+        .primitives
+        .iter()
+        .map(|p| p.mesh.indices.len() / 3)
+        .sum();
+    let skinned = model.primitives.iter().filter(|p| p.skinned).count();
+    let textured = model.primitives.iter().filter(|p| p.texture.is_some()).count();
+    println!("{path}");
+    println!(
+        "  primitives {}  verts {verts}  tris {tris}  skinned {skinned}  textured {textured}",
+        model.primitives.len()
+    );
+
+    let materials: std::collections::BTreeSet<&str> = model
+        .primitives
+        .iter()
+        .map(|p| p.material.as_str())
+        .filter(|m| !m.is_empty())
+        .collect();
+    if !materials.is_empty() {
+        println!("  materials  {}", materials.into_iter().collect::<Vec<_>>().join(", "));
+    }
+
+    match &model.skeleton {
+        None => println!("  skeleton   none"),
+        Some(skel) => {
+            let rest = skel.rest_globals();
+            let lo = rest.iter().map(|m| m.w_axis.y).fold(f32::MAX, f32::min);
+            let hi = rest.iter().map(|m| m.w_axis.y).fold(f32::MIN, f32::max);
+            println!(
+                "  skeleton   {} joints, rest spans y {lo:.3}..{hi:.3}",
+                skel.joints.len()
+            );
+        }
+    }
+
+    if !model.primitives.is_empty() {
+        // Through the bind matrices: a skinned mesh's raw vertices are in the
+        // file's own bind space, which for a centimetre export is a hundred
+        // times the size the model actually appears.
+        let b = model.bind_pose_bounds();
+        println!(
+            "  bounds     x {:.3}..{:.3}  y {:.3}..{:.3}  z {:.3}..{:.3}",
+            b[0], b[3], b[1], b[4], b[2], b[5]
+        );
+    }
+
+    println!("  clips      {}", model.clips.len());
+    for c in &model.clips {
+        let joints: std::collections::BTreeSet<usize> =
+            c.channels.iter().map(|ch| ch.joint).collect();
+        println!(
+            "    {:<44} {:.3}s  {} channels over {} joints",
+            c.name,
+            c.duration,
+            c.channels.len(),
+            joints.len()
+        );
+    }
+    ExitCode::SUCCESS
+}
+
+/// Check a library of models against one reference rig.
+///
+/// A shared animation set only works if every character agrees with the rig the
+/// clips were authored on. That is a property of a whole directory, not of the
+/// one file someone happened to open, and it is cheap enough to check on every
+/// asset drop.
+fn cmd_asset_check(reference: &str, dirs: &[String]) -> ExitCode {
+    // Rest positions this far apart are the same joint: loose enough for an
+    // exporter's rounding, tight enough that a different body fails.
+    const TOLERANCE: f32 = 0.002;
+
+    if dirs.is_empty() {
+        eprintln!("usage: aurorac asset check <reference-rig> <dir>...");
+        return ExitCode::from(2);
+    }
+    let reference_model = match aurora_asset::model::Model::load(reference) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("error: reference rig: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(reference_skel) = reference_model.skeleton else {
+        eprintln!("error: reference rig `{reference}` has no skeleton");
+        return ExitCode::FAILURE;
+    };
+    let reference_rest = reference_skel.rest_globals();
+
+    fn models_under(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                models_under(&p, out);
+            } else if p.extension().and_then(|s| s.to_str()).is_some_and(|s| {
+                matches!(s.to_ascii_lowercase().as_str(), "fbx" | "gltf" | "glb")
+            }) {
+                out.push(p);
+            }
+        }
+    }
+
+    let mut files = Vec::new();
+    for d in dirs {
+        models_under(std::path::Path::new(d), &mut files);
+    }
+    files.sort();
+    println!(
+        "checking {} model(s) against {reference} ({} joints)",
+        files.len(),
+        reference_skel.joints.len()
+    );
+
+    let (mut ok, mut bad) = (0usize, 0usize);
+    for path in &files {
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        let model = match aurora_asset::model::Model::load(&path.to_string_lossy()) {
+            Ok(m) => m,
+            Err(e) => {
+                println!("  FAILED  {name}: {e}");
+                bad += 1;
+                continue;
+            }
+        };
+        let Some(skel) = &model.skeleton else { continue };
+
+        let rest = skel.rest_globals();
+        let mut conforms = true;
+        for (i, joint) in skel.joints.iter().enumerate() {
+            let found = reference_skel
+                .joints
+                .iter()
+                .position(|j| j.name.eq_ignore_ascii_case(&joint.name));
+            match found {
+                None => {
+                    println!("  EXTRA   {name}: {} is not on the reference rig", joint.name);
+                    conforms = false;
+                }
+                Some(r) => {
+                    let d = (rest[i].w_axis.truncate() - reference_rest[r].w_axis.truncate())
+                        .length();
+                    if d > TOLERANCE {
+                        println!("  MOVED   {name}: {} sits {d:.4} away", joint.name);
+                        conforms = false;
+                    }
+                }
+            }
+        }
+        if conforms {
+            ok += 1;
+        } else {
+            bad += 1;
+        }
+    }
+
+    println!("conforming {ok}, non-conforming {bad}");
+    if bad > 0 {
+        // A non-conforming library is a real failure: the shared animation set
+        // will not drive it. Reporting it as success would make this checkable
+        // in a pipeline and useless in one.
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
 fn cmd_new(name: &str) -> ExitCode {
     use std::path::Path;
     let root = Path::new(name);

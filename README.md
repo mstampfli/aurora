@@ -138,6 +138,8 @@ aurorac new    mygame                       # scaffold a project (aurora.toml + 
 aurorac run    examples/showcase.aur        # compile main to native code and run (JIT)
 aurorac build  examples/native.aur -o game.exe   # standalone optimized native executable
 aurorac check  examples/game.aur            # type + ECS + move + region checks only
+aurorac asset  info model.fbx               # what the importer read: meshes, rig, clips, bounds
+aurorac asset  check rig.fbx characters/    # does a library share one rig? (nonzero exit if not)
 aurorac debug  examples/native.aur --break 9     # native debugger (breakpoints, step, locals)
 aurorac gpu    examples/gpu_shader.aur -o out.ppm # run a shader on the real GPU
 aurorac window                              # open a live real-time window

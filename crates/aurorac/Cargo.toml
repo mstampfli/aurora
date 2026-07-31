@@ -1,4 +1,4 @@
-[package]
+﻿[package]
 name = "aurorac"
 version.workspace = true
 edition.workspace = true
@@ -9,6 +9,7 @@ name = "aurorac"
 path = "src/main.rs"
 
 [dependencies]
+aurora-asset.workspace = true
 aurora-span.workspace = true
 aurora-diag.workspace = true
 aurora-lexer.workspace = true
