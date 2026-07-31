@@ -1556,3 +1556,156 @@ fn array_repeat_rejects_a_runtime_count() {
         "a runtime array-repeat count must not compile"
     );
 }
+
+// --- the value stack -------------------------------------------------------
+//
+// Aggregates past `VSTACK_THRESHOLD` come from a per-thread arena instead of
+// the machine frame, because a frame that grows with struct size blew Windows'
+// 1 MB stack reserve (marrow's 235 KB `Warren` produced a 470 KB frame, and the
+// process died with a bare access violation and no output at all).
+
+/// A 240 KB struct - deliberately the size of the one that exposed this.
+const BIG_SRC: &str = "
+    struct Big { a: [i64; 30000], n: i64 }
+    fn mk(seed: i64) -> Big {
+        let mut b = Big { a: [0; 30000], n: seed }
+        b.a[29999] = seed
+        b
+    }
+";
+
+/// The value must survive being built in a callee, copied across the sret
+/// boundary and read back - the arena is useless if it does not round-trip.
+#[test]
+fn a_large_aggregate_round_trips_through_a_call() {
+    let src = format!(
+        "{BIG_SRC}
+    fn run() -> i64 {{
+        let b = mk(4242)
+        b.a[29999] + b.n
+    }}"
+    );
+    let (module, diags) = parse_str(&src);
+    assert!(!diags.iter().any(|d| d.is_error()));
+    let jit = crate::build(&module).unwrap();
+    assert_eq!(jit.call_i64("run", &[]).unwrap(), 8484);
+}
+
+/// THE regression this exists for.
+///
+/// A machine stack slot is reserved once in the frame layout and reused on every
+/// trip through a loop. An arena allocation made where the *use* appears instead
+/// of once per activation turns a loop's memory profile from constant into
+/// linear in trip count - which is exactly what the first cut of this did: 20k
+/// iterations of a 240 KB struct reached 4.4 GB of working set.
+///
+/// So: run the same loop at two very different trip counts and require the
+/// arena's high-water mark not to grow with the count.
+#[test]
+fn a_loop_does_not_grow_the_arena_with_its_trip_count() {
+    let src = format!(
+        "{BIG_SRC}
+    fn run(n: i64) -> i64 {{
+        let mut acc = 0
+        let mut i = 0
+        while i < n {{
+            let b = mk(i)
+            acc = acc + b.a[29999]
+            i = i + 1
+        }}
+        acc
+    }}"
+    );
+    let (module, diags) = parse_str(&src);
+    assert!(!diags.iter().any(|d| d.is_error()));
+    let jit = crate::build(&module).unwrap();
+
+    aurora_runtime::aurora_vstack_reset_peak();
+    assert_eq!(jit.call_i64("run", &[10]).unwrap(), 45);
+    let peak_10 = aurora_runtime::aurora_vstack_peak();
+
+    aurora_runtime::aurora_vstack_reset_peak();
+    assert_eq!(jit.call_i64("run", &[2000]).unwrap(), 1999000);
+    let peak_2000 = aurora_runtime::aurora_vstack_peak();
+
+    // 200x the iterations must not mean materially more memory. Allowing 2x
+    // leaves room for chunk granularity while still failing hard on a leak,
+    // which at this trip count would be ~480 MB against ~0.5 MB.
+    assert!(
+        peak_2000 <= peak_10.max(1) * 2,
+        "arena grew with trip count: {peak_10} bytes at 10 iterations, \
+         {peak_2000} at 2000 - allocation is happening per iteration, not per activation"
+    );
+}
+
+/// Every activation needs its OWN buffer: if recursion handed the same memory to
+/// a nested call, an outer frame's value would be clobbered by an inner one.
+/// Checked by reading the value back *after* the recursive call returns.
+#[test]
+fn recursion_gives_each_activation_its_own_buffer() {
+    let src = format!(
+        "{BIG_SRC}
+    fn deep(n: i64) -> i64 {{
+        if n <= 0 {{ return 0 }}
+        let mut b = mk(n)
+        let inner = deep(n - 1)
+        if b.a[29999] != n {{ return 0 - 1 }}
+        inner + 1
+    }}
+    fn run() -> i64 {{ deep(120) }}"
+    );
+    let (module, diags) = parse_str(&src);
+    assert!(!diags.iter().any(|d| d.is_error()));
+    let jit = crate::build(&module).unwrap();
+    // 120 activations x 240 KB = ~29 MB live at the deepest point, which could
+    // not fit on a 1 MB thread stack at all.
+    assert_eq!(jit.call_i64("run", &[]).unwrap(), 120);
+}
+
+/// A call must give its memory back. Without this the arena would only ever
+/// grow, and a game loop would march it to the high-water mark of the whole
+/// session rather than of the deepest call chain.
+#[test]
+fn a_returned_call_releases_its_arena_frame() {
+    let src = format!(
+        "{BIG_SRC}
+    fn run() -> i64 {{ let b = mk(7) ; b.a[29999] }}"
+    );
+    let (module, diags) = parse_str(&src);
+    assert!(!diags.iter().any(|d| d.is_error()));
+    let jit = crate::build(&module).unwrap();
+    let before = aurora_runtime::aurora_vstack_used();
+    assert_eq!(jit.call_i64("run", &[]).unwrap(), 7);
+    assert_eq!(
+        aurora_runtime::aurora_vstack_used(),
+        before,
+        "the arena must return to its previous offset once the call is done"
+    );
+}
+
+/// Small aggregates must stay in the machine frame: they are the common case,
+/// and a call into the arena for a 16-byte tuple would be pure overhead. Proven
+/// by the arena never being touched at all.
+#[test]
+fn small_aggregates_do_not_touch_the_arena() {
+    let src = "
+    struct Small { x: i64, y: i64 }
+    fn mks(a: i64) -> Small { Small { x: a, y: a * 2 } }
+    fn run() -> i64 {
+        let mut t = 0
+        let mut i = 0
+        while i < 500 { let s = mks(i) ; t = t + s.y ; i = i + 1 }
+        t
+    }";
+    let (module, diags) = parse_str(src);
+    assert!(!diags.iter().any(|d| d.is_error()));
+    let jit = crate::build(&module).unwrap();
+    aurora_runtime::aurora_vstack_reset_peak();
+    let base = aurora_runtime::aurora_vstack_peak();
+    assert_eq!(jit.call_i64("run", &[]).unwrap(), 249500);
+    assert_eq!(
+        aurora_runtime::aurora_vstack_peak(),
+        base,
+        "a 16-byte struct belongs in the frame, not the arena"
+    );
+}

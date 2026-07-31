@@ -211,9 +211,17 @@ FieldList  ::= Field ~ ","
 Field      ::= Attr* Vis? ident ":" Type [ "=" Expr ]      // default value optional
 ```
 
-Structs are **POD value types**: stack-allocated, copied on assignment unless they
-(transitively) contain an `~T` or `rc<T>` field, which makes them *move/own* types
-(§8.1). Field defaults enable `Foo { .. }` partial init.
+Structs are **POD value types**: automatically storaged, copied on assignment unless
+they (transitively) contain an `~T` or `rc<T>` field, which makes them *move/own*
+types (§8.1). Field defaults enable `Foo { .. }` partial init.
+
+Storage is by size, and the choice is the compiler's, not the program's. A struct
+small enough to sit in a machine stack frame does; one of 4 KiB or more is placed in
+a per-thread **value stack** instead, because a frame that grew with struct size
+overflowed a thread's stack reserve (1 MB by default on Windows, with no on-demand
+growth). Either way the lifetime is the enclosing call and the semantics are
+identical: the value is released when the function returns, and a pointer to it must
+not outlive that. See the *Invariants* table in `ARCHITECTURE.md`.
 
 ### 4.2 Enums (tagged unions, exhaustive)
 ```

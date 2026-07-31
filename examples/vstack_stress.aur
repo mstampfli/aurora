@@ -1,0 +1,57 @@
+// Value-stack stress: the two properties the design rests on, measured.
+//
+//   aurorac run examples/vstack_stress.aur
+//
+// `Big` is deliberately the size of marrow's `Warren` (240 KB), the struct that
+// made a 470 KB frame and blew Windows' 1 MB stack reserve.
+
+struct Big {
+    a: [i64; 30000],
+    n: i64,
+}
+
+fn mk(seed: i64) -> Big {
+    let mut b = Big { a: [0; 30000], n: seed }
+    b.a[29999] = seed
+    b
+}
+
+/// Recurse `n` deep, holding a 240 KB aggregate live in every activation.
+fn deep(n: i64) -> i64 {
+    if n <= 0 {
+        return 0
+    }
+    let mut b = mk(n)
+    // Read it back after the recursive call, so the value must still be intact
+    // when the inner frames have come and gone - this is what catches an arena
+    // that hands the same memory to a nested call.
+    let inner = deep(n - 1)
+    if b.a[29999] != n {
+        println("CORRUPT at depth " + str(n))
+        return 0 - 1
+    }
+    inner + 1
+}
+
+fn main() {
+    // ---- 1. reuse ----------------------------------------------------------
+    // 20,000 calls, each allocating 240 KB. If `leave` did not give the memory
+    // back this would ask for 4.8 GB and die; flat memory means the arena is
+    // being reused.
+    let mut acc = 0
+    let mut i = 0
+    while i < 20000 {
+        let b = mk(i)
+        acc = acc + b.a[29999]
+        i = i + 1
+    }
+    println("RESULT reuse_sum=" + str(acc) + " (expect 199990000)")
+    println("RESULT reuse_ok=" + str((acc == 199990000) as i64) + " (expect 1)")
+
+    // ---- 2. depth ----------------------------------------------------------
+    // 200 nested activations each holding 240 KB = ~48 MB live at the deepest
+    // point. On a 1 MB machine stack this could not reach depth 5.
+    let d = deep(200)
+    println("RESULT depth_reached=" + str(d) + " (expect 200)")
+    println("RESULT depth_ok=" + str((d == 200) as i64) + " (expect 1)")
+}

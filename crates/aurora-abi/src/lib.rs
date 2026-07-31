@@ -185,6 +185,9 @@ impl Builtin {
 macro_rules! for_each_builtin {
     ($m:ident) => {
         $m! {
+        [internal, vstack_enter,                  aurora_vstack_enter,                   [],                                              void]
+        [internal, vstack_leave,                  aurora_vstack_leave,                   [],                                              void]
+        [internal, vstack_alloc,                  aurora_vstack_alloc,                   [I64],                                           Ptr]
         [internal, print_i64,                     aurora_print_i64,                      [I64],                                           void]
         [internal, print_f64,                     aurora_print_f64,                      [F64],                                           void]
         [internal, print_str,                     aurora_print_str,                      [Ptr, I64],                                      void]

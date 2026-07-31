@@ -50,6 +50,11 @@ pub use data::*;
 mod terrain;
 pub use terrain::*;
 
+// The value stack: per-thread bump arena for aggregates too large to sit in a
+// machine stack frame.
+mod vstack;
+pub use vstack::*;
+
 // --- printing --------------------------------------------------------------
 
 #[no_mangle]

@@ -337,6 +337,27 @@ struct Env {
     /// systems concurrently (they are provably non-conflicting and unordered).
     system_layers: Vec<Vec<usize>>,
     ptr_ty: Type,
+    /// Target shape, for the frontend helpers that need it (aggregate copies
+    /// lower through `emit_small_memory_copy`, which picks inline moves or a
+    /// `memcpy` call based on the target).
+    frontend: cranelift::codegen::isa::TargetFrontendConfig,
+    /// Value-stack allocations requested by the function currently being
+    /// lowered: one entry per *call site*, as `(variable holding the pointer,
+    /// size in bytes)`.
+    ///
+    /// Per site, not per execution - that distinction is the whole point. A
+    /// machine stack slot is reserved once in the frame layout and reused on
+    /// every trip through a loop, so allocating from the arena where the use
+    /// appears would turn a loop's memory profile from constant into linear in
+    /// trip count. Collecting the requests here and emitting them in the
+    /// preamble, which runs once per activation, reproduces stack-slot
+    /// semantics exactly while still giving each recursive activation its own
+    /// buffers.
+    ///
+    /// `None` means no function body is open and `alloc` must fall back to a
+    /// machine stack slot. `RefCell` because lowering only ever holds `&Env`
+    /// (same reason as `const_stack` and `closure_sigs`).
+    pending_vstack: std::cell::RefCell<Option<Vec<(Variable, u32)>>>,
     /// When true, emit native debug hooks (statement-line + variable reporting).
     debug: bool,
     /// When true, emit profiler hooks (per-function enter/exit timing).
@@ -500,14 +521,29 @@ pub fn build_profile(module: &AstModule) -> Result<Jit, String> {
     build_inner(module, false, true, Vec::new())
 }
 
+/// Stack probing, applied identically to the JIT and the AOT object path.
+///
+/// A frame bigger than a guard page must touch each page in order on the way
+/// down. Without probes, a single `sub rsp, N` for a large frame jumps the
+/// guard page entirely - the OS never sees the fault it uses to commit (Windows)
+/// or grow (Linux) the stack, so the process dies on the first write with a bare
+/// access violation and no message at all. `inline` rather than `outline`
+/// because inline probes need no runtime support symbol, which keeps the JIT and
+/// a freshly linked object behaving the same.
+const STACK_PROBE_FLAGS: &[(&str, &str)] = &[
+    ("enable_probestack", "true"),
+    ("probestack_strategy", "inline"),
+];
+
 fn build_inner(
     module: &AstModule,
     debug: bool,
     profile: bool,
     line_starts: Vec<u32>,
 ) -> Result<Jit, String> {
-    let mut builder = JITBuilder::new(cranelift_module::default_libcall_names())
-        .map_err(|e| format!("failed to create JIT: {e}"))?;
+    let mut builder =
+        JITBuilder::with_flags(STACK_PROBE_FLAGS, cranelift_module::default_libcall_names())
+            .map_err(|e| format!("failed to create JIT: {e}"))?;
     register_host_symbols(&mut builder);
     let mut jmod = JITModule::new(builder);
     let module = monomorphized(module)?;
@@ -702,6 +738,13 @@ pub fn build_object(module: &AstModule) -> Result<(Vec<u8>, HashMap<String, Stri
     // AOT is the release path (`aurorac build`): optimize for speed. The JIT
     // keeps Cranelift's default (fast compile) for quick `aurorac run` turnaround.
     let _ = flags.set("opt_level", "speed");
+    // Not `let _ =`: a mistyped setting name would leave probing silently off,
+    // which is exactly the failure this is here to prevent.
+    for (k, v) in STACK_PROBE_FLAGS {
+        flags
+            .set(k, v)
+            .map_err(|e| format!("cranelift setting `{k} = {v}`: {e}"))?;
+    }
     let isa = cranelift_native::builder()
         .map_err(|e| format!("host isa unavailable: {e}"))?
         .finish(codegen::settings::Flags::new(flags))
@@ -1104,6 +1147,8 @@ fn lower(
         system_order,
         system_layers,
         ptr_ty,
+        frontend: jmod.target_config(),
+        pending_vstack: std::cell::RefCell::new(None),
         debug,
         profile,
         trait_types,
@@ -1214,6 +1259,8 @@ fn compile_body(
     let mut locals = Locals {
         scope: HashMap::new(),
         sret: None,
+        epilogue: None,
+        epilogue_used: false,
         loops: Vec::new(),
     };
     if sret {
@@ -1238,6 +1285,37 @@ fn compile_body(
         }
     }
     b.seal_block(entry);
+
+    // Four blocks: entry -> preamble -> body -> epilogue.
+    //
+    // Whether this function needs the value stack is only known once its body
+    // has been lowered - that is when `alloc` meets an aggregate too large for a
+    // frame - but the `enter` call has to run ahead of the body. So the block
+    // holding it is filled LAST, once the answer is known, rather than predicted
+    // by a separate pre-pass that could drift out of step with the allocator it
+    // is trying to predict.
+    //
+    // That late-filled block cannot be `entry` itself. Cranelift appends a block
+    // to the layout when its first instruction is inserted, and the verifier
+    // requires the layout's first block to carry the function's parameters - so
+    // an `entry` left empty until the end gets overtaken by `body` and loses
+    // them. `entry` is therefore terminated straight away, and `preamble`, whose
+    // position in the layout is irrelevant, is the one filled late.
+    let preamble = b.create_block();
+    let body = b.create_block();
+    let epilogue = b.create_block();
+    let ret_ty = if sret {
+        env.ptr_ty
+    } else {
+        ret_cty.clif(env.ptr_ty)
+    };
+    b.append_block_param(epilogue, ret_ty);
+    locals.epilogue = Some(epilogue);
+
+    b.ins().jump(preamble, &[]);
+    b.seal_block(preamble);
+
+    b.switch_to_block(body);
     // Push a debugger call frame on entry; report parameters too.
     emit_dbg_enter(jmod, &mut b, env, &f.name.name);
     emit_prof_enter(jmod, &mut b, env, &f.name.name);
@@ -1252,23 +1330,61 @@ fn compile_body(
         }
     }
 
-    match tr_block(jmod, &mut b, &mut locals, env, f.body.as_ref().unwrap())? {
-        Term::Val(v, _) => {
-            emit_dbg_leave(jmod, &mut b, env); // pop frame on the normal return path
-            emit_prof_exit(jmod, &mut b, env);
-            if sret {
-                // Copy the aggregate result into the caller's sret slot.
-                let sret_ptr = b.block_params(entry)[0];
-                for i in 0..agg_slots(env, ret_cty) {
-                    let x = load_at(&mut b, v, i, types::I64);
-                    store_at(&mut b, sret_ptr, i, x);
-                }
-                b.ins().return_(&[sret_ptr]);
-            } else {
-                b.ins().return_(&[v]);
+    *env.pending_vstack.borrow_mut() = Some(Vec::new());
+    let term = tr_block(jmod, &mut b, &mut locals, env, f.body.as_ref().unwrap())?;
+    let pending = env.pending_vstack.borrow_mut().take().unwrap_or_default();
+    if let Term::Val(v, _) = term {
+        // The value falling out of the body is just another way to reach the
+        // exit, so it takes the same path as an explicit `return`.
+        b.ins().jump(epilogue, &[v.into()]);
+        locals.epilogue_used = true;
+    }
+    let used_vstack = !pending.is_empty();
+
+    // `preamble` was left open for exactly this: the value-stack frame is pushed,
+    // and this activation's buffers taken from it, only by the functions that
+    // turned out to need one.
+    b.switch_to_block(preamble);
+    emit_vstack_frame(jmod, &mut b, env, &pending);
+    b.ins().jump(body, &[]);
+    b.seal_block(body);
+
+    b.switch_to_block(epilogue);
+    b.seal_block(epilogue);
+    if locals.epilogue_used {
+        let rv = b.block_params(epilogue)[0];
+        emit_dbg_leave(jmod, &mut b, env);
+        emit_prof_exit(jmod, &mut b, env);
+        if sret {
+            // Copy the aggregate result into the caller's slot. Emitted once
+            // here rather than at every `return`, which for a large struct is
+            // the difference between one memcpy and one per return site.
+            let sret_ptr = b.block_params(entry)[0];
+            copy_bytes(&mut b, env, sret_ptr, rv, byte_size(env, ret_cty));
+            // Pop the frame AFTER the copy: `rv` may point into the value
+            // stack, and `leave` invalidates everything this call allocated.
+            if used_vstack {
+                emit_vstack_leave(jmod, &mut b, env);
             }
+            b.ins().return_(&[sret_ptr]);
+        } else {
+            if used_vstack {
+                emit_vstack_leave(jmod, &mut b, env);
+            }
+            b.ins().return_(&[rv]);
         }
-        Term::Diverged => {}
+    } else {
+        // Unreachable: every path diverged. Fill it with a self-contained
+        // terminator - referencing `entry`'s params here would be a use with no
+        // dominating definition, since no path arrives.
+        let z = if ret_ty == types::F64 {
+            b.ins().f64const(0.0)
+        } else if ret_ty == types::F32 {
+            b.ins().f32const(0.0)
+        } else {
+            b.ins().iconst(ret_ty, 0)
+        };
+        b.ins().return_(&[z]);
     }
     b.finalize();
     Ok(())
@@ -1297,6 +1413,8 @@ fn compile_lambda(
     let mut locals = Locals {
         scope: HashMap::new(),
         sret: None,
+        epilogue: None,
+        epilogue_used: false,
         loops: Vec::new(),
     };
     // Param 0 is the env pointer; load each captured value from it.
@@ -1324,13 +1442,47 @@ fn compile_lambda(
         locals.scope.insert(pn.clone(), (var, cty));
     }
     b.seal_block(entry);
-    match tr_expr(jmod, &mut b, &mut locals, env, body)? {
-        Term::Val(v, vty) => {
-            // Return as raw i64 bits (the signature's return is i64).
-            let raw = to_i64_bits(&mut b, v, &vty);
-            b.ins().return_(&[raw]);
+    // Same block shape as `compile_body`: a closure body lowers arbitrary user
+    // code, so it can put an aggregate on the value stack and needs the same
+    // bracketing, and `entry` must be terminated now to keep its place at the
+    // head of the layout.
+    let preamble = b.create_block();
+    let body_blk = b.create_block();
+    let epilogue = b.create_block();
+    b.append_block_param(epilogue, types::I64);
+    locals.epilogue = Some(epilogue);
+
+    b.ins().jump(preamble, &[]);
+    b.seal_block(preamble);
+
+    b.switch_to_block(body_blk);
+    *env.pending_vstack.borrow_mut() = Some(Vec::new());
+    let term = tr_expr(jmod, &mut b, &mut locals, env, body)?;
+    let pending = env.pending_vstack.borrow_mut().take().unwrap_or_default();
+    if let Term::Val(v, vty) = term {
+        // Return as raw i64 bits (the signature's return is i64).
+        let raw = to_i64_bits(&mut b, v, &vty);
+        b.ins().jump(epilogue, &[raw.into()]);
+        locals.epilogue_used = true;
+    }
+    let used_vstack = !pending.is_empty();
+
+    b.switch_to_block(preamble);
+    emit_vstack_frame(jmod, &mut b, env, &pending);
+    b.ins().jump(body_blk, &[]);
+    b.seal_block(body_blk);
+
+    b.switch_to_block(epilogue);
+    b.seal_block(epilogue);
+    if locals.epilogue_used {
+        let rv = b.block_params(epilogue)[0];
+        if used_vstack {
+            emit_vstack_leave(jmod, &mut b, env);
         }
-        Term::Diverged => {}
+        b.ins().return_(&[rv]);
+    } else {
+        let z = b.ins().iconst(types::I64, 0);
+        b.ins().return_(&[z]);
     }
     b.finalize();
     Ok(())
@@ -1352,6 +1504,8 @@ fn compile_system(
     let mut locals = Locals {
         scope: HashMap::new(),
         sret: None,
+        epilogue: None,
+        epilogue_used: false,
         loops: Vec::new(),
     };
     for pn in pnames {
@@ -1360,11 +1514,43 @@ fn compile_system(
         b.def_var(var, zero);
         locals.scope.insert(pn.clone(), (var, Cty::I64));
     }
-    match tr_block(jmod, &mut b, &mut locals, env, body)? {
-        Term::Val(v, _) => {
-            b.ins().return_(&[v]);
+    // A system body is user code too, so it gets the same value-stack
+    // bracketing as a function and a closure.
+    let preamble = b.create_block();
+    let body_blk = b.create_block();
+    let epilogue = b.create_block();
+    b.append_block_param(epilogue, types::I64);
+    locals.epilogue = Some(epilogue);
+
+    b.ins().jump(preamble, &[]);
+    b.seal_block(preamble);
+
+    b.switch_to_block(body_blk);
+    *env.pending_vstack.borrow_mut() = Some(Vec::new());
+    let term = tr_block(jmod, &mut b, &mut locals, env, body)?;
+    let pending = env.pending_vstack.borrow_mut().take().unwrap_or_default();
+    if let Term::Val(v, _) = term {
+        b.ins().jump(epilogue, &[v.into()]);
+        locals.epilogue_used = true;
+    }
+    let used_vstack = !pending.is_empty();
+
+    b.switch_to_block(preamble);
+    emit_vstack_frame(jmod, &mut b, env, &pending);
+    b.ins().jump(body_blk, &[]);
+    b.seal_block(body_blk);
+
+    b.switch_to_block(epilogue);
+    b.seal_block(epilogue);
+    if locals.epilogue_used {
+        let rv = b.block_params(epilogue)[0];
+        if used_vstack {
+            emit_vstack_leave(jmod, &mut b, env);
         }
-        Term::Diverged => {}
+        b.ins().return_(&[rv]);
+    } else {
+        let z = b.ins().iconst(types::I64, 0);
+        b.ins().return_(&[z]);
     }
     b.finalize();
     Ok(())
@@ -1491,6 +1677,16 @@ struct Locals {
     /// For an sret (aggregate-returning) function: the caller's result pointer
     /// and the return type, so an early `return <aggregate>` can copy into it.
     sret: Option<(Value, Cty)>,
+    /// The single exit block. Every `return` jumps here carrying its value
+    /// rather than emitting its own `return_`, so the sret copy, the debug and
+    /// profile hooks, and the value-stack `leave` are emitted exactly once per
+    /// function and cannot be missed on some path.
+    epilogue: Option<cranelift::prelude::Block>,
+    /// Whether any path actually reaches the epilogue. A body that diverges on
+    /// every path leaves it unreachable, and an unreachable block must not
+    /// reference values defined in `entry` - there is no path for `entry` to
+    /// dominate it along.
+    epilogue_used: bool,
     /// Stack of enclosing loops so `break`/`continue` know where to jump. The
     /// innermost loop is last. `continue_to` is the loop's latch (the increment
     /// step for `for`, the condition header for `while`/`loop`); `break_to` is
@@ -1509,9 +1705,40 @@ struct LoopFrame {
 
 // --- memory helpers --------------------------------------------------------
 
-/// Allocate `slots` 8-byte slots on the stack; return a pointer to slot 0.
+/// Aggregates of at least this many bytes come from the value stack instead of
+/// the machine frame.
+///
+/// The machine stack is the right home for small aggregates: the allocation is
+/// free (it is just frame layout), the access is a fixed offset from `rsp`, and
+/// there is no call. It stops being the right home once a frame grows large
+/// enough to matter against a thread's stack reserve - and on Windows that is
+/// 1 MB by default, with no on-demand growth. So the split is by size.
+///
+/// 4 KiB is one page: below it a frame is a rounding error against any thread
+/// stack, and above it a handful of nested calls can plausibly exhaust one.
+/// Every allocation this catches is already big enough that the two calls
+/// bracketing the function are noise next to touching the memory itself.
+const VSTACK_THRESHOLD: u32 = 4096;
+
+/// Allocate `slots` 8-byte slots with the lifetime of the current call; return
+/// a pointer to slot 0.
 fn alloc(b: &mut FunctionBuilder, env: &Env, slots: usize) -> Value {
     let size = (slots as u32).max(1) * SLOT;
+    if size >= VSTACK_THRESHOLD {
+        if let Some(pending) = env.pending_vstack.borrow_mut().as_mut() {
+            // Reserve a slot in the arena for this *site* and read the pointer
+            // from a variable. The matching `vstack_alloc` call is emitted in
+            // the preamble once the body has been lowered, so a site inside a
+            // loop allocates once per activation rather than once per
+            // iteration - exactly what the frame slot it replaces did.
+            let var = b.declare_var(env.ptr_ty);
+            pending.push((var, size));
+            return b.use_var(var);
+        }
+        // No open function body to attach the preamble allocation to. Falling
+        // back to a frame slot is the safe direction: it is what this always
+        // did, and it cannot leak the arena.
+    }
     let slot = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, 3));
     b.ins().stack_addr(env.ptr_ty, slot, 0)
 }
@@ -1545,16 +1772,82 @@ fn agg_ptr(b: &mut FunctionBuilder, base: Value, off: u32) -> Value {
 
 /// Copy an aggregate (`byte_size` bytes, 8-byte chunks) from `src` to `dst+off`.
 fn copy_agg(b: &mut FunctionBuilder, env: &Env, dst: Value, off: u32, src: Value, cty: &Cty) {
-    let bytes = byte_size(env, cty);
-    let mut k = 0;
-    while k < bytes {
-        let x = load_b(b, src, k, types::I64);
-        store_b(b, dst, off + k, x);
-        k += 8;
+    let dst = if off == 0 {
+        dst
+    } else {
+        b.ins().iadd_imm(dst, off as i64)
+    };
+    copy_bytes(b, env, dst, src, byte_size(env, cty));
+}
+
+/// Copy `bytes` from `src` to `dst`.
+///
+/// This used to be an unrolled chain of 8-byte load/store pairs, which meant a
+/// 235 KB aggregate emitted ~60,000 instructions at *every* copy site - the
+/// dominant term in both compile time and binary size for a program with big
+/// structs. `emit_small_memory_copy` keeps the inline moves for the small
+/// aggregates that are the common case and drops to a libc call for the large
+/// ones, so both ends of the range get the right code.
+///
+/// Overlap is permitted (`non_overlapping: false`, i.e. `memmove` semantics):
+/// Aurora hands out interior pointers that can alias within a frame, and the
+/// old forward-order loop was only accidentally correct for those.
+fn copy_bytes(b: &mut FunctionBuilder, env: &Env, dst: Value, src: Value, bytes: u32) {
+    if bytes == 0 {
+        return;
     }
+    b.emit_small_memory_copy(
+        env.frontend,
+        dst,
+        src,
+        bytes as u64,
+        SLOT as u8,
+        SLOT as u8,
+        false,
+        MemFlags::new(),
+    );
 }
 
 // --- translation -----------------------------------------------------------
+
+/// Emit `aurora_vstack_enter()` — push a value-stack frame mark.
+fn emit_vstack_enter(m: &mut dyn Module, b: &mut FunctionBuilder, env: &Env) {
+    let f = m.declare_func_in_func(env.hosts["vstack_enter"], b.func);
+    b.ins().call(f, &[]);
+}
+
+/// Open this activation's value-stack frame and take every buffer the body
+/// asked for, binding each to the variable its use site reads.
+///
+/// Emitted into the preamble, which runs exactly once per activation - so a
+/// request made inside a loop yields one buffer reused across iterations, the
+/// same as the frame slot it replaces, and recursion still gives every
+/// activation its own. A function that asked for nothing emits nothing.
+fn emit_vstack_frame(
+    m: &mut dyn Module,
+    b: &mut FunctionBuilder,
+    env: &Env,
+    pending: &[(Variable, u32)],
+) {
+    if pending.is_empty() {
+        return;
+    }
+    emit_vstack_enter(m, b, env);
+    let f = m.declare_func_in_func(env.hosts["vstack_alloc"], b.func);
+    for (var, size) in pending {
+        let n = b.ins().iconst(types::I64, *size as i64);
+        let call = b.ins().call(f, &[n]);
+        let p = b.inst_results(call)[0];
+        b.def_var(*var, p);
+    }
+}
+
+/// Emit `aurora_vstack_leave()` — pop to the matching mark, freeing every
+/// aggregate this activation put on the value stack in one step.
+fn emit_vstack_leave(m: &mut dyn Module, b: &mut FunctionBuilder, env: &Env) {
+    let f = m.declare_func_in_func(env.hosts["vstack_leave"], b.func);
+    b.ins().call(f, &[]);
+}
 
 /// Emit `aurora_dbg_enter(name)` — push a debugger call frame for `func`.
 fn emit_dbg_enter(m: &mut dyn Module, b: &mut FunctionBuilder, env: &Env, func: &str) {
@@ -2163,19 +2456,14 @@ fn tr_expr(
                 Some(inner) => val(m, b, l, env, inner)?.0,
                 None => b.ins().iconst(types::I64, 0),
             };
-            emit_dbg_leave(m, b, env); // pop frame on the early-return path
-            emit_prof_exit(m, b, env);
-            // Aggregate-returning (sret) function: copy the value into the
-            // caller's result slot and return that pointer.
-            if let Some((sret_ptr, ret_cty)) = l.sret.clone() {
-                for i in 0..agg_slots(env, &ret_cty) {
-                    let x = load_at(b, rv, i, types::I64);
-                    store_at(b, sret_ptr, i, x);
-                }
-                b.ins().return_(&[sret_ptr]);
-            } else {
-                b.ins().return_(&[rv]);
-            }
+            // Jump to the single exit carrying the value. The sret copy, the
+            // debug/profile hooks and the value-stack pop all live there, so
+            // they cannot be forgotten on one return path out of several.
+            let epilogue = l
+                .epilogue
+                .ok_or("internal: `return` outside a function body")?;
+            b.ins().jump(epilogue, &[rv.into()]);
+            l.epilogue_used = true;
             return Ok(Term::Diverged);
         }
         ExprKind::Try(inner) => return tr_try(m, b, l, env, inner),

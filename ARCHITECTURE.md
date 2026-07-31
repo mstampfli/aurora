@@ -51,7 +51,7 @@ functions, lowering them to WGSL instead of machine code.
 
 | Crate | Owns |
 |---|---|
-| `aurora-runtime` | every host function compiled code calls: `phys3d_*`, `net_*` (netgame), audio, input, the r3d bridge |
+| `aurora-runtime` | every host function compiled code calls: `phys3d_*`, `net_*` (netgame), audio, input, the r3d bridge, and the value stack that holds aggregates too large for a machine frame |
 | `aurora-gfx` | CPU rasterization: the 2D framebuffer, text, sprites |
 | `aurora-render3d` | the GPU 3D renderer: meshes, materials, skinning, lights, shadows, the scene |
 | `aurora-window` | a real window and input (winit + wgpu), and the immediate-mode surface the builtins call |
@@ -91,6 +91,10 @@ is the one place a reader is already looking.
 | A freed handle is refused rather than aliased to whatever took its slot | `aurora-slot`'s generation tag, tested at the pixels in `aurora-render3d` |
 | A model file's GPU upload is shared between every handle that loads it, and released when the last one goes | `aurora-render3d`'s asset cache, tested by byte counts |
 | Under owned movement a body has exactly one simulator | `aurora-runtime::netgame` skips the sim for a networked client, and skips the client's own prediction and reconciliation |
+| A function's frame size does not scale with the size of the aggregates it holds | `aurora-codegen`'s `alloc`: at or above `VSTACK_THRESHOLD` an aggregate comes from `aurora-runtime`'s per-thread value stack instead of a Cranelift stack slot |
+| A value-stack allocation is made once per call SITE, never once per execution | `aurora-codegen` collects each request during lowering and emits it in the function's `preamble` block, which runs once per activation - so a site inside a loop yields one buffer reused across iterations, exactly as the frame slot it replaces did. Tested by `a_loop_does_not_grow_the_arena_with_its_trip_count` |
+| Every value-stack frame is released on every return path | the single `epilogue` block every `return` jumps to, in `compile_body`, `compile_lambda` and `compile_system` - there is one exit, so there is one `vstack_leave` |
+| A stack overflow faults cleanly instead of silently corrupting | `enable_probestack` (`STACK_PROBE_FLAGS`, applied to both the JIT and the AOT object) makes a large frame touch guard pages in order rather than jumping past them |
 
 ## Key flows
 
