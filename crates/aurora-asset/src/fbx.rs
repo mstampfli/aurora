@@ -143,28 +143,65 @@ fn build_skeleton(scene: &ufbx::Scene) -> (Option<Skeleton>, JointIndex) {
         }
     }
 
-    let joints: Vec<Joint> = order
+    let bind_of: Vec<Option<Mat4>> = order
+        .iter()
+        .map(|n| inverse_bind.get(&n.element.element_id).copied())
+        .collect();
+    let parent_of: Vec<Option<usize>> = order
         .iter()
         .map(|n| {
+            n.parent
+                .as_ref()
+                .and_then(|p| joint_of.get(&p.element.element_id))
+                .copied()
+        })
+        .collect();
+
+    let joints: Vec<Joint> = order
+        .iter()
+        .enumerate()
+        .map(|(i, n)| {
             let x = &n.local_transform;
+            let mut t = vec3(x.translation);
+            let mut r = Quat::from_xyzw(
+                x.rotation.x as f32,
+                x.rotation.y as f32,
+                x.rotation.z as f32,
+                x.rotation.w as f32,
+            );
+            let mut s = vec3(x.scale);
+
+            // Prefer the bind pose recorded by the skin clusters over the node's
+            // own transform.
+            //
+            // An FBX node transform is whatever pose the rig happened to be in
+            // when it was exported, which is frequently not the bind pose and is
+            // sometimes nothing at all: Synty's reference character ships with
+            // every bone collapsed onto the hip, so a skeleton read from node
+            // transforms alone skins the whole mesh to a single point. The skin
+            // clusters always carry the truth, because that is what the weights
+            // were authored against.
+            //
+            // Deriving the local from a parent and child bind matrix keeps the
+            // result in bind space, where it is directly comparable with the
+            // node-derived transforms it replaces. Going through world space
+            // instead would mix bind-space centimetres with the metres the node
+            // chain has already been converted to.
+            if let (Some(bind), Some(parent)) = (bind_of[i], parent_of[i]) {
+                if let Some(parent_bind) = bind_of[parent] {
+                    let (ls, lr, lt) = (parent_bind * bind.inverse()).to_scale_rotation_translation();
+                    t = lt;
+                    r = lr;
+                    s = ls;
+                }
+            }
+
             Joint {
-                parent: n
-                    .parent
-                    .as_ref()
-                    .and_then(|p| joint_of.get(&p.element.element_id))
-                    .copied(),
-                inverse_bind: inverse_bind
-                    .get(&n.element.element_id)
-                    .copied()
-                    .unwrap_or(Mat4::IDENTITY),
-                t: vec3(x.translation),
-                r: Quat::from_xyzw(
-                    x.rotation.x as f32,
-                    x.rotation.y as f32,
-                    x.rotation.z as f32,
-                    x.rotation.w as f32,
-                ),
-                s: vec3(x.scale),
+                parent: parent_of[i],
+                inverse_bind: bind_of[i].unwrap_or(Mat4::IDENTITY),
+                t,
+                r,
+                s,
                 name: n.element.name.to_string(),
             }
         })
