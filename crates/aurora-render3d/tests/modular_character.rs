@@ -171,7 +171,6 @@ const SYNTY_MAP: &[(&str, &str)] = &[
 /// changes shape over the clip: a retarget that silently dropped its channels
 /// still renders a perfectly good T-pose.
 #[test]
-#[ignore = "local rest-relative transfer tips the character over; needs world-space transfer. See the decisions log."]
 fn a_character_plays_a_retargeted_sword_clip() {
     let Ok(dir) = std::env::var("AURORA_TEST_FBX_DIR") else {
         return;

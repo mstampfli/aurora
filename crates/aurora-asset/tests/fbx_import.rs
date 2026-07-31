@@ -274,8 +274,6 @@ fn synty_bone_map() -> Vec<(String, String)> {
 /// pack. If the map or the renumbering were wrong this poses a person into a
 /// knot, so the assertions are about anatomy rather than about counts.
 #[test]
-#[ignore = "rest-relative transfer in LOCAL space is not enough when parent bone frames \
-            differ; needs world-space transfer. See the decisions log."]
 fn a_sword_clip_retargets_onto_a_character() {
     let mut character = model!("SK_Character_Male_King.fbx");
     let dir = std::env::var("AURORA_TEST_FBX_DIR").unwrap();
@@ -307,32 +305,16 @@ fn a_sword_clip_retargets_onto_a_character() {
         driven.len()
     );
 
+    // Composition of the retargeted clip: rotation for every mapped bone, and
+    // translation for the root alone. A clip-only export has no bone offsets, so
+    // any other translation track would be a zero that wipes a bone length.
     {
         use aurora_asset::model::Path as P;
         let n = |p: P| clip.channels.iter().filter(|c| c.path == p).count();
-        println!(
-            "retargeted clip: rot={} trans={} scale={}  joints={}",
-            n(P::Rotation),
-            n(P::Translation),
-            n(P::Scale),
-            driven.len()
-        );
-        let rest = skel.rest_globals();
-        let name_of = |i: usize| skel.joints[i].name.as_str();
-        for b in ["Pelvis", "spine_01", "neck_01", "head"] {
-            let i = skel.joints.iter().position(|j| j.name == b).unwrap();
-            println!(
-                "  {b}: rest_y={:.3} local_t=({:.3},{:.3},{:.3}) parent={:?} driven={}",
-                rest[i].w_axis.y,
-                skel.joints[i].t.x,
-                skel.joints[i].t.y,
-                skel.joints[i].t.z,
-                skel.joints[i].parent.map(name_of),
-                driven.contains(&i)
-            );
-        }
+        assert!(n(P::Rotation) >= 40, "only {} rotation tracks", n(P::Rotation));
+        assert_eq!(n(P::Translation), 1, "root travel should be the only translation");
+        assert_eq!(n(P::Scale), 0, "scale must never transfer");
     }
-
     let index = |n: &str| skel.joints.iter().position(|j| j.name == n).unwrap();
     let (pelvis, head, hand_r, foot_l) = (
         index("Pelvis"),

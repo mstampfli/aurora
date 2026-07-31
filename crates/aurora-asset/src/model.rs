@@ -315,6 +315,50 @@ impl Retarget<'_> {
     }
 }
 
+/// Joint indices ordered so a parent always precedes its children.
+///
+/// Both importers already emit depth-first order, but composing a chain is not
+/// something to leave resting on that: a skeleton assembled by hand or edited by
+/// a tool need not be sorted, and the failure would be a silently wrong pose
+/// rather than an error.
+fn parents_first(skel: &Skeleton) -> Vec<usize> {
+    let mut depth = vec![0u32; skel.joints.len()];
+    for i in 0..skel.joints.len() {
+        let mut d = 0;
+        let mut p = skel.joints[i].parent;
+        // Bounded by the joint count so a parent cycle cannot spin here.
+        while let Some(j) = p {
+            if j == i || d as usize > skel.joints.len() {
+                break;
+            }
+            d += 1;
+            p = skel.joints[j].parent;
+        }
+        depth[i] = d;
+    }
+    let mut order: Vec<usize> = (0..skel.joints.len()).collect();
+    order.sort_by_key(|&i| depth[i]);
+    order
+}
+
+/// Per-joint world-space rotation for a posed skeleton.
+fn global_rotations(skel: &Skeleton, r: &[Quat], order: &[usize]) -> Vec<Quat> {
+    let mut out = vec![Quat::IDENTITY; skel.joints.len()];
+    for &i in order {
+        out[i] = match skel.joints[i].parent {
+            Some(p) if p != i => out[p] * r[i],
+            _ => r[i],
+        };
+    }
+    out
+}
+
+/// Per-joint world-space rotation in the rest pose.
+fn rest_global_rotations(skel: &Skeleton) -> Vec<Quat> {
+    let locals: Vec<Quat> = skel.joints.iter().map(|j| j.r).collect();
+    global_rotations(skel, &locals, &parents_first(skel))
+}
+
 impl Clip {
     /// Rewrite this clip's channels to address `target`'s joints instead of
     /// `source`'s, matching by bone name.
@@ -350,91 +394,134 @@ impl Clip {
     /// A clip where NOTHING matched is an error rather than an empty clip,
     /// because that means the map is wrong and silence would hide it.
     pub fn retarget(&self, opts: &Retarget) -> Result<Clip, String> {
-        let mut channels = Vec::with_capacity(self.channels.len());
-        let mut dropped = Vec::new();
+        // One timeline for the whole clip.
+        //
+        // A joint's WORLD rotation depends on its ancestors', so a channel
+        // cannot be transformed on its own - the spine has to be known at the
+        // same instant as the hip. Every key time in the clip is gathered into a
+        // single sorted timeline and the whole pose is resampled at each. For a
+        // baked export every channel already shares one set of times, so this
+        // costs nothing there.
+        let mut times: Vec<f32> = self
+            .channels
+            .iter()
+            .flat_map(|c| c.times.iter().copied())
+            .collect();
+        times.sort_by(f32::total_cmp);
+        times.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+        if times.is_empty() {
+            return Err(format!("clip {} has no keyframes", self.name));
+        }
 
-        for ch in &self.channels {
+        // Source joint -> target joint, for the bones present on both.
+        let mut pairs = Vec::new();
+        let mut dropped = Vec::new();
+        for (si, from) in opts.source.joints.iter().enumerate() {
+            let want = opts.target_name(&from.name);
+            match Retarget::joint_by_name(opts.target, want) {
+                Some((ti, _)) => pairs.push((si, ti, want.to_string())),
+                None => dropped.push(from.name.clone()),
+            }
+        }
+        if pairs.is_empty() {
+            return Err(format!(
+                "clip {} retargeted to nothing: none of its {} joints matched the target \
+                 skeleton, so the bone map is wrong",
+                self.name,
+                dropped.len()
+            ));
+        }
+
+        // Rest references. The source's comes from the rig the motion was
+        // authored on, matched by source name, because a clip-only export's own
+        // rest is a placeholder.
+        let source_rest_g = rest_global_rotations(opts.source_rest);
+        let target_rest_g = rest_global_rotations(opts.target);
+        let target_order = parents_first(opts.target);
+        let source_order = parents_first(opts.source);
+
+        let mut src_rest_of = vec![None; opts.source.joints.len()];
+        for (si, from) in opts.source.joints.iter().enumerate() {
+            src_rest_of[si] =
+                Retarget::joint_by_name(opts.source_rest, &from.name).map(|(i, _)| i);
+        }
+
+        // Resample: world-space delta from rest, re-expressed on the target.
+        let mut rot_tracks: Vec<Vec<f32>> = vec![Vec::with_capacity(times.len() * 4); pairs.len()];
+        for &t in &times {
+            let (_, src_local_r, _) = opts.source.sample(Some(self), t);
+            let src_g = global_rotations(opts.source, &src_local_r, &source_order);
+
+            // Target world rotations at this instant: driven joints take the
+            // source's motion, the rest hold their rest orientation so a chain
+            // through an undriven bone still composes.
+            let mut want_g: Vec<Option<Quat>> = vec![None; opts.target.joints.len()];
+            for (si, ti, _) in &pairs {
+                if let Some(sr) = src_rest_of[*si] {
+                    let delta = src_g[*si] * source_rest_g[sr].inverse();
+                    want_g[*ti] = Some((delta * target_rest_g[*ti]).normalize());
+                }
+            }
+
+            let mut tgt_g = vec![Quat::IDENTITY; opts.target.joints.len()];
+            let mut tgt_local = vec![Quat::IDENTITY; opts.target.joints.len()];
+            for &ti in &target_order {
+                let parent_g = match opts.target.joints[ti].parent {
+                    Some(p) if p != ti => tgt_g[p],
+                    _ => Quat::IDENTITY,
+                };
+                tgt_g[ti] = want_g[ti].unwrap_or(parent_g * opts.target.joints[ti].r);
+                tgt_local[ti] = (parent_g.inverse() * tgt_g[ti]).normalize();
+            }
+
+            for (k, (_, ti, _)) in pairs.iter().enumerate() {
+                let q = tgt_local[*ti];
+                rot_tracks[k].extend_from_slice(&[q.x, q.y, q.z, q.w]);
+            }
+        }
+
+        let mut channels = Vec::with_capacity(pairs.len() + 1);
+        for (k, (_, ti, _)) in pairs.iter().enumerate() {
+            channels.push(Channel {
+                joint: *ti,
+                path: Path::Rotation,
+                interp: Interp::Linear,
+                times: times.clone(),
+                values: std::mem::take(&mut rot_tracks[k]),
+            });
+        }
+
+        // Root travel, carried over as the same distance relative to the body.
+        // Scale is never transferred: a clip that does not author it still
+        // reports the source rig's own, and on a rig whose root carries a unit
+        // conversion that resizes the character.
+        for ch in self.channels.iter().filter(|c| c.path == Path::Translation) {
             let Some(from) = opts.source.joints.get(ch.joint) else {
                 continue;
             };
             let want = opts.target_name(&from.name);
-
-            let Some((joint, to_rest)) = Retarget::joint_by_name(opts.target, want) else {
-                if !dropped.contains(&from.name) {
-                    dropped.push(from.name.clone());
-                }
+            if !opts.translate.iter().any(|n| n.eq_ignore_ascii_case(want)) {
+                continue;
+            }
+            let Some((ti, to_rest)) = Retarget::joint_by_name(opts.target, want) else {
                 continue;
             };
-            // The rest the clip was authored against, looked up by the SOURCE
-            // name: `source_rest` is the source rig, not the target.
-            let from_rest = Retarget::joint_by_name(opts.source_rest, &from.name).map(|(_, j)| j);
-
-            let values = match ch.path {
-                // Scale is never transferred. A clip that does not author it
-                // still reports the source rig's own scale, and on a rig whose
-                // root carries a unit conversion that resizes the character.
-                Path::Scale => continue,
-
-                Path::Rotation => {
-                    // A clip stores each joint's LOCAL rotation, and a local
-                    // rotation only means anything against the rest orientation
-                    // it was authored from. Two rigs can agree on every joint's
-                    // world position and still bake different orientations into
-                    // their locals, so copying the value across replaces the
-                    // target's bind orientation with the source's and folds the
-                    // skeleton up.
-                    //
-                    // What transfers is the motion AWAY from rest, re-expressed
-                    // against the target's own rest:
-                    //     delta  = inverse(source_rest) * clip
-                    //     result = target_rest * delta
-                    let Some(from_rest) = from_rest else {
-                        return Err(format!(
-                            "bone {} is animated but absent from the source rest skeleton, so \
-                             there is nothing to measure its motion against",
-                            from.name
-                        ));
-                    };
-                    let basis = to_rest.r * from_rest.r.inverse();
-                    ch.values
-                        .chunks_exact(4)
-                        .flat_map(|q| {
-                            let r = basis
-                                * Quat::from_xyzw(q[0], q[1], q[2], q[3]).normalize();
-                            [r.x, r.y, r.z, r.w]
-                        })
-                        .collect()
-                }
-
-                Path::Translation => {
-                    if !opts.translate.iter().any(|n| n.eq_ignore_ascii_case(want)) {
-                        continue;
+            let scale = src_rest_of[ch.joint]
+                .map(|i| {
+                    let (a, b) = (to_rest.t.length(), opts.source_rest.joints[i].t.length());
+                    if b > 1e-6 {
+                        a / b
+                    } else {
+                        1.0
                     }
-                    // Root travel is authored in the source rig's own local
-                    // units, which need not be the target's - one rig may put a
-                    // unit conversion on its root and the other not. Rescaling
-                    // by the ratio of the two rest offsets carries the motion
-                    // over as the same distance relative to the body.
-                    let scale = from_rest
-                        .map(|f| {
-                            let (a, b) = (to_rest.t.length(), f.t.length());
-                            if b > 1e-6 {
-                                a / b
-                            } else {
-                                1.0
-                            }
-                        })
-                        .unwrap_or(1.0);
-                    ch.values.iter().map(|v| v * scale).collect()
-                }
-            };
-
+                })
+                .unwrap_or(1.0);
             channels.push(Channel {
-                joint,
-                path: ch.path,
+                joint: ti,
+                path: Path::Translation,
                 interp: ch.interp,
                 times: ch.times.clone(),
-                values,
+                values: ch.values.iter().map(|v| v * scale).collect(),
             });
         }
 

@@ -1,49 +1,64 @@
-﻿//! Retargeting a clip from one rig's bone names to another's.
+//! Retargeting a clip from one rig to another.
+//!
+//! Retargeting transfers world-space motion, not channel values. The rigs here
+//! deliberately disagree about local bone frames, because that is the case a
+//! value copy gets wrong and the whole reason the transfer exists.
 
 use aurora_asset::model::{Channel, Clip, Interp, Joint, Path, Retarget, Skeleton};
 use glam::{Mat4, Quat, Vec3};
 
-fn joint(name: &str, parent: Option<usize>) -> Joint {
+fn joint(name: &str, parent: Option<usize>, rest: Quat) -> Joint {
     Joint {
         parent,
         inverse_bind: Mat4::IDENTITY,
         t: Vec3::Y,
-        r: Quat::IDENTITY,
+        r: rest,
         s: Vec3::ONE,
         name: name.into(),
     }
 }
 
-/// The animation rig's names.
+/// The animation rig: bones rest at identity, as a clip-only export has them.
 fn source() -> Skeleton {
     Skeleton {
         joints: vec![
-            joint("Hips", None),
-            joint("Spine_01", Some(0)),
-            joint("Shoulder_L", Some(1)),
-            joint("Jaw", Some(1)),
-            joint("Prop_L", Some(2)),
+            joint("Hips", None, Quat::IDENTITY),
+            joint("Spine_01", Some(0), Quat::IDENTITY),
+            joint("Jaw", Some(1), Quat::IDENTITY),
         ],
     }
 }
 
-/// The character rig's names, deliberately in a different order so a correct
-/// retarget must renumber rather than happen to line up.
+/// The character rig: same chain, but every bone rests a quarter turn about Z,
+/// standing in for a rig that runs its bones along a different axis. It also
+/// stores the child BEFORE its parent, so nothing may depend on storage order.
 fn target() -> Skeleton {
+    let bent = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
     Skeleton {
         joints: vec![
-            joint("UpperArm_L", None),
-            joint("spine_01", None),
-            joint("Pelvis", None),
+            joint("spine_01", Some(1), bent),
+            joint("Pelvis", None, bent),
         ],
     }
 }
 
-const MAP: &[(&str, &str)] = &[("Hips", "Pelvis"), ("Shoulder_L", "UpperArm_L")];
+const MAP: &[(&str, &str)] = &[("Hips", "Pelvis")];
 
+fn rotate_clip(joint: usize, angle: f32) -> Clip {
+    let q = Quat::from_rotation_y(angle);
+    Clip {
+        name: "A_Attack".into(),
+        duration: 1.0,
+        channels: vec![Channel {
+            joint,
+            path: Path::Rotation,
+            interp: Interp::Linear,
+            times: vec![0.0, 1.0],
+            values: vec![0.0, 0.0, 0.0, 1.0, q.x, q.y, q.z, q.w],
+        }],
+    }
+}
 
-/// Retarget through the synthetic rigs above. These carry real rest data, so the
-/// source doubles as its own rest reference.
 fn run(c: &Clip, translate: &[&str]) -> Result<Clip, String> {
     let (s, t) = (source(), target());
     c.retarget(&Retarget {
@@ -54,105 +69,158 @@ fn run(c: &Clip, translate: &[&str]) -> Result<Clip, String> {
         translate,
     })
 }
-fn channel(joint: usize, path: Path) -> Channel {
-    Channel {
-        joint,
-        path,
-        interp: Interp::Linear,
-        times: vec![0.0, 1.0],
-        values: match path {
-            Path::Rotation => vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
-            _ => vec![0.0, 1.0, 0.0, 0.0, 2.0, 0.0],
-        },
+
+/// World-space motion survives the move between rigs.
+///
+/// This is what retargeting means, and it is the assertion a value copy cannot
+/// pass: the target rests a quarter turn away from the source, so copying the
+/// clip's quaternions would land the bone somewhere else entirely. What must
+/// hold is that the bone turns by the SAME amount, about the same world axis,
+/// away from its own rest as the source did from its.
+#[test]
+fn world_space_motion_is_preserved_across_differing_rest_frames() {
+    let angle = 0.7f32;
+    let out = run(&rotate_clip(0, angle), &[]).expect("retargets");
+    let t = target();
+
+    let pelvis = t.joints.iter().position(|j| j.name == "Pelvis").unwrap();
+    let rest = t.joints[pelvis].r;
+
+    let (_, r, _) = t.sample(Some(&out), 1.0);
+    // Pelvis is a root, so its local rotation is also its world rotation.
+    let delta = r[pelvis] * rest.inverse();
+
+    let (axis, turned) = delta.to_axis_angle();
+    assert!(
+        (turned - angle).abs() < 1e-3,
+        "bone turned {turned} rad, source turned {angle}"
+    );
+    assert!(
+        axis.dot(Vec3::Y).abs() > 0.99,
+        "bone turned about {axis:?}, expected the world Y axis"
+    );
+}
+
+/// At rest the clip is a no-op, so the target must hold its own rest pose.
+#[test]
+fn a_zero_motion_clip_leaves_the_target_at_rest() {
+    let out = run(&rotate_clip(0, 0.0), &[]).expect("retargets");
+    let t = target();
+    let (_, r, _) = t.sample(Some(&out), 0.0);
+    for (i, j) in t.joints.iter().enumerate() {
+        let drift = (r[i].inverse() * j.r).to_axis_angle().1;
+        assert!(drift < 1e-3, "{} drifted {drift} rad from rest", j.name);
     }
 }
 
-fn clip(channels: Vec<Channel>) -> Clip {
-    Clip {
-        name: "A_Attack".into(),
-        duration: 1.0,
-        channels,
+#[test]
+fn every_mapped_bone_gets_a_track_addressed_to_the_target() {
+    let out = run(&rotate_clip(0, 0.5), &[]).expect("retargets");
+    let t = target();
+
+    // Hips->Pelvis and Spine_01->spine_01 both map; Jaw does not.
+    let driven: std::collections::HashSet<usize> = out.channels.iter().map(|c| c.joint).collect();
+    assert_eq!(driven.len(), 2, "expected both mapped bones to be driven");
+    for name in ["Pelvis", "spine_01"] {
+        let i = t.joints.iter().position(|j| j.name == name).unwrap();
+        assert!(driven.contains(&i), "{name} has no track");
     }
-}
-
-#[test]
-fn channels_are_renumbered_onto_the_target() {
-    let c = clip(vec![
-        channel(0, Path::Rotation),   // Hips       -> Pelvis      (2)
-        channel(2, Path::Rotation),   // Shoulder_L -> UpperArm_L  (0)
-    ]);
-    let out = run(&c, &["Pelvis"]).expect("retargets");
-
-    assert_eq!(out.channels.len(), 2);
-    assert_eq!(out.channels[0].joint, 2);
-    assert_eq!(out.channels[1].joint, 0);
-    assert_eq!(out.name, "A_Attack");
-    assert_eq!(out.duration, 1.0);
-}
-
-#[test]
-fn a_name_absent_from_the_map_is_matched_as_it_stands() {
-    // Spine_01 -> spine_01 by case-insensitive match, with no map entry.
-    let c = clip(vec![channel(1, Path::Rotation)]);
-    let out = run(&c, &["Pelvis"]).expect("retargets");
-    assert_eq!(out.channels[0].joint, 1);
-}
-
-#[test]
-fn keyframe_data_survives_untouched() {
-    // Retargeting changes addressing, never motion. If this drifts, every clip
-    // in the library is subtly wrong and nothing says so.
-    let c = clip(vec![channel(0, Path::Translation)]);
-    let out = run(&c, &["Pelvis"]).expect("retargets");
-    assert_eq!(out.channels[0].times, c.channels[0].times);
-    assert_eq!(out.channels[0].values, c.channels[0].values);
-    assert_eq!(out.channels[0].path, Path::Translation);
-    assert_eq!(out.channels[0].interp, Interp::Linear);
-}
-
-#[test]
-fn joints_the_target_lacks_are_dropped_not_fatal() {
-    // A source rig drives bones no character has - a jaw, a weapon socket. The
-    // rest of the clip must survive them.
-    let c = clip(vec![
-        channel(0, Path::Rotation), // Hips   -> Pelvis
-        channel(3, Path::Rotation), // Jaw    -> nothing
-        channel(4, Path::Rotation), // Prop_L -> nothing
-    ]);
-    let out = run(&c, &["Pelvis"]).expect("retargets");
-    assert_eq!(out.channels.len(), 1);
-    assert_eq!(out.channels[0].joint, 2);
+    for c in &out.channels {
+        assert!(c.joint < t.joints.len(), "track addresses joint {}", c.joint);
+    }
 }
 
 #[test]
 fn a_clip_that_matches_nothing_is_an_error() {
     // Means the bone map is wrong. An empty clip would animate nothing and say
     // nothing, which is the worst of both.
-    let c = clip(vec![channel(3, Path::Rotation)]);
-    let err = run(&c, &["Pelvis"]).expect_err("must fail");
+    let s = source();
+    let t = Skeleton {
+        joints: vec![joint("unrelated", None, Quat::IDENTITY)],
+    };
+    let err = rotate_clip(0, 0.5)
+        .retarget(&Retarget {
+            source: &s,
+            source_rest: &s,
+            target: &t,
+            rename: &[],
+            translate: &[],
+        })
+        .expect_err("must fail");
     assert!(err.contains("bone map is wrong"), "unhelpful error: {err}");
 }
 
 #[test]
-fn a_channel_naming_a_joint_outside_the_source_is_skipped() {
-    let mut c = clip(vec![channel(0, Path::Rotation)]);
-    c.channels.push(channel(99, Path::Rotation));
-    let out = run(&c, &["Pelvis"]).expect("retargets");
-    assert_eq!(out.channels.len(), 1);
+fn scale_is_never_transferred() {
+    // A clip that does not author scale still reports the source rig's own, and
+    // on a rig whose root carries a unit conversion that resizes the character.
+    let mut c = rotate_clip(0, 0.5);
+    c.channels.push(Channel {
+        joint: 0,
+        path: Path::Scale,
+        interp: Interp::Linear,
+        times: vec![0.0],
+        values: vec![100.0, 100.0, 100.0],
+    });
+    let out = run(&c, &[]).expect("retargets");
+    assert!(out.channels.iter().all(|c| c.path != Path::Scale));
+}
+
+fn translation_clip(joint: usize) -> Clip {
+    Clip {
+        name: "A_Walk".into(),
+        duration: 1.0,
+        channels: vec![Channel {
+            joint,
+            path: Path::Translation,
+            interp: Interp::Linear,
+            times: vec![0.0, 1.0],
+            values: vec![0.0, 0.0, 0.0, 0.0, 0.0, 2.0],
+        }],
+    }
 }
 
 #[test]
-fn retargeting_is_reversible_through_the_inverse_map() {
-    // A round trip must land back on the original indices. Catches a map applied
-    // in the wrong direction, which otherwise produces plausible-looking motion
-    // on the wrong limbs.
-    let (s, t) = (source(), target());
-    let c = clip(vec![channel(0, Path::Rotation), channel(2, Path::Rotation)]);
-    let there = run(&c, &["Pelvis"]).expect("forward");
+fn translation_only_reaches_the_bones_the_caller_names() {
+    // A clip-only export has no bone offsets, so its translations are zeroes
+    // that would wipe the target's bone lengths. Only root travel belongs to the
+    // clip, and the caller says which bone that is.
+    let without = run(&translation_clip(0), &[]).expect("retargets");
+    assert!(without.channels.iter().all(|c| c.path != Path::Translation));
 
-    let back_map: Vec<(&str, &str)> = MAP.iter().map(|(a, b)| (*b, *a)).collect();
-    let back = there.retarget(&Retarget { source: &t, source_rest: &t, target: &s, rename: &back_map, translate: &["Hips"] }).expect("reverse");
+    let with = run(&translation_clip(0), &["Pelvis"]).expect("retargets");
+    assert_eq!(
+        with.channels
+            .iter()
+            .filter(|c| c.path == Path::Translation)
+            .count(),
+        1
+    );
+}
 
-    assert_eq!(back.channels[0].joint, 0);
-    assert_eq!(back.channels[1].joint, 2);
+#[test]
+fn a_bone_the_clip_does_not_drive_still_holds_its_rest_orientation() {
+    // Only Hips is animated, but spine_01 maps too. Its track must carry the
+    // rest orientation rather than identity, or every undriven bone snaps.
+    let out = run(&rotate_clip(0, 0.5), &[]).expect("retargets");
+    let t = target();
+    let spine = t.joints.iter().position(|j| j.name == "spine_01").unwrap();
+    let (_, r, _) = t.sample(Some(&out), 0.0);
+    let drift = (r[spine].inverse() * t.joints[spine].r).to_axis_angle().1;
+    assert!(drift < 1e-3, "spine_01 drifted {drift} rad at rest");
+}
+
+#[test]
+fn every_emitted_rotation_is_a_unit_quaternion() {
+    // The target stores a child before its parent, so composing a chain must not
+    // depend on storage order; a mis-ordered compose shows up here as drift or
+    // as a non-unit result feeding the skinning matrices.
+    let out = run(&rotate_clip(0, 0.4), &[]).expect("retargets");
+    let t = target();
+    for step in 0..5 {
+        let (_, r, _) = t.sample(Some(&out), step as f32 * 0.25);
+        assert!(r
+            .iter()
+            .all(|q| q.is_finite() && (q.length() - 1.0).abs() < 1e-3));
+    }
 }
