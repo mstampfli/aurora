@@ -305,6 +305,7 @@ fn build_primitives(scene: &ufbx::Scene, joint_of: &JointIndex, dir: &FsPath) ->
             let (base_color, texture) = material_of(material, dir);
             out.push(Primitive {
                 mesh: data,
+                material: material.map(|m| m.element.name.to_string()).unwrap_or_default(),
                 base_color,
                 metallic: 0.0,
                 roughness: 0.9,
@@ -526,37 +527,51 @@ fn material_of(material: Option<&ufbx::Material>, dir: &FsPath) -> ([f32; 4], Op
     (base_color, tex)
 }
 
+/// How far up from the model file to look for a texture directory.
+///
+/// A pack commonly nests models a couple of levels below the folder its textures
+/// sit in - `Source_Files/FBX/ModularParts_Unreal/x.fbx` beside
+/// `Source_Files/Textures/atlas.png` is three. Walking up rather than hardcoding
+/// a depth means one rule covers every layout; the bound stops a model at a
+/// drive root from scanning the whole filesystem.
+const TEXTURE_SEARCH_DEPTH: usize = 4;
+
 /// Find and decode a texture referenced by an FBX file.
 ///
-/// The path recorded in an FBX is the one on the machine that exported it, so it
-/// is usually wrong here. Every candidate is tried in turn, ending with the
-/// bare filename inside a sibling `Textures/` directory - the layout every
-/// POLYGON pack ships and the one that actually resolves.
+/// The path recorded in an FBX is the one that existed on the machine that
+/// exported it, so it almost never resolves here. What does survive is the file
+/// NAME, so the search is: the recorded paths first, in case the file really was
+/// authored in place, then that bare name in each ancestor directory and in a
+/// `Textures` folder beside it.
 fn load_texture(tex: &ufbx::Texture, dir: &FsPath) -> Option<Tex> {
+    // Embedded content wins outright: it needs no search and cannot go stale.
+    if !tex.content.is_empty() {
+        if let Some(t) = crate::model::decode_texture(&tex.content) {
+            return Some(t);
+        }
+    }
+
     let name = FsPath::new(&*tex.relative_filename)
         .file_name()
         .or_else(|| FsPath::new(&*tex.filename).file_name())
         .or_else(|| FsPath::new(&*tex.absolute_filename).file_name())?;
 
-    let candidates: [PathBuf; 5] = [
+    let mut candidates: Vec<PathBuf> = vec![
         PathBuf::from(&*tex.absolute_filename),
         dir.join(&*tex.relative_filename),
-        dir.join(name),
-        dir.join("Textures").join(name),
-        dir.join("..").join("Textures").join(name),
     ];
-
-    for path in &candidates {
-        if !path.is_file() {
-            continue;
-        }
-        if let Ok(img) = image::open(path) {
-            let rgba = img.to_rgba8();
-            let (w, h) = rgba.dimensions();
-            return Some((rgba.into_raw(), w, h));
-        }
+    let mut up = Some(dir);
+    for _ in 0..TEXTURE_SEARCH_DEPTH {
+        let Some(at) = up else { break };
+        candidates.push(at.join(name));
+        candidates.push(at.join("Textures").join(name));
+        up = at.parent();
     }
-    None
+
+    candidates
+        .iter()
+        .filter(|p| p.is_file())
+        .find_map(|p| crate::model::load_texture_file(&p.to_string_lossy()).ok())
 }
 
 /// ufbx stores a 3x4 affine matrix column by column; widen it to a 4x4.

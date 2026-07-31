@@ -19,4 +19,7 @@ pub mod mesh;
 pub mod model;
 
 pub use mesh::{MeshData, Vertex};
-pub use model::{Channel, Clip, Interp, Joint, Model, Path, Primitive, Skeleton, Tex};
+pub use model::{
+    decode_texture, load_texture_file, Channel, Clip, Interp, Joint, Model, Path, Primitive,
+    Skeleton, Tex,
+};

@@ -56,9 +56,18 @@ fn eleven_modular_parts_render_as_one_body() {
     let (w, h) = (256u32, 384u32);
     let mut scene = Scene::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm, w, h, 1);
     scene.set_clear(CLEAR[0], CLEAR[1], CLEAR[2]);
-    scene.set_light(Vec3::new(0.4, 1.0, 0.6), Vec3::ONE, 0.45);
+    // Lit from in front and slightly above, like an asset review rather than a
+    // level: a front-facing chest under an overhead key sits at pure ambient and
+    // reads as far darker than the art actually is.
+    scene.set_light(Vec3::new(0.3, 0.5, 1.0), Vec3::ONE, 0.5);
     // Front-on, framing a person about 1.8m tall standing at the origin.
     scene.set_camera(Vec3::new(0.0, 0.9, 3.0), Vec3::new(0.0, 0.9, 0.0), 45.0);
+
+    // Synty meshes carry no texture of their own; the pack ships one atlas for
+    // the whole cast, named by the material every mesh in it uses.
+    if let Ok(atlas) = std::env::var("AURORA_TEST_ATLAS") {
+        scene.set_material_texture("ModularFantasyHeroCharacters", &atlas);
+    }
 
     let host = scene.load_model(
         &device,

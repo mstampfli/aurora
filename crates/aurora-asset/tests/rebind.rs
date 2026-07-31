@@ -54,6 +54,7 @@ fn part() -> Model {
                 vertices: vec![a, b],
                 indices: vec![0, 1, 0],
             },
+            material: String::new(),
             base_color: [1.0; 4],
             metallic: 0.0,
             roughness: 1.0,

@@ -180,6 +180,7 @@ fn primitive(vertices: Vec<Vertex>, skinned: bool) -> Primitive {
     let indices = (0..vertices.len() as u32).collect();
     Primitive {
         mesh: MeshData { vertices, indices },
+        material: String::new(),
         base_color: [1.0; 4],
         metallic: 0.0,
         roughness: 1.0,

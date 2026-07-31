@@ -126,6 +126,19 @@ pub struct Scene {
     terrain: Option<crate::terrain::TerrainRender>,
     /// Albedo the terrain is built with.
     terrain_color: [f32; 3],
+    /// Atlases to attach by material name when a loaded primitive carries no
+    /// texture of its own, and a counter that changes whenever this table does.
+    ///
+    /// A stylised pack ships meshes with no texture bound and one shared atlas
+    /// per cast, identified by the material name every mesh in the pack uses.
+    /// There is nothing in the file to resolve, so the game supplies the mapping
+    /// once and every later load picks it up.
+    ///
+    /// The counter is part of the asset cache key. Without it, a file loaded
+    /// before an atlas was registered would be handed straight back afterwards,
+    /// still untextured, with nothing to indicate why.
+    material_textures: std::collections::HashMap<String, String>,
+    material_generation: u64,
 }
 
 impl Scene {
@@ -154,6 +167,8 @@ impl Scene {
             clear: [0.05, 0.06, 0.09, 1.0],
             terrain: None,
             terrain_color: [0.32, 0.40, 0.24],
+            material_textures: std::collections::HashMap::new(),
+            material_generation: 0,
         };
         s.update_camera();
         s.renderer
@@ -281,6 +296,23 @@ impl Scene {
         self.load_model_inner(device, queue, path, Some(&skeleton))
     }
 
+    /// Attach `texture` to any primitive whose material is named `material` and
+    /// that carries no texture of its own.
+    ///
+    /// Stylised packs ship meshes with no texture bound and one shared atlas for
+    /// the whole cast, identified by the material name every mesh in the pack
+    /// uses. There is nothing in the file to resolve, so the game states the
+    /// mapping once and every load after this picks it up.
+    ///
+    /// Applies to future loads. Models already uploaded keep the material they
+    /// were built with, because the texture is baked into the GPU material at
+    /// upload; call this before loading the cast.
+    pub fn set_material_texture(&mut self, material: &str, texture: &str) {
+        self.material_textures
+            .insert(material.to_string(), texture.to_string());
+        self.material_generation += 1;
+    }
+
     fn load_model_inner(
         &mut self,
         device: &wgpu::Device,
@@ -294,11 +326,12 @@ impl Scene {
         // sharing one rig actually wants: every character rebinds a part to the
         // same skeleton and uploads it once between them.
         let key = match rebind {
-            None => Scene::asset_key(path),
+            None => format!("{}#m{}", Scene::asset_key(path), self.material_generation),
             Some(skel) => format!(
-                "{}#bound:{}",
+                "{}#bound:{}#m{}",
                 Scene::asset_key(path),
-                skeleton_fingerprint(skel)
+                skeleton_fingerprint(skel),
+                self.material_generation
             ),
         };
         if let Some(asset) = self.assets.get(&key) {
@@ -327,16 +360,48 @@ impl Scene {
                 return -1;
             }
         }
+        // Atlases named by material, decoded once for this load rather than once
+        // per primitive - a body is a dozen primitives all naming the same one.
+        let mut atlases: std::collections::HashMap<&str, Option<crate::model::Tex>> =
+            std::collections::HashMap::new();
+        for p in &model.primitives {
+            if p.texture.is_some() || p.material.is_empty() {
+                continue;
+            }
+            let Some(file) = self.material_textures.get(p.material.as_str()) else {
+                continue;
+            };
+            atlases.entry(p.material.as_str()).or_insert_with(|| {
+                aurora_asset::load_texture_file(file)
+                    .map_err(|e| eprintln!("aurora: atlas for material {}: {e}", p.material))
+                    .ok()
+            });
+        }
+
         let mut prims = Vec::new();
         let mut skinned = false;
         for p in &model.primitives {
             let mesh = self.renderer.add_mesh(device, &p.mesh);
+            let atlas = atlases.get(p.material.as_str()).and_then(|t| t.as_ref());
             let desc = MaterialDesc {
-                base_color: p.base_color,
+                // An attached atlas REPLACES the material's flat colour rather
+                // than tinting it. The file's colour describes a material that
+                // has no texture - Synty's is a flat 0.5 grey - and letting it
+                // multiply an atlas the engine supplied would halve every pixel
+                // of art the pack shipped.
+                base_color: if atlas.is_some() && p.texture.is_none() {
+                    [1.0, 1.0, 1.0, p.base_color[3]]
+                } else {
+                    p.base_color
+                },
                 metallic: p.metallic,
                 roughness: p.roughness,
                 emissive: p.emissive,
-                base_tex: p.texture.as_ref().map(|(px, w, h)| (px.as_slice(), *w, *h)),
+                base_tex: p
+                    .texture
+                    .as_ref()
+                    .or(atlas)
+                    .map(|(px, w, h)| (px.as_slice(), *w, *h)),
                 normal_tex: p
                     .normal_tex
                     .as_ref()

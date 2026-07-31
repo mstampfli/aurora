@@ -11,9 +11,35 @@ use crate::mesh::{MeshData, Vertex};
 /// A tightly-packed RGBA8 texture: `(pixels, w, h)`.
 pub type Tex = (Vec<u8>, u32, u32);
 
+/// Decode an image file (PNG or JPEG) to tightly-packed RGBA8.
+///
+/// Lives here rather than in the renderer so that decoding art is the asset
+/// layer's job wherever it is triggered from, and so a caller that needs a
+/// texture without a GPU - a baker, a test - can still get one.
+pub fn load_texture_file(path: &str) -> Result<Tex, String> {
+    let img = image::open(path).map_err(|e| format!("load texture {path}: {e}"))?;
+    let rgba = img.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    Ok((rgba.into_raw(), w, h))
+}
+
+/// Decode an image already in memory (an embedded texture) to RGBA8.
+pub fn decode_texture(bytes: &[u8]) -> Option<Tex> {
+    let img = image::load_from_memory(bytes).ok()?;
+    let rgba = img.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    Some((rgba.into_raw(), w, h))
+}
+
 /// A drawable piece of a model: geometry plus a PBR material.
 pub struct Primitive {
     pub mesh: MeshData,
+    /// The material's name in the source file, or empty when it has none.
+    ///
+    /// Kept because a stylised pack routinely ships meshes with no texture
+    /// bound, expecting the engine to attach a shared atlas chosen by material
+    /// name. Discarding the name would leave nothing to choose it by.
+    pub material: String,
     pub base_color: [f32; 4],
     pub metallic: f32,
     pub roughness: f32,
@@ -482,6 +508,11 @@ impl Model {
                 .unwrap_or([0.8, 0.8, 0.8, 1.0]);
             primitives.push(Primitive {
                 mesh: data,
+                material: mesh
+                    .material_id
+                    .and_then(|id| materials.get(id))
+                    .map(|m| m.name.clone())
+                    .unwrap_or_default(),
                 base_color,
                 metallic: 0.0,
                 roughness: 0.9,
@@ -698,6 +729,7 @@ impl Model {
                     .and_then(|i| tex_of(i.texture()));
                 primitives.push(Primitive {
                     mesh: data,
+                    material: material.name().unwrap_or_default().to_string(),
                     base_color: pbr.base_color_factor(),
                     metallic: pbr.metallic_factor(),
                     roughness: pbr.roughness_factor(),

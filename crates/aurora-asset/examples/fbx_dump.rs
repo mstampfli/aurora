@@ -44,8 +44,9 @@ fn main() {
         for p in &model.primitives {
             let b = p.mesh.bounds();
             println!(
-                "    prim: {:>6} tris  base_color=[{:.2} {:.2} {:.2}]  bounds y {:.3}..{:.3}  tex={}",
+                "    prim: {:>6} tris  mat={:<28} base_color=[{:.2} {:.2} {:.2}]  bounds y {:.3}..{:.3}  tex={}",
                 p.mesh.indices.len() / 3,
+                if p.material.is_empty() { "<none>" } else { &p.material },
                 p.base_color[0],
                 p.base_color[1],
                 p.base_color[2],
