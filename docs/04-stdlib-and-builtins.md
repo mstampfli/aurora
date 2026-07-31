@@ -143,6 +143,24 @@ Fixed timestep: `set_fixed_dt(dt)` pins `frame_dt()` to exactly `dt` per call
 The `AURORA_FIXED_DT` env var does the same for unmodified programs - the
 test-harness hook for reproducible runs.
 
+**The simulation clock.** Frame time is what the display did; tick time is what
+the simulation did, and game rules belong on the second. A window stated in
+ticks - invulnerable from tick 6 to tick 27 - means the same thing on every
+machine only because ticks are a fixed length.
+
+| Builtin | Meaning |
+|---|---|
+| `set_tick_rate(hz)` | ticks per second, default 60. Values outside `1..=1000` are ignored rather than allowed to produce a zero or negative step |
+| `tick_count() -> i64` | fixed ticks simulated so far; advances at the configured rate however long frames take |
+| `tick_delta() -> f64` | the fixed step in seconds - what a fixed-rate system integrates with, never `frame_dt()` |
+| `tick_alpha() -> f64` | position between the last tick and the next, `0..1`. Interpolating render positions by it removes the judder you get when frame rate and tick rate disagree |
+
+The clock is per-thread, so a server and a client in one process keep separate
+simulated time. A stalled frame owes many steps at once; at most 8 run and the
+remaining debt is dropped, because chasing all of it makes the next frame longer
+still and the program never catches up. Losing simulated time after a stall is
+visible and survivable; locking up is not.
+
 Text files: `read_file(path) -> str` ("" if unreadable - discriminate with
 `file_exists(path) -> 1|0`), `write_file(path, contents) -> 1|0` (creates
 parent directories). `save_png(path)` writes the 2D framebuffer as a PNG

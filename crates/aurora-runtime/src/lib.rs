@@ -1422,6 +1422,138 @@ pub unsafe extern "C" fn aurora_run_parallel(fns: *const usize, n: i64) {
     });
 }
 
+// --- fixed-timestep simulation ---------------------------------------------
+
+/// The fixed-step clock: how long a tick is, how much real time is owed, and how
+/// many ticks have run.
+///
+/// Thread-local for the same reason the world is: two threads each driving their
+/// own simulation must not share a clock.
+struct FixedClock {
+    step: f64,
+    owed: f64,
+    ticks: i64,
+}
+
+thread_local! {
+    static FIXED: RefCell<FixedClock> = const {
+        RefCell::new(FixedClock { step: 1.0 / 60.0, owed: 0.0, ticks: 0 })
+    };
+}
+
+/// Most fixed steps one frame may run before the rest of the debt is written off.
+///
+/// Without a ceiling a frame that ran long owes several steps, and running them
+/// all makes the next frame longer still - the simulation falls further behind
+/// the harder it tries to catch up, and the program locks solid. Dropping the
+/// excess makes a stalled frame lose simulated time, which is visible and
+/// recoverable, instead of never returning.
+const MAX_CATCHUP_STEPS: i64 = 8;
+
+/// Set the fixed simulation rate in ticks per second. Values outside a sane
+/// range are ignored rather than allowed to produce a zero or negative step.
+#[no_mangle]
+pub extern "C" fn aurora_set_tick_rate(hz: f64) {
+    if hz.is_finite() && hz >= 1.0 && hz <= 1000.0 {
+        FIXED.with(|f| f.borrow_mut().step = 1.0 / hz);
+    }
+}
+
+/// Fixed ticks simulated since the program started.
+///
+/// This, not a frame counter, is what game rules should be written against: it
+/// advances at exactly the configured rate regardless of how long frames take.
+#[no_mangle]
+pub extern "C" fn aurora_tick_count() -> i64 {
+    FIXED.with(|f| f.borrow().ticks)
+}
+
+/// How far the current frame sits between the last fixed tick and the next, in
+/// `0..1`. Render positions interpolated by this do not judder when the frame
+/// rate and the tick rate disagree.
+#[no_mangle]
+pub extern "C" fn aurora_tick_alpha() -> f64 {
+    FIXED.with(|f| {
+        let f = f.borrow();
+        if f.step > 0.0 {
+            (f.owed / f.step).clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    })
+}
+
+/// The fixed step length in seconds - what a `FixedUpdate` system should use as
+/// its delta rather than the frame time.
+#[no_mangle]
+pub extern "C" fn aurora_tick_delta() -> f64 {
+    FIXED.with(|f| f.borrow().step)
+}
+
+/// Advance the fixed clock by `dt` seconds and run the fixed schedule once per
+/// whole step owed. Returns the number of steps run.
+///
+/// `fns` is a flat array of system addresses and `lens` gives the length of each
+/// layer within it, so one call carries the whole schedule: layers run in order,
+/// and a layer with several systems runs them concurrently exactly as
+/// [`aurora_run_parallel`] does for the frame schedule.
+///
+/// # Safety
+/// `fns` must point to the sum of `lens[0..n_layers]` initialized addresses, each
+/// a live compiled system, and `lens` to `n_layers` initialized lengths. All must
+/// stay valid for the whole call.
+#[no_mangle]
+pub unsafe extern "C" fn aurora_run_fixed(
+    fns: *const usize,
+    lens: *const i64,
+    n_layers: i64,
+    dt: f64,
+) -> i64 {
+    let n_layers = n_layers.max(0) as usize;
+    let steps = FIXED.with(|f| {
+        let mut f = f.borrow_mut();
+        // A frame time that is negative, NaN or absurd must not move the clock;
+        // a paused or hitching host should resume, not teleport.
+        if dt.is_finite() && dt > 0.0 {
+            f.owed += dt;
+        }
+        let want = if f.step > 0.0 {
+            (f.owed / f.step) as i64
+        } else {
+            0
+        };
+        let run = want.min(MAX_CATCHUP_STEPS);
+        f.owed -= run as f64 * f.step;
+        if want > run {
+            // Debt beyond the ceiling is written off, not banked.
+            f.owed = 0.0;
+        }
+        f.ticks += run;
+        run
+    });
+
+    if n_layers == 0 || steps == 0 {
+        return steps;
+    }
+    let lens = unsafe { std::slice::from_raw_parts(lens, n_layers) };
+    let total: usize = lens.iter().map(|&l| l.max(0) as usize).sum();
+    let all = unsafe { std::slice::from_raw_parts(fns, total) };
+
+    for _ in 0..steps {
+        let mut at = 0usize;
+        for &len in lens {
+            let len = len.max(0) as usize;
+            if len > 0 {
+                // SAFETY: `all` is a live slice of system addresses and this
+                // window lies inside it by construction of `total`.
+                unsafe { aurora_run_parallel(all[at..].as_ptr(), len as i64) };
+            }
+            at += len;
+        }
+    }
+    steps
+}
+
 /// Run `addrs` concurrently, each worker bound to `par` for the duration.
 ///
 /// The binding is installed on the worker threads only, so no thread outside

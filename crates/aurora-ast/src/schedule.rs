@@ -86,22 +86,64 @@ fn conflict(a: &Access, b: &Access) -> bool {
 /// list — index `k` is the k-th `system` item in `module`. A layer with one
 /// index runs sequentially; a layer with several runs them concurrently.
 pub fn parallel_layers(module: &Module) -> Vec<Vec<usize>> {
-    let infos: Vec<SysInfo> = module
+    layers_matching(module, |_| true)
+}
+
+/// The stage a system runs in when it names none.
+pub const DEFAULT_STAGE: &str = "Update";
+
+/// The stage driven by a fixed-timestep accumulator rather than by the frame.
+///
+/// Simulation that must be reproducible belongs here. A rule stated in frames -
+/// an invulnerability window from frame 6 to frame 27 - only means anything if
+/// the frames are a fixed length; under a variable frame time the same input
+/// produces different outcomes on different machines, and on the same machine
+/// under load.
+pub const FIXED_STAGE: &str = "FixedUpdate";
+
+/// The stage a system declares, or [`DEFAULT_STAGE`].
+pub fn stage_of(sys: &SystemDecl) -> String {
+    sys.schedule
+        .iter()
+        .find_map(|s| match s {
+            SysSched::Stage(id) => Some(id.name.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| DEFAULT_STAGE.to_string())
+}
+
+/// Layers containing only the systems in `stage`.
+///
+/// Indices still address the module's full declaration-ordered system list, so a
+/// caller holding that list can use them directly. Systems outside the stage are
+/// skipped rather than renumbered: two stages that each renumbered would both be
+/// right about a different list, and the caller has only one.
+pub fn parallel_layers_in(module: &Module, stage: &str) -> Vec<Vec<usize>> {
+    layers_matching(module, |s| stage_of(s) == stage)
+}
+
+fn layers_matching(module: &Module, keep: impl Fn(&SystemDecl) -> bool) -> Vec<Vec<usize>> {
+    let decls: Vec<&SystemDecl> = module
         .items
         .iter()
         .filter_map(|it| match &it.kind {
-            ItemKind::System(s) => Some(SysInfo {
-                name: s.name.name.clone(),
-                access: access_of(s),
-                ordered_with: ordering_of(s),
-            }),
+            ItemKind::System(s) => Some(s),
             _ => None,
         })
         .collect();
+    let infos: Vec<SysInfo> = decls
+        .iter()
+        .map(|s| SysInfo {
+            name: s.name.name.clone(),
+            access: access_of(s),
+            ordered_with: ordering_of(s),
+        })
+        .collect();
+    let wanted: Vec<usize> = (0..decls.len()).filter(|&i| keep(decls[i])).collect();
 
     let mut layers: Vec<Vec<usize>> = Vec::new();
     let mut cur: Vec<usize> = Vec::new();
-    for i in 0..infos.len() {
+    for i in wanted {
         // `i` may join the current layer only if it is independent of, and
         // unordered relative to, every system already placed in it. This keeps
         // every conflicting or explicitly-ordered pair in declaration order.
