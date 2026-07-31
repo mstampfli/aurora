@@ -7,7 +7,7 @@ use std::sync::Arc;
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat3, Mat4, Vec3};
 
-use crate::mesh::{GpuMesh, MeshData, Vertex};
+use crate::mesh::{GpuMesh, MeshData, VERTEX_LAYOUT};
 use aurora_slot::SlotMap;
 
 /// Handle to a GPU mesh registered with [`Renderer3D::add_mesh`].
@@ -415,7 +415,7 @@ impl Renderer3D {
                 module: &module,
                 entry_point: "vs",
                 compilation_options: Default::default(),
-                buffers: &[Vertex::LAYOUT],
+                buffers: &[VERTEX_LAYOUT],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &module,
@@ -547,7 +547,7 @@ impl Renderer3D {
                 module: &module,
                 entry_point: "vs_shadow",
                 compilation_options: Default::default(),
-                buffers: &[Vertex::LAYOUT],
+                buffers: &[VERTEX_LAYOUT],
             },
             fragment: None,
             primitive: wgpu::PrimitiveState {
@@ -686,7 +686,7 @@ impl Renderer3D {
                 module: &module,
                 entry_point: "vs_inst",
                 compilation_options: Default::default(),
-                buffers: &[Vertex::LAYOUT, InstanceRaw::LAYOUT],
+                buffers: &[VERTEX_LAYOUT, InstanceRaw::LAYOUT],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &module,
@@ -730,7 +730,7 @@ impl Renderer3D {
                 module: &module,
                 entry_point: "vs_shadow_inst",
                 compilation_options: Default::default(),
-                buffers: &[Vertex::LAYOUT, InstanceRaw::LAYOUT],
+                buffers: &[VERTEX_LAYOUT, InstanceRaw::LAYOUT],
             },
             fragment: None,
             primitive: wgpu::PrimitiveState {
@@ -801,7 +801,7 @@ impl Renderer3D {
                 module: &module,
                 entry_point: "vs",
                 compilation_options: Default::default(),
-                buffers: &[Vertex::LAYOUT],
+                buffers: &[VERTEX_LAYOUT],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &module,
@@ -843,7 +843,7 @@ impl Renderer3D {
                     module: &module,
                     entry_point: "vs_inst",
                     compilation_options: Default::default(),
-                    buffers: &[Vertex::LAYOUT, InstanceRaw::LAYOUT],
+                    buffers: &[VERTEX_LAYOUT, InstanceRaw::LAYOUT],
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: &module,
@@ -1032,7 +1032,7 @@ impl Renderer3D {
                 module: &module,
                 entry_point: "vs_pshadow",
                 compilation_options: Default::default(),
-                buffers: &[Vertex::LAYOUT],
+                buffers: &[VERTEX_LAYOUT],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &module,

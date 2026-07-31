@@ -13,14 +13,19 @@
 
 mod anim;
 mod mesh;
-mod model;
 mod render;
 mod scene;
 pub mod terrain;
 
+// Geometry, skeletons, clips and the importers that produce them live in
+// `aurora-asset`, which carries no GPU dependency. Re-exported at this path so
+// `crate::model::...` keeps naming them and so a consumer of the renderer does
+// not have to depend on the asset crate directly just to name a `Model`.
+pub use aurora_asset::model;
+
 pub use anim::{skin_matrices, skin_matrices_blended, AnimPlayer};
 pub use glam::{Mat4, Quat, Vec3};
-pub use mesh::{GpuMesh, MeshData, Vertex};
+pub use mesh::{GpuMesh, MeshData, Vertex, VERTEX_LAYOUT};
 pub use model::{Channel, Clip, Interp, Joint, Model, Path, Primitive, Skeleton};
 pub use render::{
     InstanceRaw, Material, MaterialDesc, MaterialId, MeshId, Renderer3D, DEPTH_FORMAT, MAX_JOINTS,

@@ -26,6 +26,7 @@ aurora-gfx = { path = "crates/aurora-gfx" }
 aurora-shader = { path = "crates/aurora-shader" }
 aurora-runtime = { path = "crates/aurora-runtime" }
 aurora-gpu = { path = "crates/aurora-gpu" }
+aurora-asset = { path = "crates/aurora-asset" }
 aurora-render3d = { path = "crates/aurora-render3d" }
 aurora-window = { path = "crates/aurora-window" }
 aurora-lsp = { path = "crates/aurora-lsp" }

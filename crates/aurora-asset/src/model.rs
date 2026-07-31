@@ -47,6 +47,170 @@ impl Skeleton {
     pub fn joint_count(&self) -> usize {
         self.joints.len()
     }
+
+    /// Model-space transform of every joint in the rest (bind) pose.
+    ///
+    /// Joints are stored parent-before-child by both importers, but this does
+    /// not rely on that: each joint resolves through its parent chain, so a
+    /// skeleton in any order gives the same answer.
+    pub fn rest_globals(&self) -> Vec<Mat4> {
+        let mut out = vec![None; self.joints.len()];
+        for i in 0..self.joints.len() {
+            resolve_rest(self, i, &mut out);
+        }
+        out.into_iter().map(|m| m.unwrap_or(Mat4::IDENTITY)).collect()
+    }
+
+    /// Per-joint matrices that take bind-space geometry to model space in the
+    /// rest pose - the identity transform of the skinning pipeline.
+    pub fn bind_matrices(&self) -> Vec<Mat4> {
+        let globals = self.rest_globals();
+        self.joints
+            .iter()
+            .enumerate()
+            .map(|(i, j)| globals[i] * j.inverse_bind)
+            .collect()
+    }
+
+    /// Per-joint local TRS with `clip` applied at `time`.
+    ///
+    /// Joints the clip does not drive keep their authored rest transform, which
+    /// is what makes a clip authored for part of a body composable with the
+    /// rest of it. `None` yields the rest pose unchanged.
+    ///
+    /// This is the one clip sampler. It is pure math over a skeleton and a
+    /// clip - no playback state, no device - so it lives with the data rather
+    /// than in the renderer, and the importer's own verification uses exactly
+    /// the code that will pose the character on screen.
+    pub fn sample(&self, clip: Option<&Clip>, time: f32) -> (Vec<Vec3>, Vec<Quat>, Vec<Vec3>) {
+        let n = self.joints.len();
+        let mut t: Vec<Vec3> = self.joints.iter().map(|j| j.t).collect();
+        let mut r: Vec<Quat> = self.joints.iter().map(|j| j.r).collect();
+        let mut s: Vec<Vec3> = self.joints.iter().map(|j| j.s).collect();
+        if let Some(clip) = clip {
+            for ch in &clip.channels {
+                if ch.joint >= n {
+                    continue;
+                }
+                match ch.path {
+                    Path::Translation => t[ch.joint] = sample_vec3(ch, time),
+                    Path::Scale => s[ch.joint] = sample_vec3(ch, time),
+                    Path::Rotation => r[ch.joint] = sample_quat(ch, time),
+                }
+            }
+        }
+        (t, r, s)
+    }
+
+    /// Model-space transform of every joint for a local TRS pose.
+    pub fn globals(&self, t: &[Vec3], r: &[Quat], s: &[Vec3]) -> Vec<Mat4> {
+        let local: Vec<Mat4> = (0..self.joints.len())
+            .map(|i| Mat4::from_scale_rotation_translation(s[i], r[i], t[i]))
+            .collect();
+        let mut out = vec![None; self.joints.len()];
+        for i in 0..self.joints.len() {
+            resolve_pose(self, &local, i, &mut out);
+        }
+        out.into_iter().map(|m| m.unwrap_or(Mat4::IDENTITY)).collect()
+    }
+}
+
+/// Resolve one joint's global for a posed skeleton, memoizing into `out`.
+///
+/// Iterative for the same reason as [`resolve_rest`]: a self-parented joint in a
+/// malformed file must not take the stack down with it.
+fn resolve_pose(skel: &Skeleton, local: &[Mat4], joint: usize, out: &mut Vec<Option<Mat4>>) {
+    let mut chain = Vec::new();
+    let mut cur = Some(joint);
+    while let Some(i) = cur {
+        if out[i].is_some() || chain.contains(&i) {
+            break;
+        }
+        chain.push(i);
+        cur = skel.joints[i].parent;
+    }
+    for &i in chain.iter().rev() {
+        // A root joint's local already folds in every non-joint ancestor above
+        // it, so it composes against the world rather than against a parent.
+        out[i] = Some(match skel.joints[i].parent {
+            Some(p) if p != i => out[p].unwrap_or(Mat4::IDENTITY) * local[i],
+            _ => local[i],
+        });
+    }
+}
+
+/// Find the key interval `[i, i+1]` containing `time` and the fraction within.
+fn locate(times: &[f32], time: f32) -> (usize, usize, f32) {
+    if times.is_empty() {
+        return (0, 0, 0.0);
+    }
+    if time <= times[0] {
+        return (0, 0, 0.0);
+    }
+    let last = times.len() - 1;
+    if time >= times[last] {
+        return (last, last, 0.0);
+    }
+    let mut i = 0;
+    while i + 1 < times.len() && times[i + 1] < time {
+        i += 1;
+    }
+    let (a, b) = (times[i], times[i + 1]);
+    let f = if b > a { (time - a) / (b - a) } else { 0.0 };
+    (i, i + 1, f)
+}
+
+fn sample_vec3(ch: &Channel, time: f32) -> Vec3 {
+    let (i0, i1, f) = locate(&ch.times, time);
+    let get = |k: usize| Vec3::new(ch.values[k * 3], ch.values[k * 3 + 1], ch.values[k * 3 + 2]);
+    if ch.interp == Interp::Step || i0 == i1 {
+        get(i0)
+    } else {
+        get(i0).lerp(get(i1), f)
+    }
+}
+
+fn sample_quat(ch: &Channel, time: f32) -> Quat {
+    let (i0, i1, f) = locate(&ch.times, time);
+    let get = |k: usize| {
+        Quat::from_xyzw(
+            ch.values[k * 4],
+            ch.values[k * 4 + 1],
+            ch.values[k * 4 + 2],
+            ch.values[k * 4 + 3],
+        )
+        .normalize()
+    };
+    if ch.interp == Interp::Step || i0 == i1 {
+        get(i0)
+    } else {
+        get(i0).slerp(get(i1), f)
+    }
+}
+
+/// Resolve one joint's rest global, memoizing into `out`.
+///
+/// Iterative rather than recursive: a corrupt file can name a joint its own
+/// ancestor, and a recursive walk would blow the stack instead of reporting a
+/// bad asset. The visited set makes a cycle terminate at identity.
+fn resolve_rest(skel: &Skeleton, joint: usize, out: &mut Vec<Option<Mat4>>) {
+    let mut chain = Vec::new();
+    let mut cur = Some(joint);
+    while let Some(i) = cur {
+        if out[i].is_some() || chain.contains(&i) {
+            break;
+        }
+        chain.push(i);
+        cur = skel.joints[i].parent;
+    }
+    for &i in chain.iter().rev() {
+        let j = &skel.joints[i];
+        let local = Mat4::from_scale_rotation_translation(j.s, j.r, j.t);
+        out[i] = Some(match j.parent {
+            Some(p) => out[p].unwrap_or(Mat4::IDENTITY) * local,
+            None => local,
+        });
+    }
 }
 
 /// Which transform component an animation channel drives.
@@ -87,11 +251,65 @@ pub struct Model {
 }
 
 impl Model {
-    /// Load a model by file extension (`.gltf`/`.glb` or `.obj`).
+    /// Axis-aligned bounds of this model as it is actually drawn, in model
+    /// space: `[min_x, min_y, min_z, max_x, max_y, max_z]`.
+    ///
+    /// Use this, not [`MeshData::bounds`], to size anything that must match what
+    /// appears on screen - a collider, a culling volume, a camera framing. A
+    /// skinned mesh's vertices live in the source file's bind space, which for
+    /// an FBX authored in centimetres is a hundred times the model's real size;
+    /// only after the bind matrices are applied is the geometry in model space.
+    /// Static primitives are already there and are measured as they are.
+    pub fn bind_pose_bounds(&self) -> [f32; 6] {
+        let bind = self.skeleton.as_ref().map(|s| s.bind_matrices());
+        let mut lo = Vec3::splat(f32::MAX);
+        let mut hi = Vec3::splat(f32::MIN);
+        let mut any = false;
+
+        for prim in &self.primitives {
+            for v in &prim.mesh.vertices {
+                let p = Vec3::from(v.pos);
+                let p = match (prim.skinned, &bind) {
+                    (true, Some(bind)) => {
+                        let mut acc = Vec3::ZERO;
+                        let mut total = 0.0;
+                        for k in 0..4 {
+                            let w = v.weights[k];
+                            let j = v.joints[k] as usize;
+                            if w > 0.0 && j < bind.len() {
+                                acc += w * bind[j].transform_point3(p);
+                                total += w;
+                            }
+                        }
+                        // An unweighted vertex would collapse to the origin and
+                        // drag the bounds with it; leave it where it lies.
+                        if total > 0.0 {
+                            acc / total
+                        } else {
+                            p
+                        }
+                    }
+                    _ => p,
+                };
+                lo = lo.min(p);
+                hi = hi.max(p);
+                any = true;
+            }
+        }
+
+        if !any {
+            return [0.0; 6];
+        }
+        [lo.x, lo.y, lo.z, hi.x, hi.y, hi.z]
+    }
+
+    /// Load a model by file extension (`.gltf`/`.glb`, `.obj`, or `.fbx`).
     pub fn load(path: &str) -> Result<Model, String> {
         let lower = path.to_ascii_lowercase();
         if lower.ends_with(".obj") {
             Self::load_obj(path)
+        } else if lower.ends_with(".fbx") {
+            crate::fbx::load(path)
         } else {
             Self::load_gltf(path)
         }

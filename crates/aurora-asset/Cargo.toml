@@ -1,0 +1,22 @@
+[package]
+name = "aurora-asset"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Aurora's asset layer: the CPU-side representation of everything an artist
+# authors - geometry, materials, skeletons, and animation clips - plus every
+# importer that produces it (glTF/GLB, OBJ, FBX). Deliberately free of any GPU
+# dependency so the offline baker in `aurorac` can ingest a source file without
+# linking a renderer, and so importers are testable on a machine with no adapter.
+
+[dependencies]
+glam = { version = "0.29", features = ["bytemuck"] }
+# Vertex is cast straight to bytes for GPU upload by aurora-render3d. bytemuck
+# is a plain byte-cast crate, not a graphics dependency, so deriving Pod here
+# costs the asset layer nothing and saves the renderer a copy.
+bytemuck = { version = "1", features = ["derive"] }
+gltf = { version = "1.4", features = ["import", "utils", "names"] }
+tobj = "4"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+ufbx = "0.11"

@@ -538,23 +538,7 @@ fn sample_locals(
     clip: Option<&crate::model::Clip>,
     time: f32,
 ) -> (Vec<Vec3>, Vec<Quat>, Vec<Vec3>) {
-    let n = skel.joints.len();
-    let mut t: Vec<Vec3> = skel.joints.iter().map(|j| j.t).collect();
-    let mut r: Vec<Quat> = skel.joints.iter().map(|j| j.r).collect();
-    let mut s: Vec<Vec3> = skel.joints.iter().map(|j| j.s).collect();
-    if let Some(clip) = clip {
-        for ch in &clip.channels {
-            if ch.joint >= n {
-                continue;
-            }
-            match ch.path {
-                Path::Translation => t[ch.joint] = sample_vec3(ch, time),
-                Path::Scale => s[ch.joint] = sample_vec3(ch, time),
-                Path::Rotation => r[ch.joint] = sample_quat(ch, time),
-            }
-        }
-    }
-    (t, r, s)
+    skel.sample(clip, time)
 }
 
 /// Turn per-joint local TRS into skinning matrices (`global * inverse_bind`). Joints whose bit is
@@ -666,51 +650,6 @@ fn resolve_global(
     g
 }
 
-/// Find the key interval `[i, i+1]` containing `time` and the fraction within.
-fn locate(times: &[f32], time: f32) -> (usize, usize, f32) {
-    if times.is_empty() {
-        return (0, 0, 0.0);
-    }
-    if time <= times[0] {
-        return (0, 0, 0.0);
-    }
-    let last = times.len() - 1;
-    if time >= times[last] {
-        return (last, last, 0.0);
-    }
-    let mut i = 0;
-    while i + 1 < times.len() && times[i + 1] < time {
-        i += 1;
-    }
-    let (a, b) = (times[i], times[i + 1]);
-    let f = if b > a { (time - a) / (b - a) } else { 0.0 };
-    (i, i + 1, f)
-}
-
-fn sample_vec3(ch: &Channel, time: f32) -> Vec3 {
-    let (i0, i1, f) = locate(&ch.times, time);
-    let get = |k: usize| Vec3::new(ch.values[k * 3], ch.values[k * 3 + 1], ch.values[k * 3 + 2]);
-    if ch.interp == Interp::Step || i0 == i1 {
-        get(i0)
-    } else {
-        get(i0).lerp(get(i1), f)
-    }
-}
-
-fn sample_quat(ch: &Channel, time: f32) -> Quat {
-    let (i0, i1, f) = locate(&ch.times, time);
-    let get = |k: usize| {
-        Quat::from_xyzw(
-            ch.values[k * 4],
-            ch.values[k * 4 + 1],
-            ch.values[k * 4 + 2],
-            ch.values[k * 4 + 3],
-        )
-        .normalize()
-    };
-    if ch.interp == Interp::Step || i0 == i1 {
-        get(i0)
-    } else {
-        get(i0).slerp(get(i1), f)
-    }
-}
+// Clip sampling and key interpolation live in `aurora-asset`, beside the clip
+// format itself: see `Skeleton::sample`. Keeping a second copy here is how a
+// renderer and an importer quietly start disagreeing about what a clip means.

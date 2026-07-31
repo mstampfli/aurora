@@ -167,6 +167,18 @@ name = "aurora-abi"
 version = "0.1.0"
 
 [[package]]
+name = "aurora-asset"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "glam",
+ "gltf",
+ "image",
+ "tobj",
+ "ufbx",
+]
+
+[[package]]
 name = "aurora-ast"
 version = "0.1.0"
 dependencies = [
@@ -304,13 +316,11 @@ dependencies = [
 name = "aurora-render3d"
 version = "0.1.0"
 dependencies = [
+ "aurora-asset",
  "aurora-slot",
  "bytemuck",
  "glam",
- "gltf",
- "image",
  "pollster",
- "tobj",
  "wgpu",
 ]
 
@@ -3393,6 +3403,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
+name = "ufbx"
+version = "0.11.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "163c9b35d1322b7bab8f5eeda14428ad1b139cbcf5f1e04f659a2469378b66f2"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4178,3 +4197,11 @@ checksum = "27bc9d5b815bc103f142aa054f561d9187d191692ec7c2d1e2b4737f8dbd7296"
 dependencies = [
  "zune-core",
 ]
+
+[[patch.unused]]
+name = "naga"
+version = "30.0.0"
+
+[[patch.unused]]
+name = "wgpu"
+version = "30.0.0"
