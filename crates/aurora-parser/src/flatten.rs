@@ -17,13 +17,31 @@ use aurora_ast::{
     AssocItem, Block, Expr, ExprKind, Item, ItemKind, MatchArm, Param, Pat, PatKind, Stmt, Type,
     TypeKind,
 };
+use aurora_span::Span;
 
 /// Replace every module in `items` with its flattened, mangled contents.
 pub fn flatten_modules(items: Vec<Item>) -> Vec<Item> {
+    flatten_modules_tracked(items).0
+}
+
+/// As [`flatten_modules`], but also reporting every reference one module makes to another.
+///
+/// This pass is the only place that knows the boundary: afterwards `map::room_at` and a local
+/// `room_at` are both just mangled names in one flat list, which is why the compiler could not
+/// tell a declared dependency from an undeclared reach. The caller holds the manifests and can.
+pub fn flatten_modules_tracked(items: Vec<Item>) -> (Vec<Item>, Vec<(String, String, Span)>) {
+    let mut refs = Vec::new();
+    let out = flatten_modules_into(items, &mut refs);
+    (out, refs)
+}
+
+fn flatten_modules_into(items: Vec<Item>, refs: &mut Vec<(String, String, Span)>) -> Vec<Item> {
     let mut out = Vec::new();
     for item in items {
         match item.kind {
-            ItemKind::Mod(name, Some(inner)) => out.extend(flatten_mod(&name.name, inner)),
+            ItemKind::Mod(name, Some(inner)) => {
+                out.extend(flatten_mod_into(&name.name, inner, refs))
+            }
             // A bodiless `mod NAME;` carries no items of its own: the file module
             // loader (`modload.rs`) has already appended `NAME.aur` as an inline
             // `mod NAME { .. }` block, which is flattened above. The declaration
@@ -36,6 +54,15 @@ pub fn flatten_modules(items: Vec<Item>) -> Vec<Item> {
 }
 
 fn flatten_mod(prefix: &str, items: Vec<Item>) -> Vec<Item> {
+    let mut refs = Vec::new();
+    flatten_mod_into(prefix, items, &mut refs)
+}
+
+fn flatten_mod_into(
+    prefix: &str,
+    items: Vec<Item>,
+    refs: &mut Vec<(String, String, Span)>,
+) -> Vec<Item> {
     let mut flat = Vec::new();
     let mut own = Vec::new();
     let mut locals = HashSet::new();
@@ -47,7 +74,11 @@ fn flatten_mod(prefix: &str, items: Vec<Item>) -> Vec<Item> {
         match item.kind {
             ItemKind::Mod(sub, Some(inner)) => {
                 submods.insert(sub.name.clone());
-                flat.extend(flatten_mod(&format!("{prefix}::{}", sub.name), inner));
+                flat.extend(flatten_mod_into(
+                    &format!("{prefix}::{}", sub.name),
+                    inner,
+                    refs,
+                ));
             }
             // Resolved by the file module loader into a top-level block (see above).
             ItemKind::Mod(_, None) => {}
@@ -61,9 +92,11 @@ fn flatten_mod(prefix: &str, items: Vec<Item>) -> Vec<Item> {
     }
 
     // Rewrite references inside each own item, then mangle its defined name.
+    let seen = std::cell::RefCell::new(Vec::new());
     for mut item in own {
         let cx = Cx {
             prefix,
+            refs: &seen,
             locals: &locals,
             submods: &submods,
             bound: HashSet::new(),
@@ -72,11 +105,14 @@ fn flatten_mod(prefix: &str, items: Vec<Item>) -> Vec<Item> {
         mangle_item(&mut item, prefix);
         flat.push(item);
     }
+    refs.extend(seen.into_inner());
     flat
 }
 
 struct Cx<'a> {
     prefix: &'a str,
+    /// Where a reference to ANOTHER module is recorded, as `(from, to, span)`.
+    refs: &'a std::cell::RefCell<Vec<(String, String, Span)>>,
     /// Module-level item names (functions/structs/enums/consts) defined here.
     locals: &'a HashSet<String>,
     submods: &'a HashSet<String>,
@@ -93,6 +129,7 @@ impl<'a> Cx<'a> {
         bound.extend(extra);
         Cx {
             prefix: self.prefix,
+            refs: self.refs,
             locals: self.locals,
             submods: self.submods,
             bound,
@@ -260,6 +297,17 @@ fn rewrite_path(p: &mut aurora_ast::Path, cx: &Cx) {
             .join("::");
         p.segments[0].ident.name = format!("{}::{}", cx.prefix, joined);
         p.segments.truncate(1);
+    } else if p.segments.len() > 1
+        && !cx.locals.contains(&p.segments[0].ident.name)
+        && !cx.bound.contains(&p.segments[0].ident.name)
+    {
+        // Neither a sibling item nor a submodule nor a local: this is a reference OUT of this
+        // module, which is exactly the edge a dependency graph is made of. Recorded rather than
+        // rejected here - the parser has no manifest; the driver does.
+        let head = &p.segments[0].ident;
+        cx.refs
+            .borrow_mut()
+            .push((cx.prefix.to_string(), head.name.clone(), head.span));
     } else if cx.locals.contains(&p.segments[0].ident.name)
         && !cx.bound.contains(&p.segments[0].ident.name)
     {

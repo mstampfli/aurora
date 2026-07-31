@@ -49,6 +49,81 @@ fn aurorac(cmd: &str, entry: &Path) -> Output {
         .expect("run aurorac")
 }
 
+/// Run `aurorac <cmd> <entry>` from INSIDE the program's own directory.
+///
+/// Manifest dependencies are resolved relative to the working directory, so a test about them
+/// has to stand where the manifest is.
+fn aurorac_in(cmd: &str, dir: &Path, entry: &str) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_aurorac"))
+        .args([cmd, entry])
+        .current_dir(dir)
+        .env("AURORA_HEADLESS", "1")
+        .output()
+        .expect("run aurorac")
+}
+
+/// A program of two manifest modules, where `a` reaches into `b`. `a_deps` is what `a` declares.
+fn dep_program(tag: &str, a_deps: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("aurora_dep_{}_{tag}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("a")).expect("mkdir a");
+    std::fs::create_dir_all(dir.join("b")).expect("mkdir b");
+    std::fs::write(
+        dir.join("aurora.toml"),
+        "entry = \"main.aur\"\n\n[dependencies]\na = \"a\"\nb = \"b\"\n",
+    )
+    .expect("root manifest");
+    std::fs::write(
+        dir.join("a/aurora.toml"),
+        format!("name = \"a\"\nlib = \"a.aur\"\n\n[dependencies]\n{a_deps}"),
+    )
+    .expect("a manifest");
+    std::fs::write(dir.join("a/a.aur"), "fn touch() -> i64 { b::val() }\n").expect("a source");
+    std::fs::write(dir.join("b/aurora.toml"), "name = \"b\"\nlib = \"b.aur\"\n")
+        .expect("b manifest");
+    std::fs::write(dir.join("b/b.aur"), "fn val() -> i64 { 7 }\n").expect("b source");
+    std::fs::write(dir.join("main.aur"), "fn main() { println(a::touch()) }\n").expect("entry");
+    dir
+}
+
+/// A module may not reach into one it never declared a dependency on.
+///
+/// Flattening puts every module into one scope before checking, so `a::` and `b::` are just
+/// mangled prefixes by the time the checker runs and it cannot see a boundary at all. That made
+/// every declared dependency graph a drawing rather than a rule - a module could call anything
+/// that happened to be in the build, and the manifest was decoration.
+#[test]
+fn a_module_cannot_use_one_it_does_not_declare() {
+    let dir = dep_program("undeclared", "");
+    let out = aurorac_in("check", &dir, "main.aur");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "check passed on an undeclared cross-module use:\n{err}"
+    );
+    assert!(
+        err.contains("E0330") && err.contains("without depending on it"),
+        "expected the undeclared-dependency error, got:\n{err}"
+    );
+    // The message has to say what to do about it, at the place it happened.
+    assert!(
+        err.contains("[dependencies]") && err.contains("a/aurora.toml"),
+        "the error should name the manifest to fix:\n{err}"
+    );
+}
+
+/// ...and declaring it is all it takes. The check must not simply forbid cross-module calls.
+#[test]
+fn declaring_the_dependency_is_enough() {
+    let dir = dep_program("declared", "b = \"../b\"\n");
+    let out = aurorac_in("check", &dir, "main.aur");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "check failed on a properly declared dependency:\n{err}"
+    );
+}
+
 /// A three-file program: `main.aur` -> `mid.aur` -> `leaf.aur`.
 fn nested_program(tag: &str) -> PathBuf {
     program(

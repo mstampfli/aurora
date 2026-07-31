@@ -523,6 +523,8 @@ fn build_inner(
 fn monomorphized(module: &AstModule) -> Result<AstModule, String> {
     Ok(AstModule {
         items: aurora_ast::monomorphize(module.items.clone())?,
+        // Module boundaries are a front-end question, already answered by the time codegen runs.
+        cross_refs: Vec::new(),
     })
 }
 

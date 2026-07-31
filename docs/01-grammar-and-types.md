@@ -141,6 +141,17 @@ resolved to the prefixed name; a name the module does not define itself resolves
 against the top level, so a module can use the entry file's items and the standard
 prelude unqualified.
 
+**Manifest modules must declare what they use.** A module resolved through an `aurora.toml`
+`[dependencies]` entry may only name modules that entry lists. Reaching into one it did not
+declare is `E0330`, and the error names the manifest to add it to.
+
+This is a rule about the manifest graph rather than about lowering, and it exists because
+lowering cannot express it: modules are flattened into one scope BEFORE type-checking, so by then
+`map::room_at` and a local `room_at` are the same kind of mangled name and no boundary survives
+for the checker to see. Without the rule a declared dependency graph is decoration - any module
+can call anything that happens to be in the build. File modules (`mod NAME;`) are unaffected:
+they have no manifest and are siblings by construction.
+
 **File modules.** The bodiless form `mod NAME;` loads its items from `NAME.aur`:
 
 * `NAME.aur` is resolved **relative to the directory of the file that declares it**.

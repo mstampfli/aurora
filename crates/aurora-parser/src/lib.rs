@@ -26,8 +26,11 @@ pub fn parse_str(src: &str) -> (Module, Vec<Diagnostic>) {
     let lexed = lex(src);
     let mut parser = Parser::new(lexed.tokens);
     let mut module = parser.parse_module();
-    // Lower `mod` blocks to mangled top-level items so modules namespace cleanly.
-    module.items = flatten::flatten_modules(module.items);
+    // Lower `mod` blocks to mangled top-level items so modules namespace cleanly, recording
+    // which module reached for which along the way - after this pass the boundary is gone.
+    let (items, cross_refs) = flatten::flatten_modules_tracked(module.items);
+    module.items = items;
+    module.cross_refs = cross_refs;
     let mut diags = lexed.diagnostics;
     diags.append(&mut parser.diags);
     (module, diags)
@@ -266,7 +269,10 @@ impl Parser {
                 self.bump();
             }
         }
-        Module { items }
+        Module {
+            items,
+            cross_refs: Vec::new(),
+        }
     }
 }
 

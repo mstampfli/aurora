@@ -5,7 +5,7 @@
 //! lowering to HIR, not here, so error messages can point at real source.
 
 use aurora_lexer::{FloatTy, IntTy};
-use aurora_span::Span;
+pub use aurora_span::Span;
 
 mod builtins;
 pub use builtins::{builtin_names, is_builtin};
@@ -100,6 +100,14 @@ pub fn is_shader_stage(attrs: &[Attr]) -> bool {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Module {
     pub items: Vec<Item>,
+    /// Every reference a module makes to ANOTHER module, as `(from, to, span)`.
+    ///
+    /// Collected while flattening, because that is the one pass that already knows which module
+    /// each item came from - afterwards the names are mangled and the boundary is gone. A driver
+    /// with a manifest can then refuse a use that was never declared as a dependency: without it
+    /// the declared dependency graph is a drawing, since flattening puts every module in one
+    /// scope and the checker sees no boundary at all.
+    pub cross_refs: Vec<(String, String, Span)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
