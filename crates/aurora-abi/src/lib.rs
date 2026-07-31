@@ -262,6 +262,7 @@ macro_rules! for_each_builtin {
         [scalar,   inject_char,                   aurora_inject_char,                    [I64],                                           void]
         [internal, oob,                           aurora_oob,                            [I64, I64],                                      void]
         [scalar,   frame_dt,                      aurora_frame_dt,                       [],                                              F64]
+        [internal, run_fixed,                     aurora_run_fixed,                      [Ptr, Ptr, I64, F64],                            I64]
         [scalar,   set_tick_rate,                 aurora_set_tick_rate,                  [F64],                                           void]
         [scalar,   tick_count,                    aurora_tick_count,                     [],                                              I64]
         [scalar,   tick_delta,                    aurora_tick_delta,                     [],                                              F64]

@@ -336,6 +336,11 @@ struct Env {
     /// A layer with one system runs sequentially; a multi-system layer runs its
     /// systems concurrently (they are provably non-conflicting and unordered).
     system_layers: Vec<Vec<usize>>,
+    /// The `stage(FixedUpdate)` schedule, in the same form. Driven by the
+    /// simulation clock rather than the frame: `run_systems()` runs these once
+    /// per whole step owed, which may be zero times on a fast frame and several
+    /// on a slow one.
+    fixed_layers: Vec<Vec<usize>>,
     ptr_ty: Type,
     /// Target shape, for the frontend helpers that need it (aggregate copies
     /// lower through `emit_small_memory_copy`, which picks inline moves or a
@@ -1130,7 +1135,12 @@ fn lower(
     }
     // Partition systems into ordered layers of mutually-independent systems
     // (§6.2): each multi-system layer is safe to run concurrently.
-    let system_layers = aurora_ast::parallel_layers(module);
+    //
+    // Split by stage, because the two run on different clocks: the frame
+    // schedule once per `run_systems()`, the fixed schedule once per whole
+    // simulation step owed. Indices address `system_order` either way.
+    let system_layers = aurora_ast::parallel_layers_in(module, aurora_ast::DEFAULT_STAGE);
+    let fixed_layers = aurora_ast::parallel_layers_in(module, aurora_ast::FIXED_STAGE);
 
     let env = Env {
         fns,
@@ -1146,6 +1156,7 @@ fn lower(
         extern_fns,
         system_order,
         system_layers,
+        fixed_layers,
         ptr_ty,
         frontend: jmod.target_config(),
         pending_vstack: std::cell::RefCell::new(None),
@@ -4055,11 +4066,44 @@ fn tr_call(
         return Ok(Term::Val(n, Cty::I64));
     }
     if name == "run_systems" {
-        // Run the schedule layer by layer. A single-system layer is a direct
-        // call; a multi-system layer is handed to `aurora_run_parallel`, which
-        // runs its (provably non-conflicting, unordered) systems concurrently
-        // over the shared world. Layer order preserves declaration order for
-        // every conflicting or explicitly-ordered pair.
+        // The fixed schedule first, and on its own clock.
+        //
+        // `stage(FixedUpdate)` systems run once per whole simulation step the
+        // frame owes - possibly zero times, possibly several - so that rules
+        // written in ticks mean the same thing however long frames take. The
+        // whole schedule goes to the runtime in one call, flattened with a
+        // length per layer, because the accumulator loop belongs in Rust rather
+        // than in emitted code and a multi-system layer must still run
+        // concurrently once inside it.
+        if !env.fixed_layers.is_empty() {
+            let total: usize = env.fixed_layers.iter().map(|l| l.len()).sum();
+            let fns = alloc(b, env, total);
+            let lens = alloc(b, env, env.fixed_layers.len());
+            let mut at = 0usize;
+            for (li, layer) in env.fixed_layers.iter().enumerate() {
+                let n = b.ins().iconst(types::I64, layer.len() as i64);
+                store_at(b, lens, li, n);
+                for &si in layer {
+                    let id = env.fns[&env.system_order[si]].id;
+                    let fref = m.declare_func_in_func(id, b.func);
+                    let faddr = b.ins().func_addr(env.ptr_ty, fref);
+                    store_at(b, fns, at, faddr);
+                    at += 1;
+                }
+            }
+            let dt_f = m.declare_func_in_func(env.hosts["frame_dt"], b.func);
+            let dt_call = b.ins().call(dt_f, &[]);
+            let dt = b.inst_results(dt_call)[0];
+            let n_layers = b.ins().iconst(types::I64, env.fixed_layers.len() as i64);
+            let run_fixed = m.declare_func_in_func(env.hosts["run_fixed"], b.func);
+            b.ins().call(run_fixed, &[fns, lens, n_layers, dt]);
+        }
+
+        // Then the frame schedule, layer by layer. A single-system layer is a
+        // direct call; a multi-system layer is handed to `aurora_run_parallel`,
+        // which runs its (provably non-conflicting, unordered) systems
+        // concurrently over the shared world. Layer order preserves declaration
+        // order for every conflicting or explicitly-ordered pair.
         for layer in &env.system_layers {
             if layer.len() == 1 {
                 let id = env.fns[&env.system_order[layer[0]]].id;
