@@ -1,4 +1,4 @@
-//! A modular character, rendered.
+﻿//! A modular character, rendered.
 //!
 //! The asset-side tests prove the numbers line up. This proves the pixels do:
 //! eleven separately authored parts, rebound onto one skeleton, drawn from a
@@ -142,4 +142,121 @@ fn eleven_modular_parts_render_as_one_body() {
         "silhouette centred at x={cx}, expected near {}",
         w / 2
     );
+}
+
+/// Bones whose names differ between Synty's animation rig and its character rig.
+/// Everything else matches as it stands.
+const SYNTY_MAP: &[(&str, &str)] = &[
+    ("Hips", "Pelvis"),
+    ("Neck", "neck_01"),
+    ("Head", "head"),
+    ("Shoulder_L", "UpperArm_L"),
+    ("Elbow_L", "lowerarm_l"),
+    ("Shoulder_R", "UpperArm_R"),
+    ("Elbow_R", "lowerarm_r"),
+    ("UpperLeg_L", "Thigh_L"),
+    ("LowerLeg_L", "calf_l"),
+    ("Ankle_L", "Foot_L"),
+    ("UpperLeg_R", "Thigh_R"),
+    ("LowerLeg_R", "calf_r"),
+    ("Ankle_R", "Foot_R"),
+];
+
+/// Milestone 0: an assembled, textured character playing a retargeted sword clip.
+///
+/// Everything the pipeline does, at once - FBX import, modular assembly on a
+/// shared skeleton, an atlas attached by material name, and a clip authored
+/// against a different rig driving the result. The frames are written out so the
+/// swing can be looked at, and the assertion is that the character actually
+/// changes shape over the clip: a retarget that silently dropped its channels
+/// still renders a perfectly good T-pose.
+#[test]
+#[ignore = "needs rest-relative rotation retargeting; see the decisions log"]
+fn a_character_plays_a_retargeted_sword_clip() {
+    let Ok(dir) = std::env::var("AURORA_TEST_FBX_DIR") else {
+        return;
+    };
+    let Some((device, queue)) = headless_device() else {
+        eprintln!("no GPU adapter - skipping the animated character render");
+        return;
+    };
+
+    let (w, h) = (256u32, 384u32);
+    let mut scene = Scene::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm, w, h, 1);
+    scene.set_clear(CLEAR[0], CLEAR[1], CLEAR[2]);
+    scene.set_light(Vec3::new(0.3, 0.5, 1.0), Vec3::ONE, 0.5);
+    scene.set_camera(Vec3::new(0.0, 1.0, 3.2), Vec3::new(0.0, 0.9, 0.0), 45.0);
+    if let Ok(atlas) = std::env::var("AURORA_TEST_ATLAS") {
+        scene.set_material_texture("ModularFantasyHeroCharacters", &atlas);
+    }
+
+    let hero = scene.load_character(
+        &device,
+        &queue,
+        &format!("{dir}/SK_Character_Male_King.fbx"),
+        &[&format!("{dir}/A_Attack_LightCombo01A_RootMotion_Sword.fbx")],
+        SYNTY_MAP,
+        &["Pelvis"],
+    );
+    assert!(hero >= 0, "character failed to load");
+
+    // Control: the character must render at all before asking whether a clip
+    // moves it. Without this a failure below cannot distinguish "the clip poses
+    // nothing" from "nothing is being drawn".
+    scene.begin();
+    scene.draw(hero, glam::Mat4::IDENTITY);
+    let rest = render_offscreen(&mut scene.renderer, &device, &queue, w, h, CLEAR);
+    if let Ok(out) = std::env::var("AURORA_TEST_FRAME_DIR") {
+        write_png(&out, "swing_rest.ppm", &rest, w, h);
+    }
+    let rest_drawn = rest.chunks_exact(4).filter(|p| !is_background(p)).count();
+    assert!(
+        rest_drawn > 2000,
+        "the character drew only {rest_drawn} pixels at rest, before any clip played"
+    );
+
+    let clip = scene.clip_index(hero, "A_Attack_LightCombo01A_RootMotion_Sword");
+    assert!(clip >= 0, "the retargeted clip is not addressable by name");
+
+    scene.anim_play(hero, clip, true, 1.0, 0.0);
+
+    // Sample the swing at four points and require the silhouette to change. A
+    // clip whose channels were all dropped advances time and poses nothing.
+    let mut silhouettes = Vec::new();
+    for step in 0..4 {
+        scene.anim_seek(hero, 0.2 * step as f32);
+        scene.anim_update(hero, 0.0);
+        for bone in ["Pelvis", "head", "Foot_L"] {
+            let j = scene.joint_index(hero, bone);
+            let p = scene
+                .joint_global_mat(hero, j)
+                .map(|m| m.w_axis.truncate())
+                .unwrap_or(Vec3::ZERO);
+            println!("step {step} {bone}: idx={j} pos=({:.3},{:.3},{:.3})", p.x, p.y, p.z);
+        }
+        scene.begin();
+        scene.draw(hero, glam::Mat4::IDENTITY);
+        let img = render_offscreen(&mut scene.renderer, &device, &queue, w, h, CLEAR);
+
+        if let Ok(out) = std::env::var("AURORA_TEST_FRAME_DIR") {
+            write_png(&out, &format!("swing_{step}.ppm"), &img, w, h);
+        }
+        let mask: Vec<bool> = img.chunks_exact(4).map(|p| !is_background(p)).collect();
+        let drawn = mask.iter().filter(|b| **b).count();
+        assert!(drawn > 2000, "frame {step} drew only {drawn} character pixels");
+        silhouettes.push(mask);
+    }
+
+    for step in 1..silhouettes.len() {
+        let changed = silhouettes[0]
+            .iter()
+            .zip(&silhouettes[step])
+            .filter(|(a, b)| a != b)
+            .count();
+        assert!(
+            changed > 500,
+            "frame {step} differs from the first by only {changed} pixels; \
+             the clip is not actually posing the character"
+        );
+    }
 }

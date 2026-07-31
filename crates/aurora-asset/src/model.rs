@@ -289,6 +289,19 @@ impl Clip {
     /// it are matched as they are, case-insensitively, so a map need only list
     /// the bones whose names actually differ.
     ///
+    /// `translate` names the TARGET bones permitted to take their translation
+    /// from the clip. Everything else keeps the target skeleton's own bone
+    /// offsets, and only rotation transfers.
+    ///
+    /// That restriction is the difference between an animated character and a
+    /// heap. A clip-only export carries no bone offsets at all - every joint's
+    /// local translation is zero and the motion lives entirely in rotations,
+    /// because the file is meant to drive a skeleton it does not ship. Copying
+    /// those translations across replaces a character's real bone lengths with
+    /// zero and collapses the whole body onto its hip. Bone offsets belong to
+    /// the skeleton; only the root's travel belongs to the clip, which is why
+    /// that one bone has to be named explicitly.
+    ///
     /// Channels naming a joint the target lacks are dropped - a source rig
     /// routinely drives bones no character has, like a jaw or a weapon socket.
     /// A clip where NOTHING matched is an error rather than an empty clip,
@@ -298,6 +311,7 @@ impl Clip {
         source: &Skeleton,
         target: &Skeleton,
         rename: &[(&str, &str)],
+        translate: &[&str],
     ) -> Result<Clip, String> {
         let mut channels = Vec::with_capacity(self.channels.len());
         let mut dropped = Vec::new();
@@ -317,13 +331,27 @@ impl Clip {
                 .iter()
                 .position(|j| j.name.eq_ignore_ascii_case(want))
             {
-                Some(joint) => channels.push(Channel {
-                    joint,
-                    path: ch.path,
-                    interp: ch.interp,
-                    times: ch.times.clone(),
-                    values: ch.values.clone(),
-                }),
+                Some(joint) => {
+                    // Scale is never transferred: a clip that does not author it
+                    // reports the source rig's own scale, which on a rig whose
+                    // root carries a unit conversion would resize the character.
+                    let keep = match ch.path {
+                        Path::Rotation => true,
+                        Path::Translation => {
+                            translate.iter().any(|n| n.eq_ignore_ascii_case(want))
+                        }
+                        Path::Scale => false,
+                    };
+                    if keep {
+                        channels.push(Channel {
+                            joint,
+                            path: ch.path,
+                            interp: ch.interp,
+                            times: ch.times.clone(),
+                            values: ch.values.clone(),
+                        });
+                    }
+                }
                 None => {
                     if !dropped.contains(&from.name) {
                         dropped.push(from.name.clone());
@@ -532,7 +560,12 @@ impl Model {
     /// Returns the number of clips added. Clips that retarget to nothing are
     /// reported and skipped rather than aborting the whole file, so one bad
     /// export does not cost a library.
-    pub fn add_clips_from(&mut self, path: &str, rename: &[(&str, &str)]) -> Result<usize, String> {
+    pub fn add_clips_from(
+        &mut self,
+        path: &str,
+        rename: &[(&str, &str)],
+        translate: &[&str],
+    ) -> Result<usize, String> {
         let Some(target) = &self.skeleton else {
             return Err(format!("cannot add clips to {path}: model has no skeleton"));
         };
@@ -543,7 +576,7 @@ impl Model {
 
         let mut added = Vec::new();
         for clip in &library.clips {
-            match clip.retarget(source, target, rename) {
+            match clip.retarget(source, target, rename, translate) {
                 Ok(c) => added.push(c),
                 Err(e) => eprintln!("aurora: {e}"),
             }

@@ -1,4 +1,4 @@
-//! A high-level scene: a registry of drawable models (file-loaded or primitive),
+﻿//! A high-level scene: a registry of drawable models (file-loaded or primitive),
 //! per-model animation players, and a camera, on top of [`Renderer3D`]. This is
 //! the surface the engine/runtime drives; it owns no device and borrows one per
 //! call so the same scene renders offscreen or to the window.
@@ -260,7 +260,38 @@ impl Scene {
     /// way to write a horde - one handle per body, so each animates independently - costs
     /// one upload per distinct file instead of one per body.
     pub fn load_model(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, path: &str) -> i64 {
-        self.load_model_inner(device, queue, path, None)
+        self.load_model_inner(device, queue, path, None, &[], &[], &[])
+    }
+
+    /// Load a character together with a moveset gathered from separate files.
+    ///
+    /// An animation library ships one clip per file, authored against a rig that
+    /// is not this character's, so each is retargeted onto this model's skeleton
+    /// by bone name as it is read (see `Clip::retarget`). `rename` maps source
+    /// bone names to this skeleton's; bones whose names already agree need no
+    /// entry.
+    ///
+    /// Clips are gathered at load rather than attached afterwards because an
+    /// uploaded asset is shared between every handle that loaded the same file.
+    /// Mutating one later would silently rewrite the moveset of every character
+    /// already drawing from it.
+    ///
+    /// Clips land in the order given, so `clip_index` and `anim_play` can address
+    /// them by name.
+    /// `translate` names the bones allowed to take translation from a clip -
+    /// normally just the root or the hips. Every other bone keeps this
+    /// skeleton's own offsets, because a clip-only export carries none of its
+    /// own and copying its zeroes collapses the body onto its hip.
+    pub fn load_character(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        path: &str,
+        clips: &[&str],
+        rename: &[(&str, &str)],
+        translate: &[&str],
+    ) -> i64 {
+        self.load_model_inner(device, queue, path, None, clips, rename, translate)
     }
 
     /// Load `path` as a part of `host`'s body: its skinning is rebound onto the
@@ -293,7 +324,7 @@ impl Scene {
             eprintln!("aurora: load_part: host {host} has no skeleton");
             return -1;
         };
-        self.load_model_inner(device, queue, path, Some(&skeleton))
+        self.load_model_inner(device, queue, path, Some(&skeleton), &[], &[], &[])
     }
 
     /// Attach `texture` to any primitive whose material is named `material` and
@@ -319,21 +350,30 @@ impl Scene {
         queue: &wgpu::Queue,
         path: &str,
         rebind: Option<&crate::model::Skeleton>,
+        clips: &[&str],
+        rename: &[(&str, &str)],
+        translate: &[&str],
     ) -> i64 {
         // A rebound part is different GPU data from the same file loaded plainly,
         // so it cannot share a cache entry with it. Keying on the target's joint
         // names keeps one upload per (file, skeleton) pair, which is what a cast
         // sharing one rig actually wants: every character rebinds a part to the
         // same skeleton and uploads it once between them.
-        let key = match rebind {
-            None => format!("{}#m{}", Scene::asset_key(path), self.material_generation),
-            Some(skel) => format!(
-                "{}#bound:{}#m{}",
-                Scene::asset_key(path),
-                skeleton_fingerprint(skel),
-                self.material_generation
-            ),
-        };
+        // The key names everything that changes what gets uploaded: which file,
+        // which skeleton it was bound to, which atlases were registered, and
+        // which moveset was gathered into it.
+        let mut key = Scene::asset_key(path);
+        if let Some(skel) = rebind {
+            key.push_str(&format!("#bound:{}", skeleton_fingerprint(skel)));
+        }
+        key.push_str(&format!("#m{}", self.material_generation));
+        if !clips.is_empty() {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            clips.hash(&mut h);
+            rename.hash(&mut h);
+            key.push_str(&format!("#clips:{}", h.finish()));
+        }
         if let Some(asset) = self.assets.get(&key) {
             return self
                 .items
@@ -358,6 +398,14 @@ impl Scene {
             if let Err(e) = model.rebind_skin(target, 1e-3) {
                 eprintln!("aurora: cannot bind {path} to this skeleton: {e}");
                 return -1;
+            }
+        }
+        // Gather the moveset before the asset is built. A clip file that fails to
+        // load is reported and skipped: one bad export in a library of hundreds
+        // should cost that clip, not the character.
+        for clip in clips {
+            if let Err(e) = model.add_clips_from(clip, rename, translate) {
+                eprintln!("aurora: {e}");
             }
         }
         // Atlases named by material, decoded once for this load rather than once
