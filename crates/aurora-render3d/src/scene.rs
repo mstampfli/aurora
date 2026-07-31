@@ -43,6 +43,22 @@ where
     -1
 }
 
+/// A stable identifier for a skeleton's joint layout.
+///
+/// Two skeletons that agree on joint names in the same order are interchangeable
+/// as a rebinding target, so parts bound to either can share one GPU upload. The
+/// names are what a rebind matches on, so they are what the identity is built
+/// from - a hash rather than the names themselves, because this ends up inside a
+/// cache key and a fifty-bone rig would otherwise make it enormous.
+fn skeleton_fingerprint(skel: &crate::model::Skeleton) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for j in &skel.joints {
+        j.name.hash(&mut h);
+    }
+    h.finish()
+}
+
 /// The heavy half of a drawable: uploaded GPU meshes and materials, plus the parsed
 /// model (skeleton, clips, CPU mesh data). SHARED between every handle that loaded the
 /// same file, and reference-counted so the last handle to go frees the GPU memory.
@@ -229,7 +245,62 @@ impl Scene {
     /// way to write a horde - one handle per body, so each animates independently - costs
     /// one upload per distinct file instead of one per body.
     pub fn load_model(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, path: &str) -> i64 {
-        let key = Scene::asset_key(path);
+        self.load_model_inner(device, queue, path, None)
+    }
+
+    /// Load `path` as a part of `host`'s body: its skinning is rebound onto the
+    /// host's skeleton by bone name, so [`Scene::draw_skinned`] can drive it from
+    /// the host's pose.
+    ///
+    /// This is how a modular character is assembled. Each part is authored as its
+    /// own file with its own private joint list, so its vertices mean nothing
+    /// against another skeleton until they are renumbered. Once rebound, a dozen
+    /// parts share one pose evaluation and animate as a single body.
+    ///
+    /// Returns -1 if the host has no skeleton, or if the part cannot be rebound
+    /// onto it - a joint it deforms with that the host lacks, or one they disagree
+    /// about at bind time. Refusing here is deliberate: the alternative is a part
+    /// silently skinned to the wrong body, which shows up as a seam that opens
+    /// only in some poses.
+    pub fn load_part(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        path: &str,
+        host: i64,
+    ) -> i64 {
+        let Some(skeleton) = self
+            .item(host)
+            .and_then(|r| r.asset.model.as_ref())
+            .and_then(|m| m.skeleton.as_ref())
+            .cloned()
+        else {
+            eprintln!("aurora: load_part: host {host} has no skeleton");
+            return -1;
+        };
+        self.load_model_inner(device, queue, path, Some(&skeleton))
+    }
+
+    fn load_model_inner(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        path: &str,
+        rebind: Option<&crate::model::Skeleton>,
+    ) -> i64 {
+        // A rebound part is different GPU data from the same file loaded plainly,
+        // so it cannot share a cache entry with it. Keying on the target's joint
+        // names keeps one upload per (file, skeleton) pair, which is what a cast
+        // sharing one rig actually wants: every character rebinds a part to the
+        // same skeleton and uploads it once between them.
+        let key = match rebind {
+            None => Scene::asset_key(path),
+            Some(skel) => format!(
+                "{}#bound:{}",
+                Scene::asset_key(path),
+                skeleton_fingerprint(skel)
+            ),
+        };
         if let Some(asset) = self.assets.get(&key) {
             return self
                 .items
@@ -240,13 +311,22 @@ impl Scene {
                 })
                 .to_i64();
         }
-        let model = match Model::load(path) {
+        let mut model = match Model::load(path) {
             Ok(m) => m,
             Err(e) => {
                 eprintln!("aurora: {e}");
                 return -1;
             }
         };
+        if let Some(target) = rebind {
+            // Tolerance in metres. Loose enough to absorb the rounding of a bind
+            // matrix through an exporter, tight enough that a genuinely different
+            // bind pose - a part built for another body - is still refused.
+            if let Err(e) = model.rebind_skin(target, 1e-3) {
+                eprintln!("aurora: cannot bind {path} to this skeleton: {e}");
+                return -1;
+            }
+        }
         let mut prims = Vec::new();
         let mut skinned = false;
         for p in &model.primitives {
@@ -271,24 +351,17 @@ impl Scene {
             prims.push((mesh, mat));
             skinned |= p.skinned;
         }
-        // Union of every primitive's bounds: one glTF file is often several meshes,
-        // and a collider sized to only the first one would miss half the model.
-        let mut bounds = [f32::MAX, f32::MAX, f32::MAX, f32::MIN, f32::MIN, f32::MIN];
-        let mut any = false;
-        for p in &model.primitives {
-            let b = p.mesh.bounds();
-            if p.mesh.vertices.is_empty() {
-                continue;
-            }
-            any = true;
-            for a in 0..3 {
-                bounds[a] = bounds[a].min(b[a]);
-                bounds[3 + a] = bounds[3 + a].max(b[3 + a]);
-            }
-        }
-        if !any {
-            bounds = [0.0; 6];
-        }
+        // Measured through the bind matrices, and over every primitive: one file
+        // is often several meshes, and a collider sized to the first alone would
+        // miss half the model.
+        //
+        // Through the bind matrices specifically, because a skinned mesh's
+        // vertices live in the source file's bind space. Unioning raw vertex
+        // bounds happened to agree for the glTF models this was written against,
+        // whose bind space is model space; an FBX authored in centimetres is a
+        // hundred times larger there, and a collider built from it would swallow
+        // the level.
+        let bounds = model.bind_pose_bounds();
         let asset = Arc::new(Asset {
             prims,
             model: Some(model),
