@@ -1,15 +1,15 @@
-//! Module flattening: lower `mod NAME { items }` into top-level items with
+﻿//! Module flattening: lower `mod NAME { items }` into top-level items with
 //! `NAME::`-mangled names, rewriting intra-module references so that modules
 //! provide real namespacing (two modules may define same-named items without
 //! colliding). Runs automatically after parsing.
 //!
 //! * A definition `mod m { fn f }` becomes a top-level `fn` named `m::f`.
-//! * A reference to a sibling (`f` → `m::f`) or a submodule path (`s::g` →
+//! * A reference to a sibling (`f` â†’ `m::f`) or a submodule path (`s::g` â†’
 //!   `m::s::g`) inside the module is rewritten to the mangled name.
 //! * Qualified references from *outside* (`m::f`) are resolved by the backend,
 //!   which joins multi-segment call paths with `::`.
 //!
-//! Nesting is supported (`mod a { mod b { fn f } }` → `a::b::f`).
+//! Nesting is supported (`mod a { mod b { fn f } }` â†’ `a::b::f`).
 
 use std::collections::HashSet;
 
@@ -185,6 +185,7 @@ fn item_name(item: &Item) -> Option<String> {
         ItemKind::Struct(s) | ItemKind::Component(s) => Some(s.name.name.clone()),
         ItemKind::Enum(e) => Some(e.name.name.clone()),
         ItemKind::Const(c) => Some(c.name.name.clone()),
+        ItemKind::System(s) => Some(s.name.name.clone()),
         _ => None,
     }
 }
@@ -196,6 +197,10 @@ fn mangle_item(item: &mut Item, prefix: &str) {
         ItemKind::Struct(s) | ItemKind::Component(s) => set(&mut s.name),
         ItemKind::Enum(e) => set(&mut e.name),
         ItemKind::Const(c) => set(&mut c.name),
+        // A system is an item like any other. Leaving it unmangled let two
+        // modules declare the same system name and collide silently, and left
+        // `after(other)` in one module able to name a system in another.
+        ItemKind::System(s) => set(&mut s.name),
         _ => {}
     }
 }
@@ -227,6 +232,28 @@ fn rewrite_item(item: &mut Item, cx: &Cx) {
             }
         }
         ItemKind::Const(c) => rewrite_expr(&mut c.value, cx),
+        // A system's body names components, and its schedule names sibling
+        // systems. Neither was being rewritten, so a system declared in a module
+        // could not see its own components: the declaration became `m::Player`
+        // while the `query<&mut Player>` inside it did not, and the checker
+        // reported a component that was right there in the same file.
+        //
+        // The stage is deliberately left alone. `stage(FixedUpdate)` names a
+        // schedule the runtime owns, not an item in this module, and prefixing
+        // it would put every module's systems in a stage of their own.
+        ItemKind::System(s) => {
+            for sched in &mut s.schedule {
+                match sched {
+                    aurora_ast::SysSched::After(ps) | aurora_ast::SysSched::Before(ps) => {
+                        for p in ps {
+                            rewrite_path(p, cx);
+                        }
+                    }
+                    aurora_ast::SysSched::Stage(_) => {}
+                }
+            }
+            rewrite_block(&mut s.body, cx);
+        }
         ItemKind::Impl(im) => {
             rewrite_type(&mut im.self_ty, cx);
             for it in &mut im.items {
@@ -465,6 +492,28 @@ fn rewrite_expr(e: &mut Expr, cx: &Cx) {
         ExprKind::Spawn(args) => {
             for a in args {
                 rewrite_expr(&mut a.value, cx);
+            }
+        }
+        // A query names components, and a component is an item like any other -
+        // so a query inside a module has to reach its module's components.
+        // Without this, declaring `component Player` and `query<&mut Player>` in
+        // one file failed the moment that file became a module: the declaration
+        // was mangled and the query was not, and the checker reported a
+        // component missing that was three lines above.
+        ExprKind::Query(q) => {
+            for term in &mut q.terms {
+                match term {
+                    aurora_ast::QTerm::Read(p)
+                    | aurora_ast::QTerm::Write(p)
+                    | aurora_ast::QTerm::OptRead(p)
+                    | aurora_ast::QTerm::OptWrite(p)
+                    | aurora_ast::QTerm::Without(p)
+                    | aurora_ast::QTerm::With(p) => rewrite_path(p, cx),
+                    aurora_ast::QTerm::Entity => {}
+                }
+            }
+            if let Some(f) = &mut q.filter {
+                rewrite_expr(f, cx);
             }
         }
         ExprKind::Return(o) | ExprKind::Break(o) => {
