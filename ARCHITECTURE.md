@@ -53,7 +53,8 @@ functions, lowering them to WGSL instead of machine code.
 |---|---|
 | `aurora-runtime` | every host function compiled code calls: `phys3d_*`, `net_*` (netgame), audio, input, the r3d bridge, and the value stack that holds aggregates too large for a machine frame |
 | `aurora-gfx` | CPU rasterization: the 2D framebuffer, text, sprites |
-| `aurora-render3d` | the GPU 3D renderer: meshes, materials, skinning, lights, shadows, the scene |
+| `aurora-asset` | authored art in memory - geometry, materials, skeletons, clips - and every importer that produces it (glTF/GLB, OBJ, FBX). No GPU dependency, so the offline baker reads a file without linking a renderer and importers are testable with no adapter |
+| `aurora-render3d` | the GPU 3D renderer: meshes, materials, skinning, lights, shadows, the scene. Sits on `aurora-asset` and uploads what lands there |
 | `aurora-window` | a real window and input (winit + wgpu), and the immediate-mode surface the builtins call |
 | `aurora-audio` | synthesis, mixing and decoding |
 | `aurora-net` | the reliable-UDP transport, snapshots, interest, lag compensation |
@@ -90,6 +91,10 @@ is the one place a reader is already looking.
 | A module may only use modules it declares in its manifest | the compiler: `E0330`, tested in `aurorac`'s CLI suite |
 | A freed handle is refused rather than aliased to whatever took its slot | `aurora-slot`'s generation tag, tested at the pixels in `aurora-render3d` |
 | A model file's GPU upload is shared between every handle that loads it, and released when the last one goes | `aurora-render3d`'s asset cache, tested by byte counts |
+| A rig's rest pose is whatever its skin clusters say, not whatever pose its node transforms were exported in | `aurora-asset`'s FBX importer derives a joint's local from the parent and child bind matrices; `a_rig_whose_node_transforms_are_not_its_bind_pose_still_imports` |
+| Skinning a mesh with its own rest pose reproduces that rest pose | the bind-pose self-test in `aurora-asset`'s `fbx_import` suite; this is what catches geometry, bind matrices and joint transforms disagreeing about units or space |
+| A skinned model is measured through its bind matrices, never from raw vertices | `Model::bind_pose_bounds`. Skinned geometry stays in the source file's bind space, so `MeshData::bounds` on it would size a collider a hundred times too large for a centimetre export |
+| There is one clip sampler, and it lives with the clip format | `Skeleton::sample` in `aurora-asset`; `aurora-render3d` delegates rather than keeping a copy that can drift |
 | Under owned movement a body has exactly one simulator | `aurora-runtime::netgame` skips the sim for a networked client, and skips the client's own prediction and reconciliation |
 | A function's frame size does not scale with the size of the aggregates it holds | `aurora-codegen`'s `alloc`: at or above `VSTACK_THRESHOLD` an aggregate comes from `aurora-runtime`'s per-thread value stack instead of a Cranelift stack slot |
 | A value-stack allocation is made once per call SITE, never once per execution | `aurora-codegen` collects each request during lowering and emits it in the function's `preamble` block, which runs once per activation - so a site inside a loop yields one buffer reused across iterations, exactly as the frame slot it replaces did. Tested by `a_loop_does_not_grow_the_arena_with_its_trip_count` |

@@ -3,7 +3,7 @@
 
 use glam::{Mat4, Quat, Vec3, Vec4};
 
-use crate::model::{Channel, Interp, Model, Path, Skeleton};
+use crate::model::{Model, Skeleton};
 
 /// Tracks playback of a clip on a model, with crossfade blending from the
 /// previously-playing clip.
