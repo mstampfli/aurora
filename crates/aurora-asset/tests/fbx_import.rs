@@ -221,6 +221,133 @@ const BONE_MAP: &[(&str, &str)] = &[
     ("Toes_R", "toes_r"),
 ];
 
+/// The full correspondence between Synty's animation rig and its character rig.
+///
+/// Fingers are generated rather than listed: the animation rig suffixes the right
+/// hand with `_1` where the character rig suffixes with `_r`, and spelling out
+/// thirty entries by hand is thirty chances to transpose a digit.
+fn synty_bone_map() -> Vec<(String, String)> {
+    let mut m: Vec<(String, String)> = [
+        ("Hips", "Pelvis"),
+        ("Neck", "neck_01"),
+        ("Head", "head"),
+        ("Shoulder_L", "UpperArm_L"),
+        ("Elbow_L", "lowerarm_l"),
+        ("Shoulder_R", "UpperArm_R"),
+        ("Elbow_R", "lowerarm_r"),
+        ("UpperLeg_L", "Thigh_L"),
+        ("LowerLeg_L", "calf_l"),
+        ("Ankle_L", "Foot_L"),
+        ("UpperLeg_R", "Thigh_R"),
+        ("LowerLeg_R", "calf_r"),
+        ("Ankle_R", "Foot_R"),
+    ]
+    .iter()
+    .map(|(a, b)| (a.to_string(), b.to_string()))
+    .collect();
+
+    for (anim_suffix, char_suffix) in [("", "_l"), ("_1", "_r")] {
+        for digit in ["01", "02", "03"] {
+            m.push((
+                format!("Thumb_{digit}{anim_suffix}"),
+                format!("thumb_{digit}{char_suffix}"),
+            ));
+        }
+        for digit in ["01", "02", "03", "04"] {
+            m.push((
+                format!("IndexFinger_{digit}{anim_suffix}"),
+                format!("indexFinger_{digit}{char_suffix}"),
+            ));
+            m.push((
+                format!("Finger_{digit}{anim_suffix}"),
+                format!("finger_{digit}{char_suffix}"),
+            ));
+        }
+    }
+    m
+}
+
+/// A real sword clip drives a real character.
+///
+/// The end of the animation pipeline: a clip authored against one rig, loaded
+/// from a file with no geometry, addressed to a character built from a different
+/// pack. If the map or the renumbering were wrong this poses a person into a
+/// knot, so the assertions are about anatomy rather than about counts.
+#[test]
+fn a_sword_clip_retargets_onto_a_character() {
+    let mut character = model!("SK_Character_Male_King.fbx");
+    let dir = std::env::var("AURORA_TEST_FBX_DIR").unwrap();
+
+    let owned = synty_bone_map();
+    let map: Vec<(&str, &str)> = owned.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+
+    let before = character.clips.len();
+    let added = character
+        .add_clips_from(
+            &format!("{dir}/A_Attack_LightCombo01A_RootMotion_Sword.fbx"),
+            &map,
+        )
+        .expect("clip library loads");
+    assert_eq!(added, 1, "expected one clip from the file");
+    assert_eq!(character.clips.len(), before + added);
+
+    let clip = character.clips.last().unwrap();
+    let skel = character.skeleton.as_ref().unwrap();
+
+    // Most of the source rig's joints should have found a home. A map that only
+    // half works still animates, badly, so a low count has to fail.
+    let driven: std::collections::HashSet<usize> = clip.channels.iter().map(|c| c.joint).collect();
+    assert!(
+        driven.len() >= 40,
+        "only {} joints are driven; the bone map is incomplete",
+        driven.len()
+    );
+
+    let index = |n: &str| skel.joints.iter().position(|j| j.name == n).unwrap();
+    let (pelvis, head, hand_r, foot_l) = (
+        index("Pelvis"),
+        index("head"),
+        index("Hand_R"),
+        index("Foot_L"),
+    );
+
+    let mut moved = 0;
+    let mut prev: Option<glam::Vec3> = None;
+    for step in 0..=8 {
+        let t = clip.duration * step as f32 / 8.0;
+        let (tr, r, s) = skel.sample(Some(clip), t);
+        let g = skel.globals(&tr, &r, &s);
+        let at = |i: usize| g[i].w_axis.truncate();
+
+        // Anatomy holds at every instant of the swing.
+        assert!(
+            at(head).y > at(pelvis).y,
+            "at t={t:.2} the head is below the hip"
+        );
+        assert!(
+            at(foot_l).y < at(pelvis).y,
+            "at t={t:.2} the foot is above the hip"
+        );
+        assert!(
+            at(pelvis).y > 0.4 && at(pelvis).y < 1.4,
+            "at t={t:.2} the hip is at y {}",
+            at(pelvis).y
+        );
+
+        // And the sword hand actually swings.
+        if let Some(p) = prev {
+            if (at(hand_r) - p).length() > 0.05 {
+                moved += 1;
+            }
+        }
+        prev = Some(at(hand_r));
+    }
+    assert!(
+        moved >= 3,
+        "the sword hand barely moved across the clip ({moved} of 8 steps)"
+    );
+}
+
 /// The animation rig and the character rig are the same skeleton under two
 /// naming conventions.
 ///

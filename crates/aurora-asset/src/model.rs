@@ -241,19 +241,20 @@ fn resolve_rest(skel: &Skeleton, joint: usize, out: &mut Vec<Option<Mat4>>) {
 }
 
 /// Which transform component an animation channel drives.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Path {
     Translation,
     Rotation,
     Scale,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Interp {
     Linear,
     Step,
 }
 
+#[derive(Clone, Debug)]
 pub struct Channel {
     pub joint: usize,
     pub path: Path,
@@ -264,10 +265,88 @@ pub struct Channel {
 }
 
 /// A named animation: a set of per-joint TRS channels.
+#[derive(Clone, Debug)]
 pub struct Clip {
     pub name: String,
     pub duration: f32,
     pub channels: Vec<Channel>,
+}
+
+impl Clip {
+    /// Rewrite this clip's channels to address `target`'s joints instead of
+    /// `source`'s, matching by bone name.
+    ///
+    /// This is the whole of retargeting when two rigs share a rest pose - the
+    /// usual case for a pack whose animations and characters were built to the
+    /// same proportions, and the case worth checking for before reaching for
+    /// anything heavier. A channel holds a rotation in its joint's parent frame,
+    /// so if the joint sits in the same place on both skeletons the rotation
+    /// means the same thing on both and only the addressing has to change. Rigs
+    /// that genuinely differ in proportion need rest-relative transfer and limb
+    /// scaling; this is not that, and does not pretend to be.
+    ///
+    /// `rename` maps a source bone name to a target bone name. Names absent from
+    /// it are matched as they are, case-insensitively, so a map need only list
+    /// the bones whose names actually differ.
+    ///
+    /// Channels naming a joint the target lacks are dropped - a source rig
+    /// routinely drives bones no character has, like a jaw or a weapon socket.
+    /// A clip where NOTHING matched is an error rather than an empty clip,
+    /// because that means the map is wrong and silence would hide it.
+    pub fn retarget(
+        &self,
+        source: &Skeleton,
+        target: &Skeleton,
+        rename: &[(&str, &str)],
+    ) -> Result<Clip, String> {
+        let mut channels = Vec::with_capacity(self.channels.len());
+        let mut dropped = Vec::new();
+
+        for ch in &self.channels {
+            let Some(from) = source.joints.get(ch.joint) else {
+                continue;
+            };
+            let want = rename
+                .iter()
+                .find(|(a, _)| a.eq_ignore_ascii_case(&from.name))
+                .map(|(_, b)| *b)
+                .unwrap_or(from.name.as_str());
+
+            match target
+                .joints
+                .iter()
+                .position(|j| j.name.eq_ignore_ascii_case(want))
+            {
+                Some(joint) => channels.push(Channel {
+                    joint,
+                    path: ch.path,
+                    interp: ch.interp,
+                    times: ch.times.clone(),
+                    values: ch.values.clone(),
+                }),
+                None => {
+                    if !dropped.contains(&from.name) {
+                        dropped.push(from.name.clone());
+                    }
+                }
+            }
+        }
+
+        if channels.is_empty() {
+            return Err(format!(
+                "clip {} retargeted to nothing: none of its {} joints matched the target \
+                 skeleton, so the bone map is wrong",
+                self.name,
+                dropped.len()
+            ));
+        }
+
+        Ok(Clip {
+            name: self.name.clone(),
+            duration: self.duration,
+            channels,
+        })
+    }
 }
 
 /// A loaded model: drawable primitives, an optional skeleton, and clips.
@@ -439,6 +518,39 @@ impl Model {
 
         self.skeleton = Some(target.clone());
         Ok(rewritten)
+    }
+
+    /// Load the clips from `path` and add them to this model, retargeted onto
+    /// its skeleton.
+    ///
+    /// A moveset ships as one file per clip, authored against a rig that is not
+    /// the character's - a library of a few hundred animations is exported once
+    /// and every character in the project is expected to borrow from it. This
+    /// reads such a file, discards its geometry and its skeleton, and keeps the
+    /// motion addressed to bones this model actually has.
+    ///
+    /// Returns the number of clips added. Clips that retarget to nothing are
+    /// reported and skipped rather than aborting the whole file, so one bad
+    /// export does not cost a library.
+    pub fn add_clips_from(&mut self, path: &str, rename: &[(&str, &str)]) -> Result<usize, String> {
+        let Some(target) = &self.skeleton else {
+            return Err(format!("cannot add clips to {path}: model has no skeleton"));
+        };
+        let library = Model::load(path)?;
+        let Some(source) = &library.skeleton else {
+            return Err(format!("{path} has no skeleton to retarget from"));
+        };
+
+        let mut added = Vec::new();
+        for clip in &library.clips {
+            match clip.retarget(source, target, rename) {
+                Ok(c) => added.push(c),
+                Err(e) => eprintln!("aurora: {e}"),
+            }
+        }
+        let n = added.len();
+        self.clips.extend(added);
+        Ok(n)
     }
 
     /// Load a model by file extension (`.gltf`/`.glb`, `.obj`, or `.fbx`).
