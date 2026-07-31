@@ -6,6 +6,10 @@
 //! [`Framebuffer`] with clear, point, line, and a barycentric **triangle
 //! rasterizer** with per-vertex color interpolation, plus binary PPM output so
 //! results are inspectable and testable.
+//!
+//! **Place in the graph.** Depends on no Aurora crate; used by `window`, `codegen` and `interp`.
+//!
+//! **Never.** Never touches the GPU. This is the CPU framebuffer; 3D lives in `aurora-render3d`.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Color {

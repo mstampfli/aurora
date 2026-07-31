@@ -10,6 +10,10 @@
 //!
 //! These are the checks that don't require resolving expression types, so they
 //! land before the full type checker. `query` access sets drive (2) and (3).
+//!
+//! **Place in the graph.** Sits on `ast` and `parser`; runs before `typeck`.
+//!
+//! **Never.** Never needs inference. Anything that needs a type belongs in `aurora-typeck`.
 
 mod ecs;
 mod moves;

@@ -3,6 +3,10 @@
 //! Phase A surface: `aurorac lex <file>` tokenizes a source file and prints the
 //! token stream (or any diagnostics). More subcommands (`parse`, `check`) land
 //! as those phases come online.
+//!
+//! **Place in the graph.** The top of the graph: it depends on the front end, the back end and the runtime, and nothing depends on it.
+//!
+//! **Never.** Never contains language semantics - it wires stages together, resolves dependencies and reports.
 
 use std::process::ExitCode;
 

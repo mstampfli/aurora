@@ -53,6 +53,10 @@
 //! caller-allocated 2-slot out-pointer prepended to the parameter list, which
 //! the row does not spell (see [`Builtin::abi_params`]). Only a `text` row may
 //! return `Str`, because only its dispatch knows to allocate that slot.
+//!
+//! **Place in the graph.** Depends on nothing. `codegen` and `runtime` both read it, which is the whole point.
+//!
+//! **Never.** Never contains an implementation. A row here is a name, a signature and a symbol; the body lives in `aurora-runtime`.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;

@@ -5,6 +5,10 @@
 //! control over spans, numeric suffixes, and error recovery. On an unexpected
 //! character the lexer reports a diagnostic, emits a [`TokenKind::Error`] token,
 //! and keeps going so later phases still see a full token stream.
+//!
+//! **Place in the graph.** Sits on `span` and `diag`; `parser` is its only real consumer.
+//!
+//! **Never.** Never resolves a name or judges a token sequence: that is the parser's job and above.
 
 mod token;
 pub use token::*;

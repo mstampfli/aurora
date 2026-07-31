@@ -117,49 +117,18 @@ fn main() {
 
 ## Project layout
 
-```
-crates/
-  aurora-span      spans + source maps
-  aurora-diag      diagnostics + caret renderer
-  aurora-lexer     hand-rolled lexer (nested comments, newline-aware ASI)
-  aurora-abi       the ONE builtin table (name, symbol, signature) every layer generates from
-  aurora-slot      the ONE handle store: generation-tagged slots a freed handle cannot alias
-  aurora-ast       the syntax tree
-  aurora-parser    recursive-descent + Pratt expressions
-  aurora-types     type representation + union-find unifier
-  aurora-typeck    bidirectional type checker (generics, traits, enums)
-  aurora-check     ECS scheduler safety, move checking, region escape, resolution
-  aurora-interp    tree-walking interpreter (reference path; compiled path is primary)
-  aurora-codegen   Cranelift backend: JIT + AOT object emission (whole language)
-  aurora-runtime   native host functions (print/graphics/ECS/physics/nav) for compiled code
-  aurora-exe       link target + entry shim for standalone .exe output
-  aurora-gfx       CPU rasterizer (framebuffer, triangles, PPM)
-  aurora-shader    Aurora @vertex/@fragment/@compute -> WGSL
-  aurora-gpu       live GPU execution via wgpu (headless compute + render)
-  aurora-render3d  GPU 3D renderer (depth, camera/lights, textures, GPU skinning) + glTF/OBJ + animation
-  aurora-window    real-time winit + wgpu window with keyboard/mouse input
-  aurora-audio     synthesis (oscillators/ADSR/mixing) + cpal playback
-  aurora-debug     native source-level debugger (machine-code instrumentation)
-  aurora-net       netcode: replication, prediction, lag-comp, interest, reliable UDP
-  aurora-std       standard-library prelude (Aurora source, auto-included)
-  aurora-lsp       Language Server (diagnostics + completion over stdio)
-  aurorac          the CLI driver
-docs/
-  01-grammar-and-types.md      full EBNF + type system
-  02-netcode-replication.md    replication model
-  03-implementation-roadmap.md phase-by-phase build log
-  04-stdlib-and-builtins.md    practical reference: every builtin + the stdlib prelude
-examples/                      runnable .aur programs (start with showcase.aur)
-```
+`ARCHITECTURE.md` has the codemap of all 25 crates, the pipeline from source to native code, the
+dependency direction, the invariants and where each is enforced. Each crate's `lib.rs` header
+states that crate's own job, its place in the graph, and what it must never do.
 
-The pipeline is `lex -> parse -> resolve -> typecheck -> ECS-safety -> move-check
--> region-check`, then JIT-run or emit a standalone native executable.
+`CONTRIBUTING.md` has the dev loop and what to touch to add a builtin, syntax, a static rule or a
+renderer feature.
 
 ## Building
 
 ```sh
-cargo build --workspace      # builds the toolchain (Cranelift takes a moment first time)
-cargo test  --workspace      # 416 tests
+cargo build --release --workspace    # the toolchain (Cranelift takes a moment the first time)
+cargo test  --release                # the gate
 ```
 
 ## CLI
@@ -187,7 +156,7 @@ the auto-included standard library).
 ## Tests
 
 ```sh
-cargo test --workspace       # 343 tests across 23 crates, 0 warnings
+cargo test --release          # the whole workspace, including GPU and socket suites
 ```
 
 Every capability above is backed by passing tests and a runnable example in

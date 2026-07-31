@@ -5,6 +5,10 @@
 //! diagnostics renderer. Multi-file support arrives via [`SourceMap`] once the
 //! module/`use` graph (resolver) needs it; until then most callers work with a
 //! single [`SourceFile`].
+//!
+//! **Place in the graph.** Depends on nothing, and everything depends on it.
+//!
+//! **Never.** Never knows about files, text or diagnostics: a span is two offsets.
 
 use std::fmt;
 use std::ops::Range;

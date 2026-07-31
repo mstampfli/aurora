@@ -15,6 +15,10 @@
 //! stack slot). Aggregate fields/elements occupy 8-byte slots. Constructs still
 //! ahead (closures, enums, ECS) cause the function to be stubbed; the tree-
 //! walking interpreter covers those until their codegen lands.
+//!
+//! **Place in the graph.** Sits on `ast`, `abi`, `parser`, `std`, `gfx`, `runtime`; driven by `aurorac`.
+//!
+//! **Never.** Never reports a type error - by the time it runs, the program is already known to be well typed.
 
 use std::collections::{HashMap, HashSet};
 

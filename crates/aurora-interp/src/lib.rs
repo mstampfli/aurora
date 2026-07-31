@@ -8,6 +8,10 @@
 //! error rather than a panic.
 //!
 //! Output from the `print`/`println` builtins is captured in [`Interp::output`].
+//!
+//! **Place in the graph.** Sits on `ast`, `parser`, `gfx`. Tooling only.
+//!
+//! **Never.** Never on the path `aurorac run` takes: Aurora is compiled, and a second execution semantics would be a second set of bugs.
 
 mod value;
 

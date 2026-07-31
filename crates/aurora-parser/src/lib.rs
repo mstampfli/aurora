@@ -4,6 +4,10 @@
 //! precedence climbing (see `expr.rs`). The parser never panics on bad input:
 //! it emits a diagnostic, inserts an `Error` node, and synchronizes to a
 //! recovery point so a single mistake does not cascade.
+//!
+//! **Place in the graph.** Sits on `lexer`, `ast`, `span`, `diag`; feeds `check`, `typeck` and `codegen`.
+//!
+//! **Never.** Never infers types and never resolves cross-module names to definitions - it only mangles module paths so a later stage can.
 
 mod expr;
 mod flatten;

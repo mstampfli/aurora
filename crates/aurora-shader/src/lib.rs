@@ -8,6 +8,10 @@
 //! IO location/builtin annotations are simplified (a full backend would derive
 //! them from usage). The point is to prove the unified-language claim — testably,
 //! without a GPU device.
+//!
+//! **Place in the graph.** Sits on `ast` and `parser`; feeds `aurora-gpu`.
+//!
+//! **Never.** Never emits machine code, and never runs anything.
 
 use std::collections::HashMap;
 

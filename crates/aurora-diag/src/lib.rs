@@ -4,6 +4,10 @@
 //! [`Diagnostic`] is built with a fluent API and rendered against a
 //! [`SourceFile`] into an `rustc`/Elm-style snippet with a caret underline.
 //! The renderer is deterministic so it can back snapshot tests.
+//!
+//! **Place in the graph.** Sits on `aurora-span`; every stage above emits through it.
+//!
+//! **Never.** Never decides whether a program is valid - it carries the verdict, it does not reach it.
 
 use std::fmt::Write as _;
 

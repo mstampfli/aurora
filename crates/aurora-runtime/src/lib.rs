@@ -23,6 +23,10 @@
 //! only: the emitted symbol, its C ABI, and both consumers above are unchanged.
 //! What it buys is that safe Rust can no longer call one of these with a pointer
 //! it invented. A host function that takes no pointer stays safe.
+//!
+//! **Place in the graph.** Sits on `abi`, `slot`, `gfx`, `audio`, `window`, `render3d`, `gpu`, `net`. Called by compiled code.
+//!
+//! **Never.** Never parses or type-checks. Every entry point here is an `extern "C"` fn whose row lives in `aurora-abi`.
 
 use std::cell::RefCell;
 use std::collections::HashSet;

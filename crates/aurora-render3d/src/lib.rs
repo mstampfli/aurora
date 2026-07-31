@@ -6,6 +6,10 @@
 //! drives an offscreen target (headless tests, read back and asserted) or the
 //! live window surface. [`model`] loads glTF/OBJ meshes, materials, skeletons,
 //! and animation clips; [`anim`] samples those clips into skinning matrices.
+//!
+//! **Place in the graph.** Sits on `aurora-slot`; driven by `aurora-window`.
+//!
+//! **Never.** Never opens a window, owns an event loop, or reads input - it borrows a device and draws.
 
 mod anim;
 mod mesh;

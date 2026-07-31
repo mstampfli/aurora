@@ -4,6 +4,10 @@
 //! to send back (responses and `publishDiagnostics` notifications). It runs the
 //! compiler's own `parse → check → typeck` pipeline so editors see exactly the
 //! diagnostics `aurorac check` would. The stdio framing lives in the binary.
+//!
+//! **Place in the graph.** Sits on `abi`, `parser`, `check`, `typeck`.
+//!
+//! **Never.** Never runs a program, and never owns an editor protocol loop - it is pure request dispatch.
 
 use std::collections::HashMap;
 

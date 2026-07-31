@@ -10,6 +10,10 @@
 //! * [`debug_trace`] runs to completion recording a [`Stop`] at each pause —
 //!   deterministic and unit-testable.
 //! * [`debug_interactive`] drives a stdin REPL (`step`/`continue`/`quit`).
+//!
+//! **Place in the graph.** Sits on the front end plus `codegen` and `runtime`.
+//!
+//! **Never.** Never changes how a program is compiled: a debugged program is the same program.
 
 use std::collections::HashSet;
 use std::io::{BufRead, Write};

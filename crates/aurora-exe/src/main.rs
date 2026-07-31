@@ -2,6 +2,10 @@
 //!
 //! The Aurora object exports `aurora_user_main`; we call it, flush stdout (the
 //! program does not return through Rust's runtime), and exit with its result.
+//!
+//! **Place in the graph.** Sits on `runtime` alone.
+//!
+//! **Never.** Never contains game logic: it is the shell a built object is linked into.
 #![allow(unused_unsafe)]
 
 // Real build: the symbol comes from the linked Aurora object.

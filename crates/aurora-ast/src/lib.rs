@@ -3,6 +3,10 @@
 //! Nodes carry a [`Span`] for diagnostics. The tree is intentionally close to
 //! the surface syntax; desugaring (pipes, struct-update, etc.) happens during
 //! lowering to HIR, not here, so error messages can point at real source.
+//!
+//! **Place in the graph.** Sits on `span`, `lexer` and `abi`; every stage from `parser` up walks it.
+//!
+//! **Never.** Never type-checks, lowers or evaluates. It is the shape, not the meaning.
 
 use aurora_lexer::{FloatTy, IntTy};
 pub use aurora_span::Span;

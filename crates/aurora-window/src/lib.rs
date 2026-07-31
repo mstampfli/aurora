@@ -15,6 +15,10 @@
 //!     fb.set(x as i32, 90, aurora_gfx::Color::WHITE);
 //! }).unwrap();
 //! ```
+//!
+//! **Place in the graph.** Sits on `gfx` and `render3d`; called by `aurora-runtime`.
+//!
+//! **Never.** Never contains rendering algorithms; it owns the window, the event loop and the immediate-mode surface.
 
 mod imm;
 mod input;

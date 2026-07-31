@@ -8,6 +8,10 @@
 //! A real adapter is required at runtime. Acquisition is fallible (no GPU / no
 //! driver), so the entry points return `Result` and tests skip gracefully when
 //! [`Gpu::new`] returns `None`.
+//!
+//! **Place in the graph.** Sits on `parser` and `shader`.
+//!
+//! **Never.** Never lowers Aurora to machine code; it runs shaders, which is a different back end.
 
 use std::borrow::Cow;
 

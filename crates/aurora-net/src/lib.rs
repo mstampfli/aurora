@@ -11,6 +11,10 @@
 //!
 //! This mirrors what the real compiler would *generate* per replicated
 //! component; here it is schema-driven at runtime over interpreter [`Value`]s.
+//!
+//! **Place in the graph.** Sits on `ast`, `interp`, `parser`; used by `aurora-runtime`.
+//!
+//! **Never.** Never knows what a game's state MEANS - it moves bytes reliably and in order.
 
 mod bitpack;
 mod channel;

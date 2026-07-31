@@ -39,6 +39,10 @@
 //! [`Key::from_i64`] rejects anything negative and anything with generation 0,
 //! which means a zeroed or default-initialized `i64` is invalid by
 //! construction rather than being handle 0.
+//!
+//! **Place in the graph.** Depends on nothing; used by `render3d` and `runtime`.
+//!
+//! **Never.** Never knows what it stores. A slot map is handles and generations.
 
 use std::marker::PhantomData;
 

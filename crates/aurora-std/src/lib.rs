@@ -2,6 +2,10 @@
 //! program. It is plain Aurora source (so it compiles natively like user code)
 //! and is added *after* the user's source, leaving user line numbers intact for
 //! diagnostics and the debugger.
+//!
+//! **Place in the graph.** Sits on `parser`, `check`, `typeck`; its text is appended to every program.
+//!
+//! **Never.** Never contains anything a game could not have written itself - it is Aurora source, not a back door into the host.
 
 /// The prelude source, appended to every compiled program.
 pub const PRELUDE: &str = r#"

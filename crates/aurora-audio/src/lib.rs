@@ -5,6 +5,10 @@
 //! a buffer to the speakers (upmixed to the device's channel count) and blocks
 //! until it finishes. Device acquisition is fallible, so `play` returns a
 //! `Result` and the synthesis tests never touch hardware.
+//!
+//! **Place in the graph.** Depends on no Aurora crate; used by `aurora-runtime`.
+//!
+//! **Never.** Never blocks the game thread: the device runs on its own, and the synthesis core is testable without one.
 
 mod engine;
 mod synth;

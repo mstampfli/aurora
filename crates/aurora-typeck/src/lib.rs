@@ -18,6 +18,10 @@
 //! Vector/matrix algebra (`Vec3 * f32`, `Mat4 * Vec4`) is intentionally treated
 //! permissively rather than strictly unified, matching the overloaded operators
 //! in spec §7.5.
+//!
+//! **Place in the graph.** Sits on `ast`, `types`, `parser`, `span`, `diag`; the last front-end stage before codegen.
+//!
+//! **Never.** Never lowers or emits code, and never mutates the AST it checks.
 
 mod convert;
 

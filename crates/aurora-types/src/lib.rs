@@ -10,6 +10,10 @@
 //! (`i32`/`f32`) at construction rather than via numeric inference variables, so
 //! `let x: u8 = 1` defaulting is not modelled yet — that arrives with the
 //! bidirectional checker's literal handling.
+//!
+//! **Place in the graph.** Sits on `lexer` alone; used by `typeck`.
+//!
+//! **Never.** Never touches the AST. It knows types and unification, not the program they came from.
 
 use aurora_lexer::{FloatTy, IntTy};
 
