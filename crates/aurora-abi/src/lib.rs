@@ -348,6 +348,13 @@ macro_rules! for_each_builtin {
 
         // 3D rendering.
         [special,  r3d_load_model,                aurora_r3d_load_model,                 [Ptr, I64],                                      I64]
+        [special,  r3d_load_character,            aurora_r3d_load_character,             [Ptr, I64],                                      I64]
+        [special,  r3d_load_part,                 aurora_r3d_load_part,                  [Ptr, I64, I64],                                 I64]
+        [special,  r3d_clip_rig,                  aurora_r3d_clip_rig,                   [Ptr, I64],                                      void]
+        [special,  r3d_clip_add,                  aurora_r3d_clip_add,                   [Ptr, I64],                                      void]
+        [special,  r3d_clip_root,                 aurora_r3d_clip_root,                  [Ptr, I64],                                      void]
+        [special,  r3d_bone_map,                  aurora_r3d_bone_map,                   [Ptr, I64, Ptr, I64],                            void]
+        [special,  r3d_material_texture,          aurora_r3d_material_texture,           [Ptr, I64, Ptr, I64],                            void]
         [scalar,   r3d_free_model,                aurora_r3d_free_model,                 [I64],                                           I64]
         [scalar,   r3d_model_extent,              aurora_r3d_model_extent,               [I64, I64],                                      F64]
         [scalar,   r3d_model_centre,              aurora_r3d_model_centre,               [I64, I64],                                      F64]

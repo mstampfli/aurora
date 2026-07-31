@@ -559,11 +559,95 @@ fn with_gfx<R>(default: R, f: impl FnOnce(&mut dyn SceneHost) -> R) -> R {
     })
 }
 
-/// Load a glTF/GLB/OBJ model; returns a handle (>= 0) or -1 on failure.
+/// Load a glTF/GLB/OBJ/FBX model; returns a handle (>= 0) or -1 on failure.
 pub fn r3d_load_model(path: &str) -> i64 {
     with_gfx(-1, |g| {
         let (d, q, s) = g.scene_mut();
         s.load_model(d, q, path)
+    })
+}
+
+/// A character's moveset and bone map, gathered before the character loads.
+///
+/// Clips have to be attached at load time: an uploaded asset is shared between
+/// every handle that loaded the same file, so attaching to one afterwards would
+/// silently rewrite the moveset of every character already drawing from it. A
+/// builtin also cannot take a list of strings in one call, so the recipe is
+/// accumulated call by call and consumed by [`r3d_load_character`].
+#[derive(Default)]
+struct CharacterRecipe {
+    /// The rig the clips were authored on. Clip-only exports carry no usable
+    /// rest pose, and a joint's local rotation means nothing without one.
+    rig: String,
+    clips: Vec<String>,
+    rename: Vec<(String, String)>,
+    /// Bones allowed to take translation from a clip - normally just the root.
+    translate: Vec<String>,
+}
+
+thread_local! {
+    static RECIPE: std::cell::RefCell<CharacterRecipe> =
+        std::cell::RefCell::new(CharacterRecipe::default());
+}
+
+/// Name the rig the clips gathered so far were authored on.
+pub fn r3d_clip_rig(path: &str) {
+    RECIPE.with(|r| r.borrow_mut().rig = path.to_string());
+}
+
+/// Add one clip file to the moveset being gathered.
+pub fn r3d_clip_add(path: &str) {
+    RECIPE.with(|r| r.borrow_mut().clips.push(path.to_string()));
+}
+
+/// Map a bone name on the clips' rig to its name on the character. Only bones
+/// whose names differ need an entry; the rest match as they stand.
+pub fn r3d_bone_map(from: &str, to: &str) {
+    RECIPE.with(|r| r.borrow_mut().rename.push((from.to_string(), to.to_string())));
+}
+
+/// Allow one character bone to take its translation from a clip - the root, so
+/// locomotion travels. Every other bone keeps the character's own offsets,
+/// because a clip-only export has none of its own to give and its zeroes would
+/// collapse the body onto its hip.
+pub fn r3d_clip_root(bone: &str) {
+    RECIPE.with(|r| r.borrow_mut().translate.push(bone.to_string()));
+}
+
+/// Load a character together with the moveset gathered since the last load.
+///
+/// The recipe is cleared afterwards, so one character's moveset cannot leak into
+/// the next character loaded.
+pub fn r3d_load_character(path: &str) -> i64 {
+    let recipe = RECIPE.with(|r| std::mem::take(&mut *r.borrow_mut()));
+    with_gfx(-1, |g| {
+        let (d, q, s) = g.scene_mut();
+        let clips: Vec<&str> = recipe.clips.iter().map(|c| c.as_str()).collect();
+        let rename: Vec<(&str, &str)> = recipe
+            .rename
+            .iter()
+            .map(|(a, b)| (a.as_str(), b.as_str()))
+            .collect();
+        let translate: Vec<&str> = recipe.translate.iter().map(|t| t.as_str()).collect();
+        s.load_character(d, q, path, &clips, &recipe.rig, &rename, &translate)
+    })
+}
+
+/// Load a mesh as a part of `host`'s body, rebinding its skinning onto the
+/// host's skeleton so one pose drives them together. -1 if it cannot be bound.
+pub fn r3d_load_part(path: &str, host: i64) -> i64 {
+    with_gfx(-1, |g| {
+        let (d, q, s) = g.scene_mut();
+        s.load_part(d, q, path, host)
+    })
+}
+
+/// Attach a texture to every mesh whose material is `material` and that carries
+/// no texture of its own. Applies to models loaded after this call.
+pub fn r3d_material_texture(material: &str, path: &str) {
+    with_gfx((), |g| {
+        let (_, _, s) = g.scene_mut();
+        s.set_material_texture(material, path);
     })
 }
 

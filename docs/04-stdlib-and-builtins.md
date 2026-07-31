@@ -345,7 +345,7 @@ window. Colors are 0..1 floats; angles are radians; handles are `i64`.
 
 | Builtin | Signature | Notes |
 |---|---|---|
-| `r3d_load_model(path) -> i64` | load `.gltf`/`.glb`/`.obj` | meshes, materials, skeleton, clips; -1 on failure |
+| `r3d_load_model(path) -> i64` | load `.gltf`/`.glb`/`.obj`/`.fbx` | meshes, materials, skeleton, clips; -1 on failure |
 | `r3d_free_model(h) -> i64` | release a model/primitive handle | frees its GPU meshes and materials; 1 if freed, 0 if the handle was already dead |
 | `r3d_model_extent(h,axis) -> f64` | half-extent of the model's bounding box | axis 0/1/2 = x/y/z, in model space and before draw scale; 0.0 for a dead handle or bad axis |
 | `r3d_model_centre(h,axis) -> f64` | centre of the model's bounding box | relative to the model's origin, so a model standing on its origin reports a positive `y`; 0.0 for a dead handle |
@@ -396,6 +396,51 @@ More rendering controls:
 The CPU framebuffer (`clear`/`pixel`/`triangle`/`draw_text`) is composited over
 the 3D scene as a **HUD** each `r3d_present()`, with pure black as the
 transparent key (clear to black, draw the crosshair/ammo in color).
+
+### Modular characters
+
+A stylised character pack ships a body as a dozen separate meshes over one
+skeleton, one shared texture atlas for the whole cast, and its animations as
+hundreds of single-clip files authored on a rig that is not the character's.
+These assemble that into one animated body.
+
+| Builtin | Signature | Notes |
+|---|---|---|
+| `r3d_load_part(path, host) -> i64` | load a mesh as part of `host`'s body | rebinds its skinning onto the host's skeleton by bone name, so one pose drives them together. -1 if a bone it deforms with is missing from the host, or if the two disagree about where a bone rests |
+| `r3d_material_texture(material, path)` | attach an atlas by material name | for meshes that carry no texture of their own. Applies to models loaded *after* the call |
+| `r3d_clip_rig(path)` | the rig the clips were authored on | a clip-only export has no usable rest pose of its own, and a joint's local rotation means nothing without one |
+| `r3d_clip_add(path)` | add one clip file to the moveset | |
+| `r3d_bone_map(from, to)` | rename a bone between the clips' rig and the character's | only bones whose names differ need an entry |
+| `r3d_clip_root(bone)` | let this bone take translation from a clip | the root, so locomotion travels. Every other bone keeps the character's own offsets: a clip-only export has none to give, and its zeroes would collapse the body onto its hip |
+| `r3d_load_character(path) -> i64` | load a character with the moveset gathered so far | retargets each clip onto this skeleton, then clears the gathering so one character's moveset cannot leak into the next |
+
+The moveset is gathered call by call rather than passed in one go because a
+builtin cannot take a list of strings, and it is attached at load rather than
+afterwards because an uploaded asset is shared between every handle that loaded
+the same file - attaching to one later would rewrite the moveset of every
+character already drawing from it.
+
+```aurora
+r3d_material_texture("ModularFantasyHeroCharacters", "art/atlas_01_A.png")
+
+r3d_clip_rig("anim/ReferenceRig.fbx")
+r3d_bone_map("Hips", "Pelvis")
+r3d_bone_map("Shoulder_L", "UpperArm_L")
+r3d_clip_root("Pelvis")
+r3d_clip_add("anim/Attack_LightCombo01A.fbx")
+let hero = r3d_load_character("art/Character.fbx")
+
+let torso = r3d_load_part("art/parts/Torso_00.fbx", hero)
+let legs  = r3d_load_part("art/parts/LegLeft_00.fbx", hero)
+
+let swing = r3d_clip_index(hero, "Attack_LightCombo01A")
+r3d_anim_play(hero, swing, 1, 1.0, 0.15)
+
+// Each frame: advance the host, then draw every part from its pose.
+r3d_anim_update(hero, tick_delta())
+r3d_draw_skinned(torso, hero, 0.0,0.0,0.0, 0.0,0.0,0.0, 1.0)
+r3d_draw_skinned(legs,  hero, 0.0,0.0,0.0, 0.0,0.0,0.0, 1.0)
+```
 
 ### Asset lifetime
 

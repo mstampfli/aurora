@@ -1976,6 +1976,94 @@ pub unsafe extern "C" fn aurora_r3d_load_model(ptr: *const u8, len: i64) -> i64 
     let path = String::from_utf8_lossy(s);
     aurora_window::imm_r3d_load_model(&path)
 }
+
+/// Borrow an Aurora string argument as a `&str`.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes that stay valid for the call.
+unsafe fn arg_str<'a>(ptr: *const u8, len: i64) -> std::borrow::Cow<'a, str> {
+    String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) })
+}
+
+/// Name the rig the clips gathered so far were authored on.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
+#[no_mangle]
+pub unsafe extern "C" fn aurora_r3d_clip_rig(ptr: *const u8, len: i64) {
+    aurora_window::imm_r3d_clip_rig(&unsafe { arg_str(ptr, len) });
+}
+
+/// Add one clip file to the moveset being gathered.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
+#[no_mangle]
+pub unsafe extern "C" fn aurora_r3d_clip_add(ptr: *const u8, len: i64) {
+    aurora_window::imm_r3d_clip_add(&unsafe { arg_str(ptr, len) });
+}
+
+/// Map a bone name on the clips' rig to its name on the character.
+///
+/// # Safety
+/// Both pointers must point to their stated number of initialized bytes.
+#[no_mangle]
+pub unsafe extern "C" fn aurora_r3d_bone_map(
+    from: *const u8,
+    from_len: i64,
+    to: *const u8,
+    to_len: i64,
+) {
+    aurora_window::imm_r3d_bone_map(&unsafe { arg_str(from, from_len) }, &unsafe {
+        arg_str(to, to_len)
+    });
+}
+
+/// Allow one character bone to take translation from a clip - the root.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
+#[no_mangle]
+pub unsafe extern "C" fn aurora_r3d_clip_root(ptr: *const u8, len: i64) {
+    aurora_window::imm_r3d_clip_root(&unsafe { arg_str(ptr, len) });
+}
+
+/// Load a character with the moveset gathered since the last load; -1 on
+/// failure. Clears the gathered recipe.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
+#[no_mangle]
+pub unsafe extern "C" fn aurora_r3d_load_character(ptr: *const u8, len: i64) -> i64 {
+    aurora_window::imm_r3d_load_character(&unsafe { arg_str(ptr, len) })
+}
+
+/// Load a mesh as a part of `host`'s body, rebound onto its skeleton; -1 if it
+/// cannot be bound.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
+#[no_mangle]
+pub unsafe extern "C" fn aurora_r3d_load_part(ptr: *const u8, len: i64, host: i64) -> i64 {
+    aurora_window::imm_r3d_load_part(&unsafe { arg_str(ptr, len) }, host)
+}
+
+/// Attach a texture to every mesh whose material is named `material` and that
+/// carries none of its own.
+///
+/// # Safety
+/// Both pointers must point to their stated number of initialized bytes.
+#[no_mangle]
+pub unsafe extern "C" fn aurora_r3d_material_texture(
+    material: *const u8,
+    material_len: i64,
+    path: *const u8,
+    path_len: i64,
+) {
+    aurora_window::imm_r3d_material_texture(&unsafe { arg_str(material, material_len) }, &unsafe {
+        arg_str(path, path_len)
+    });
+}
 /// Half-extent of a loaded model's bounding box on one axis (0 = x, 1 = y,
 /// 2 = z), in model space, before any draw scale.
 ///
