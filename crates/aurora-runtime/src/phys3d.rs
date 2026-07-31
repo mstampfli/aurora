@@ -26,7 +26,7 @@
 use std::cell::RefCell;
 
 use aurora_slot::{Key, SlotMap};
-use rapier3d::control::{CharacterLength, KinematicCharacterController};
+use rapier3d::control::{CharacterAutostep, CharacterLength, KinematicCharacterController};
 use rapier3d::na::{DMatrix, Quaternion, UnitQuaternion};
 use rapier3d::parry::query::ShapeCastOptions;
 use rapier3d::prelude::*;
@@ -84,6 +84,21 @@ pub extern "C" fn aurora_phys3d_init(gx: f64, gy: f64, gz: f64) {
         offset: CharacterLength::Absolute(0.02),
         slide: true,
         snap_to_ground: Some(CharacterLength::Absolute(0.3)),
+        // Stairs, in metres rather than as a fraction of the character.
+        //
+        // The default is Relative(0.25), which for a human-sized capsule works out around 0.2 m -
+        // below the riser of any staircase anyone would build, so a character walked to the foot
+        // of a flight and stopped dead against the first step. It cost MARROW a whole feature:
+        // its stairwells could be walked DOWN (gravity does that) and never climbed, so every
+        // level below was one-way.
+        //
+        // Absolute, because "what can this body step onto" is a fact about the world's geometry,
+        // not about how tall the body is: a kerb is a kerb for everyone.
+        autostep: Some(CharacterAutostep {
+            max_height: CharacterLength::Absolute(0.55),
+            min_width: CharacterLength::Absolute(0.2),
+            include_dynamic_bodies: false,
+        }),
         ..Default::default()
     };
     PHYS3.with(|x| {
