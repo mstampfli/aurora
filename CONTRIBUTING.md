@@ -24,6 +24,12 @@ Before a commit: `cargo fmt --check` and `cargo test --release`, both clean. Bot
 suite includes tests that drive a real GPU and real sockets, and they are the ones that catch the
 failures unit tests cannot.
 
+`.github/workflows/gate.yml` runs those same two commands on every push to `main` and every pull
+request. It runs them on a machine with **no GPU adapter**, and every test that needs one skips
+instead of failing, so a green run there is not evidence the renderer is correct. The pixel tests
+are yours to run locally, which is the reason the paragraph above says both must pass before the
+commit rather than after it.
+
 To try a change against a real program rather than a test:
 
 ```sh

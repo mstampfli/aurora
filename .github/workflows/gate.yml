@@ -1,0 +1,67 @@
+name: gate
+
+# The gate CONTRIBUTING.md documents, run on the same commits that reach main.
+# Nothing here is a CI-only invention: `cargo fmt --check` and
+# `cargo test --release` are exactly what a contributor runs before committing,
+# so a red run means the same thing locally and here.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: gate-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  gate:
+    name: fmt + workspace tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      # Keyed on the lockfile and toolchain, so an unchanged dependency graph
+      # does not pay to rebuild wgpu, rapier and symphonia every run.
+      - uses: Swatinem/rust-cache@v2
+
+      # Build-time system libraries. `cpal` needs ALSA headers, and `winit`
+      # needs the X11/Wayland and xkbcommon ones. No Vulkan ICD is installed on
+      # purpose: see the note on GPU coverage below.
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev \
+            libudev-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxi-dev
+
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      # GPU COVERAGE: this runner has no Vulkan adapter, and every test that
+      # needs one is written to skip rather than fail (`headless_device()` and
+      # `device()` return `None`). So a green run here proves the front end,
+      # codegen, runtime, netcode and physics - NOT the pixel-exact renderer
+      # tests, which stay a local responsibility.
+      #
+      # Installing lavapipe would make them run, but a software rasterizer does
+      # not reproduce a real driver's output byte for byte, and a gate that goes
+      # red for reasons unrelated to the change is worse than one with a stated
+      # boundary.
+      - name: cargo test --release
+        run: cargo test --release
