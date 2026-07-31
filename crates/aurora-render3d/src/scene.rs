@@ -260,7 +260,7 @@ impl Scene {
     /// way to write a horde - one handle per body, so each animates independently - costs
     /// one upload per distinct file instead of one per body.
     pub fn load_model(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, path: &str) -> i64 {
-        self.load_model_inner(device, queue, path, None, &[], &[], &[])
+        self.load_model_inner(device, queue, path, None, &[], "", &[], &[])
     }
 
     /// Load a character together with a moveset gathered from separate files.
@@ -288,10 +288,11 @@ impl Scene {
         queue: &wgpu::Queue,
         path: &str,
         clips: &[&str],
+        source_rest: &str,
         rename: &[(&str, &str)],
         translate: &[&str],
     ) -> i64 {
-        self.load_model_inner(device, queue, path, None, clips, rename, translate)
+        self.load_model_inner(device, queue, path, None, clips, source_rest, rename, translate)
     }
 
     /// Load `path` as a part of `host`'s body: its skinning is rebound onto the
@@ -324,7 +325,7 @@ impl Scene {
             eprintln!("aurora: load_part: host {host} has no skeleton");
             return -1;
         };
-        self.load_model_inner(device, queue, path, Some(&skeleton), &[], &[], &[])
+        self.load_model_inner(device, queue, path, Some(&skeleton), &[], "", &[], &[])
     }
 
     /// Attach `texture` to any primitive whose material is named `material` and
@@ -351,6 +352,7 @@ impl Scene {
         path: &str,
         rebind: Option<&crate::model::Skeleton>,
         clips: &[&str],
+        source_rest: &str,
         rename: &[(&str, &str)],
         translate: &[&str],
     ) -> i64 {
@@ -403,9 +405,20 @@ impl Scene {
         // Gather the moveset before the asset is built. A clip file that fails to
         // load is reported and skipped: one bad export in a library of hundreds
         // should cost that clip, not the character.
-        for clip in clips {
-            if let Err(e) = model.add_clips_from(clip, rename, translate) {
-                eprintln!("aurora: {e}");
+        //
+        // The reference rig is loaded once for the whole library. Clip files ship
+        // no usable rest pose of their own, and a joint's local rotation means
+        // nothing without the rest orientation it was authored from.
+        if !clips.is_empty() {
+            match crate::model::Model::load_skeleton(source_rest) {
+                Ok(rest) => {
+                    for clip in clips {
+                        if let Err(e) = model.add_clips_from(clip, &rest, rename, translate) {
+                            eprintln!("aurora: {e}");
+                        }
+                    }
+                }
+                Err(e) => eprintln!("aurora: no retargeting reference rig: {e}"),
             }
         }
         // Atlases named by material, decoded once for this load rather than once

@@ -171,7 +171,7 @@ const SYNTY_MAP: &[(&str, &str)] = &[
 /// changes shape over the clip: a retarget that silently dropped its channels
 /// still renders a perfectly good T-pose.
 #[test]
-#[ignore = "needs rest-relative rotation retargeting; see the decisions log"]
+#[ignore = "local rest-relative transfer tips the character over; needs world-space transfer. See the decisions log."]
 fn a_character_plays_a_retargeted_sword_clip() {
     let Ok(dir) = std::env::var("AURORA_TEST_FBX_DIR") else {
         return;
@@ -195,6 +195,7 @@ fn a_character_plays_a_retargeted_sword_clip() {
         &queue,
         &format!("{dir}/SK_Character_Male_King.fbx"),
         &[&format!("{dir}/A_Attack_LightCombo01A_RootMotion_Sword.fbx")],
+        &format!("{dir}/PolygonSyntyCharacter.fbx"),
         SYNTY_MAP,
         &["Pelvis"],
     );
@@ -244,6 +245,30 @@ fn a_character_plays_a_retargeted_sword_clip() {
         let mask: Vec<bool> = img.chunks_exact(4).map(|p| !is_background(p)).collect();
         let drawn = mask.iter().filter(|b| **b).count();
         assert!(drawn > 2000, "frame {step} drew only {drawn} character pixels");
+
+        // The character stays on its feet.
+        //
+        // "The silhouette changed" is not enough on its own: a character
+        // toppling forward changes silhouette beautifully, and that is exactly
+        // what a retarget with mismatched bone frames produces. A standing
+        // fighter is taller than it is wide at every instant of a sword swing.
+        let (mut min_x, mut max_x, mut min_y, mut max_y) = (w, 0u32, h, 0u32);
+        for y in 0..h {
+            for x in 0..w {
+                if mask[(y * w + x) as usize] {
+                    min_x = min_x.min(x);
+                    max_x = max_x.max(x);
+                    min_y = min_y.min(y);
+                    max_y = max_y.max(y);
+                }
+            }
+        }
+        assert!(
+            max_y - min_y > max_x - min_x,
+            "at frame {step} the character is wider ({}) than tall ({}); it has fallen over",
+            max_x - min_x,
+            max_y - min_y
+        );
         silhouettes.push(mask);
     }
 

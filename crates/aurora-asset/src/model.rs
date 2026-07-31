@@ -272,6 +272,49 @@ pub struct Clip {
     pub channels: Vec<Channel>,
 }
 
+/// Everything a retarget needs to move a clip from one rig to another.
+pub struct Retarget<'a> {
+    /// The skeleton the clip's channel indices address - the one that came out
+    /// of the clip's own file.
+    pub source: &'a Skeleton,
+    /// The source rig's TRUE rest pose, by bone name.
+    ///
+    /// Usually this is `source`, but not for a clip-only export: those ship no
+    /// bind data, so every joint's rest transform is a placeholder and cannot be
+    /// used as the reference the motion was authored against. An animation pack
+    /// that ships clips without a rig also ships the rig they were authored on,
+    /// and that is what belongs here.
+    pub source_rest: &'a Skeleton,
+    /// The skeleton to retarget onto.
+    pub target: &'a Skeleton,
+    /// Source bone name to target bone name, for the bones whose names differ.
+    pub rename: &'a [(&'a str, &'a str)],
+    /// Target bones allowed to take translation from the clip - normally just
+    /// the root or the hips.
+    pub translate: &'a [&'a str],
+}
+
+impl Retarget<'_> {
+    /// The target bone a source bone maps to.
+    fn target_name<'n>(&self, source_name: &'n str) -> &'n str
+    where
+        Self: 'n,
+    {
+        self.rename
+            .iter()
+            .find(|(a, _)| a.eq_ignore_ascii_case(source_name))
+            .map(|(_, b)| *b)
+            .unwrap_or(source_name)
+    }
+
+    fn joint_by_name<'s>(skel: &'s Skeleton, name: &str) -> Option<(usize, &'s Joint)> {
+        skel.joints
+            .iter()
+            .position(|j| j.name.eq_ignore_ascii_case(name))
+            .map(|i| (i, &skel.joints[i]))
+    }
+}
+
 impl Clip {
     /// Rewrite this clip's channels to address `target`'s joints instead of
     /// `source`'s, matching by bone name.
@@ -306,58 +349,93 @@ impl Clip {
     /// routinely drives bones no character has, like a jaw or a weapon socket.
     /// A clip where NOTHING matched is an error rather than an empty clip,
     /// because that means the map is wrong and silence would hide it.
-    pub fn retarget(
-        &self,
-        source: &Skeleton,
-        target: &Skeleton,
-        rename: &[(&str, &str)],
-        translate: &[&str],
-    ) -> Result<Clip, String> {
+    pub fn retarget(&self, opts: &Retarget) -> Result<Clip, String> {
         let mut channels = Vec::with_capacity(self.channels.len());
         let mut dropped = Vec::new();
 
         for ch in &self.channels {
-            let Some(from) = source.joints.get(ch.joint) else {
+            let Some(from) = opts.source.joints.get(ch.joint) else {
                 continue;
             };
-            let want = rename
-                .iter()
-                .find(|(a, _)| a.eq_ignore_ascii_case(&from.name))
-                .map(|(_, b)| *b)
-                .unwrap_or(from.name.as_str());
+            let want = opts.target_name(&from.name);
 
-            match target
-                .joints
-                .iter()
-                .position(|j| j.name.eq_ignore_ascii_case(want))
-            {
-                Some(joint) => {
-                    // Scale is never transferred: a clip that does not author it
-                    // reports the source rig's own scale, which on a rig whose
-                    // root carries a unit conversion would resize the character.
-                    let keep = match ch.path {
-                        Path::Rotation => true,
-                        Path::Translation => {
-                            translate.iter().any(|n| n.eq_ignore_ascii_case(want))
-                        }
-                        Path::Scale => false,
+            let Some((joint, to_rest)) = Retarget::joint_by_name(opts.target, want) else {
+                if !dropped.contains(&from.name) {
+                    dropped.push(from.name.clone());
+                }
+                continue;
+            };
+            // The rest the clip was authored against, looked up by the SOURCE
+            // name: `source_rest` is the source rig, not the target.
+            let from_rest = Retarget::joint_by_name(opts.source_rest, &from.name).map(|(_, j)| j);
+
+            let values = match ch.path {
+                // Scale is never transferred. A clip that does not author it
+                // still reports the source rig's own scale, and on a rig whose
+                // root carries a unit conversion that resizes the character.
+                Path::Scale => continue,
+
+                Path::Rotation => {
+                    // A clip stores each joint's LOCAL rotation, and a local
+                    // rotation only means anything against the rest orientation
+                    // it was authored from. Two rigs can agree on every joint's
+                    // world position and still bake different orientations into
+                    // their locals, so copying the value across replaces the
+                    // target's bind orientation with the source's and folds the
+                    // skeleton up.
+                    //
+                    // What transfers is the motion AWAY from rest, re-expressed
+                    // against the target's own rest:
+                    //     delta  = inverse(source_rest) * clip
+                    //     result = target_rest * delta
+                    let Some(from_rest) = from_rest else {
+                        return Err(format!(
+                            "bone {} is animated but absent from the source rest skeleton, so \
+                             there is nothing to measure its motion against",
+                            from.name
+                        ));
                     };
-                    if keep {
-                        channels.push(Channel {
-                            joint,
-                            path: ch.path,
-                            interp: ch.interp,
-                            times: ch.times.clone(),
-                            values: ch.values.clone(),
-                        });
-                    }
+                    let basis = to_rest.r * from_rest.r.inverse();
+                    ch.values
+                        .chunks_exact(4)
+                        .flat_map(|q| {
+                            let r = basis
+                                * Quat::from_xyzw(q[0], q[1], q[2], q[3]).normalize();
+                            [r.x, r.y, r.z, r.w]
+                        })
+                        .collect()
                 }
-                None => {
-                    if !dropped.contains(&from.name) {
-                        dropped.push(from.name.clone());
+
+                Path::Translation => {
+                    if !opts.translate.iter().any(|n| n.eq_ignore_ascii_case(want)) {
+                        continue;
                     }
+                    // Root travel is authored in the source rig's own local
+                    // units, which need not be the target's - one rig may put a
+                    // unit conversion on its root and the other not. Rescaling
+                    // by the ratio of the two rest offsets carries the motion
+                    // over as the same distance relative to the body.
+                    let scale = from_rest
+                        .map(|f| {
+                            let (a, b) = (to_rest.t.length(), f.t.length());
+                            if b > 1e-6 {
+                                a / b
+                            } else {
+                                1.0
+                            }
+                        })
+                        .unwrap_or(1.0);
+                    ch.values.iter().map(|v| v * scale).collect()
                 }
-            }
+            };
+
+            channels.push(Channel {
+                joint,
+                path: ch.path,
+                interp: ch.interp,
+                times: ch.times.clone(),
+                values,
+            });
         }
 
         if channels.is_empty() {
@@ -563,6 +641,7 @@ impl Model {
     pub fn add_clips_from(
         &mut self,
         path: &str,
+        source_rest: &Skeleton,
         rename: &[(&str, &str)],
         translate: &[&str],
     ) -> Result<usize, String> {
@@ -573,10 +652,17 @@ impl Model {
         let Some(source) = &library.skeleton else {
             return Err(format!("{path} has no skeleton to retarget from"));
         };
+        let opts = Retarget {
+            source,
+            source_rest,
+            target,
+            rename,
+            translate,
+        };
 
         let mut added = Vec::new();
         for clip in &library.clips {
-            match clip.retarget(source, target, rename, translate) {
+            match clip.retarget(&opts) {
                 Ok(c) => added.push(c),
                 Err(e) => eprintln!("aurora: {e}"),
             }
@@ -584,6 +670,16 @@ impl Model {
         let n = added.len();
         self.clips.extend(added);
         Ok(n)
+    }
+
+    /// Load just the skeleton from a file, for use as a retargeting reference.
+    ///
+    /// An animation pack ships the rig its clips were authored on precisely so
+    /// this is possible; the clips themselves carry no usable rest pose.
+    pub fn load_skeleton(path: &str) -> Result<Skeleton, String> {
+        Model::load(path)?
+            .skeleton
+            .ok_or_else(|| format!("{path} has no skeleton"))
     }
 
     /// Load a model by file extension (`.gltf`/`.glb`, `.obj`, or `.fbx`).
