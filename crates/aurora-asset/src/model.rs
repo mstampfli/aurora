@@ -39,6 +39,7 @@ pub struct Joint {
 }
 
 /// A skeleton: joints in skinning order with their default local transforms.
+#[derive(Clone)]
 pub struct Skeleton {
     pub joints: Vec<Joint>,
 }
@@ -301,6 +302,117 @@ impl Model {
             return [0.0; 6];
         }
         [lo.x, lo.y, lo.z, hi.x, hi.y, hi.z]
+    }
+
+    /// Rebind this model's skinning onto `target`, matching joints by name.
+    ///
+    /// This is what makes a modular character possible. Each part is authored as
+    /// its own file with its own skeleton - a head exports eight joints, a
+    /// forearm eight different ones - and its vertices index that private list.
+    /// Rewriting those indices into a shared skeleton's order lets one pose
+    /// drive every part, so a character assembled from a dozen meshes animates
+    /// as one body and costs one pose evaluation rather than a dozen.
+    ///
+    /// A part may cover any subset of the target's joints; that is the normal
+    /// case. What it may not do is disagree about where those joints sit at
+    /// bind time, because a shared pose is applied as
+    /// `target_global[joint] * inverse_bind[joint]` and only one inverse bind
+    /// per joint survives. Parts whose bind pose differs by more than
+    /// `tolerance` are rejected by name rather than silently skinned to a
+    /// slightly wrong body, which reads on screen as a seam that pulls apart
+    /// only in certain poses and is miserable to track down later.
+    ///
+    /// On success the model adopts `target` as its skeleton and reports how many
+    /// influences were rewritten. On failure the model is left untouched.
+    pub fn rebind_skin(&mut self, target: &Skeleton, tolerance: f32) -> Result<usize, String> {
+        let Some(source) = &self.skeleton else {
+            return Err("model has no skeleton to rebind".into());
+        };
+
+        let index_of: std::collections::HashMap<&str, usize> = target
+            .joints
+            .iter()
+            .enumerate()
+            .map(|(i, j)| (j.name.as_str(), i))
+            .collect();
+
+        let remap: Vec<Option<u32>> = source
+            .joints
+            .iter()
+            .map(|j| index_of.get(j.name.as_str()).map(|&i| i as u32))
+            .collect();
+
+        // Which joints this part actually deforms with.
+        //
+        // Only these matter. A part's skeleton also carries the chain above what
+        // it deforms - a head exports the spine and pelvis purely so its neck
+        // has somewhere to hang from - and those joints have no skin cluster,
+        // hence no bind matrix, only a placeholder identity. Checking them
+        // against the target's real bind matrices compares a measurement to a
+        // placeholder and rejects every part that is doing nothing wrong.
+        let mut weighted = vec![false; source.joints.len()];
+        for prim in self.primitives.iter().filter(|p| p.skinned) {
+            for v in &prim.mesh.vertices {
+                for k in 0..4 {
+                    if v.weights[k] > 0.0 {
+                        let j = v.joints[k] as usize;
+                        if j >= source.joints.len() {
+                            return Err(format!(
+                                "a vertex is weighted to joint {j}, past the end of this part's \
+                                 {}-joint skeleton",
+                                source.joints.len()
+                            ));
+                        }
+                        weighted[j] = true;
+                    }
+                }
+            }
+        }
+
+        // Validate before touching a vertex, so a rejected part is left exactly
+        // as it was.
+        for (i, joint) in source.joints.iter().enumerate() {
+            if !weighted[i] {
+                continue;
+            }
+            let Some(to) = remap[i] else {
+                return Err(format!(
+                    "joint {} carries weight in this part but is absent from the target skeleton",
+                    joint.name
+                ));
+            };
+            let drift = (joint.inverse_bind - target.joints[to as usize].inverse_bind)
+                .to_cols_array()
+                .iter()
+                .fold(0.0f32, |acc, d| acc.max(d.abs()));
+            if drift > tolerance {
+                return Err(format!(
+                    "joint {} binds differently in this part than in the target skeleton \
+                     (largest difference {drift}, tolerance {tolerance})",
+                    joint.name
+                ));
+            }
+        }
+
+        let mut rewritten = 0;
+        for prim in self.primitives.iter_mut().filter(|p| p.skinned) {
+            for v in &mut prim.mesh.vertices {
+                for k in 0..4 {
+                    if v.weights[k] > 0.0 {
+                        v.joints[k] = remap[v.joints[k] as usize].expect("validated above");
+                        rewritten += 1;
+                    } else {
+                        // An unweighted slot indexes nothing meaningful. Point it
+                        // at a joint that exists so the palette lookup stays in
+                        // bounds whatever the source file left here.
+                        v.joints[k] = 0;
+                    }
+                }
+            }
+        }
+
+        self.skeleton = Some(target.clone());
+        Ok(rewritten)
     }
 
     /// Load a model by file extension (`.gltf`/`.glb`, `.obj`, or `.fbx`).

@@ -116,6 +116,83 @@ fn a_clip_with_no_geometry_imports_as_animation() {
     assert!(travel > 0.3, "root motion travelled only {travel}");
 }
 
+/// The eleven slots that make up a whole modular body.
+const SLOTS: &[&str] = &[
+    "Head",
+    "Torso",
+    "Hips",
+    "ArmUpperLeft",
+    "ArmUpperRight",
+    "ArmLowerLeft",
+    "ArmLowerRight",
+    "HandLeft",
+    "HandRight",
+    "LegLeft",
+    "LegRight",
+];
+
+/// A character assembled from eleven separately authored parts rebinds onto one
+/// skeleton and forms a single whole body.
+///
+/// This is the modular character system end to end. Each part exports its own
+/// private joint list, so this passing means the renumbering is right; and the
+/// assembled bounds being a plausible human means the parts landed on the body
+/// rather than at the origin or inside each other.
+#[test]
+fn eleven_modular_parts_assemble_onto_one_skeleton() {
+    let donor = model!("SK_Character_Male_King.fbx");
+    let skeleton = donor.skeleton.expect("donor carries the shared skeleton");
+
+    let mut lo = [f32::MAX; 3];
+    let mut hi = [f32::MIN; 3];
+    let mut assembled = 0;
+
+    for slot in SLOTS {
+        let Some(mut part) = fixture(&format!("modular/SK_Chr_{slot}_Male_00.fbx")) else {
+            return;
+        };
+        let joints_before = part.skeleton.as_ref().map(|s| s.joints.len()).unwrap_or(0);
+        assert!(
+            joints_before < skeleton.joints.len(),
+            "{slot} should carry only its own chain, got {joints_before}"
+        );
+
+        part.rebind_skin(&skeleton, 1e-4)
+            .unwrap_or_else(|e| panic!("{slot} failed to rebind: {e}"));
+
+        // Every influence must now address the shared palette.
+        for prim in &part.primitives {
+            for v in &prim.mesh.vertices {
+                for k in 0..4 {
+                    assert!(
+                        (v.joints[k] as usize) < skeleton.joints.len(),
+                        "{slot} vertex addresses joint {} of {}",
+                        v.joints[k],
+                        skeleton.joints.len()
+                    );
+                }
+            }
+        }
+
+        let b = part.bind_pose_bounds();
+        for a in 0..3 {
+            lo[a] = lo[a].min(b[a]);
+            hi[a] = hi[a].max(b[3 + a]);
+        }
+        assembled += 1;
+    }
+
+    assert_eq!(assembled, SLOTS.len());
+
+    // One body: feet near the ground, head near 1.8m, arms spread about a metre
+    // either side. Parts left unrebound would pile up at the origin and collapse
+    // the vertical span.
+    assert!(lo[1] > -0.05 && lo[1] < 0.05, "feet at y {}", lo[1]);
+    assert!(hi[1] > 1.6 && hi[1] < 2.0, "head at y {}", hi[1]);
+    assert!(hi[0] > 0.5, "arms reach only to x {}", hi[0]);
+    assert!(lo[0] < -0.5, "arms reach only to x {}", lo[0]);
+}
+
 /// Bone-name correspondence between the animation rig and the character rig.
 const BONE_MAP: &[(&str, &str)] = &[
     ("Hips", "Pelvis"),
