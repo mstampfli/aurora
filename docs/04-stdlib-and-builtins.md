@@ -329,6 +329,8 @@ window. Colors are 0..1 floats; angles are radians; handles are `i64`.
 |---|---|---|
 | `r3d_load_model(path) -> i64` | load `.gltf`/`.glb`/`.obj` | meshes, materials, skeleton, clips; -1 on failure |
 | `r3d_free_model(h) -> i64` | release a model/primitive handle | frees its GPU meshes and materials; 1 if freed, 0 if the handle was already dead |
+| `r3d_model_extent(h,axis) -> f64` | half-extent of the model's bounding box | axis 0/1/2 = x/y/z, in model space and before draw scale; 0.0 for a dead handle or bad axis |
+| `r3d_model_centre(h,axis) -> f64` | centre of the model's bounding box | relative to the model's origin, so a model standing on its origin reports a positive `y`; 0.0 for a dead handle |
 | `r3d_make_box(r,g,b) -> i64` | unit cube primitive | greybox geometry |
 | `r3d_make_sphere(segments,r,g,b) -> i64` | UV sphere primitive | |
 | `r3d_make_plane(size,tiles,r,g,b) -> i64` | ground plane in XZ | `tiles` repeats the UVs |
@@ -451,6 +453,7 @@ along walls (the core of a fluid movement shooter). Bodies are `i64` handles.
 | `phys3d_add_capsule(x,y,z, hh, r, dynamic) -> i64` | upright capsule | |
 | `phys3d_add_character(x,y,z, hh, r) -> i64` | kinematic character capsule | move with `move_character` |
 | `phys3d_add_trimesh(verts, indices) -> i64` | static mesh collider | `[f64;N]` xyz verts, `[i64;M]` indices |
+| `phys3d_add_model_collider(model,x,y,z,yaw,sx,sy,sz) -> i64` | static collider shaped like a loaded model | concave (triangle mesh, not a hull), joins the world group so movement probes see it; -1 if the handle has no mesh. Placed and scaled like the matching `r3d_draw_scaled`, so the collider IS the art |
 | `phys3d_remove(h) -> i64` | destroy a body and its collider | 1 if removed, 0 if `h` was already dead; `h` stays dead afterwards |
 | `phys3d_alive(h) -> i64` | is `h` still a live body | 1/0; tells "removed" from "sitting at the origin" |
 | `phys3d_step(dt)` | advance the simulation | |

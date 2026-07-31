@@ -297,6 +297,7 @@ macro_rules! for_each_builtin {
         [scalar,   phys3d_add_capsule,            aurora_phys3d_add_capsule,             [F64, F64, F64, F64, F64, I64],                  I64]
         [scalar,   phys3d_add_character,          aurora_phys3d_add_character,           [F64, F64, F64, F64, F64],                       I64]
         [special,  phys3d_add_trimesh,            aurora_phys3d_add_trimesh,             [Ptr, I64, Ptr, I64],                            I64]
+        [scalar,   phys3d_add_model_collider,     aurora_phys3d_add_model_collider,      [I64, F64, F64, F64, F64, F64, F64, F64],        I64]
         [scalar,   phys3d_remove,                 aurora_phys3d_remove,                  [I64],                                           I64]
         [scalar,   phys3d_alive,                  aurora_phys3d_alive,                   [I64],                                           I64]
         [scalar,   phys3d_step,                   aurora_phys3d_step,                    [F64],                                           void]
@@ -343,6 +344,8 @@ macro_rules! for_each_builtin {
         // 3D rendering.
         [special,  r3d_load_model,                aurora_r3d_load_model,                 [Ptr, I64],                                      I64]
         [scalar,   r3d_free_model,                aurora_r3d_free_model,                 [I64],                                           I64]
+        [scalar,   r3d_model_extent,              aurora_r3d_model_extent,               [I64, I64],                                      F64]
+        [scalar,   r3d_model_centre,              aurora_r3d_model_centre,               [I64, I64],                                      F64]
         [scalar,   r3d_make_box,                  aurora_r3d_make_box,                   [F64, F64, F64],                                 I64]
         [scalar,   r3d_make_box_sized,            aurora_r3d_make_box_sized,             [F64, F64, F64, F64, F64, F64],                  I64]
         [scalar,   r3d_make_box_emissive,         aurora_r3d_make_box_emissive,          [F64, F64, F64, F64, F64, F64],                  I64]

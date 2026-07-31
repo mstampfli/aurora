@@ -425,6 +425,67 @@ pub unsafe extern "C" fn aurora_phys3d_add_trimesh(
     })
 }
 
+/// Add a static collider shaped like a LOADED MODEL's own mesh, placed at
+/// `(x, y, z)`, turned `yaw` radians about Y and scaled by `(sx, sy, sz)`.
+/// Returns the body handle, or -1 if the model has no mesh or physics is not up.
+///
+/// The point is that the collider IS the art. A box typed beside an `r3d_draw`
+/// call is a second description of the same object, and the two drift the moment
+/// an asset changes - which reads to a player as the world being broken rather
+/// than as a wrong constant. Here there is one description.
+///
+/// Concave by construction: a triangle mesh, not a hull, so a table is solid
+/// where the table is and open underneath. Static only, which is all a concave
+/// shape can be - Rapier cannot use one for a moving body.
+///
+/// It joins `GROUP_1`, the world group, so the movement and ground probes that
+/// deliberately ignore players and enemies still see it.
+///
+/// The transform is baked into the points rather than left on the collider, so a
+/// non-uniform scale works: an isometry cannot express one.
+#[no_mangle]
+pub extern "C" fn aurora_phys3d_add_model_collider(
+    model: i64,
+    x: f64,
+    y: f64,
+    z: f64,
+    yaw: f64,
+    sx: f64,
+    sy: f64,
+    sz: f64,
+) -> i64 {
+    let Some((pos, idx)) = aurora_window::imm_r3d_model_mesh(model) else {
+        return -1;
+    };
+    let (sn, cs) = (yaw as Real).sin_cos();
+    let points: Vec<Point<Real>> = pos
+        .chunks_exact(3)
+        .map(|p| {
+            let px = p[0] as Real * sx as Real;
+            let py = p[1] as Real * sy as Real;
+            let pz = p[2] as Real * sz as Real;
+            point![
+                px * cs + pz * sn + x as Real,
+                py + y as Real,
+                pz * cs - px * sn + z as Real
+            ]
+        })
+        .collect();
+    let tris: Vec<[u32; 3]> = idx.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
+    if points.is_empty() || tris.is_empty() {
+        return -1;
+    }
+    PHYS3.with(|p| {
+        let mut p = p.borrow_mut();
+        let Some(p) = p.as_mut() else { return -1 };
+        let rb = RigidBodyBuilder::fixed().build();
+        let col = ColliderBuilder::trimesh(points, tris)
+            .collision_groups(InteractionGroups::new(Group::GROUP_1, Group::ALL))
+            .build();
+        push_body(p, rb, col)
+    })
+}
+
 /// Add the heightmap terrain as a static collider and return its body handle
 /// (or -1 if the physics world does not exist yet).
 ///

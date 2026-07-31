@@ -52,6 +52,28 @@ pub struct MeshData {
 }
 
 impl MeshData {
+    /// Axis-aligned bounds as `[min_x, min_y, min_z, max_x, max_y, max_z]` in the
+    /// mesh's own space.
+    ///
+    /// This is what lets a caller size a collider to the art rather than to a guess,
+    /// so a swapped asset moves its collider with it instead of silently leaving one
+    /// behind at the old size. An empty mesh reports all zeroes rather than the
+    /// infinities an unseeded fold would produce, so arithmetic on a failed load
+    /// stays finite.
+    pub fn bounds(&self) -> [f32; 6] {
+        if self.vertices.is_empty() {
+            return [0.0; 6];
+        }
+        let mut b = [f32::MAX, f32::MAX, f32::MAX, f32::MIN, f32::MIN, f32::MIN];
+        for v in &self.vertices {
+            for a in 0..3 {
+                b[a] = b[a].min(v.pos[a]);
+                b[3 + a] = b[3 + a].max(v.pos[a]);
+            }
+        }
+        b
+    }
+
     /// Recompute flat per-face normals (used when a source mesh lacks normals).
     pub fn compute_flat_normals(&mut self) {
         for v in &mut self.vertices {

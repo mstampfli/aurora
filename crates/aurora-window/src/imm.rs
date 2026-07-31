@@ -567,6 +567,41 @@ pub fn r3d_load_model(path: &str) -> i64 {
     })
 }
 
+/// Half-extent of a model's bounding box on one axis (0 = x, 1 = y, 2 = z), in
+/// model space and before any draw scale. 0.0 for a bad handle or axis.
+pub fn r3d_model_extent(handle: i64, axis: i64) -> f32 {
+    with_gfx(0.0, |g| {
+        let (_, _, s) = g.scene_mut();
+        match (s.model_bounds(handle), axis) {
+            (Some(b), 0..=2) => (b[3 + axis as usize] - b[axis as usize]) * 0.5,
+            _ => 0.0,
+        }
+    })
+}
+
+/// Centre of a model's bounding box on one axis (0 = x, 1 = y, 2 = z), relative
+/// to the model's origin. A model authored standing on its origin has a positive
+/// y centre, which is exactly the offset a collider needs. 0.0 for a bad handle.
+pub fn r3d_model_centre(handle: i64, axis: i64) -> f32 {
+    with_gfx(0.0, |g| {
+        let (_, _, s) = g.scene_mut();
+        match (s.model_bounds(handle), axis) {
+            (Some(b), 0..=2) => (b[3 + axis as usize] + b[axis as usize]) * 0.5,
+            _ => 0.0,
+        }
+    })
+}
+
+/// The model's CPU geometry, merged across primitives: `(positions, indices)`.
+/// `None` for a dead handle or a code-built primitive. Used to build a collider
+/// that follows the art.
+pub fn r3d_model_mesh(handle: i64) -> Option<(Vec<f32>, Vec<u32>)> {
+    with_gfx(None, |g| {
+        let (_, _, s) = g.scene_mut();
+        s.model_mesh(handle)
+    })
+}
+
 /// Release a model or primitive handle and every GPU buffer it owns. Returns 1
 /// when something was freed, 0 for a handle that was already freed or never
 /// valid.

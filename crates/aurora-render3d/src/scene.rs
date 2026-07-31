@@ -56,6 +56,11 @@ struct Asset {
     prims: Vec<(MeshId, MaterialId)>,
     model: Option<Model>,
     skinned: bool,
+    /// Axis-aligned bounds of the whole asset in model space, as
+    /// `[min_x, min_y, min_z, max_x, max_y, max_z]`. Computed once here because the
+    /// CPU-side vertices are only in hand while the asset is being built - after
+    /// upload the mesh lives on the GPU and nothing can measure it again.
+    bounds: [f32; 6],
     /// The file this came from, and the key it is cached under. `None` for a primitive
     /// built in code, which is cheap and never shared.
     path: Option<String>,
@@ -266,10 +271,29 @@ impl Scene {
             prims.push((mesh, mat));
             skinned |= p.skinned;
         }
+        // Union of every primitive's bounds: one glTF file is often several meshes,
+        // and a collider sized to only the first one would miss half the model.
+        let mut bounds = [f32::MAX, f32::MAX, f32::MAX, f32::MIN, f32::MIN, f32::MIN];
+        let mut any = false;
+        for p in &model.primitives {
+            let b = p.mesh.bounds();
+            if p.mesh.vertices.is_empty() {
+                continue;
+            }
+            any = true;
+            for a in 0..3 {
+                bounds[a] = bounds[a].min(b[a]);
+                bounds[3 + a] = bounds[3 + a].max(b[3 + a]);
+            }
+        }
+        if !any {
+            bounds = [0.0; 6];
+        }
         let asset = Arc::new(Asset {
             prims,
             model: Some(model),
             skinned,
+            bounds,
             path: Some(key.clone()),
         });
         self.assets.insert(key, Arc::clone(&asset));
@@ -295,20 +319,57 @@ impl Scene {
         }
     }
 
-    /// Wrap freshly built GPU primitives as a one-off, unshared asset.
-    fn own_asset(&mut self, prims: Vec<(MeshId, MaterialId)>) -> i64 {
+    /// Wrap freshly built GPU primitives as a one-off, unshared asset. `bounds` is
+    /// measured by the caller from the CPU mesh, which is the last moment it exists.
+    fn own_asset(&mut self, prims: Vec<(MeshId, MaterialId)>, bounds: [f32; 6]) -> i64 {
         self.items
             .insert(Renderable {
                 asset: Arc::new(Asset {
                     prims,
                     model: None,
                     skinned: false,
+                    bounds,
                     path: None,
                 }),
                 player: AnimPlayer::new(),
                 hidden_joints: 0,
             })
             .to_i64()
+    }
+
+    /// Axis-aligned bounds of a model or primitive handle, in model space, as
+    /// `[min_x, min_y, min_z, max_x, max_y, max_z]`. `None` for a handle that was
+    /// freed or never existed.
+    pub fn model_bounds(&self, handle: i64) -> Option<[f32; 6]> {
+        self.item(handle).map(|r| r.asset.bounds)
+    }
+
+    /// The asset's CPU geometry, merged across primitives, as flat positions and
+    /// triangle indices: `(xyz * n, [i0, i1, i2] * m)`.
+    ///
+    /// This exists so a collider can be built from the ART rather than from a box
+    /// typed next to it. The mesh is already retained for skinning, so handing it
+    /// out costs a copy rather than a reload. `None` for a dead handle or for a
+    /// primitive built in code, which keeps no `Model`.
+    ///
+    /// Indices are re-based per primitive, because each primitive numbers its own
+    /// vertices from zero and a naive concatenation would fold them all onto the
+    /// first one.
+    pub fn model_mesh(&self, handle: i64) -> Option<(Vec<f32>, Vec<u32>)> {
+        let model = self.item(handle)?.asset.model.as_ref()?;
+        let mut pos: Vec<f32> = Vec::new();
+        let mut idx: Vec<u32> = Vec::new();
+        for p in &model.primitives {
+            let base = (pos.len() / 3) as u32;
+            for v in &p.mesh.vertices {
+                pos.extend_from_slice(&v.pos);
+            }
+            idx.extend(p.mesh.indices.iter().map(|i| i + base));
+        }
+        if idx.len() < 3 {
+            return None;
+        }
+        Some((pos, idx))
     }
 
     /// Release a model or primitive handle.
@@ -370,7 +431,7 @@ impl Scene {
         let mat = self
             .renderer
             .add_material(device, queue, &MaterialDesc::flat(color));
-        self.own_asset(vec![(m, mat)])
+        self.own_asset(vec![(m, mat)], mesh.bounds())
     }
 
     pub fn make_box(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, color: [f32; 4]) -> i64 {
@@ -397,9 +458,8 @@ impl Scene {
         hz: f32,
         color: [f32; 3],
     ) -> i64 {
-        let m = self
-            .renderer
-            .add_mesh(device, &MeshData::box_dims(hx, hy, hz));
+        let mesh = MeshData::box_dims(hx, hy, hz);
+        let m = self.renderer.add_mesh(device, &mesh);
         let desc = MaterialDesc {
             base_color: [0.0, 0.0, 0.0, 1.0],
             metallic: 0.0,
@@ -411,7 +471,7 @@ impl Scene {
             emissive_tex: None,
         };
         let mat = self.renderer.add_material(device, queue, &desc);
-        self.own_asset(vec![(m, mat)])
+        self.own_asset(vec![(m, mat)], mesh.bounds())
     }
     pub fn make_sphere(
         &mut self,
@@ -454,7 +514,8 @@ impl Scene {
         queue: &wgpu::Queue,
         color: [f32; 3],
     ) -> i64 {
-        let m = self.renderer.add_mesh(device, &MeshData::quad());
+        let mesh = MeshData::quad();
+        let m = self.renderer.add_mesh(device, &mesh);
         let desc = MaterialDesc {
             base_color: [0.0, 0.0, 0.0, 1.0],
             metallic: 0.0,
@@ -466,7 +527,7 @@ impl Scene {
             emissive_tex: None,
         };
         let mat = self.renderer.add_material(device, queue, &desc);
-        self.own_asset(vec![(m, mat)])
+        self.own_asset(vec![(m, mat)], mesh.bounds())
     }
 
     /// Draw a sprite handle as a camera-facing billboard of side `size` at `pos`.

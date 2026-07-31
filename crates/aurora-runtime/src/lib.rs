@@ -1844,6 +1844,24 @@ pub unsafe extern "C" fn aurora_r3d_load_model(ptr: *const u8, len: i64) -> i64 
     let path = String::from_utf8_lossy(s);
     aurora_window::imm_r3d_load_model(&path)
 }
+/// Half-extent of a loaded model's bounding box on one axis (0 = x, 1 = y,
+/// 2 = z), in model space, before any draw scale.
+///
+/// This exists so a game can size a collider to the art instead of to a guess.
+/// A hand-typed box is a number that silently stops matching the moment an asset
+/// is swapped, and a collider that is not where the model is reads to a player
+/// as the world being broken rather than as a wrong constant.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_model_extent(handle: i64, axis: i64) -> f64 {
+    aurora_window::imm_r3d_model_extent(handle, axis) as f64
+}
+/// Centre of a loaded model's bounding box on one axis, relative to the model's
+/// origin. A model authored standing on its origin has a positive `y` centre,
+/// which is the offset its collider needs to sit on the same ground.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_model_centre(handle: i64, axis: i64) -> f64 {
+    aurora_window::imm_r3d_model_centre(handle, axis) as f64
+}
 /// Release a model/primitive handle and every GPU buffer behind it.
 ///
 /// Returns 1 when the handle was live and is now freed, 0 when it was already
