@@ -6,21 +6,29 @@ to work in them. Neither restates the other.
 ## The dev loop
 
 ```sh
-cargo check -p aurora-typeck          # the inner loop: the crate you are in. Seconds.
-cargo test  --release -p aurora-abi   # one crate's tests
-cargo test  --release                 # THE GATE: the whole workspace
-cargo fmt --check                     # part of the gate; run cargo fmt first
+cargo check -p aurora-typeck                              # the inner loop. Seconds.
+cargo test --profile release-test -j 4 -p aurora-abi      # one crate's tests
+cargo test --workspace --profile release-test -j 4        # THE GATE. About two minutes.
+cargo fmt --check                                         # part of the gate; run cargo fmt first
 ```
 
-Release, not debug: several suites drive the GPU or compile real programs, and a debug build turns
-minutes into tens of minutes. On a laptop, cap the parallelism so a build cannot starve the
-machine:
+**`release-test`, not `release`.** It inherits `release` and turns LTO off. The suite used to be
+run with `--release` and took ninety-plus minutes, almost all of it LINKING: every integration test
+is its own binary, each links the whole runtime (wgpu, rapier, symphonia, cranelift), and thin LTO
+runs once per binary over that graph. That is the shipping binary's trade, not a test's. Same
+`opt-level`, so the timing-sensitive suites still measure an optimized build, and
+`debug-assertions` stays on because a test is exactly where an overflow should abort.
 
-```sh
-CARGO_BUILD_JOBS=4 nice -n19 cargo test --release
-```
+Not debug either: several suites drive the GPU or compile real programs.
 
-Before a commit: `cargo fmt --check` and `cargo test --release`, both clean. Both must pass; the
+**`-j 4` is part of the recipe, not a laptop concession.** Cargo's default is one rustc per core and
+will take the machine with it.
+
+A ninety-minute gate is a gate that stops being run, and that is not hypothetical - the first green
+run after the profile landed found ten undocumented builtins and a broken doctest that had been
+sitting in the tree.
+
+Before a commit: `cargo fmt --check` and the workspace gate above, both clean. Both must pass; the
 suite includes tests that drive a real GPU and real sockets, and they are the ones that catch the
 failures unit tests cannot.
 

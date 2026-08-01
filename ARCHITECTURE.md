@@ -102,6 +102,10 @@ is the one place a reader is already looking.
 | A value-stack allocation is made once per call SITE, never once per execution | `aurora-codegen` collects each request during lowering and emits it in the function's `preamble` block, which runs once per activation - so a site inside a loop yields one buffer reused across iterations, exactly as the frame slot it replaces did. Tested by `a_loop_does_not_grow_the_arena_with_its_trip_count` |
 | Every value-stack frame is released on every return path | the single `epilogue` block every `return` jumps to, in `compile_body`, `compile_lambda` and `compile_system` - there is one exit, so there is one `vstack_leave` |
 | A stack overflow faults cleanly instead of silently corrupting | `enable_probestack` (`STACK_PROBE_FLAGS`, applied to both the JIT and the AOT object) makes a large frame touch guard pages in order rather than jumping past them |
+| An aggregate is a VALUE: `let`, `=`, a field, an element and a by-value parameter all COPY | `aurora-codegen`: `produces_fresh_storage` decides when a copy can be elided, and a parameter's copy is unconditional. Eleven tests in `tests/value_semantics.rs`, every one of which fails on the previous codegen |
+| Only `&T`, `&mut T` and a method's `self` share storage, and both ends say so | the same tests; `is_reference_ty` is what exempts a parameter from the copy |
+| An array type's LENGTH survives every pass that walks types | `tests/const_array_length.rs` runs the literal, const, arithmetic-const and repeat-count forms, and all of them one module deep. Three passes have dropped it, each silently |
+| A socket places and orients; it does not resize | `without_scale` in `aurora-render3d`, which divides each basis column by its own length rather than decomposing through a quaternion - so a MIRRORED bone keeps its reflection. Six tests including `a_mirrored_bone_keeps_its_reflection` |
 
 ## Key flows
 
@@ -131,4 +135,8 @@ the host's `on_server_packet` -> `Session::update` -> `broadcast` -> the client'
   `docs/02-netcode-replication.md`. **The roadmap**: `docs/03-implementation-roadmap.md`.
 - **Every builtin**: `docs/04-stdlib-and-builtins.md`, and `crates/aurora-abi`, which is the table
   that document describes.
-- **A crate's contract**: that crate's `lib.rs` header.
+- **A crate's contract**: that crate's `lib.rs` header. There are deliberately no
+  per-crate READMEs - the header is the one home for that fact, and a README
+  beside it is a second copy that drifts.
+- **The primitives to reuse, and the recipes with a right order** (adding a
+  builtin, running the tests): `docs/PRIMITIVES.md`.

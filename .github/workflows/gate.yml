@@ -1,9 +1,11 @@
 name: gate
 
 # The gate CONTRIBUTING.md documents, run on the same commits that reach main.
-# Nothing here is a CI-only invention: `cargo fmt --check` and
-# `cargo test --release` are exactly what a contributor runs before committing,
-# so a red run means the same thing locally and here.
+# Nothing here is a CI-only invention: `cargo fmt --check` and the workspace
+# test run are exactly what a contributor runs before committing, so a red run
+# means the same thing locally and here. If you change the command here, change
+# it there - a CI that runs something else is a CI that goes red for reasons
+# nobody can reproduce.
 
 on:
   push:
@@ -63,5 +65,10 @@ jobs:
       # not reproduce a real driver's output byte for byte, and a gate that goes
       # red for reasons unrelated to the change is worse than one with a stated
       # boundary.
-      - name: cargo test --release
-        run: cargo test --release
+      - name: cargo test
+        # `release-test` inherits release with LTO off. Under plain --release
+        # this step took ninety-plus minutes, almost all of it linking: each
+        # integration test is its own binary and each links the whole runtime,
+        # so thin LTO runs once per binary. Same opt-level, so the timing
+        # suites still measure an optimized build.
+        run: cargo test --workspace --profile release-test
