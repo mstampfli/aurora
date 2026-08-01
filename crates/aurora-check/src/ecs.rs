@@ -1,4 +1,4 @@
-//! ECS query and scheduler analysis (grammar spec §5.4, §6.2).
+﻿//! ECS query and scheduler analysis (grammar spec Â§5.4, Â§6.2).
 
 use std::collections::BTreeSet;
 
@@ -6,7 +6,6 @@ use aurora_ast::{ItemKind, Module, QTerm, QueryExpr, SysSched, SystemDecl};
 use aurora_diag::Diagnostic;
 use aurora_span::Span;
 
-use crate::walk::queries_in_block;
 
 /// Read/write component access derived from a system's queries.
 #[derive(Default)]
@@ -19,8 +18,10 @@ struct SysInfo {
     name: String,
     span: Span,
     stage: Option<String>,
-    /// Names of systems this one is ordered relative to (either direction).
-    ordered_with: BTreeSet<String>,
+    /// Systems named by `after(..)`: each must run strictly before this one.
+    after: BTreeSet<String>,
+    /// Systems named by `before(..)`: each must run strictly after this one.
+    before: BTreeSet<String>,
     access: Access,
 }
 
@@ -32,8 +33,12 @@ pub(crate) fn check_queries_and_schedule(module: &Module, diags: &mut Vec<Diagno
             continue;
         };
 
-        // Collect every query in the system body.
-        let queries = queries_in_block(&sys.body);
+        // Every query the system can reach, including through the functions it
+        // calls. A helper that queries `&mut Player` gives its caller that access
+        // just as surely as an inline query would, and attributing it only to the
+        // body would let two systems that both reach `Player` through helpers be
+        // declared independent - and then run concurrently over it.
+        let queries = aurora_ast::reachable_queries(module, &sys.body);
 
         // Intra-query aliasing + access-set union.
         let mut access = Access::default();
@@ -46,7 +51,8 @@ pub(crate) fn check_queries_and_schedule(module: &Module, diags: &mut Vec<Diagno
             name: sys.name.name.clone(),
             span: sys.name.span,
             stage: stage_of(sys),
-            ordered_with: ordering_of(sys),
+            after: directed_of(sys, true),
+            before: directed_of(sys, false),
             access,
         });
     }
@@ -61,26 +67,53 @@ fn stage_of(sys: &SystemDecl) -> Option<String> {
     })
 }
 
-fn ordering_of(sys: &SystemDecl) -> BTreeSet<String> {
+/// The systems named by one direction of ordering annotation.
+///
+/// Kept directional rather than merged into a single "ordered with" set: the
+/// direction is what lets the ordering be composed transitively, and a set that
+/// has forgotten which way its edges point can only say whether two systems were
+/// mentioned together, not which of them runs first.
+fn directed_of(sys: &SystemDecl, want_after: bool) -> BTreeSet<String> {
     let mut set = BTreeSet::new();
     for s in &sys.schedule {
-        match s {
-            SysSched::After(paths) | SysSched::Before(paths) => {
-                for p in paths {
-                    if let Some(seg) = p.segments.last() {
-                        set.insert(seg.ident.name.clone());
-                    }
-                }
-            }
-            SysSched::Stage(_) => {}
+        let paths = match s {
+            SysSched::After(paths) if want_after => paths,
+            SysSched::Before(paths) if !want_after => paths,
+            _ => continue,
+        };
+        // Joined, not last-segment: `after(sim::tick)` names the system that
+        // module flattening called `sim::tick`, and matching on `tick` alone
+        // would miss it, or match a same-named system in another module.
+        for p in paths {
+            set.insert(
+                p.segments
+                    .iter()
+                    .map(|s| s.ident.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join("::"),
+            );
         }
     }
     set
 }
 
-/// The component named by a query-term path (its last segment).
+/// The component a query-term path names, in full.
+///
+/// Joined rather than reduced to the last segment: after module flattening a
+/// component is called `sim::Foe`, and two modules may each define a `Foe`.
+/// Comparing on `Foe` would treat those as one component and report a conflict
+/// between systems that never touch the same data.
 fn comp_name(path: &aurora_ast::Path) -> Option<String> {
-    path.segments.last().map(|s| s.ident.name.clone())
+    if path.segments.is_empty() {
+        return None;
+    }
+    Some(
+        path.segments
+            .iter()
+            .map(|s| s.ident.name.as_str())
+            .collect::<Vec<_>>()
+            .join("::"),
+    )
 }
 
 fn accumulate(q: &QueryExpr, access: &mut Access) {
@@ -139,10 +172,88 @@ fn check_query_aliasing(q: &QueryExpr, diags: &mut Vec<Diagnostic>) {
     }
 }
 
+/// Who must run before whom, transitively, within one stage.
+///
+/// `precedes[i][j]` is true when system `i` is forced ahead of system `j` by some
+/// chain of `after`/`before`. Transitivity is the point: `a after(b)` and
+/// `b after(c)` fixes c ahead of a just as firmly as writing `a after(c)` would,
+/// and requiring the direct edge as well would be asking the programmer to
+/// restate something the annotations already say. Small graphs, so the closure is
+/// computed the obvious way.
+fn precedes(systems: &[SysInfo], stage: &Option<String>) -> Vec<Vec<bool>> {
+    let n = systems.len();
+    let mut reach = vec![vec![false; n]; n];
+    let at = |name: &str| {
+        (0..n).find(|&k| systems[k].name == name && &systems[k].stage == stage)
+    };
+    for (i, sys) in systems.iter().enumerate() {
+        if &sys.stage != stage {
+            continue;
+        }
+        for name in &sys.after {
+            if let Some(k) = at(name) {
+                reach[k][i] = true;
+            }
+        }
+        for name in &sys.before {
+            if let Some(k) = at(name) {
+                reach[i][k] = true;
+            }
+        }
+    }
+    for k in 0..n {
+        for i in 0..n {
+            if reach[i][k] {
+                for j in 0..n {
+                    if reach[k][j] {
+                        reach[i][j] = true;
+                    }
+                }
+            }
+        }
+    }
+    reach
+}
+
 /// Within each stage, any two systems with conflicting access sets must be
-/// explicitly ordered. Otherwise the scheduler would run them in parallel and
-/// race. (Grammar spec §6.2.)
+/// ordered, so that which of them observes the other's writes is a property of
+/// the program rather than of the declaration order they happen to sit in.
+/// (Grammar spec Â§6.2.)
+///
+/// An ordering *cycle* is rejected too: it cannot be satisfied, and left alone it
+/// would quietly degrade into "whatever rank the layering fell back to".
 fn check_schedule(systems: &[SysInfo], diags: &mut Vec<Diagnostic>) {
+    let stages: BTreeSet<Option<String>> = systems.iter().map(|s| s.stage.clone()).collect();
+    let mut order: Vec<Vec<bool>> = vec![vec![false; systems.len()]; systems.len()];
+    for stage in &stages {
+        let reach = precedes(systems, stage);
+        for (i, row) in reach.iter().enumerate() {
+            for (j, &r) in row.iter().enumerate() {
+                if r {
+                    order[i][j] = true;
+                }
+            }
+        }
+    }
+
+    for (i, sys) in systems.iter().enumerate() {
+        if order[i][i] {
+            diags.push(
+                Diagnostic::error(format!(
+                    "system `{}` is ordered before itself through a cycle of `after`/`before`",
+                    sys.name
+                ))
+                .with_code("E0203")
+                .primary(sys.span, "this ordering cannot be satisfied")
+                .note(
+                    "every `after`/`before` chain must run in one direction; \
+                     remove one edge of the cycle"
+                        .to_string(),
+                ),
+            );
+        }
+    }
+
     for i in 0..systems.len() {
         for j in (i + 1)..systems.len() {
             let (a, b) = (&systems[i], &systems[j]);
@@ -156,8 +267,7 @@ fn check_schedule(systems: &[SysInfo], diags: &mut Vec<Diagnostic>) {
                 continue;
             };
 
-            let ordered = a.ordered_with.contains(&b.name) || b.ordered_with.contains(&a.name);
-            if ordered {
+            if order[i][j] || order[j][i] {
                 continue;
             }
 

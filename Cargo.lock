@@ -407,6 +407,7 @@ dependencies = [
 name = "aurorac"
 version = "0.1.0"
 dependencies = [
+ "aurora-asset",
  "aurora-audio",
  "aurora-check",
  "aurora-codegen",

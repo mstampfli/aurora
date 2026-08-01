@@ -286,11 +286,8 @@ fn manifest_deps(toml: &str) -> Vec<(String, String)> {
 /// in a `mod <name> { .. }` so they namespace cleanly, and writing an
 /// `aurora.lock` of the resolved set. Each dependency's own dependencies are
 /// emitted first, so a dep can reference them as `<dep>::item`.
-fn collect_dep_sources() -> String {
-    collect_deps().0
-}
-
-/// The dependency sources, plus what each module DECLARED it depends on.
+///
+/// Returns the sources, plus what each module DECLARED it depends on.
 ///
 /// The second half is what makes a module boundary real. Flattening puts every module in one
 /// scope, so after it `map::room_at` and a local `room_at` are both just mangled names and the

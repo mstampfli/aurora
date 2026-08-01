@@ -19,12 +19,8 @@ use aurora_ast::{
 };
 use aurora_span::Span;
 
-/// Replace every module in `items` with its flattened, mangled contents.
-pub fn flatten_modules(items: Vec<Item>) -> Vec<Item> {
-    flatten_modules_tracked(items).0
-}
-
-/// As [`flatten_modules`], but also reporting every reference one module makes to another.
+/// Replace every module in `items` with its flattened, mangled contents, also
+/// reporting every reference one module makes to another.
 ///
 /// This pass is the only place that knows the boundary: afterwards `map::room_at` and a local
 /// `room_at` are both just mangled names in one flat list, which is why the compiler could not
@@ -51,11 +47,6 @@ fn flatten_modules_into(items: Vec<Item>, refs: &mut Vec<(String, String, Span)>
         }
     }
     out
-}
-
-fn flatten_mod(prefix: &str, items: Vec<Item>) -> Vec<Item> {
-    let mut refs = Vec::new();
-    flatten_mod_into(prefix, items, &mut refs)
 }
 
 fn flatten_mod_into(
@@ -577,7 +568,7 @@ mod tests {
             !diags.iter().any(|d| d.is_error()),
             "parse errors: {diags:?}"
         );
-        let flat = flatten_modules(module.items);
+        let flat = flatten_modules_tracked(module.items).0;
         // The body of m::pick must still reference the bare local `phase`,
         // not the qualified `m::phase`.
         assert_eq!(
@@ -588,7 +579,7 @@ mod tests {
         // Sanity: a genuine reference to the sibling function IS still qualified.
         let src2 = "mod m {\n  fn phase(x: i64) -> i64 { x }\n  fn caller() -> i64 { phase(3) }\n}";
         let (m2, _) = crate::parse_str(src2);
-        let flat2 = flatten_modules(m2.items);
+        let flat2 = flatten_modules_tracked(m2.items).0;
         let calls_qualified = flat2.iter().any(|it| {
             if let ItemKind::Fn(f) = &it.kind {
                 if f.name.name == "m::caller" {

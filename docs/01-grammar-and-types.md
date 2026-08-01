@@ -384,7 +384,27 @@ For systems `S1`, `S2` in the same stage with access sets
 
 - They **may run in parallel** iff `W1 ∩ (R2 ∪ W2) = ∅` and `W2 ∩ (R1 ∪ W1) = ∅`.
 - Otherwise an edge `S1 → S2` is added per declared `after`/`before`, or, absent an
-  ordering, the compiler **emits an error** demanding the programmer disambiguate.
+  ordering, the compiler **emits an error** (`E0202`) demanding the programmer
+  disambiguate.
+
+An access set is what a system **reaches**, not what its body spells out: queries
+inside the functions it calls count as its own, transitively. Otherwise moving a
+query into a helper would silently remove it from the theorem, and two systems that
+both write a component through helpers would be declared independent and run
+concurrently over it.
+
+Ordering is a partial order, not a set of adjacent pairs:
+
+- `after`/`before` are **transitive**. `a after(b)` and `b after(c)` orders a
+  against c, and no direct edge between them is required.
+- They are **independent of declaration order**. `a after(b)` runs b first whether
+  a is declared before or after b; each system is ranked one past the longest
+  chain that must precede it.
+- Declaration order remains the tie-break between conflicting systems that are
+  ordered by nothing else — which is exactly the case `E0202` refuses to let you
+  rely on.
+- An ordering **cycle** is an error (`E0203`): it cannot be satisfied.
+- Ordering does not compose across stages, since stages already run in sequence.
 
 Because access sets are derived from `query<...>` types, the compiler proves the
 absence of data races *without* a borrow checker over component storage. This is

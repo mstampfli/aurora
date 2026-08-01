@@ -3141,11 +3141,17 @@ fn tr_query_loop(
     body: &Block,
 ) -> Result<Term, String> {
     use aurora_ast::QTerm;
+    // Joined, not last-segment. Module flattening names a component by its full
+    // path, so `query<&sim::Foe>` must look up `sim::Foe`. The last segment alone
+    // missed the field layout - a hard error - and hashed to a different
+    // `comp_id`, so the query would have matched no entity and quietly iterated
+    // nothing had the layout lookup happened to succeed.
     let comp_name_of = |p: &aurora_ast::Path| {
         p.segments
-            .last()
-            .map(|s| s.ident.name.clone())
-            .unwrap_or_default()
+            .iter()
+            .map(|s| s.ident.name.as_str())
+            .collect::<Vec<_>>()
+            .join("::")
     };
     let mut required: Vec<String> = Vec::new();
     let mut data: Vec<Option<String>> = Vec::new(); // Some(comp) or None=Entity

@@ -124,14 +124,24 @@ pub(crate) fn resolve(module: &Module, diags: &mut Vec<Diagnostic>) {
         for sched in &sys.schedule {
             if let SysSched::After(paths) | SysSched::Before(paths) = sched {
                 for p in paths {
-                    let Some(seg) = p.segments.last() else {
+                    if p.segments.is_empty() {
                         continue;
-                    };
-                    if !tables.systems.contains(&seg.ident.name) {
+                    }
+                    // Joined, matching the mangled name module flattening gives a
+                    // system: `after(sim::guard_tick)` names `sim::guard_tick`.
+                    // Resolving on the last segment alone could not find it, and
+                    // would have accepted a same-named system in any module.
+                    let named = p
+                        .segments
+                        .iter()
+                        .map(|s| s.ident.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join("::");
+                    if !tables.systems.contains(&named) {
                         diags.push(
                             Diagnostic::error(format!(
                                 "`{}` orders against unknown system `{}`",
-                                sys.name.name, seg.ident.name
+                                sys.name.name, named
                             ))
                             .with_code("E0210")
                             .primary(p.span, "no system with this name"),

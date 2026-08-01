@@ -16,7 +16,9 @@ pub use builtins::{builtin_names, is_builtin};
 mod monomorphize;
 pub use monomorphize::monomorphize;
 mod schedule;
-pub use schedule::{parallel_layers, parallel_layers_in, stage_of, DEFAULT_STAGE, FIXED_STAGE};
+pub use schedule::{
+    parallel_layers, parallel_layers_in, reachable_queries, stage_of, DEFAULT_STAGE, FIXED_STAGE,
+};
 
 // ---------------------------------------------------------------------------
 // Shared leaves

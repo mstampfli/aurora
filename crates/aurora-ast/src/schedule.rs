@@ -1,12 +1,26 @@
-//! Parallel system scheduling (grammar spec §6.2).
+﻿//! Parallel system scheduling (grammar spec Â§6.2).
 //!
 //! Groups a module's `system`s into ordered *layers* of mutually-independent
-//! systems that may execute concurrently. Two systems land in different layers —
-//! preserving their declaration order — whenever they (a) have conflicting
-//! component access (one writes a component the other reads or writes) or (b)
-//! are explicitly ordered with `after`/`before`. Everything else commutes, so
-//! fusing it into one concurrent layer cannot change results. This is the
-//! runtime realisation of the data-race-freedom theorem the checker enforces.
+//! systems that may execute concurrently. Everything else commutes, so fusing it
+//! into one concurrent layer cannot change results. This is the runtime
+//! realisation of the data-race-freedom theorem the checker enforces.
+//!
+//! Layering happens in two steps, and the order of the two is what makes
+//! `after`/`before` mean what they say:
+//!
+//! 1. **Rank by ordering.** `after`/`before` form a DAG over the stage's systems,
+//!    and each system is ranked one past the longest chain that must precede it.
+//!    Ordering is therefore transitive by construction, and independent of
+//!    declaration order - `a after(b)` puts b first even when a is declared
+//!    first. Ranking only after the edges are known is the point: an earlier
+//!    version split layers in declaration order and used the annotation merely as
+//!    a hint to split, so `a after(b)` with a declared first ran a first, exactly
+//!    backwards, and silently.
+//! 2. **Split conflicts within a rank.** Same-rank systems are unordered relative
+//!    to each other, so they may share a layer only where their component access
+//!    does not conflict; conflicting ones are split into consecutive layers in
+//!    declaration order. No pair inside a layer can race, which is what makes a
+//!    layer safe to hand to the thread pool.
 
 use std::collections::BTreeSet;
 
@@ -23,31 +37,57 @@ struct Access {
 struct SysInfo {
     name: String,
     access: Access,
-    /// Systems this one is explicitly ordered against (either direction).
-    ordered_with: BTreeSet<String>,
+    /// Systems named by `after(..)`: each must run strictly before this one.
+    after: BTreeSet<String>,
+    /// Systems named by `before(..)`: each must run strictly after this one.
+    before: BTreeSet<String>,
 }
 
-fn last_seg(p: &Path) -> Option<String> {
-    p.segments.last().map(|s| s.ident.name.clone())
+/// The name a call expression names, joined so a module-qualified path matches
+/// the mangled item name flattening produced.
+fn callee_name(e: &Expr) -> Option<String> {
+    match &e.kind {
+        ExprKind::Path(p) => Some(
+            p.segments
+                .iter()
+                .map(|s| s.ident.name.as_str())
+                .collect::<Vec<_>>()
+                .join("::"),
+        ),
+        _ => None,
+    }
 }
 
-/// Component read/write sets derived from every `query<...>` in the body.
-fn access_of(sys: &SystemDecl) -> Access {
-    let mut queries = Vec::new();
-    walk_block(&sys.body, &mut queries);
+/// A path written out in full, matching the mangled name flattening gives an item.
+///
+/// Ordering names must join rather than take the last segment: `after(sim::tick)`
+/// names a system called `sim::tick` once modules are flattened, and matching on
+/// `tick` alone would either miss it or, worse, match a same-named system in some
+/// other module.
+fn joined(p: &Path) -> String {
+    p.segments
+        .iter()
+        .map(|s| s.ident.name.as_str())
+        .collect::<Vec<_>>()
+        .join("::")
+}
+
+/// Component read/write sets derived from every `query<...>` the system reaches,
+/// its own and those of the functions it calls.
+fn access_of(module: &Module, sys: &SystemDecl) -> Access {
+    let queries = reachable_queries(module, &sys.body);
     let mut a = Access::default();
     for q in queries {
         for term in &q.terms {
             match term {
+                // Joined for the same reason ordering names are: `sim::Foe` and
+                // a different module's `Foe` are different components, and the
+                // layering must not fuse or split systems on a name collision.
                 QTerm::Read(p) | QTerm::OptRead(p) => {
-                    if let Some(n) = last_seg(p) {
-                        a.reads.insert(n);
-                    }
+                    a.reads.insert(joined(p));
                 }
                 QTerm::Write(p) | QTerm::OptWrite(p) => {
-                    if let Some(n) = last_seg(p) {
-                        a.writes.insert(n);
-                    }
+                    a.writes.insert(joined(p));
                 }
                 // Filters / entity id are not data access.
                 QTerm::With(_) | QTerm::Without(_) | QTerm::Entity => {}
@@ -57,18 +97,59 @@ fn access_of(sys: &SystemDecl) -> Access {
     a
 }
 
-fn ordering_of(sys: &SystemDecl) -> BTreeSet<String> {
-    let mut set = BTreeSet::new();
+/// The two ordering sets, kept apart because direction is the whole point.
+///
+/// Folding `after` and `before` into one "ordered with" set loses which side of
+/// the edge a system is on, and an ordering that does not know its own direction
+/// can only ever be used to keep two systems apart - never to put them in the
+/// right sequence.
+fn ordering_of(sys: &SystemDecl) -> (BTreeSet<String>, BTreeSet<String>) {
+    let mut after = BTreeSet::new();
+    let mut before = BTreeSet::new();
     for s in &sys.schedule {
-        if let SysSched::After(ps) | SysSched::Before(ps) = s {
-            for p in ps {
-                if let Some(n) = last_seg(p) {
-                    set.insert(n);
-                }
+        match s {
+            SysSched::After(ps) => after.extend(ps.iter().map(joined)),
+            SysSched::Before(ps) => before.extend(ps.iter().map(joined)),
+            _ => {}
+        }
+    }
+    (after, before)
+}
+
+/// Rank every system by the longest chain of ordering constraints reaching it.
+///
+/// `after`/`before` form a DAG; a system's rank is one past the highest-ranked
+/// system that must precede it, which makes the ordering transitive by
+/// construction: `a after(b)` and `b after(c)` puts c, b and a in three ascending
+/// ranks whatever order they were declared in.
+///
+/// The ready set is drained lowest-index-first so the result depends only on the
+/// program, not on hash iteration order - a schedule that varied between runs
+/// would defeat the point of having one.
+///
+/// Systems caught in an ordering cycle are unreachable here and keep rank 0. The
+/// checker rejects those programs; this only has to stay deterministic and
+/// race-free in the meantime, and the conflict split below guarantees both.
+fn ranks(edges: &[BTreeSet<usize>], n: usize) -> Vec<usize> {
+    let mut indegree = vec![0usize; n];
+    for succs in edges.iter().take(n) {
+        for &v in succs {
+            indegree[v] += 1;
+        }
+    }
+    let mut ready: BTreeSet<usize> = (0..n).filter(|&i| indegree[i] == 0).collect();
+    let mut rank = vec![0usize; n];
+    while let Some(&u) = ready.iter().next() {
+        ready.remove(&u);
+        for &v in &edges[u] {
+            rank[v] = rank[v].max(rank[u] + 1);
+            indegree[v] -= 1;
+            if indegree[v] == 0 {
+                ready.insert(v);
             }
         }
     }
-    set
+    rank
 }
 
 /// Two systems conflict when one writes a component the other reads or writes.
@@ -83,7 +164,7 @@ fn conflict(a: &Access, b: &Access) -> bool {
 
 /// Group the module's systems (declaration order) into ordered parallel layers.
 /// Returns, for each layer, the indices into the declaration-ordered system
-/// list — index `k` is the k-th `system` item in `module`. A layer with one
+/// list â€” index `k` is the k-th `system` item in `module`. A layer with one
 /// index runs sequentially; a layer with several runs them concurrently.
 pub fn parallel_layers(module: &Module) -> Vec<Vec<usize>> {
     layers_matching(module, |_| true)
@@ -133,39 +214,125 @@ fn layers_matching(module: &Module, keep: impl Fn(&SystemDecl) -> bool) -> Vec<V
         .collect();
     let infos: Vec<SysInfo> = decls
         .iter()
-        .map(|s| SysInfo {
-            name: s.name.name.clone(),
-            access: access_of(s),
-            ordered_with: ordering_of(s),
+        .map(|s| {
+            let (after, before) = ordering_of(s);
+            SysInfo {
+                name: s.name.name.clone(),
+                access: access_of(module, s),
+                after,
+                before,
+            }
         })
         .collect();
     let wanted: Vec<usize> = (0..decls.len()).filter(|&i| keep(decls[i])).collect();
 
-    let mut layers: Vec<Vec<usize>> = Vec::new();
-    let mut cur: Vec<usize> = Vec::new();
-    for i in wanted {
-        // `i` may join the current layer only if it is independent of, and
-        // unordered relative to, every system already placed in it. This keeps
-        // every conflicting or explicitly-ordered pair in declaration order.
-        let joins = cur.iter().all(|&j| {
-            !conflict(&infos[i].access, &infos[j].access)
-                && !infos[i].ordered_with.contains(&infos[j].name)
-                && !infos[j].ordered_with.contains(&infos[i].name)
-        });
-        if !joins && !cur.is_empty() {
-            layers.push(std::mem::take(&mut cur));
-        }
-        cur.push(i);
+    // Ordering edges over positions within `wanted`. A system may only be ordered
+    // against one in the same stage: stages already run in sequence, so an edge
+    // across them is either redundant or unsatisfiable, and silently honouring it
+    // here would let a stage boundary be reordered.
+    let n = wanted.len();
+    let mut at: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for (pos, &i) in wanted.iter().enumerate() {
+        at.insert(infos[i].name.as_str(), pos);
     }
-    if !cur.is_empty() {
-        layers.push(cur);
+    let mut edges: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); n];
+    for (pos, &i) in wanted.iter().enumerate() {
+        for name in &infos[i].after {
+            if let Some(&other) = at.get(name.as_str()) {
+                edges[other].insert(pos);
+            }
+        }
+        for name in &infos[i].before {
+            if let Some(&other) = at.get(name.as_str()) {
+                edges[pos].insert(other);
+            }
+        }
+    }
+    let rank = ranks(&edges, n);
+
+    // Systems of equal rank are unordered with respect to each other, so they may
+    // share a layer - but only where they do not conflict. Conflicting systems
+    // are split into consecutive layers in declaration order, which is what makes
+    // a layer safe to run concurrently: no pair inside one can race.
+    let mut by_rank: std::collections::BTreeMap<usize, Vec<usize>> =
+        std::collections::BTreeMap::new();
+    for pos in 0..n {
+        by_rank.entry(rank[pos]).or_default().push(pos);
+    }
+
+    let mut layers: Vec<Vec<usize>> = Vec::new();
+    for group in by_rank.values() {
+        let mut cur: Vec<usize> = Vec::new();
+        for &pos in group {
+            let joins = cur
+                .iter()
+                .all(|&other| !conflict(&infos[wanted[pos]].access, &infos[wanted[other]].access));
+            if !joins && !cur.is_empty() {
+                layers.push(cur.drain(..).map(|p| wanted[p]).collect());
+            }
+            cur.push(pos);
+        }
+        if !cur.is_empty() {
+            layers.push(cur.into_iter().map(|p| wanted[p]).collect());
+        }
     }
     layers
 }
 
 // --- query collection (read-only walk over a system body) ------------------
 
-fn walk_block<'a>(block: &'a Block, out: &mut Vec<&'a QueryExpr>) {
+/// What a read-only walk finds: the queries written here, and the functions
+/// called from here.
+///
+/// The calls matter as much as the queries. A system that calls a helper which
+/// queries `&mut Player` accesses `Player` just as surely as if it had written
+/// the query inline, and a race-freedom proof that only reads the system body
+/// cannot see it. Collecting both in one pass keeps the two in step: a walker
+/// that learned about a new expression form for queries but not for calls would
+/// go quietly blind on exactly the programs that nest deepest.
+#[derive(Default)]
+pub struct Collected<'a> {
+    pub queries: Vec<&'a QueryExpr>,
+    pub calls: Vec<String>,
+}
+
+/// Every query a system can reach, including through the functions it calls.
+///
+/// Follows calls transitively, so component access is attributed to the system
+/// that ultimately performs it. Recursion terminates on the visited set; an
+/// unresolved callee (a builtin, or an `@extern`) contributes nothing, which is
+/// correct - neither runs a query.
+pub fn reachable_queries<'a>(module: &'a Module, body: &'a Block) -> Vec<&'a QueryExpr> {
+    let mut bodies: std::collections::HashMap<&str, &Block> = std::collections::HashMap::new();
+    for item in &module.items {
+        // A bodiless `@extern fn` has nothing to walk, and cannot run a query.
+        if let ItemKind::Fn(f) = &item.kind {
+            if let Some(body) = &f.body {
+                bodies.insert(f.name.name.as_str(), body);
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut queue = vec![body];
+    while let Some(b) = queue.pop() {
+        let mut found = Collected::default();
+        walk_block(b, &mut found);
+        out.append(&mut found.queries);
+        for name in found.calls {
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            if let Some(next) = bodies.get(name.as_str()) {
+                queue.push(next);
+            }
+        }
+    }
+    out
+}
+
+fn walk_block<'a>(block: &'a Block, out: &mut Collected<'a>) {
     for stmt in &block.stmts {
         match stmt {
             Stmt::Let(l) => {
@@ -181,10 +348,10 @@ fn walk_block<'a>(block: &'a Block, out: &mut Vec<&'a QueryExpr>) {
     }
 }
 
-fn walk_expr<'a>(e: &'a Expr, out: &mut Vec<&'a QueryExpr>) {
+fn walk_expr<'a>(e: &'a Expr, out: &mut Collected<'a>) {
     match &e.kind {
         ExprKind::Query(q) => {
-            out.push(q);
+            out.queries.push(q);
             if let Some(f) = &q.filter {
                 walk_expr(f, out);
             }
@@ -199,6 +366,9 @@ fn walk_expr<'a>(e: &'a Expr, out: &mut Vec<&'a QueryExpr>) {
             walk_expr(func, out);
         }
         ExprKind::Call { callee, args, .. } => {
+            if let Some(name) = callee_name(callee) {
+                out.calls.push(name);
+            }
             walk_expr(callee, out);
             for arg in args {
                 walk_expr(&arg.value, out);

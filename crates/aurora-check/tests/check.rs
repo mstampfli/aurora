@@ -571,3 +571,216 @@ fn extern_region_return_annotation_is_enforced() {
         "expected a return-region escape error, got {errs:?}"
     );
 }
+
+// --- transitive ordering (§6.2) --------------------------------------------
+//
+// `after`/`before` compose. Demanding a direct edge between every conflicting
+// pair would mean restating an order the annotations already fix, and the
+// restatement is the kind that rots: the chain gets rearranged and the redundant
+// edge is left behind, now saying something different from the chain.
+
+/// Three systems in a chain, all writing the same component. `a -> b -> c` fixes
+/// a ahead of c, so nothing here is ambiguous and nothing should be reported.
+#[test]
+fn a_transitive_chain_orders_the_ends() {
+    let errs = check_src(
+        "component P { x: f32 }
+         system a() stage(Update) { for p in query<&mut P> { p.x = 1.0 } }
+         system b() stage(Update) after(a) { for p in query<&mut P> { p.x = 2.0 } }
+         system c() stage(Update) after(b) { for p in query<&mut P> { p.x = 3.0 } }",
+    );
+    assert!(
+        errs.is_empty(),
+        "a and c are ordered through b; requiring the direct edge too is noise: {errs:?}"
+    );
+}
+
+/// The same chain built from `before` instead, and one built from both. Direction
+/// has to survive being written from either end or the closure is only half right.
+#[test]
+fn a_chain_composes_from_either_direction() {
+    for chain in [
+        "system a() stage(Update) before(b) { for p in query<&mut P> { p.x = 1.0 } }
+         system b() stage(Update) before(c) { for p in query<&mut P> { p.x = 2.0 } }
+         system c() stage(Update) { for p in query<&mut P> { p.x = 3.0 } }",
+        "system a() stage(Update) before(b) { for p in query<&mut P> { p.x = 1.0 } }
+         system b() stage(Update) { for p in query<&mut P> { p.x = 2.0 } }
+         system c() stage(Update) after(b) { for p in query<&mut P> { p.x = 3.0 } }",
+    ] {
+        let errs = check_src(&format!("component P {{ x: f32 }}\n{chain}"));
+        assert!(errs.is_empty(), "chain should order a and c: {errs:?}\n{chain}");
+    }
+}
+
+/// The relaxation must not swallow the case it exists to catch: two conflicting
+/// systems with no chain between them at all are still an error. Without this the
+/// transitive test above would pass just as well against a checker that reported
+/// nothing.
+#[test]
+fn an_unordered_conflicting_pair_is_still_rejected() {
+    let errs = check_src(
+        "component P { x: f32 }
+         system a() stage(Update) { for p in query<&mut P> { p.x = 1.0 } }
+         system b() stage(Update) { for p in query<&mut P> { p.x = 2.0 } }",
+    );
+    assert_eq!(errs.len(), 1, "expected exactly one conflict: {errs:?}");
+    assert!(errs[0].contains("not ordered"), "{errs:?}");
+}
+
+/// A chain that reaches a third system does not order the two ends of a *different*
+/// branch. `b after(a)` and `c after(a)` leaves b and c siblings, still ambiguous.
+#[test]
+fn siblings_of_a_common_predecessor_are_not_ordered() {
+    let errs = check_src(
+        "component P { x: f32 }
+         system a() stage(Update) { for p in query<&mut P> { p.x = 1.0 } }
+         system b() stage(Update) after(a) { for p in query<&mut P> { p.x = 2.0 } }
+         system c() stage(Update) after(a) { for p in query<&mut P> { p.x = 3.0 } }",
+    );
+    assert_eq!(errs.len(), 1, "b and c are siblings, not ordered: {errs:?}");
+    assert!(errs[0].contains("`b`") && errs[0].contains("`c`"), "{errs:?}");
+}
+
+/// A chain does not leak across a stage boundary. Stages already run in sequence,
+/// so an edge between them cannot be honoured, and treating it as ordering would
+/// let a conflicting same-stage pair through on the strength of it.
+#[test]
+fn ordering_does_not_compose_across_stages() {
+    let errs = check_src(
+        "component P { x: f32 }
+         system a() stage(Update) { for p in query<&mut P> { p.x = 1.0 } }
+         system mid() stage(FixedUpdate) after(a) { for p in query<&mut P> { p.x = 9.0 } }
+         system c() stage(Update) after(mid) { for p in query<&mut P> { p.x = 3.0 } }",
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("not ordered")),
+        "a and c are both in Update with only a cross-stage hop between them: {errs:?}"
+    );
+}
+
+/// An ordering cycle cannot be satisfied. Previously it was accepted and then
+/// quietly resolved to whatever the layering fell back to.
+#[test]
+fn an_ordering_cycle_is_rejected() {
+    let errs = check_src(
+        "component P { x: f32 }
+         system a() stage(Update) after(c) { for p in query<&mut P> { p.x = 1.0 } }
+         system b() stage(Update) after(a) { for p in query<&mut P> { p.x = 2.0 } }
+         system c() stage(Update) after(b) { for p in query<&mut P> { p.x = 3.0 } }",
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("cycle")),
+        "a -> b -> c -> a is unsatisfiable: {errs:?}"
+    );
+}
+
+/// A system ordered against itself is the degenerate cycle, and is caught too.
+#[test]
+fn a_self_ordering_is_rejected() {
+    let errs = check_src(
+        "component P { x: f32 }
+         system a() stage(Update) after(a) { for p in query<&mut P> { p.x = 1.0 } }",
+    );
+    assert!(errs.iter().any(|e| e.contains("cycle")), "{errs:?}");
+}
+
+// --- access through called functions (§6.2) ---------------------------------
+//
+// A system's component access is what it *reaches*, not what it spells out. The
+// analysis used to read only the system body, so moving a query into a helper
+// hid it from the race-freedom proof: two systems that both wrote `Player`
+// through helpers were declared independent and handed to the thread pool
+// together. The escape hatch was a refactor away, and refactors are exactly when
+// nobody re-reads the scheduler.
+
+#[test]
+fn a_query_inside_a_called_function_still_counts_as_access() {
+    let errs = check_src(
+        "component P { x: f32 }
+         fn bump() { for p in query<&mut P> { p.x = 1.0 } }
+         system a() stage(Update) { bump() }
+         system b() stage(Update) { for p in query<&mut P> { p.x = 2.0 } }",
+    );
+    assert_eq!(
+        errs.len(),
+        1,
+        "`a` writes P through `bump`; hiding a query in a helper must not hide the conflict: {errs:?}"
+    );
+    assert!(errs[0].contains("not ordered"), "{errs:?}");
+}
+
+#[test]
+fn access_is_followed_through_a_chain_of_calls() {
+    let errs = check_src(
+        "component P { x: f32 }
+         fn inner() { for p in query<&mut P> { p.x = 1.0 } }
+         fn outer() { inner() }
+         system a() stage(Update) { outer() }
+         system b() stage(Update) { for p in query<&mut P> { p.x = 2.0 } }",
+    );
+    assert_eq!(errs.len(), 1, "access must follow the whole call chain: {errs:?}");
+}
+
+#[test]
+fn both_systems_reaching_a_component_only_through_helpers_conflict() {
+    let errs = check_src(
+        "component P { x: f32 }
+         fn write_it() { for p in query<&mut P> { p.x = 1.0 } }
+         fn read_it() -> f32 { let mut v = 0.0; for p in query<&P> { v = p.x } v }
+         system a() stage(Update) { write_it() }
+         system b() stage(Update) { let v = read_it() }",
+    );
+    assert_eq!(errs.len(), 1, "neither body names a query, but both reach P: {errs:?}");
+}
+
+/// Ordering the pair resolves it, exactly as it would for inline queries -
+/// the new analysis must not become impossible to satisfy.
+#[test]
+fn ordering_resolves_a_conflict_reached_through_a_call() {
+    let errs = check_src(
+        "component P { x: f32 }
+         fn bump() { for p in query<&mut P> { p.x = 1.0 } }
+         system a() stage(Update) { bump() }
+         system b() stage(Update) after(a) { for p in query<&mut P> { p.x = 2.0 } }",
+    );
+    assert!(errs.is_empty(), "{errs:?}");
+}
+
+/// Recursion must terminate rather than chase itself forever.
+#[test]
+fn a_recursive_helper_terminates() {
+    let errs = check_src(
+        "component P { x: f32 }
+         fn spin(n: i64) { if n > 0 { spin(n - 1) } for p in query<&mut P> { p.x = 1.0 } }
+         system a() stage(Update) { spin(3) }
+         system b() stage(Update) { for p in query<&mut P> { p.x = 2.0 } }",
+    );
+    assert_eq!(errs.len(), 1, "{errs:?}");
+}
+
+/// Mutually recursive helpers likewise.
+#[test]
+fn mutually_recursive_helpers_terminate() {
+    let errs = check_src(
+        "component P { x: f32 }
+         fn ping(n: i64) { if n > 0 { pong(n - 1) } }
+         fn pong(n: i64) { for p in query<&mut P> { p.x = 1.0 } if n > 0 { ping(n - 1) } }
+         system a() stage(Update) { ping(3) }
+         system b() stage(Update) { for p in query<&mut P> { p.x = 2.0 } }",
+    );
+    assert_eq!(errs.len(), 1, "{errs:?}");
+}
+
+/// A helper that touches a *different* component is not a conflict. Without this
+/// the analysis could pass every test above by simply reporting everything.
+#[test]
+fn a_helper_touching_another_component_is_not_a_conflict() {
+    let errs = check_src(
+        "component P { x: f32 }
+         component Q { y: f32 }
+         fn bump_q() { for q in query<&mut Q> { q.y = 1.0 } }
+         system a() stage(Update) { bump_q() }
+         system b() stage(Update) { for p in query<&mut P> { p.x = 2.0 } }",
+    );
+    assert!(errs.is_empty(), "P and Q are independent: {errs:?}");
+}
