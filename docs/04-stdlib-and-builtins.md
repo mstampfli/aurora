@@ -74,7 +74,16 @@ negative index panics with `array index N out of bounds (length L)`.
 creates an entity; `system move() { for (p, v) in query<&mut Position, &Velocity> { .. } }`
 defines behaviour. `run_systems()` runs them - **independent systems in a stage
 run in parallel** (the §6.2 checker proves they can't race). `despawn(e)`,
-`entity_count()`.
+`entity_count()`, `world_clear()`.
+
+`world_clear()` despawns every entity and drops all component storage - what a
+level transition needs, and what a test suite needs between cases. Entity ids
+keep counting up rather than restarting, so an id held from before the clear
+names nothing instead of silently naming whatever entity later takes its number.
+
+A system's access set is what it **reaches**, not what its body spells out:
+queries inside the functions it calls count as its own, transitively. Ordering
+with `after`/`before` is transitive and independent of declaration order (§6.2).
 
 ## Graphics, window, input
 

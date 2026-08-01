@@ -205,6 +205,7 @@ macro_rules! for_each_builtin {
         [internal, query_begin,                   aurora_query_begin,                    [Ptr, I64],                                      I64]
         [internal, query_entity,                  aurora_query_entity,                   [I64],                                           I64]
         [special,  entity_count,                  aurora_entity_count,                   [],                                              I64]
+        [special,  world_clear,                   aurora_world_clear,                    [],                                              void]
 
         // Audio + windowing builtins.
         [special,  gpu_compute,                   aurora_gpu_compute,                    [Ptr, I64, Ptr, I64],                            void]

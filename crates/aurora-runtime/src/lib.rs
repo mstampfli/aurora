@@ -1378,6 +1378,30 @@ pub extern "C" fn aurora_entity_count() -> i64 {
     with_world(|w| w.entities.len() as i64)
 }
 
+/// Despawn every entity and drop all component storage, leaving an empty world.
+///
+/// What a level transition needs, and what a test suite needs between cases: a
+/// world carried over from the last one is a world whose contents no assertion
+/// mentioned.
+///
+/// Entity ids keep counting up rather than restarting at zero. An id held from
+/// before the clear then names nothing, instead of silently naming whatever new
+/// entity happened to take its number - a stale handle is a bug either way, and
+/// the version that resolves to nothing is the one that stays findable.
+///
+/// The pending query match set is cleared too. A clear from inside a query loop
+/// is a mistake, but the loop reads its matches by index and stops at the end,
+/// so emptying the set ends that iteration rather than walking entities that no
+/// longer exist.
+#[no_mangle]
+pub extern "C" fn aurora_world_clear() {
+    with_world(|w| {
+        w.entities.clear();
+        w.comps.clear();
+    });
+    QUERY.with(|q| q.borrow_mut().clear());
+}
+
 /// Run a batch of zero-arg system functions concurrently over the shared ECS
 /// world. The section 6.2 scheduler check guarantees the systems handed to one
 /// batch have non-conflicting component access, so concurrent execution is

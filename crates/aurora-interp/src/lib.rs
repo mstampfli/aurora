@@ -875,6 +875,14 @@ impl<'a> Interp<'a> {
                 _ => 0,
             })),
             "entity_count" => Ok(Value::Int(self.world.entities.len() as i128)),
+            // Ids keep counting up, matching the compiled runtime: an id held
+            // from before the clear must name nothing rather than name whatever
+            // entity later takes its number.
+            "world_clear" => {
+                self.world.entities.clear();
+                self.world.comps.clear();
+                Ok(Value::Unit)
+            }
             _ => {
                 // A top-level function, or a local binding holding a closure.
                 if self.fns.contains_key(&name) {

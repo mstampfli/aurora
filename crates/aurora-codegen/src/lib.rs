@@ -4102,6 +4102,11 @@ fn tr_call(
         let n = b.inst_results(call)[0];
         return Ok(Term::Val(n, Cty::I64));
     }
+    if name == "world_clear" {
+        let f = m.declare_func_in_func(env.hosts["world_clear"], b.func);
+        b.ins().call(f, &[]);
+        return Ok(Term::Val(b.ins().iconst(types::I64, 0), Cty::I64));
+    }
     if name == "run_systems" {
         // The fixed schedule first, and on its own clock.
         //
