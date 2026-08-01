@@ -120,7 +120,6 @@ const UNDOCUMENTED: &[&str] = &[
     "net_server_projectiles_clear",
     "net_set_player_meta",
     "net_hit_seq",
-    "input_suppress",
     "f32_blob",
     "log",
     "exp",

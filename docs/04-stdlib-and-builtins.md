@@ -524,6 +524,22 @@ are the left/right/middle mouse buttons.
 | `input_binding(action) -> i64` | the code bound to an action | -1 if unbound |
 | `input_down(action) -> i64` | is the action's input held? | 1/0 |
 | `input_axis(neg, pos) -> f64` | a -1/0/+1 axis from two actions | e.g. back vs forward |
+| `input_pressed(action) -> i64` | did it go down THIS frame? | 1/0 |
+| `input_released(action) -> i64` | did it come up THIS frame? | 1/0 |
+| `input_suppress(on)` | freeze all bound-action reads | raw key/mouse untouched |
+| `input_step()` | advance the edge snapshot | automatic in `present` |
+
+`input_pressed` is the difference between "drink one flask" and "drink five": a
+held button is one press, not sixty. The snapshot it compares against is advanced
+by `window_present` and `r3d_present`, so a game with a window never has to think
+about it. A headless program that injects input and steps a simulation without
+presenting has no frame boundary of its own, and calls `input_step()` where its
+frame ends.
+
+Edges are tracked per input CODE, not per action, so rebinding an action while
+its old key is held cannot manufacture a press on the new one. The snapshot
+records the raw key state even while `input_suppress` is on, so a pause menu
+opened and closed with attack held does not fire an attack on the way out.
 
 ### Raw float-blob accessors
 

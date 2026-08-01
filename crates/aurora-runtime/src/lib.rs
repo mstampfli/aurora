@@ -1935,7 +1935,13 @@ pub extern "C" fn aurora_window_open(w: i64, h: i64) {
 #[no_mangle]
 pub extern "C" fn aurora_window_present() -> i64 {
     let rgba = FB.with(|fb| fb.borrow().as_ref().map(|f| f.rgba()).unwrap_or_default());
-    if aurora_window::imm_present(&rgba) {
+    let open = aurora_window::imm_present(&rgba);
+    // A frame just ended, so what is held now is what the next frame compares
+    // its presses against. Done here rather than left to the game: an edge
+    // snapshot that is only advanced when someone remembers to is one that
+    // reports every held button as a fresh press forever.
+    aurora_input_step();
+    if open {
         1
     } else {
         0
@@ -2567,7 +2573,10 @@ pub extern "C" fn aurora_r3d_present() -> i64 {
             .map(|f| (f.rgba(), f.width(), f.height()))
             .unwrap_or((Vec::new(), 0, 0))
     });
-    if aurora_window::imm_r3d_present(&rgba, w, h) {
+    let open = aurora_window::imm_r3d_present(&rgba, w, h);
+    // The frame is over: advance the input edge snapshot. See `input_step`.
+    aurora_input_step();
+    if open {
         1
     } else {
         0
@@ -2839,6 +2848,83 @@ thread_local! {
     // so a game can freeze player actions in one call (e.g. a pause overlay) without
     // touching the raw mouse used by menus.
     static INPUT_SUPPRESS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    // Which input codes were held at the last frame boundary, one bit each, so
+    // `input_pressed` and `input_released` answer about the EDGE and not the
+    // level.
+    //
+    // Codes rather than actions: rebinding an action while its old key is held
+    // must not manufacture a press on the new one. And EVERY code, not only the
+    // bound ones - the first version snapshotted just what was bound, so a key
+    // that was already down when an action moved onto it read as freshly
+    // pressed, which is the exact case a rebind screen produces.
+    //
+    // A bitmask rather than a set: the whole code space fits in one word, so the
+    // per-frame snapshot costs no allocation and the lookup is a shift.
+    static INPUT_PREV: std::cell::Cell<u128> = const { std::cell::Cell::new(0) };
+}
+
+/// One past the highest input code. 0..65 are keyboard, 100..104 the mouse
+/// buttons; the gap between costs a few bits and nothing else.
+const INPUT_CODE_MAX: i64 = 105;
+
+/// Advance the input edge snapshot: what is held now becomes "was held" for the
+/// next frame's `input_pressed` / `input_released`.
+///
+/// Called automatically by `window_present` and `r3d_present`, because those are
+/// where a frame ends and a game with a window never has to remember. Headless
+/// programs that inject input and step the simulation without presenting have no
+/// frame boundary of their own, and call this where theirs is.
+///
+/// The snapshot records the RAW key state even while input is suppressed. A pause
+/// menu opened with attack held and closed with attack still held must not fire
+/// an attack on the way out - which it would if suppression made the snapshot
+/// read "not held".
+#[no_mangle]
+pub extern "C" fn aurora_input_step() {
+    let mut held: u128 = 0;
+    let mut c = 0;
+    while c < INPUT_CODE_MAX {
+        if code_is_down(c) {
+            held |= 1u128 << c;
+        }
+        c += 1;
+    }
+    INPUT_PREV.with(|p| p.set(held));
+}
+
+/// Whether an action went down THIS frame (1) or not (0).
+///
+/// The distinction every action game needs and every one of them re-implements:
+/// a held button is one press, not sixty. Without it a game keeps its own
+/// `was_down` beside each call site, and those copies drift - the flask that
+/// empties five charges in a second, the menu that scrolls the whole list on one
+/// tap. It is a property of the input layer, so it lives here.
+#[no_mangle]
+pub extern "C" fn aurora_input_pressed(action: i64) -> i64 {
+    input_edge(action, true)
+}
+
+/// Whether an action came up THIS frame (1) or not (0).
+#[no_mangle]
+pub extern "C" fn aurora_input_released(action: i64) -> i64 {
+    input_edge(action, false)
+}
+
+fn input_edge(action: i64, want_press: bool) -> i64 {
+    if INPUT_SUPPRESS.with(|s| s.get()) {
+        return 0;
+    }
+    let code = BINDINGS.with(|b| b.borrow().get(&action).copied().unwrap_or(-1));
+    if code < 0 || code >= INPUT_CODE_MAX {
+        return 0;
+    }
+    let was = INPUT_PREV.with(|p| p.get()) >> code & 1 == 1;
+    let now = code_is_down(code);
+    if want_press {
+        (now && !was) as i64
+    } else {
+        (was && !now) as i64
+    }
 }
 
 /// Suppress (1) or restore (0) all bound-action input. While suppressed, every
@@ -3724,6 +3810,122 @@ macro_rules! gen_force_link {
 }
 
 aurora_abi::for_each_builtin!(gen_force_link);
+
+#[cfg(test)]
+mod input_edge_tests {
+    use super::*;
+
+    const ACT: i64 = 1;
+    const OTHER: i64 = 2;
+    const KEY_A: i64 = 40;
+    const KEY_B: i64 = 41;
+
+    /// Injected input is written into the window's own key set, so there has to
+    /// be a window for it to land in. Headless, which needs no event loop and no
+    /// GPU adapter - and per test thread, since the window state is thread-local.
+    fn reset() {
+        std::env::set_var("AURORA_HEADLESS", "1");
+        aurora_window_open(1, 1);
+        BINDINGS.with(|b| b.borrow_mut().clear());
+        INPUT_PREV.with(|p| p.set(0));
+        aurora_input_suppress(0);
+        aurora_inject_key(KEY_A, 0);
+        aurora_inject_key(KEY_B, 0);
+        aurora_input_step();
+        // The harness has to be able to move a key at all, or every assertion
+        // below passes by reading "nothing is held" forever.
+        aurora_input_bind(0, KEY_A);
+        aurora_inject_key(KEY_A, 1);
+        assert_eq!(aurora_input_down(0), 1, "injected input never reached a key");
+        aurora_inject_key(KEY_A, 0);
+        BINDINGS.with(|b| b.borrow_mut().clear());
+        aurora_input_step();
+    }
+
+    /// A held button is ONE press. This is the whole reason the builtin exists:
+    /// without it a game reads `input_down` every frame, a flask belt empties in
+    /// a second and a half, and a menu scrolls its whole list on one tap.
+    #[test]
+    fn a_held_button_is_one_press() {
+        reset();
+        aurora_input_bind(ACT, KEY_A);
+
+        aurora_inject_key(KEY_A, 1);
+        assert_eq!(aurora_input_pressed(ACT), 1, "the press was missed");
+        // Asked twice in the same frame, it must answer the same. A read that
+        // consumed the edge would make the order of two callers matter.
+        assert_eq!(aurora_input_pressed(ACT), 1, "the edge was consumed by a read");
+
+        aurora_input_step();
+        assert_eq!(aurora_input_down(ACT), 1, "the key is still held");
+        assert_eq!(aurora_input_pressed(ACT), 0, "a hold reported a second press");
+
+        aurora_inject_key(KEY_A, 0);
+        assert_eq!(aurora_input_released(ACT), 1);
+        assert_eq!(aurora_input_pressed(ACT), 0);
+        aurora_input_step();
+        assert_eq!(aurora_input_released(ACT), 0, "a release repeated");
+
+        // And it can happen again.
+        aurora_inject_key(KEY_A, 1);
+        assert_eq!(aurora_input_pressed(ACT), 1);
+    }
+
+    /// Rebinding while the old key is held must not manufacture a press on the
+    /// new one - the reason the snapshot is keyed by code and not by action.
+    #[test]
+    fn rebinding_under_a_held_key_does_not_fire() {
+        reset();
+        aurora_input_bind(ACT, KEY_A);
+        aurora_inject_key(KEY_B, 1);
+        aurora_input_step();
+        assert_eq!(aurora_input_pressed(ACT), 0);
+
+        // B was already down when the action moved onto it.
+        aurora_input_bind(ACT, KEY_B);
+        assert_eq!(
+            aurora_input_pressed(ACT),
+            0,
+            "rebinding onto a held key fired it"
+        );
+    }
+
+    /// A pause menu opened with attack held and closed with attack still held
+    /// must not fire an attack on the way out, so the snapshot has to record the
+    /// RAW state rather than the suppressed reading.
+    #[test]
+    fn unsuppressing_a_held_action_does_not_fire_it() {
+        reset();
+        aurora_input_bind(ACT, KEY_A);
+        aurora_inject_key(KEY_A, 1);
+        aurora_input_step();
+
+        aurora_input_suppress(1);
+        assert_eq!(aurora_input_pressed(ACT), 0, "suppressed input reported a press");
+        assert_eq!(aurora_input_down(ACT), 0);
+        // Frames pass while paused.
+        aurora_input_step();
+        aurora_input_step();
+        aurora_input_suppress(0);
+        assert_eq!(
+            aurora_input_pressed(ACT),
+            0,
+            "unpausing fired the button that was already held"
+        );
+        assert_eq!(aurora_input_down(ACT), 1);
+    }
+
+    /// An unbound action is never pressed, rather than being pressed by whatever
+    /// key happens to answer for code -1.
+    #[test]
+    fn an_unbound_action_is_never_pressed() {
+        reset();
+        aurora_input_bind(ACT, KEY_A);
+        aurora_inject_key(KEY_A, 1);
+        assert_eq!(aurora_input_pressed(OTHER), 0);
+        assert_eq!(aurora_input_released(OTHER), 0);
+    }
+}
 
 #[cfg(test)]
 mod arena_tests {
