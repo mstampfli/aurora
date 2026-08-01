@@ -33,6 +33,7 @@ pub use imm::{
     r3d_anim_blend as imm_r3d_anim_blend, r3d_anim_play as imm_r3d_anim_play,
     r3d_anim_play_upper as imm_r3d_anim_play_upper, r3d_anim_seek as imm_r3d_anim_seek,
     r3d_anim_seek_upper as imm_r3d_anim_seek_upper, r3d_anim_stop_upper as imm_r3d_anim_stop_upper,
+    r3d_anim_clip as imm_r3d_anim_clip, r3d_anim_clip_upper as imm_r3d_anim_clip_upper,
     r3d_anim_done as imm_r3d_anim_done,
     r3d_anim_done_upper as imm_r3d_anim_done_upper, r3d_anim_time as imm_r3d_anim_time,
     r3d_anim_update as imm_r3d_anim_update, r3d_begin as imm_r3d_begin,

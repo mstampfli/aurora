@@ -439,6 +439,8 @@ macro_rules! for_each_builtin {
         [scalar,   r3d_anim_done,                 aurora_r3d_anim_done,                  [I64],                                           I64, owner]
         [scalar,   r3d_anim_done_upper,           aurora_r3d_anim_done_upper,            [I64],                                           I64, owner]
         [scalar,   r3d_anim_time,                 aurora_r3d_anim_time,                  [I64],                                           F64, owner]
+        [scalar,   r3d_anim_clip,                 aurora_r3d_anim_clip,                  [I64],                                           I64, owner]
+        [scalar,   r3d_anim_clip_upper,           aurora_r3d_anim_clip_upper,            [I64],                                           I64, owner]
         [text,     r3d_clip_name,                 aurora_r3d_clip_name,                  [I64, I64],                                      Str, owner]
         [text,     r3d_clip_index,                aurora_r3d_clip_index,                 [I64, Ptr, I64],                                 I64, owner]
         [text,     r3d_joint_index,               aurora_r3d_joint_index,                [I64, Ptr, I64],                                 I64, owner]

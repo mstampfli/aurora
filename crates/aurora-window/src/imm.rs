@@ -1263,6 +1263,23 @@ pub fn r3d_anim_time(handle: i64) -> f64 {
     })
 }
 
+/// Which clip the model is playing, or -1. Lets a state machine ask "am I
+/// already playing this?" instead of keeping its own copy of the answer.
+pub fn r3d_anim_clip(handle: i64) -> i64 {
+    with_gfx(-1, |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.anim_clip(handle)
+    })
+}
+
+/// Which clip the upper-body overlay is playing, or -1 when none is running.
+pub fn r3d_anim_clip_upper(handle: i64) -> i64 {
+    with_gfx(-1, |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.anim_clip_upper(handle)
+    })
+}
+
 /// How many drawable pieces (and so materials) a model has.
 pub fn r3d_material_count(handle: i64) -> i64 {
     with_gfx(0, |gf| {

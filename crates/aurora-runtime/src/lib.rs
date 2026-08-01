@@ -2825,6 +2825,22 @@ pub extern "C" fn aurora_r3d_anim_done_upper(h: i64) -> i64 {
 pub extern "C" fn aurora_r3d_anim_time(h: i64) -> f64 {
     aurora_window::imm_r3d_anim_time(h)
 }
+/// `r3d_anim_clip(h) -> i64`: which clip is playing, or -1.
+///
+/// Completes the set beside `anim_done` and `anim_time`, which both answer
+/// about the current clip without ever saying which one it is. A state machine
+/// without this has to remember what it last asked for, and that copy goes
+/// stale the moment anything else plays a clip on the same model.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_anim_clip(h: i64) -> i64 {
+    aurora_window::imm_r3d_anim_clip(h)
+}
+/// `r3d_anim_clip_upper(h) -> i64`: which clip the upper-body overlay is
+/// playing, or -1 when no overlay is running.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_anim_clip_upper(h: i64) -> i64 {
+    aurora_window::imm_r3d_anim_clip_upper(h)
+}
 /// `r3d_clip_name(h, i) -> str`: the asset's own name for clip `i`, or "" for a
 /// stale handle or an out-of-range index.
 ///

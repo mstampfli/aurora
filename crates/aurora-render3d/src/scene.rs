@@ -1029,6 +1029,31 @@ impl Scene {
         self.item(handle).map(|r| r.player.time).unwrap_or(0.0)
     }
 
+    /// Which clip the model is playing on its base layer, or -1 for a handle
+    /// that is not a model.
+    ///
+    /// "Am I already playing this?" is the question every state machine driving
+    /// an animation has to answer, and without it each one keeps a mirror of
+    /// what it last asked for - a second copy of a fact the renderer already
+    /// holds, which drifts the moment anything else plays a clip. `anim_done`
+    /// and `anim_time` are already answers about the current clip; this is the
+    /// one that says WHICH.
+    pub fn anim_clip(&self, handle: i64) -> i64 {
+        match self.item(handle) {
+            Some(r) => r.player.clip as i64,
+            None => -1,
+        }
+    }
+
+    /// The same for the upper-body overlay: which clip it is playing, or -1 when
+    /// no overlay is running.
+    pub fn anim_clip_upper(&self, handle: i64) -> i64 {
+        match self.item(handle) {
+            Some(r) if r.player.upper => r.player.uclip as i64,
+            _ => -1,
+        }
+    }
+
     /// Index of the clip called `name`, or -1 if this model has no such clip.
     ///
     /// Exporters routinely prefix a clip with its armature (Blender/glTF emit
