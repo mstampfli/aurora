@@ -121,3 +121,28 @@ machine unusable while it runs.
 - **A whole-sheet UV is not a bug.** `0..1` is one repeat against a TILING
   texture and the entire atlas against an ATLAS. Which is correct is a fact
   about the material, not the mesh.
+
+## Text
+
+**`draw_text` works with no asset.** A 5x7 ASCII font ships in the binary
+(`aurora-runtime/src/font.rs`) and is used whenever no TTF is loaded; `load_font`
+overrides it. Glyphs scale by whole pixels (`px / 7`, never below 1), which suits
+a low-poly game and cannot go blurry.
+
+Before this, `load_font` needed a TTF on disk and `render_text` returned
+SILENTLY without one - so a program with no font drew nothing and said nothing,
+which looks identical to text drawn off-screen, in the background colour, or
+behind something. Poly Souls carried ninety lines of seven-segment glyphs made
+of rectangles, in two copies, to get around it.
+
+`text_width` answers for the built-in font too. It used to return 0, so
+`x - text_width(s, px) / 2` centred a label at zero width - hard against the
+left edge, in the one case where the text was also invisible.
+
+The glyph table is generated from an ASCII-art spec, not typed as hex, and
+`a_glyph_matches_its_spec` renders two glyphs back to `#` and space so a table
+shifted by one cannot land quietly.
+
+**2D drawing needs `framebuffer(w, h)` first.** `window_open` does not create
+one, and every 2D call is a silent no-op without it - including `save_png`,
+which then writes no file.

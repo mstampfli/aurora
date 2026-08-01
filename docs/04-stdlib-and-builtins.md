@@ -113,8 +113,9 @@ with `after`/`before` is transitive and independent of declaration order (Â§6.
 |---|---|---|
 | `load_ppm(path) -> i64` | PPM â†’ framebuffer | built-in |
 | `load_image(path) -> i64` | **PNG/JPEG** â†’ framebuffer | `image` crate |
-| `load_font(path) -> i64` | load a TrueType/OpenType font | `fontdue` |
-| `draw_text(x, y, str, px, color)` | rasterize text (alpha-blended) | `fontdue` |
+| `load_font(path) -> i64` | load a TrueType/OpenType font | `fontdue`. OPTIONAL: a 5x7 ASCII font ships in the binary and is used when none is loaded, so text works with no asset. Load one to override it |
+| `draw_text(x, y, str, px, color)` | draw text into the 2D framebuffer | alpha-blended through a loaded TTF; opaque whole-pixel glyphs from the built-in 5x7 font otherwise, scaled by `px / 7` and never below 1. Needs a `framebuffer()` - every 2D call is a no-op without one |
+| `text_width(str, px) -> i64` | pixel width of `str`, for centring | answers for the built-in font too. It used to return 0 with no TTF loaded, so a centred label was centred at zero width |
 | `play_note(semitone, ms)` / `play_sound(...)` | synth audio | `aurora-audio` |
 | `play_wav(path) -> i64` | decode + play an audio file once (1 = played) | `hound` / `symphonia` |
 | `scene_save(path)` / `scene_load(path)` | persist the ECS world | built-in |

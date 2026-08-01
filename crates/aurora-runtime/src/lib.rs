@@ -52,6 +52,7 @@ pub use terrain::*;
 
 // The value stack: per-thread bump arena for aggregates too large to sit in a
 // machine stack frame.
+mod font;
 mod vstack;
 pub use vstack::*;
 
@@ -645,6 +646,25 @@ pub unsafe extern "C" fn aurora_load_font(ptr: *const u8, len: i64) -> i64 {
 /// over the existing pixels. No-op if no font was loaded or no framebuffer is
 /// active. Backs the `draw_text` builtin.
 #[no_mangle]
+/// Draw with the built-in 5x7 font, clipped to the framebuffer.
+///
+/// Opaque rather than blended: the glyphs are 1-bit, so there is no coverage to
+/// blend with, and a HUD wants its label to survive whatever is behind it.
+fn render_text_builtin(x: i64, y: i64, text: &str, px: i64, cr: u8, cg: u8, cb: u8) {
+    let scale = font::scale_for(px);
+    FB.with(|fb| {
+        let mut fb = fb.borrow_mut();
+        let Some(fb) = fb.as_mut() else { return };
+        let (w, h) = (fb.width() as i64, fb.height() as i64);
+        let colour = aurora_gfx::Color::rgb(cr, cg, cb);
+        font::blit(x, y, text, scale, |px_x, px_y| {
+            if px_x >= 0 && px_y >= 0 && px_x < w && px_y < h {
+                fb.set(px_x as i32, px_y as i32, colour);
+            }
+        });
+    });
+}
+
 fn render_text(x: i64, y: i64, text: &str, px: i64, color: i64) {
     let px = px.max(1) as f32;
     let (cr, cg, cb) = (
@@ -652,6 +672,14 @@ fn render_text(x: i64, y: i64, text: &str, px: i64, color: i64) {
         ((color >> 8) & 255) as u8,
         (color & 255) as u8,
     );
+    let loaded = FONT.with(|f| f.borrow().is_some());
+    if !loaded {
+        // No TTF: draw with the font that ships in the binary rather than
+        // returning silently, which is what this did and which makes "no font"
+        // and "text drawn off-screen" the same picture.
+        render_text_builtin(x, y, text, px as i64, cr, cg, cb);
+        return;
+    }
     FONT.with(|font| {
         let font = font.borrow();
         let Some(font) = font.as_ref() else { return };
@@ -710,8 +738,12 @@ pub unsafe extern "C" fn aurora_draw_text(
     render_text(x, y, &text, px, color);
 }
 
-/// Pixel width of `text` at size `px` in the loaded font (sum of glyph advances).
-/// Lets a game centre/right-align labels. Returns 0 if no font is loaded.
+/// Pixel width of `text` at size `px`, so a game can centre or right-align it.
+///
+/// Answers for the BUILT-IN font when no TTF is loaded, which is the only
+/// version that is safe to divide by: it used to return 0, so a centred label
+/// on a program with no font was centred at zero width - drawn hard against the
+/// left edge, in the one case where the text itself was also invisible.
 ///
 /// # Safety
 /// `ptr` must point to `len` initialized bytes.
@@ -721,6 +753,10 @@ pub unsafe extern "C" fn aurora_text_width(ptr: *const u8, len: i64, px: i64) ->
         let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
         String::from_utf8_lossy(s).into_owned()
     };
+    let loaded = FONT.with(|f| f.borrow().is_some());
+    if !loaded {
+        return font::width(&text, font::scale_for(px.max(1)));
+    }
     let px = px.max(1) as f32;
     FONT.with(|font| {
         let font = font.borrow();

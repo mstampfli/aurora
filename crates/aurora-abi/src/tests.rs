@@ -125,7 +125,6 @@ const UNDOCUMENTED: &[&str] = &[
     "exp",
     "atan2",
     "draw_int",
-    "text_width",
     "play_noise",
     "audio_volume",
     "window_fullscreen",
