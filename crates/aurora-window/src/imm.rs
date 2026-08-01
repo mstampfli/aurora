@@ -1239,6 +1239,30 @@ pub fn r3d_clip_name(handle: i64, i: i64) -> String {
     })
 }
 
+/// 1 when the model's current non-looping clip has played out, else 0.
+pub fn r3d_anim_done(handle: i64) -> i64 {
+    with_gfx(0, |gf| {
+        let (_, _, s) = gf.scene_mut();
+        if s.anim_done(handle) { 1 } else { 0 }
+    })
+}
+
+/// How far into its current clip the model is, in seconds.
+pub fn r3d_anim_time(handle: i64) -> f64 {
+    with_gfx(0.0, |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.anim_time(handle) as f64
+    })
+}
+
+/// How long clip `i` runs, in seconds, or 0.0 for a stale handle / bad index.
+pub fn r3d_clip_duration(handle: i64, i: i64) -> f64 {
+    with_gfx(0.0, |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.clip_duration(handle, i) as f64
+    })
+}
+
 /// Index of the clip called `name`, or -1 when the model has no such clip.
 pub fn r3d_clip_index(handle: i64, name: &str) -> i64 {
     with_gfx(-1, |gf| {

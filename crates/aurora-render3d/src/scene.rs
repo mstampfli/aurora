@@ -922,6 +922,62 @@ impl Scene {
         m.clips.get(i as usize).map(|c| c.name.as_str())
     }
 
+    /// How long clip `i` runs, in seconds; 0.0 for a stale handle or bad index.
+    ///
+    /// A game that knows how many ticks an attack is allowed to take, and how
+    /// long the clip for it runs, can make the two agree - `speed = duration /
+    /// budget` finishes the swing exactly when the rules say the swing is over.
+    /// Without it the only options are to play every attack at 1.0 and let the
+    /// animation drift out of sync with its own hitbox, or to guess a speed per
+    /// clip by eye. Both were tried downstream; the second is how a jump attack
+    /// ended up indistinguishable from a heavy.
+    ///
+    /// The number is loaded already. It was simply not askable.
+    pub fn clip_duration(&self, handle: i64, i: i64) -> f32 {
+        let Some(m) = self.item(handle).and_then(|r| r.asset.model.as_ref()) else {
+            return 0.0;
+        };
+        if i < 0 {
+            return 0.0;
+        }
+        m.clips.get(i as usize).map(|c| c.duration).unwrap_or(0.0)
+    }
+
+    /// Whether the model's current one-shot animation has reached its end.
+    ///
+    /// 1 when a non-looping clip has played out, 0 while it is still running and
+    /// 0 for a looping clip (which never ends) or a stale handle.
+    ///
+    /// This is THE question a game asks about a one-shot - has the swing
+    /// finished, is the guard up yet, is the roll over - and it had no answer.
+    /// Every caller had to keep its own timer beside the player's, advance it
+    /// with the same dt, and hope the two never drifted; and the player already
+    /// knew, because it clamps its own time to the clip's duration.
+    ///
+    /// Answered here rather than by exposing the raw time, because "compare the
+    /// time to the duration and get the looping case right" is exactly the check
+    /// that rots when it is written five times.
+    pub fn anim_done(&self, handle: i64) -> bool {
+        let Some(r) = self.item(handle) else {
+            return false;
+        };
+        if r.player.looping {
+            return false;
+        }
+        let Some(m) = r.asset.model.as_ref() else {
+            return false;
+        };
+        let Some(c) = m.clips.get(r.player.clip) else {
+            return false;
+        };
+        c.duration > 0.0 && r.player.time >= c.duration
+    }
+
+    /// How far into its current clip the model is, in seconds.
+    pub fn anim_time(&self, handle: i64) -> f32 {
+        self.item(handle).map(|r| r.player.time).unwrap_or(0.0)
+    }
+
     /// Index of the clip called `name`, or -1 if this model has no such clip.
     ///
     /// Exporters routinely prefix a clip with its armature (Blender/glTF emit

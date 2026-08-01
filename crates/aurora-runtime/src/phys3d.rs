@@ -455,8 +455,14 @@ pub extern "C" fn aurora_phys3d_add_character(x: f64, y: f64, z: f64, hh: f64, r
         let rb = RigidBodyBuilder::kinematic_position_based()
             .translation(vector![x as Real, y as Real, z as Real])
             .build();
-        // Characters are in group 2; the move query (below) only collides with group 1
-        // (world), so characters never stand on / trap each other - they pass through.
+        // Group 1 is the world, group 2 is characters that stop others, group 3
+        // is characters they walk through. A character BLOCKS by default and is
+        // not itself blocked, which is the crowd behaviour: bots do not wedge in
+        // a doorway, and the player still bumps into them.
+        //
+        // The two halves are separate flags because they are separate questions
+        // - see `phys3d_character_solid` (am I stopped by others?) and
+        // `phys3d_character_blocking` (do others stop at me?).
         let col = ColliderBuilder::capsule_y(hh as Real, r as Real)
             .collision_groups(InteractionGroups::new(Group::GROUP_2, Group::ALL))
             .build();
@@ -464,9 +470,19 @@ pub extern "C" fn aurora_phys3d_add_character(x: f64, y: f64, z: f64, hh: f64, r
     })
 }
 
-/// Whether this character's movement is stopped by other characters.
+/// Characters that other characters pass straight through.
 ///
-/// Off by default. See `Body3::solid`.
+/// Group 1 is the world and group 2 is characters that block; this is the third
+/// state, and it is what "not solid" has to mean if the word is to mean one
+/// thing. A ghost is still in a group, so raycasts and overlaps - which use the
+/// default filter - still find it. Only the character controller's move query
+/// skips it.
+const GHOST_GROUP: Group = Group::GROUP_3;
+
+/// Whether THIS character is stopped by other characters when it moves.
+///
+/// Off by default. See `Body3::solid`. The other half of the question is
+/// `phys3d_character_blocking`.
 #[no_mangle]
 pub extern "C" fn aurora_phys3d_character_solid(h: i64, on: i64) {
     PHYS3.with(|p| {
@@ -475,6 +491,40 @@ pub extern "C" fn aurora_phys3d_character_solid(h: i64, on: i64) {
         let Some(k) = Key::from_i64(h) else { return };
         if let Some(b) = p.registry.get_mut(k) {
             b.solid = on != 0;
+        }
+    })
+}
+
+/// Whether OTHER characters are stopped by this one. On by default.
+///
+/// The companion to `phys3d_character_solid`, and a separate flag because it is
+/// a separate question. "Am I stopped by others" is about the mover's own query;
+/// "do others stop at me" is about this collider's membership, and no amount of
+/// setting the first can express the second.
+///
+/// Collapsing the two is a real cost either way round. With only the mover's
+/// flag, a body can never be made transparent: a game whose creatures block the
+/// player - so a boss stops at you instead of walking through and swallowing you
+/// - cannot then let you walk over a corpse, because the corpse goes on blocking
+/// whatever anyone sets. Measured downstream: three dead soldiers sealed a
+/// courtyard and the boss behind them could not be reached, 20000 ticks, nobody
+/// landed a blow. Making the flag symmetric instead just moves the loss - a
+/// crowd of non-solid bots would stop stopping the player, which is the whole
+/// reason the mover's flag exists.
+///
+/// So: two bits, because there are two facts. A corpse is `blocking(0)` and is
+/// walked through while still being findable by a raycast or an overlap - it
+/// moves to a group the character controller does not ask about, not out of the
+/// world.
+#[no_mangle]
+pub extern "C" fn aurora_phys3d_character_blocking(h: i64, on: i64) {
+    PHYS3.with(|p| {
+        let mut p = p.borrow_mut();
+        let Some(p) = p.as_mut() else { return };
+        let Some(col_h) = col_of(p, h) else { return };
+        if let Some(c) = p.colliders.get_mut(col_h) {
+            let memberships = if on != 0 { Group::GROUP_2 } else { GHOST_GROUP };
+            c.set_collision_groups(InteractionGroups::new(memberships, Group::ALL));
         }
     })
 }
@@ -1882,4 +1932,69 @@ mod tests {
             "far query finds nothing"
         );
     }
+    /// `blocking` decides whether OTHERS stop at this character.
+    ///
+    /// It used to set only the mover's own query filter while the collider's
+    /// membership stayed nailed to group 2 forever, so a character marked
+    /// non-solid still blocked everything else. That made "walk through a
+    /// corpse" impossible to express: a game that marked its creatures solid so
+    /// a boss would stop at the player instead of swallowing them also turned
+    /// every dead body into a permanent wall, and three corpses sealed a
+    /// courtyard.
+    ///
+    /// Two movers, same start, same push, one blocker each. The only difference
+    /// is whether the BLOCKER is solid, and the mover is solid in both cases -
+    /// so anything that gets through is the blocker's membership talking.
+    #[test]
+    fn a_mover_passes_through_a_non_blocking_character() {
+        fn run(blocker_solid: bool) -> f64 {
+            aurora_phys3d_init(0.0, 0.0, 0.0);
+            // A blocker two metres along +x, and a mover at the origin walking
+            // into it. Radius 0.5 each, so solid contact happens around x = 1.0.
+            let blocker = aurora_phys3d_add_character(2.0, 0.0, 0.0, 0.5, 0.5);
+            aurora_phys3d_character_blocking(blocker, if blocker_solid { 1 } else { 0 });
+            let mover = aurora_phys3d_add_character(0.0, 0.0, 0.0, 0.5, 0.5);
+            aurora_phys3d_character_solid(mover, 1);
+            // Walk into it in small steps, the way a controller actually does.
+            let mut n = 0;
+            while n < 40 {
+                aurora_phys3d_move_character(mover, 0.1, 0.0, 0.0, 1.0);
+                n += 1;
+            }
+            aurora_phys3d_x(mover)
+        }
+
+        let through = run(false);
+        let stopped = run(true);
+        assert!(
+            through > 2.5,
+            "a solid mover should pass straight through a non-solid character,              but stopped at x={through}"
+        );
+        assert!(
+            stopped < 1.5,
+            "a solid mover should be stopped by a solid character, but reached              x={stopped}"
+        );
+    }
+
+    /// A ghost is still findable. Only the character controller skips it -
+    /// raycasts and overlaps use the default filter and must still see it, or
+    /// marking a creature non-solid would also make it unshootable.
+    #[test]
+    fn a_ghost_character_is_still_found_by_an_overlap() {
+        aurora_phys3d_init(0.0, 0.0, 0.0);
+        let ghost = aurora_phys3d_add_character(5.0, 0.0, 0.0, 0.5, 0.5);
+        aurora_phys3d_character_blocking(ghost, 0);
+        assert_eq!(
+            aurora_phys3d_overlap_sphere(5.0, 0.0, 0.0, 0.4),
+            ghost,
+            "a non-solid character must still be findable by a query"
+        );
+        // And it is NOT world geometry, so a camera looking for room ignores it.
+        assert_eq!(
+            aurora_phys3d_overlap_world(5.0, 0.0, 0.0, 0.4),
+            -1,
+            "a character is not a wall"
+        );
+    }
+
 }

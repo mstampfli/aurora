@@ -2769,6 +2769,33 @@ pub extern "C" fn aurora_r3d_anim_stop_upper(h: i64, fade: f64) {
 pub extern "C" fn aurora_r3d_clip_count(h: i64) -> i64 {
     aurora_window::imm_r3d_clip_count(h)
 }
+/// `r3d_clip_duration(h, i) -> f64`: how long clip `i` runs, in seconds.
+///
+/// For making an animation agree with the rules that own the move. A game whose
+/// attack lasts 42 ticks can play a 1.4-second swing at `1.4 / (42/60)` and have
+/// the blade land on the frame its hitbox opens. Without this the choice is to
+/// play everything at 1.0 and let each clip drift out of sync with its own frame
+/// data, or to guess a speed per clip by eye - which is how a jump attack ends
+/// up indistinguishable from a heavy.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_clip_duration(h: i64, i: i64) -> f64 {
+    aurora_window::imm_r3d_clip_duration(h, i)
+}
+/// `r3d_anim_done(h) -> i64`: 1 once the current one-shot clip has played out.
+///
+/// The question every game asks about a one-shot - is the swing over, is the
+/// guard up, is the roll finished - and it had no answer, so callers kept their
+/// own timer beside the player's and hoped the two never drifted. The player
+/// already knew: it clamps its own time to the clip's duration.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_anim_done(h: i64) -> i64 {
+    aurora_window::imm_r3d_anim_done(h)
+}
+/// `r3d_anim_time(h) -> f64`: seconds into the current clip.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_anim_time(h: i64) -> f64 {
+    aurora_window::imm_r3d_anim_time(h)
+}
 /// `r3d_clip_name(h, i) -> str`: the asset's own name for clip `i`, or "" for a
 /// stale handle or an out-of-range index.
 ///
