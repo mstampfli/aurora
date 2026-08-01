@@ -590,6 +590,7 @@ along walls (the core of a fluid movement shooter). Bodies are `i64` handles.
 | `phys3d_apply_impulse(h, ix,iy,iz)` | instantaneous (jumps, knockback) | dynamic bodies |
 | `phys3d_move_character(h, dx,dy,dz, dt)` | move + slide a character | read position after `step` |
 | `phys3d_grounded(h) -> i64` | is the character on the ground | 1/0 |
+| `phys3d_character_solid(h, on)` | does this character's movement collide with other characters | off by default |
 | `phys3d_raycast(x,y,z, dx,dy,dz, max) -> f64` | distance to first hit, or -1 | it hits ANY body, INCLUDING the one the ray starts inside: fired from a character's own centre it returns 0 and every shot silently stops at the muzzle. For shooting or ground probes from a body, use `phys3d_raycast_ex` / `phys3d_raycast_world` and pass that body as `exclude` |
 | `phys3d_raycast_full(x,y,z, dx,dy,dz, max) -> i64` | hit body handle (-1 none) | then read the hit below |
 | `phys3d_raycast_ex(exclude, x,y,z, dx,dy,dz, max) -> i64` | like `raycast_full`, skipping one body | probe outward from your own centre; a NEGATIVE `exclude` skips nothing |

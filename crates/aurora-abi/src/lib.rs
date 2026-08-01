@@ -319,6 +319,7 @@ macro_rules! for_each_builtin {
         [scalar,   phys3d_apply_impulse,          aurora_phys3d_apply_impulse,           [I64, F64, F64, F64],                            void]
         [scalar,   phys3d_move_character,         aurora_phys3d_move_character,          [I64, F64, F64, F64, F64],                       void]
         [scalar,   phys3d_grounded,               aurora_phys3d_grounded,                [I64],                                           I64]
+        [scalar,   phys3d_character_solid,       aurora_phys3d_character_solid,         [I64, I64],                                      void]
         [scalar,   phys3d_raycast,                aurora_phys3d_raycast,                 [F64, F64, F64, F64, F64, F64, F64],             F64]
 
         // Heightmap terrain: one heightfield behind the renderer, the physics

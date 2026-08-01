@@ -40,6 +40,20 @@ struct Body3 {
     collider: ColliderHandle,
     /// Last result from the character controller, read by `phys3d_grounded`.
     grounded: bool,
+    /// Does this character's own movement collide with OTHER characters?
+    ///
+    /// Off by default, and that default is deliberate: characters pass through
+    /// each other so a crowd cannot stack, trap, or wedge itself in a doorway,
+    /// which is what a shooter's bots want.
+    ///
+    /// It is exactly wrong for the mover you can push against. A game whose
+    /// enemies are characters - so that they slide along the level instead of
+    /// walking through it - needs the player to still meet them as bodies, or
+    /// the enemies gain the world's collision and lose their own. The flag is on
+    /// the mover rather than on the obstacle so both can be true at once: the
+    /// player is solid and is stopped by a crowd, the crowd is not solid and
+    /// does not jam itself.
+    solid: bool,
 }
 
 /// The `i64` an Aurora program holds for a body.
@@ -163,6 +177,7 @@ fn push_body(p: &mut Phys3, rb: RigidBody, col: Collider) -> i64 {
         body,
         collider,
         grounded: false,
+        solid: false,
     });
     // Stamp the handle into the collider. A query answers with a collider, and
     // the program wants a body handle back; reading it out of `user_data` is
@@ -411,6 +426,21 @@ pub extern "C" fn aurora_phys3d_add_character(x: f64, y: f64, z: f64, hh: f64, r
             .collision_groups(InteractionGroups::new(Group::GROUP_2, Group::ALL))
             .build();
         push_body(p, rb, col)
+    })
+}
+
+/// Whether this character's movement is stopped by other characters.
+///
+/// Off by default. See `Body3::solid`.
+#[no_mangle]
+pub extern "C" fn aurora_phys3d_character_solid(h: i64, on: i64) {
+    PHYS3.with(|p| {
+        let mut p = p.borrow_mut();
+        let Some(p) = p.as_mut() else { return };
+        let Some(k) = Key::from_i64(h) else { return };
+        if let Some(b) = p.registry.get_mut(k) {
+            b.solid = on != 0;
+        }
     })
 }
 
@@ -782,6 +812,22 @@ pub extern "C" fn aurora_phys3d_move_character(h: i64, dx: f64, dy: f64, dz: f64
         let (Some(col_h), Some(body_h)) = (col_of(p, h), rb_of(p, h)) else {
             return;
         };
+        // The controller reads the query pipeline, so it is a spatial query and
+        // has to sync like one.
+        //
+        // It did not, and it is the only one of them that did not - because it
+        // does not LOOK like a query, it looks like movement. A character
+        // therefore walked straight through every collider added since the last
+        // step: build a room, put an actor in it, move the actor, and the walls
+        // are not there yet. In a game loop a step always happens first and it
+        // never shows; the assertion that found it built an arena and walked a
+        // creature into a block in the same breath, which is exactly what a test
+        // does and gameplay never does.
+        //
+        // `sync_queries` already documents itself as called by every spatial
+        // query so that forgetting to step cannot be mistaken for an empty world.
+        // That promise was three-quarters true.
+        p.sync_queries();
         let desired = vector![dx as Real, dy as Real, dz as Real];
         // Use the BODY's current translation as the shape's start position, not
         // the collider's cached pose. The collider pose only syncs during a step,
@@ -804,9 +850,20 @@ pub extern "C" fn aurora_phys3d_move_character(h: i64, dx: f64, dy: f64, dz: f64
             // Group 1 (world) only: a character slides on the world but not on other
             // characters, so no stacking/trapping. Raycasts (default filter) still hit
             // characters, so shooting is unaffected.
+            // Group 1 is the world. A solid mover adds group 2 so it also meets
+            // other characters.
+            let solid = Key::from_i64(h)
+                .and_then(|k| p.registry.get(k))
+                .map(|b| b.solid)
+                .unwrap_or(false);
+            let mask = if solid {
+                Group::GROUP_1 | Group::GROUP_2
+            } else {
+                Group::GROUP_1
+            };
             let filter = QueryFilter::default()
                 .exclude_collider(col_h)
-                .groups(InteractionGroups::new(Group::GROUP_2, Group::GROUP_1));
+                .groups(InteractionGroups::new(Group::GROUP_2, mask));
             // Collect the colliders we ran into so we can SHOVE the dynamic ones (crates) afterwards -
             // a kinematic controller otherwise just slides off them and they never move.
             let mut hits = Vec::new();
@@ -1572,6 +1629,94 @@ mod tests {
         // agree with what the solver then propagates from the body.
         aurora_phys3d_step(0.016);
         assert_eq!(aurora_phys3d_overlap_sphere(0.0, 0.0, 7.0, 0.2), b);
+    }
+
+    /// A character walks through another character, unless it is solid.
+    ///
+    /// The default is what a crowd of bots wants: no stacking, no wedging in a
+    /// doorway. It is wrong for the one mover a player pushes against, and the
+    /// two cannot be reconciled by a global switch - a game needs its enemies to
+    /// slide along the level (so they must be characters) AND to stop the player
+    /// (so something must collide with them). The flag is on the MOVER, so the
+    /// player can be solid while the crowd is not.
+    #[test]
+    fn a_solid_character_is_stopped_by_another_character() {
+        aurora_phys3d_init(0.0, 0.0, 0.0);
+        // Something to walk into, standing still at the origin.
+        let wall = aurora_phys3d_add_character(0.0, 1.0, 0.0, 0.5, 0.4);
+        assert!(wall >= 0);
+        aurora_phys3d_step(0.016);
+
+        // Default: straight through it.
+        let ghost = aurora_phys3d_add_character(0.0, 1.0, -3.0, 0.5, 0.4);
+        aurora_phys3d_move_character(ghost, 0.0, 0.0, 6.0, 1.0);
+        assert!(
+            aurora_phys3d_z(ghost) > 2.0,
+            "a non-solid character was stopped at {} - it should pass through",
+            aurora_phys3d_z(ghost)
+        );
+
+        // Solid: stopped short of it.
+        let solid = aurora_phys3d_add_character(0.0, 1.0, -3.0, 0.5, 0.4);
+        aurora_phys3d_character_solid(solid, 1);
+        aurora_phys3d_move_character(solid, 0.0, 0.0, 6.0, 1.0);
+        let z = aurora_phys3d_z(solid);
+        assert!(
+            z < 0.0,
+            "a solid character reached {z} - it walked through the one at the origin"
+        );
+        assert!(
+            z > -3.0,
+            "a solid character did not move at all ({z}) - it should close the gap"
+        );
+
+        // And the flag is not one-way: turn it off and the same body passes.
+        aurora_phys3d_character_solid(solid, 0);
+        aurora_phys3d_move_character(solid, 0.0, 0.0, 6.0, 1.0);
+        assert!(
+            aurora_phys3d_z(solid) > 2.0,
+            "clearing the flag left the character solid at {}",
+            aurora_phys3d_z(solid)
+        );
+    }
+
+    /// A character meets a wall that was built since the last step.
+    ///
+    /// `move_character` reads the query pipeline but was not calling
+    /// `sync_queries`, so a world assembled and then walked in - with no step
+    /// between - had no walls in it. Every other spatial query synced; this one
+    /// did not, because it does not read like a query.
+    ///
+    /// No `phys3d_step` anywhere in this test. That is the whole point.
+    #[test]
+    fn a_character_meets_a_wall_built_since_the_last_step() {
+        aurora_phys3d_init(0.0, 0.0, 0.0);
+        aurora_phys3d_add_box(0.0, 1.0, 0.0, 2.0, 2.0, 0.5, 0);
+        let c = aurora_phys3d_add_character(0.0, 1.0, -3.0, 0.5, 0.4);
+        aurora_phys3d_move_character(c, 0.0, 0.0, 6.0, 1.0);
+        let z = aurora_phys3d_z(c);
+        assert!(
+            z < 0.0,
+            "character reached {z}: the wall was invisible because nothing stepped"
+        );
+        assert!(z > -3.0, "character did not move at all ({z})");
+    }
+
+    /// A solid character still slides along the WORLD. The flag adds characters
+    /// to what stops it; it must not replace what already did.
+    #[test]
+    fn a_solid_character_still_meets_the_world() {
+        aurora_phys3d_init(0.0, 0.0, 0.0);
+        aurora_phys3d_add_box(0.0, 1.0, 0.0, 2.0, 2.0, 0.5, 0);
+        aurora_phys3d_step(0.016);
+        let c = aurora_phys3d_add_character(0.0, 1.0, -3.0, 0.5, 0.4);
+        aurora_phys3d_character_solid(c, 1);
+        aurora_phys3d_move_character(c, 0.0, 0.0, 6.0, 1.0);
+        assert!(
+            aurora_phys3d_z(c) < 0.0,
+            "a solid character walked through a wall at {}",
+            aurora_phys3d_z(c)
+        );
     }
 
     /// `phys3d_init` builds a new world; handles from the old one must not
