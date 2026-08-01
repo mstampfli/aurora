@@ -345,6 +345,25 @@ pub unsafe extern "C" fn aurora_save_ppm(ptr: *const u8, len: i64) {
 /// Save the 2D framebuffer as a PNG (the format vision tooling reads).
 /// Creates parent directories. Backs the `save_png` builtin.
 ///
+/// `fb_width()` / `fb_height()`: the framebuffer's size, or 0 if there is none.
+///
+/// A HUD cannot lay itself out without these. Poly Souls' dialogue banner was
+/// positioned for a 640x360 surface and sat across the middle of a 960x540 one,
+/// because the only size a program could know was the one it had typed into its
+/// own constants - which is right until anything opens a different window.
+///
+/// 0 rather than a guess when no framebuffer exists, so `fb_width() / 2` is a
+/// harmless zero rather than a plausible wrong number.
+#[no_mangle]
+pub extern "C" fn aurora_fb_width() -> i64 {
+    FB.with(|fb| fb.borrow().as_ref().map(|f| f.width() as i64).unwrap_or(0))
+}
+
+#[no_mangle]
+pub extern "C" fn aurora_fb_height() -> i64 {
+    FB.with(|fb| fb.borrow().as_ref().map(|f| f.height() as i64).unwrap_or(0))
+}
+
 /// # Safety
 /// `ptr` must point to `len` initialized bytes.
 #[no_mangle]

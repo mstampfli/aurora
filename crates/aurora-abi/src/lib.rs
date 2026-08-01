@@ -264,6 +264,8 @@ macro_rules! for_each_builtin {
         [scalar,   rand_int,                      aurora_rand_int,                       [I64, I64],                                      I64, shared]
         [scalar,   set_fixed_dt,                  aurora_set_fixed_dt,                   [F64],                                           void, shared]
         [special,  save_png,                      aurora_save_png,                       [Ptr, I64],                                      void, shared]
+        [scalar,   fb_width,                      aurora_fb_width,                       [],                                              I64, owner]
+        [scalar,   fb_height,                     aurora_fb_height,                      [],                                              I64, owner]
         [special,  read_file,                     aurora_read_file,                      [Ptr, Ptr, I64],                                 void, shared]
         [special,  write_file,                    aurora_write_file,                     [Ptr, I64, Ptr, I64],                            I64, shared]
         [special,  file_exists,                   aurora_file_exists,                    [Ptr, I64],                                      I64, shared]

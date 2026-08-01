@@ -146,3 +146,9 @@ shifted by one cannot land quietly.
 **2D drawing needs `framebuffer(w, h)` first.** `window_open` does not create
 one, and every 2D call is a silent no-op without it - including `save_png`,
 which then writes no file.
+
+**`fb_width()` / `fb_height()` before laying out a HUD.** They return 0 when
+there is no framebuffer, so `fb_width() / 2` is a harmless zero rather than a
+plausible wrong number. Positions typed as constants are right for exactly the
+resolution they were written at: Poly Souls' dialogue banner was placed for
+640x360 and sat across the middle of a 960x540 capture.

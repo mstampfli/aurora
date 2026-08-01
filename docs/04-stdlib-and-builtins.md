@@ -101,6 +101,7 @@ with `after`/`before` is transitive and independent of declaration order (Â§6.
 | `framebuffer(w, h)` / `clear(r,g,b)` | create / clear the CPU framebuffer |
 | `pixel(x,y,r,g,b)` / `triangle(x0,y0,x1,y1,x2,y2,r,g,b)` | draw |
 | `fb_get(x,y) -> i64` | read a packed `0xRRGGBB` pixel |
+| `fb_width() / fb_height() -> i64` | the framebuffer's size, 0 if there is none - a HUD cannot lay itself out without them |
 | `save_ppm(path)` | write the framebuffer to a PPM |
 | `window_open(w,h)` / `window_present() -> i64` | real-time window (1=open) |
 | `key_down(code) -> i64` | keyboard (see `key_*` helpers) |
