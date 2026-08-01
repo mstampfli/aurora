@@ -108,8 +108,43 @@ impl Phys3 {
     }
 }
 
+/// This thread's own physics world, and the shim every call site goes through.
+///
+/// Routed to the batch owner's while this thread is a worker running systems.
+/// Without it a system that raycasts, overlaps or moves a character sees an
+/// empty world and reports "nothing there" - which is a legal answer, so every
+/// caller believed it.
+///
+/// The shim has `LocalKey`'s shape so the three dozen call sites below are
+/// unchanged. They were never wrong; what they reached for was.
+pub(crate) fn own_cell() -> *const () {
+    PHYS3_OWN.with(|c| c as *const _ as *const ())
+}
+
+struct Phys3Slot;
+
+impl Phys3Slot {
+    fn with<R>(&self, f: impl FnOnce(&RefCell<Option<Phys3>>) -> R) -> R {
+        let batch = crate::par_batch();
+        if batch.is_null() {
+            return PHYS3_OWN.with(f);
+        }
+        // SAFETY: as for the world - the owner is blocked in `thread::scope`
+        // until this worker joins, so its cell is alive and untouched.
+        unsafe {
+            crate::with_par_cell(
+                batch,
+                crate::par_phys3(batch) as *const RefCell<Option<Phys3>>,
+                f,
+            )
+        }
+    }
+}
+
+const PHYS3: Phys3Slot = Phys3Slot;
+
 thread_local! {
-    static PHYS3: RefCell<Option<Phys3>> = const { RefCell::new(None) };
+    static PHYS3_OWN: RefCell<Option<Phys3>> = const { RefCell::new(None) };
 }
 
 /// Create (or reset) the 3D physics world with gravity `(gx, gy, gz)`.

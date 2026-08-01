@@ -1003,8 +1003,30 @@ struct Nav {
     path: Vec<(i32, i32)>,
 }
 thread_local! {
-    static NAV: RefCell<Option<Nav>> = const { RefCell::new(None) };
+    static NAV_OWN: RefCell<Option<Nav>> = const { RefCell::new(None) };
 }
+
+/// The navigation grid, routed to the batch owner's when this thread is a
+/// worker.
+///
+/// A shim with `LocalKey`'s shape, so the call sites below read exactly as they
+/// did when it was a plain `thread_local!` - which is the point: the bug was
+/// that they all looked fine.
+struct NavSlot;
+
+impl NavSlot {
+    fn with<R>(&self, f: impl FnOnce(&RefCell<Option<Nav>>) -> R) -> R {
+        let batch = par_batch();
+        if batch.is_null() {
+            return NAV_OWN.with(f);
+        }
+        // SAFETY: the pointer came from `aurora_run_parallel` on the owner
+        // thread, which is blocked in `thread::scope` until this worker joins.
+        unsafe { with_par_cell(batch, par_nav(batch) as *const RefCell<Option<Nav>>, f) }
+    }
+}
+
+const NAV: NavSlot = NavSlot;
 
 #[no_mangle]
 pub extern "C" fn aurora_nav_init(w: i64, h: i64) {
@@ -1294,6 +1316,23 @@ thread_local! {
 struct ParWorld {
     lock: std::sync::Mutex<()>,
     world: *mut World,
+    /// The owner's OTHER runtime state, as opaque cells.
+    ///
+    /// A worker thread routed the ECS world and nothing else, so every other
+    /// subsystem the runtime owns - all of them their own `thread_local!` - was
+    /// a freshly zeroed copy on that thread. A system that pathfinds got "no
+    /// route" from a grid the program had built and filled; a system that
+    /// raycast got "nothing there" from a world full of colliders.
+    ///
+    /// Not an error and not a crash: the exact answer a caller gets when the
+    /// thing genuinely is not there, which is the worst failure mode available
+    /// because every caller already handles it. A game found it four iterations
+    /// after giving its creatures navigation they had never once used.
+    ///
+    /// Opaque because the types live in their own modules and this struct has no
+    /// business knowing them; each module casts its own back.
+    nav: *const (),
+    phys3: *const (),
 }
 
 /// A `*const ParWorld` that may be moved into a scoped worker thread.
@@ -1321,6 +1360,35 @@ thread_local! {
 
 /// Route ECS world access: the batch's shared world under a lock while this
 /// thread is inside a parallel batch, otherwise this thread's own world.
+/// The batch this thread is working for, or null when it is its own owner.
+///
+/// Exposed so a subsystem in another module can route its own state the same
+/// way the world does, without that module needing to know how batches work.
+pub(crate) fn par_batch() -> *const ParWorld {
+    PAR_WORLD.with(|c| c.get())
+}
+
+/// Borrow a subsystem cell belonging to the batch's owner, under the batch lock.
+///
+/// SAFETY: `p` must be `ParWorld::nav` or `ParWorld::phys3` from `par_batch()`,
+/// cast back to the type that module put in. Both were taken from the owner's
+/// own `thread_local!`, and `thread::scope` cannot return until every worker is
+/// joined, so the owner - blocked in that join - keeps them alive and untouched.
+pub(crate) unsafe fn with_par_cell<T, R>(p: *const ParWorld, cell: *const T,
+    f: impl FnOnce(&T) -> R) -> R {
+    let par = unsafe { &*p };
+    let _guard = par.lock.lock().unwrap();
+    f(unsafe { &*cell })
+}
+
+pub(crate) fn par_nav(p: *const ParWorld) -> *const () {
+    unsafe { &*p }.nav
+}
+
+pub(crate) fn par_phys3(p: *const ParWorld) -> *const () {
+    unsafe { &*p }.phys3
+}
+
 fn with_world<R>(f: impl FnOnce(&mut World) -> R) -> R {
     let p = PAR_WORLD.with(|c| c.get());
     if p.is_null() {
@@ -1481,9 +1549,15 @@ pub unsafe extern "C" fn aurora_run_parallel(fns: *const usize, n: i64) {
         // `as_ptr` yields `*mut World` without taking a RefCell borrow, so the
         // worker threads (which route through `PAR_WORLD` + lock) are the only
         // accessors during the scope; this thread just blocks in the join.
+        //
+        // The other subsystems are handed over the same way and for the same
+        // reason: a worker that cannot see them answers every question about
+        // them with "nothing there".
         let par = ParWorld {
             lock: std::sync::Mutex::new(()),
             world: w.as_ptr(),
+            nav: NAV.with(|n| n as *const _ as *const ()),
+            phys3: crate::phys3d::own_cell(),
         };
         run_batch(ParWorldPtr(&par), &addrs);
     });
