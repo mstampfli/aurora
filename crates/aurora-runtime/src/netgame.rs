@@ -1,4 +1,4 @@
-//! Generic multiplayer framework for games built in Aurora. The engine owns the
+﻿//! Generic multiplayer framework for games built in Aurora. The engine owns the
 //! reusable machinery - UDP transport, an authoritative server, client-side
 //! prediction + reconciliation, snapshot interpolation, lag compensation,
 //! interest management, and delta compression - but it does NOT contain any
@@ -46,8 +46,42 @@ const BOT_ID_BASE: u32 = 1000;
 /// Reserved lag-comp id range for world objects (crates). Recorded each tick so
 /// the host rewinds them for shot validation; never collides with players/bots.
 const OBJ_ID_BASE: u64 = 2000;
-/// Lag-comp sphere radius approximating a crate (half-extent ~0.4).
+/// Lag-comp sphere radius approximating a crate (half-extent ~0.4). The default
+/// for an object that never states its own size.
 const OBJ_RADIUS: f32 = 0.45;
+
+/// Layout of one replicated world object.
+///
+/// Objects began as crates - a pose and a velocity - and are the channel for any
+/// server-owned thing that is not a player. A boss is exactly that: nobody
+/// predicts it, one machine decides what it is doing, and every other machine
+/// has to agree. What a boss needs beyond a pose is its own gameplay state, so
+/// objects carry a small block of it, the same way players already do through
+/// `net_state`. Naming the layout rather than indexing 10 by hand is what makes
+/// widening it safe.
+///
+/// `0..3` position, `3..7` orientation, `7..10` linear velocity,
+/// `10..12` lag-comp collider (radius, half-height), `12..18` game state.
+const OBJ_LEN: usize = 18;
+/// First slot of the collider description.
+const OBJ_COLLIDER: usize = 10;
+/// First slot a game may write freely.
+const OBJ_STATE: usize = 12;
+/// How many game-state floats an object carries.
+const OBJ_STATE_LEN: usize = OBJ_LEN - OBJ_STATE;
+/// Wire size of one object.
+const OBJ_BYTES: usize = OBJ_LEN * 4;
+
+/// A fresh object: at the origin, upright, still, and crate-sized.
+///
+/// Upright specifically - an identity quaternion - because an object that never
+/// sets a rotation would otherwise render collapsed onto a zero quaternion.
+fn blank_object() -> [f32; OBJ_LEN] {
+    let mut o = [0.0f32; OBJ_LEN];
+    o[6] = 1.0; // qw
+    o[OBJ_COLLIDER] = OBJ_RADIUS;
+    o
+}
 
 const STATE_MAX: usize = 32; // max floats in a player state blob
 const INPUT_MAX: usize = 24; // max floats in an input blob
@@ -292,9 +326,9 @@ pub struct Session {
     world_stage_gen: [u32; WORLD_CH],
     world_stage: [Vec<f32>; WORLD_CH],
     world_stage_got: [u64; WORLD_CH],
-    objects: Vec<[f32; 10]>,
+    objects: Vec<[f32; OBJ_LEN]>,
     /// Host change-detection: objects are static until shot/bumped, so we only resend when moved.
-    last_sent_objects: Vec<[f32; 10]>,
+    last_sent_objects: Vec<[f32; OBJ_LEN]>,
     /// Transient visuals (loot drops + in-flight projectiles): host fills + replicates each
     /// frame; clients render. Each entry is [x, y, z, kind] (kind 0-2 drops, 3 rocket, 4 grenade).
     fx: Vec<[f32; 4]>,
@@ -893,8 +927,11 @@ impl Session {
                     st,
                     OBJ_ID_BASE + i as u64,
                     [o[0], o[1], o[2]],
-                    OBJ_RADIUS,
-                    0.0,
+                    // The object's own collider, so a boss is hit where a boss
+                    // looks, rather than only within a crate's radius of its
+                    // centre.
+                    o[OBJ_COLLIDER],
+                    o[OBJ_COLLIDER + 1],
                 );
             }
             self.tick += dt;
@@ -1771,13 +1808,15 @@ impl Session {
         }
     }
 
-    // --- world objects (crates): host writes + replicates; clients read ---
+    // --- world objects: host writes + replicates; clients read ---
+    //
+    // The channel for anything server-owned that is not a player - a crate, or a
+    // boss. Nobody predicts these: one machine decides what they are doing and
+    // every other machine is told, which is what makes a boss's telegraph the
+    // same telegraph on every screen.
     pub fn set_object_count(&mut self, n: usize) {
         if n > self.objects.len() {
-            // default pose: identity quaternion (qw = 1) so an object that never sets a rotation
-            // still renders upright rather than collapsed to a zero quaternion.
-            self.objects
-                .resize(n, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]);
+            self.objects.resize(n, blank_object());
         } else {
             // Retiring a crate is a departure too: drop its lag-comp ring, or its last recorded
             // sphere stays forever, both as memory and as a phantom blocker rewound shots hit.
@@ -1819,6 +1858,44 @@ impl Session {
             .map(|o| o[7 + axis.min(2)] as f64)
             .unwrap_or(0.0)
     }
+    /// Size this object's lag-compensation collider: a vertical capsule of
+    /// `radius` and `half_h` (0 = a sphere, which is what a crate is).
+    ///
+    /// A boss is not crate-sized. Leaving every object at the default meant a
+    /// swing had to reach the centre of something two metres tall to touch it,
+    /// so hits that visibly connected did nothing.
+    pub fn set_object_size(&mut self, i: usize, radius: f64, half_h: f64) {
+        if let Some(o) = self.objects.get_mut(i) {
+            o[OBJ_COLLIDER] = (radius as f32).max(0.0);
+            o[OBJ_COLLIDER + 1] = (half_h as f32).max(0.0);
+        }
+    }
+
+    /// Write one of this object's game-state floats.
+    ///
+    /// What the slots mean is the game's business - for a boss, which attack is
+    /// out and how far into it - exactly as `net_set_local_state` leaves a
+    /// player's state to the game. Replicated with the pose, so every peer reads
+    /// the same value for the same tick.
+    pub fn set_object_state(&mut self, i: usize, slot: usize, v: f64) {
+        if slot >= OBJ_STATE_LEN {
+            return;
+        }
+        if let Some(o) = self.objects.get_mut(i) {
+            o[OBJ_STATE + slot] = v as f32;
+        }
+    }
+
+    pub fn object_state(&self, i: usize, slot: usize) -> f64 {
+        if slot >= OBJ_STATE_LEN {
+            return 0.0;
+        }
+        self.objects
+            .get(i)
+            .map(|o| o[OBJ_STATE + slot] as f64)
+            .unwrap_or(0.0)
+    }
+
     pub fn object_count(&self) -> usize {
         self.objects.len()
     }
@@ -2320,8 +2397,8 @@ fn decode_world(b: &[u8]) -> Option<DecodedWorld> {
     Some((ch, gen, total, offset, vals))
 }
 
-fn encode_objects(objs: &[[f32; 10]]) -> Vec<u8> {
-    let mut b = Vec::with_capacity(3 + objs.len() * 40);
+fn encode_objects(objs: &[[f32; OBJ_LEN]]) -> Vec<u8> {
+    let mut b = Vec::with_capacity(3 + objs.len() * OBJ_BYTES);
     b.push(TAG_OBJECTS);
     b.extend_from_slice(&(objs.len() as u16).to_be_bytes());
     for o in objs {
@@ -2331,30 +2408,25 @@ fn encode_objects(objs: &[[f32; 10]]) -> Vec<u8> {
     }
     b
 }
-fn decode_objects(b: &[u8]) -> Option<Vec<[f32; 10]>> {
+fn decode_objects(b: &[u8]) -> Option<Vec<[f32; OBJ_LEN]>> {
     if b.len() < 3 || b[0] != TAG_OBJECTS {
         return None;
     }
     let count = u16::from_be_bytes([b[1], b[2]]) as usize;
     let mut objs = Vec::with_capacity(count);
-    let mut o = 3;
+    let mut at = 3;
     for _ in 0..count {
-        if o + 40 > b.len() {
+        if at + OBJ_BYTES > b.len() {
             break;
         }
-        objs.push([
-            rd_f32(b, o),
-            rd_f32(b, o + 4),
-            rd_f32(b, o + 8),
-            rd_f32(b, o + 12),
-            rd_f32(b, o + 16),
-            rd_f32(b, o + 20),
-            rd_f32(b, o + 24),
-            rd_f32(b, o + 28),
-            rd_f32(b, o + 32),
-            rd_f32(b, o + 36),
-        ]);
-        o += 40;
+        // Read by the named length rather than as an unrolled list: widening the
+        // layout must not mean remembering to add another `rd_f32` down here.
+        let mut o = [0.0f32; OBJ_LEN];
+        for (k, slot) in o.iter_mut().enumerate() {
+            *slot = rd_f32(b, at + k * 4);
+        }
+        objs.push(o);
+        at += OBJ_BYTES;
     }
     Some(objs)
 }
@@ -2458,14 +2530,20 @@ fn decode_booms(b: &[u8]) -> Option<Vec<Boom>> {
     }
     Some(booms)
 }
-fn objects_differ(a: &[[f32; 10]], b: &[[f32; 10]]) -> bool {
+fn objects_differ(a: &[[f32; OBJ_LEN]], b: &[[f32; OBJ_LEN]]) -> bool {
     if a.len() != b.len() {
         return true;
     }
-    // compare orientation too (a tumbling crate rotates even when its position barely moves)
+    // Every slot, not just the pose.
+    //
+    // Orientation counts because a tumbling crate rotates while barely moving.
+    // Game state counts for a sharper reason: a boss winding up does not move at
+    // all, so comparing only the pose would suppress the packet that carries its
+    // phase, and every other machine would show a statue until it stepped. The
+    // telegraph is the state, not the position.
     a.iter()
         .zip(b.iter())
-        .any(|(x, y)| (0..7).any(|i| (x[i] - y[i]).abs() > 1e-3))
+        .any(|(x, y)| (0..OBJ_LEN).any(|i| (x[i] - y[i]).abs() > 1e-3))
 }
 
 fn encode_fire(view_tick: u32, o: [f32; 3], d: [f32; 3], weapon: u8) -> Vec<u8> {
@@ -3094,6 +3172,26 @@ pub extern "C" fn aurora_net_object_qw(i: i64) -> f64 {
 #[no_mangle]
 pub extern "C" fn aurora_net_set_object_vel(i: i64, vx: f64, vy: f64, vz: f64) {
     with((), |s| s.set_object_vel(i.max(0) as usize, vx, vy, vz))
+}
+/// Size an object's lag-compensation collider (capsule; `half_h` 0 = a sphere).
+#[no_mangle]
+pub extern "C" fn aurora_net_set_object_size(i: i64, radius: f64, half_h: f64) {
+    with((), |s| s.set_object_size(i.max(0) as usize, radius, half_h))
+}
+/// Write one of an object's game-state floats (host), replicated with its pose.
+#[no_mangle]
+pub extern "C" fn aurora_net_set_object_state(i: i64, slot: i64, v: f64) {
+    with((), |s| {
+        s.set_object_state(i.max(0) as usize, slot.max(0) as usize, v)
+    })
+}
+/// Read one of an object's game-state floats: the host's own, or the last the
+/// host published to this client.
+#[no_mangle]
+pub extern "C" fn aurora_net_object_state(i: i64, slot: i64) -> f64 {
+    read(0.0, |s| {
+        s.object_state(i.max(0) as usize, slot.max(0) as usize)
+    })
 }
 #[no_mangle]
 pub extern "C" fn aurora_net_object_vx(i: i64) -> f64 {
