@@ -586,6 +586,9 @@ pub extern "C" fn aurora_phys3d_step(dt: f64) {
             &(),
         );
         p.query.update(&p.colliders);
+        // Just rebuilt, so the next query has nothing to do. Leaving this set
+        // would make every step cost a second rebuild on the first query after it.
+        p.query_dirty = false;
     });
 }
 
@@ -650,20 +653,48 @@ pub extern "C" fn aurora_phys3d_set_vel(h: i64, vx: f64, vy: f64, vz: f64) {
     });
 }
 
+/// Teleport a body, and move what queries can see along with it.
+///
+/// Rapier copies a body's pose down onto its colliders during `step`, so a
+/// teleport alone leaves the collider - and the query tree built from colliders -
+/// describing where the body USED to be. A program that moves a body every tick
+/// and queries without stepping (an actor driven by game rules rather than by the
+/// solver, which is most of them) then gets answers about a world one teleport
+/// stale, and a body that never steps stays at its spawn point forever as far as
+/// every raycast is concerned.
+///
+/// That is the same failure the query-dirty flag exists for: an index that
+/// silently disagrees with the world, answering confidently and wrongly. So the
+/// collider is moved here too and the tree marked for rebuild - a write to a
+/// position is a write to everything that reads positions.
 #[no_mangle]
 pub extern "C" fn aurora_phys3d_set_pos(h: i64, x: f64, y: f64, z: f64) {
     PHYS3.with(|p| {
         let mut p = p.borrow_mut();
         let Some(p) = p.as_mut() else { return };
-        if let Some(b) = rb_of(p, h).and_then(|hd| p.bodies.get_mut(hd)) {
-            let t = vector![x as Real, y as Real, z as Real];
+        let (Some(body_h), Some(col_h)) = (rb_of(p, h), col_of(p, h)) else {
+            return;
+        };
+        let t = vector![x as Real, y as Real, z as Real];
+        if let Some(b) = p.bodies.get_mut(body_h) {
             if b.is_kinematic() {
                 b.set_next_kinematic_translation(t);
-                b.set_translation(t, true);
-            } else {
-                b.set_translation(t, true);
             }
+            b.set_translation(t, true);
         }
+        // Composed through the collider's offset from its body rather than
+        // written flat, exactly as Rapier's own step does it: a collider mounted
+        // off-centre must stay off-centre after a teleport, or the shape queries
+        // answer about a body that has quietly re-centred itself.
+        let parent = p.bodies.get(body_h).map(|b| *b.position());
+        if let (Some(parent), Some(c)) = (parent, p.colliders.get_mut(col_h)) {
+            let wrt = c
+                .position_wrt_parent()
+                .copied()
+                .unwrap_or_else(Isometry::identity);
+            c.set_position(parent * wrt);
+        }
+        p.query_dirty = true;
     });
 }
 
@@ -717,6 +748,11 @@ pub extern "C" fn aurora_phys3d_remove(h: i64) -> i64 {
             &mut p.multibody,
             true,
         );
+        // The tree still holds the dead collider's handle. Rapier's generation
+        // tags make that answer nothing rather than answer wrongly, but it is
+        // still work done on every query for a body that no longer exists, and a
+        // world that respawns actors pays it forever.
+        p.query_dirty = true;
         1
     })
 }
@@ -1486,6 +1522,56 @@ mod tests {
         );
         assert_eq!(aurora_phys3d_hit_body(), live);
         assert_eq!(aurora_phys3d_overlap_sphere(7.0, 8.0, 9.0, 0.3), live);
+    }
+
+    /// A teleported body must be where queries say it is, without a step.
+    ///
+    /// Rapier syncs a body's pose down onto its colliders during `step`, and the
+    /// query tree is built from colliders - so `set_pos` alone left every
+    /// raycast, spherecast and overlap answering about the body's OLD position.
+    /// Silent, and confidently wrong in both directions at once: open space where
+    /// the body now stands, and a phantom where it used to.
+    ///
+    /// This is what an actor driven by game rules rather than by the solver does
+    /// every single tick, so the world it walked through was one teleport stale
+    /// forever.
+    #[test]
+    fn a_teleported_body_moves_for_queries_too() {
+        aurora_phys3d_init(0.0, 0.0, 0.0);
+        let b = aurora_phys3d_add_box(0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 0);
+        aurora_phys3d_step(0.016);
+        assert_eq!(aurora_phys3d_overlap_sphere(0.0, 0.0, 0.0, 0.2), b);
+
+        // No step between the move and the questions: that is the whole point.
+        aurora_phys3d_set_pos(b, 10.0, 0.0, 0.0);
+        assert_eq!(aurora_phys3d_x(b), 10.0, "the body itself did not move");
+        assert_eq!(
+            aurora_phys3d_overlap_sphere(0.0, 0.0, 0.0, 0.2),
+            -1,
+            "a phantom remained where the body used to be"
+        );
+        assert_eq!(
+            aurora_phys3d_overlap_sphere(10.0, 0.0, 0.0, 0.2),
+            b,
+            "the body is invisible to queries at its new position"
+        );
+        // And the shape is really there, not just its centre point: a ray fired
+        // down the axis must stop at its face.
+        let hit = aurora_phys3d_raycast(4.0, 0.0, 0.0, 1.0, 0.0, 0.0, 20.0);
+        assert!(
+            (hit - 5.5).abs() < 1e-3,
+            "ray met the teleported box at {hit}, expected 5.5"
+        );
+
+        // Repeated moves keep working - the flag must not latch clean.
+        aurora_phys3d_set_pos(b, 0.0, 0.0, 7.0);
+        assert_eq!(aurora_phys3d_overlap_sphere(10.0, 0.0, 0.0, 0.2), -1);
+        assert_eq!(aurora_phys3d_overlap_sphere(0.0, 0.0, 7.0, 0.2), b);
+
+        // A step must not undo it either: the collider pose written here has to
+        // agree with what the solver then propagates from the body.
+        aurora_phys3d_step(0.016);
+        assert_eq!(aurora_phys3d_overlap_sphere(0.0, 0.0, 7.0, 0.2), b);
     }
 
     /// `phys3d_init` builds a new world; handles from the old one must not
