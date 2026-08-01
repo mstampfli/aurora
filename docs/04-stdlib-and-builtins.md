@@ -399,6 +399,14 @@ window. Colors are 0..1 floats; angles are radians; handles are `i64`.
 | `r3d_anim_update(h, dt)` | advance the current clip | per frame |
 | `r3d_anim_seek(h, t)` | jump the current clip to `t` seconds | for state that is already true when you first see it - a body that went down ten seconds ago should be lying on the floor, not starting to fall over again. Cancels any crossfade in progress |
 | `r3d_clip_count(h) -> i64` | number of animation clips | |
+| `r3d_clip_duration(h, i) -> f64` | how long clip `i` runs, in seconds | 0.0 for a stale handle or a bad index. The number that lets an animation be matched to a rule: a swing whose hitbox opens on tick 42 wants `duration / (42/60)` as its speed. Playing every attack at 1.0 instead is what makes a moveset feel disconnected from what it does |
+| `r3d_anim_done(h) -> i64` | 1 when the current non-looping clip has played out | always 0 while the clip loops. Answered here rather than by exposing raw time, because "compare the time to the duration and get the looping case right" is exactly the check that rots when it is written five times. This is how a one-shot sequences into the next state without a second timer kept beside the animation's own |
+| `r3d_anim_done_upper(h) -> i64` | the same, for the upper-body overlay | the overlay keeps its own clock, so `r3d_anim_done` (which reads the base layer) cannot answer for it. Without this a masked overlay can be started and stopped but never SEQUENCED - a guard built as begin/hold/end on the arms has no way to learn its raise has finished, and sits on the first clip forever |
+| `r3d_anim_time(h) -> f64` | seconds into the current clip | |
+| `r3d_anim_clip(h) -> i64` | WHICH clip is playing | -1 for a handle that is not a model. `r3d_anim_done` and `r3d_anim_time` both answer about the current clip without ever saying which one it is, so a state machine without this keeps its own copy of what it last asked for - and that copy goes stale the moment anything else plays a clip on the same model |
+| `r3d_anim_clip_upper(h) -> i64` | which clip the upper-body overlay is playing | -1 when no overlay is running |
+| `r3d_material_count(h) -> i64` | how many drawable pieces (and so materials) a model has | |
+| `r3d_material_name(h, i) -> str` | the asset's own name for material `i` | `""` for a stale handle or a bad index. The counterpart of `r3d_clip_name`, for textures: `r3d_material_texture` binds BY NAME, so a pack whose material is called `Weapons` rather than `lambert1` renders white and says nothing. Guessing the name is how a whole weapon set stays untextured for a project's lifetime; asking takes one run |
 | `r3d_present() -> i64` | render the queue to the window | 1 while open, 0 when closed |
 
 A frame loop is `while r3d_present() { r3d_begin(); ...camera/draw...; }`. See
@@ -590,7 +598,8 @@ along walls (the core of a fluid movement shooter). Bodies are `i64` handles.
 | `phys3d_apply_impulse(h, ix,iy,iz)` | instantaneous (jumps, knockback) | dynamic bodies |
 | `phys3d_move_character(h, dx,dy,dz, dt)` | move + slide a character | read position after `step` |
 | `phys3d_grounded(h) -> i64` | is the character on the ground | 1/0 |
-| `phys3d_character_solid(h, on)` | does this character's movement collide with other characters | off by default |
+| `phys3d_character_solid(h, on)` | am I stopped by other characters | off by default. This is a FILTER: what `h`'s own movement is allowed to pass through |
+| `phys3d_character_blocking(h, on)` | do other characters stop at me | on by default. This is MEMBERSHIP: whether `h` is in the group other characters' movement collides with. Two flags rather than one because they are two questions, and a single boolean answering both gives the wrong answer to one of them - which one depends on how you collapse it. A corpse wants `blocking` off (so the living walk over it) while still being solid to nothing; a boss wants to shove the player rather than be stopped by them, which is `solid` off and `blocking` on |
 | `phys3d_raycast(x,y,z, dx,dy,dz, max) -> f64` | distance to first hit, or -1 | it hits ANY body, INCLUDING the one the ray starts inside: fired from a character's own centre it returns 0 and every shot silently stops at the muzzle. For shooting or ground probes from a body, use `phys3d_raycast_ex` / `phys3d_raycast_world` and pass that body as `exclude` |
 | `phys3d_raycast_full(x,y,z, dx,dy,dz, max) -> i64` | hit body handle (-1 none) | then read the hit below |
 | `phys3d_raycast_ex(exclude, x,y,z, dx,dy,dz, max) -> i64` | like `raycast_full`, skipping one body | probe outward from your own centre; a NEGATIVE `exclude` skips nothing |
@@ -599,6 +608,7 @@ along walls (the core of a fluid movement shooter). Bodies are `i64` handles.
 | `phys3d_hit_body() -> i64` | last hit body handle | |
 | `phys3d_spherecast(x,y,z, dx,dy,dz, r, max, ignore) -> f64` | swept-sphere distance, or -1 | thick projectiles, camera probes. `ignore` is a body handle the sweep passes through, or -1 for none - a sweep starting inside a body otherwise hits it at zero distance, which is what a camera probe from the character head always does |
 | `phys3d_overlap_sphere(x,y,z, r) -> i64` | first overlapping body, or -1 | triggers, pickups, blasts |
+| `phys3d_overlap_world(x,y,z, r) -> i64` | first overlapping WORLD body, or -1 | the same question asked of geometry only. "Is there anything here" and "is there a WALL here" are different questions, and answering the second with the first makes a creature standing in the doorway count as the doorway - so a search for somewhere to stand rejects every cell its own allies are in |
 | `phys3d_apply_force/apply_torque(h, x,y,z)` / `phys3d_set_angvel(h, x,y,z)` | dynamic forces | |
 | `phys3d_set_rot(h, qx,qy,qz,qw)` / `phys3d_rot_qx/qy/qz/qw(h) -> f64` | orientation quaternion | |
 

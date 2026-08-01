@@ -11,6 +11,21 @@
 
 use std::time::{Duration, Instant};
 
+/// Keep every socket this test opens on loopback.
+///
+/// The host and the client both bind the wildcard `0.0.0.0` by default, which is
+/// right for a real session - a loopback-bound host is reachable only from its
+/// own machine, and that failure is silent. It is wrong for a test: binding the
+/// wildcard raises the OS firewall dialog, and a suite that pops a dialog at the
+/// person running it is a suite they stop running.
+///
+/// Set once per process, before any socket is opened. Both tests want the same
+/// value, so `Once` rather than per-test bookkeeping.
+fn loopback_only() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| std::env::set_var("AURORA_NET_BIND", "127.0.0.1"));
+}
+
 /// Pump both sides until `done` holds, or give up. UDP over loopback is quick
 /// but not instant, and a fixed sleep would be either flaky or slow.
 fn pump_until(step: &mut impl FnMut(), done: impl Fn() -> bool, what: &str) {
@@ -32,6 +47,7 @@ fn pump_until(step: &mut impl FnMut(), done: impl Fn() -> bool, what: &str) {
 fn a_boss_the_host_owns_is_seen_by_a_client() {
     use std::sync::mpsc;
 
+    loopback_only();
     let port = 46101u16;
     let (to_host, host_rx) = mpsc::channel::<u8>();
     let (host_ready, ready_rx) = mpsc::channel::<()>();
@@ -123,6 +139,7 @@ fn a_boss_the_host_owns_is_seen_by_a_client() {
 fn a_stationary_objects_state_streams_rather_than_waiting_for_keyframes() {
     use std::sync::mpsc;
 
+    loopback_only();
     let port = 46102u16;
     let (to_host, host_rx) = mpsc::channel::<u8>();
     let (host_ready, ready_rx) = mpsc::channel::<()>();

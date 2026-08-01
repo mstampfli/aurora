@@ -37,3 +37,23 @@ aurora-std = { path = "crates/aurora-std" }
 [profile.release]
 opt-level = 3
 lto = "thin"
+
+# The regression suite, optimized but not link-time optimized.
+#
+# `cargo test --release` used to be the gate, and it took over ninety minutes -
+# almost all of it LINKING. Each integration test is its own binary and each one
+# pulls in the whole runtime (wgpu, rapier, symphonia, cranelift), so thin LTO
+# runs once PER TEST BINARY over a graph that size. That is the shipping
+# binary's trade, not a test's: a test wants the same optimization level so it
+# measures something like real behaviour, and has no reason to pay for
+# cross-crate inlining it will never ship.
+#
+#     cargo test --workspace --profile release-test -j 4
+#
+# Same opt-level, so the timing-sensitive tests (frame_clock, fixed_stage) still
+# measure an optimized build. `debug-assertions` stays on because a test is
+# exactly where an overflow should abort rather than wrap.
+[profile.release-test]
+inherits = "release"
+lto = false
+debug-assertions = true

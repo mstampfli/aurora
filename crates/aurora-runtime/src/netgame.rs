@@ -446,7 +446,12 @@ fn run_sim(sim_fn: usize, sim_env: usize, state: &mut [f32; STATE_MAX], input: &
 /// arrive, which looks like a firewall or routing problem rather than a bind
 /// choice. That has cost real debugging time before, so the safe value is the
 /// default and the convenient one is opt-in.
-fn host_bind_addr() -> String {
+///
+/// Applies to the CLIENT's socket too. It used to be host-only, which made the
+/// override useless for silencing the firewall: a same-machine session sets it,
+/// the host goes quiet, and then `join` binds the wildcard anyway and raises the
+/// dialog from the other side.
+fn bind_addr() -> String {
     match std::env::var("AURORA_NET_BIND") {
         Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
         _ => "0.0.0.0".to_string(),
@@ -459,7 +464,7 @@ impl Session {
         // just loopback). Same-machine clients still connect via 127.0.0.1:port. NOTE: this trips
         // the OS firewall prompt the first time you host - allow it (UDP) so joins get through, or
         // set AURORA_NET_BIND=127.0.0.1 for a silent same-machine session.
-        let sock = UdpSocket::bind((host_bind_addr().as_str(), port))?;
+        let sock = UdpSocket::bind((bind_addr().as_str(), port))?;
         sock.set_nonblocking(true)?;
         if std::env::var("AURORA_NET_TRACE").is_ok() {
             eprintln!("net trace: host bound to {:?}", sock.local_addr());
@@ -471,7 +476,12 @@ impl Session {
         // network interface to a remote host - a loopback-bound socket can only reach itself, so a
         // 127.0.0.1 bind made joining a non-local host impossible. Sending to 127.0.0.1 still works
         // from a wildcard socket, so same-machine play is unaffected.
-        let sock = UdpSocket::bind(("0.0.0.0", 0))?;
+        //
+        // `AURORA_NET_BIND` overrides it here too. It used to be honoured only
+        // by the host, which made the whole override pointless for its one
+        // purpose: the host would go quiet and the client would raise the
+        // firewall dialog from the other side of the same session.
+        let sock = UdpSocket::bind((bind_addr().as_str(), 0))?;
         sock.set_nonblocking(true)?;
         Ok(Session::base(sock, false, Some(addr)))
     }

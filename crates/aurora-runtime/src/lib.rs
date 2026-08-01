@@ -116,9 +116,11 @@ thread_local! {
     /// because `run_systems` calls it too - it is how the fixed stage learns how
     /// much time it owes - so a game that did the ordinary thing
     ///
-    ///     let dt = frame_dt()
-    ///     ...
-    ///     run_systems()
+    /// ```text
+    /// let dt = frame_dt()
+    /// ...
+    /// run_systems()
+    /// ```
     ///
     /// starved its own simulation. Played, that is a boss that takes minutes to
     /// throw its first attack, stamina that never comes back, and an attack
