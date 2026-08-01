@@ -500,6 +500,40 @@ values must be Copy and may not reference runtime resources.
 
 ## 8. Static semantics — memory, regions & borrows
 
+### 8.0 Aggregates are values
+`struct`, `[T; N]`, tuples and `str` are **value types**. Every place a name is
+bound to one, it gets its own storage:
+
+| Written | Means |
+|---|---|
+| `let b = a` | `b` is a copy; writing either leaves the other alone |
+| `b = a` | copies into `b`'s storage; `b` and `a` stay independent |
+| `s.f = a`, `v[i] = a` | copies into the field / element |
+| `fn f(p: T)` | `p` is the callee's own copy; `p.x = 1` does not reach the caller |
+| `fn f(p: &mut T)` | `p` **is** the caller's storage; `p.x = 1` writes through |
+| `fn f(p: &T)` | the caller's storage, read-only |
+| `fn m(self)` | the receiver is a reference, so `c.bump()` can change `c` |
+
+Sharing is never implicit: an out-parameter is spelled `&mut T` in the signature
+and `&mut x` at the call, so both ends say so.
+
+```aurora
+fn split(v: i64, out: &mut [i64; 2]) -> i64 {
+    out[0] = v / 10
+    out[1] = v - (v / 10) * 10
+    1
+}
+
+let mut got: [i64; 2] = [0, 0]
+split(47, &mut got)          // got == [4, 7]
+```
+
+Aggregates are held by pointer in the generated code; the copies are the moves
+the compiler inserts, elided when the right-hand side is a temporary nothing else
+can name (a literal, a constructor, a call result, a concatenation). `&x` /
+`&mut x` on an aggregate IS that pointer; a scalar local lives in a register with
+no address, so taking a reference to one is an error.
+
 ### 8.1 Ownership
 - `~T` is a uniquely-owned heap box. Assigning/passing it **moves** it; the source
   binding is invalidated (use-after-move is a compile error). Dropped automatically

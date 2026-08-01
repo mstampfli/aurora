@@ -118,6 +118,50 @@ fn is_aggregate(c: &Cty) -> bool {
     !c.is_scalar()
 }
 
+/// Is this written as a reference - `&T`, `&mut T` - possibly under a region
+/// annotation? A reference parameter shares the caller's storage on purpose.
+fn is_reference_ty(k: &TypeKind) -> bool {
+    match k {
+        TypeKind::Ref { .. } => true,
+        TypeKind::Region(_, inner) => is_reference_ty(&inner.kind),
+        _ => false,
+    }
+}
+
+/// Does evaluating this expression produce storage that nothing else can name?
+///
+/// Aggregates are held by pointer, so `let b = a` would otherwise make `b` an
+/// alias of `a` and every later write to one show up in the other. Value
+/// semantics say it must be a copy - but only when the right-hand side names
+/// storage someone else can still reach. A freshly built temporary (a literal,
+/// a constructor, a call's sret buffer, a string concat's output pair) is owned
+/// by that expression site alone, so binding it directly is both correct and
+/// free. Anything not on the fresh list is treated as a place and copied: the
+/// conservative direction costs at most one copy, while guessing "fresh" wrong
+/// silently aliases.
+fn produces_fresh_storage(k: &ExprKind) -> bool {
+    match k {
+        ExprKind::Struct { .. }
+        | ExprKind::Array(_)
+        | ExprKind::ArrayRepeat { .. }
+        | ExprKind::Tuple(_)
+        | ExprKind::Str(_)
+        | ExprKind::Call { .. }
+        | ExprKind::Binary(..)
+        | ExprKind::Spawn(_)
+        | ExprKind::Query(_) => true,
+        // `&x` / `&mut x` mean "share x" - copying would defeat the point.
+        // `*p`, `~x` and arithmetic negation do not, so they fall through.
+        ExprKind::Unary(UnOp::RefShared | UnOp::RefMut, _) => true,
+        ExprKind::Paren(inner) => produces_fresh_storage(&inner.kind),
+        ExprKind::Region { value, .. } => produces_fresh_storage(&value.kind),
+        // A path, field, index, `self`, or any branching expression whose arms
+        // may yield a place (`if c { a } else { b }`) can hand back storage that
+        // is still reachable under another name.
+        _ => false,
+    }
+}
+
 /// Reinterpret an 8-byte value as another 8-byte type (via a stack slot, so it
 /// doesn't depend on the exact `bitcast` API). Used by the closure ABI to move
 /// `f64` payloads through `i64` argument/capture/return slots without changing
@@ -792,11 +836,12 @@ fn lower(
 
     // Struct layouts: fields are laid out inline by byte_size, so NESTED AGGREGATES (array and
     // struct fields) ARE supported - stored inline as VALUE fields. Construction copies the field
-    // in (see copy_agg in tr_struct); a struct passed to a fn is by-ref, so its inline arrays/
-    // structs mutate in place. The copy-on-construct (rather than aliasing the source array's
-    // pointer) is deliberate: a struct is returned BY VALUE (sret copy), so an aliased pointer
-    // field would dangle once the constructing frame returns. (Surprise vs `let q = p` aliasing:
-    // that aliases only within a frame and is likewise copied across the sret return boundary.)
+    // in (see copy_agg in tr_struct). That is one instance of the language-wide rule: an aggregate
+    // is a VALUE. Every place a name is bound to one it takes a copy - `let`, `=`, a struct field,
+    // an array element, a parameter - and the only things that share storage are the ones written
+    // down as sharing it: `&T` / `&mut T` parameters and a method's `self`. Held by pointer under
+    // the hood, so "copy" means copy_agg; see `produces_fresh_storage` for the one case that needs
+    // no copy, an expression whose result nothing else can name.
     let mut structs = HashMap::new();
     for item in &module.items {
         if let ItemKind::Struct(s) | ItemKind::Component(s) = &item.kind {
@@ -1345,6 +1390,37 @@ fn compile_body(
     }
 
     *env.pending_vstack.borrow_mut() = Some(Vec::new());
+
+    // An aggregate argument is passed as a pointer to the caller's storage, so
+    // without this the callee's `p.x = 1` would reach back and rewrite the
+    // caller's variable - action at a distance with nothing at either the call
+    // or the signature to warn you. A parameter is a VALUE: take the copy here,
+    // once, at the top of the body.
+    //
+    // `&T` / `&mut T` opt out: there the sharing is the point, and it is written
+    // down at both ends. `self` opts out too - a method receiver is a reference,
+    // which is the whole reason `c.bump()` can change `c`.
+    //
+    // Deliberately unconditional rather than "only when the body writes to it".
+    // A write-detecting scan that misses one construct reintroduces the aliasing
+    // silently, in exactly the cases nobody tests; a copy that is never read
+    // costs a memcpy of a value small enough to pass by value in the first
+    // place. This runs after `pending_vstack` is armed so a large parameter
+    // takes its copy from the value stack rather than the frame.
+    for p in &f.params {
+        if let aurora_ast::Param::Normal { name, ty, .. } = p {
+            let cty = env.cty(&ty.kind);
+            if !is_aggregate(&cty) || is_reference_ty(&ty.kind) {
+                continue;
+            }
+            let (var, _) = locals.scope[&name.name];
+            let incoming = b.use_var(var);
+            let own = alloc(&mut b, env, agg_slots(env, &cty));
+            copy_agg(&mut b, env, own, 0, incoming, &cty);
+            b.def_var(var, own);
+        }
+    }
+
     let term = tr_block(jmod, &mut b, &mut locals, env, f.body.as_ref().unwrap())?;
     let pending = env.pending_vstack.borrow_mut().take().unwrap_or_default();
     if let Term::Val(v, _) = term {
@@ -2092,10 +2168,23 @@ fn tr_block_inner(
         }
         match stmt {
             Stmt::Let(let_stmt) => {
-                let init = match &let_stmt.init {
+                let mut init = match &let_stmt.init {
                     Some(e) => val(m, b, l, env, e)?,
                     None => (b.ins().iconst(types::I64, 0), Cty::I64),
                 };
+                // Binding an aggregate that someone else can still name has to
+                // take a copy, or the two names share storage forever.
+                if is_aggregate(&init.1) {
+                    let fresh = match &let_stmt.init {
+                        Some(e) => produces_fresh_storage(&e.kind),
+                        None => true,
+                    };
+                    if !fresh {
+                        let own = alloc(b, env, agg_slots(env, &init.1));
+                        copy_agg(b, env, own, 0, init.0, &init.1);
+                        init.0 = own;
+                    }
+                }
                 // Report a simple binding (scalar or aggregate) to the debugger.
                 if env.debug {
                     if let PatKind::Binding { name, .. } = &let_stmt.pat.kind {
@@ -2402,6 +2491,20 @@ fn tr_expr(
                     let zero = b.ins().iconst(types::I64, 0);
                     let c = b.ins().icmp(IntCC::Equal, xv, zero);
                     (b.ins().uextend(types::I64, c), Cty::I64)
+                }
+                // An aggregate is already held as a pointer to its storage, so
+                // `&x` / `&mut x` IS that pointer - the marker's job is to say
+                // at the call site that the callee shares this storage instead
+                // of copying it. A scalar local lives in an SSA value with no
+                // address, so there is nothing to point at; say so rather than
+                // handing back the value and pretending.
+                UnOp::RefShared | UnOp::RefMut if is_aggregate(&xt) => (xv, xt),
+                UnOp::RefShared | UnOp::RefMut => {
+                    return Err(
+                        "cannot take a reference to a scalar in JIT: only aggregates \
+                         (struct, array, tuple, str) have storage to point at"
+                            .into(),
+                    )
                 }
                 _ => return Err("unsupported unary operator in JIT".into()),
             }
@@ -4444,6 +4547,21 @@ fn assign(
                     apply_bin(b, *binop, cur, vty, rv, rt)?.0
                 }
             };
+            if is_aggregate(&report_cty) {
+                // A variable IS its storage. Overwrite the bytes rather than
+                // rebinding the pointer: rebinding would alias the right-hand
+                // side (so a later write to either shows up in both), and it
+                // would silently stop writing through a binding that really is
+                // a reference, such as a `&mut` component from a query loop.
+                let dst = b.use_var(var);
+                if dst != newv {
+                    copy_agg(b, env, dst, 0, newv, &report_cty);
+                }
+                if env.debug {
+                    emit_dbg_value(m, b, env, name, dst, &report_cty);
+                }
+                return Ok(());
+            }
             b.def_var(var, newv);
             // Report the updated value to an attached debugger.
             if env.debug {
@@ -4990,12 +5108,17 @@ fn ty_to_cty(kind: &TypeKind) -> Cty {
         }
         // A region annotation is checking-only; the representation is the inner type.
         TypeKind::Region(_, inner) => ty_to_cty(&inner.kind),
+        // `&T`, `&mut T` and `~T` are the inner type's representation. Aggregates
+        // are already held by pointer, so a reference to one is the same machine
+        // value - what the marker changes is who owns the storage, which is a
+        // checking question, not a layout one. These used to fall to the `_` arm
+        // below and silently become `i64`: `fn f(out: &mut [f64; 2])` compiled,
+        // then indexed an integer.
+        TypeKind::Ref { inner, .. } | TypeKind::Owned(inner) => ty_to_cty(&inner.kind),
         _ => Cty::I64,
     }
 }
 
-/// Codegen ABI for a top-level function: parameter types + return type. A unit
-/// return maps to i64 (returns 0).
 thread_local! {
     /// Integer consts usable as array lengths in TYPE positions, by name.
     ///
@@ -5190,6 +5313,8 @@ fn extern_symbol(attrs: &[aurora_ast::Attr], fn_name: &str) -> String {
     fn_name.to_string()
 }
 
+/// Codegen ABI for a top-level function: parameter types + return type. A unit
+/// return maps to i64 (returns 0).
 fn fn_abi(f: &aurora_ast::FnDecl) -> (Vec<Cty>, Cty) {
     let params = f
         .params
