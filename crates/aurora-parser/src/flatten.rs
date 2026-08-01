@@ -198,17 +198,24 @@ fn mangle_item(item: &mut Item, prefix: &str) {
 
 // --- reference rewriting ----------------------------------------------------
 
+/// Parameter and return types, wherever a function is written - top level, in
+/// an `impl`, or in a `trait`. One place, because three copies is how the
+/// `impl` arm ended up rewriting bodies and not signatures.
+fn rewrite_fn_signature(f: &mut aurora_ast::FnDecl, cx: &Cx) {
+    for p in &mut f.params {
+        if let Param::Normal { ty, .. } = p {
+            rewrite_type(ty, cx);
+        }
+    }
+    if let Some(t) = &mut f.ret {
+        rewrite_type(t, cx);
+    }
+}
+
 fn rewrite_item(item: &mut Item, cx: &Cx) {
     match &mut item.kind {
         ItemKind::Fn(f) => {
-            for p in &mut f.params {
-                if let Param::Normal { ty, .. } = p {
-                    rewrite_type(ty, cx);
-                }
-            }
-            if let Some(t) = &mut f.ret {
-                rewrite_type(t, cx);
-            }
+            rewrite_fn_signature(f, cx);
             // Parameters are in scope for the body: they shadow module items.
             let body_cx = cx.with_bound(param_names(&f.params));
             if let Some(b) = &mut f.body {
@@ -219,10 +226,48 @@ fn rewrite_item(item: &mut Item, cx: &Cx) {
             if let aurora_ast::StructBody::Named(fields) = &mut s.body {
                 for fd in fields {
                     rewrite_type(&mut fd.ty, cx);
+                    // A field default is an expression and can name a sibling
+                    // const: `component Spinner { speed: f32 = BASE_SPEED }`.
+                    if let Some(d) = &mut fd.default {
+                        rewrite_expr(d, cx);
+                    }
                 }
             }
         }
-        ItemKind::Const(c) => rewrite_expr(&mut c.value, cx),
+        // The DECLARED TYPE counts as much as the value. `const T: [str; N]`
+        // and `const HOME: Actor` both name sibling items inside the type, and
+        // rewriting only the value left the annotation pointing at names that no
+        // longer exist after mangling - so the length silently went unresolved
+        // and the type silently went unknown.
+        ItemKind::Const(c) => {
+            if let Some(t) = &mut c.ty {
+                rewrite_type(t, cx);
+            }
+            rewrite_expr(&mut c.value, cx);
+        }
+        // An enum variant's payload types are types too. Latent rather than
+        // reported, because no module has declared `Hit(Actor)` yet - but it is
+        // the same miss, and finding it a fourth time by symptom is not a plan.
+        ItemKind::Enum(e) => {
+            for v in &mut e.variants {
+                match &mut v.data {
+                    aurora_ast::VariantData::Tuple(ts) => {
+                        for t in ts {
+                            rewrite_type(t, cx);
+                        }
+                    }
+                    aurora_ast::VariantData::Struct(fields) => {
+                        for fd in fields {
+                            rewrite_type(&mut fd.ty, cx);
+                        }
+                    }
+                    aurora_ast::VariantData::Unit => {}
+                }
+                if let Some(d) = &mut v.discriminant {
+                    rewrite_expr(d, cx);
+                }
+            }
+        }
         // A system's body names components, and its schedule names sibling
         // systems. Neither was being rewritten, so a system declared in a module
         // could not see its own components: the declaration became `m::Player`
@@ -247,8 +292,12 @@ fn rewrite_item(item: &mut Item, cx: &Cx) {
         }
         ItemKind::Impl(im) => {
             rewrite_type(&mut im.self_ty, cx);
+            if let Some(t) = &mut im.trait_ {
+                rewrite_path(t, cx);
+            }
             for it in &mut im.items {
                 if let AssocItem::Fn(f) = it {
+                    rewrite_fn_signature(f, cx);
                     let mut names = param_names(&f.params);
                     names.push("self".into());
                     let body_cx = cx.with_bound(names);
@@ -258,7 +307,31 @@ fn rewrite_item(item: &mut Item, cx: &Cx) {
                 }
             }
         }
-        _ => {}
+        // A trait's method signatures name types the same way an impl's do, and
+        // a default body is a body.
+        ItemKind::Trait(t) => {
+            for p in &mut t.supertraits {
+                rewrite_path(p, cx);
+            }
+            for it in &mut t.items {
+                if let AssocItem::Fn(f) = it {
+                    rewrite_fn_signature(f, cx);
+                    let mut names = param_names(&f.params);
+                    names.push("self".into());
+                    let body_cx = cx.with_bound(names);
+                    if let Some(b) = &mut f.body {
+                        rewrite_block(b, &body_cx);
+                    }
+                }
+            }
+        }
+        ItemKind::Pipeline(p) => {
+            for f in &mut p.fields {
+                rewrite_expr(&mut f.value, cx);
+            }
+        }
+        ItemKind::Comptime(b) => rewrite_block(b, cx),
+        ItemKind::Use(_) | ItemKind::Mod(..) | ItemKind::Error => {}
     }
 }
 
@@ -277,7 +350,20 @@ fn rewrite_type(ty: &mut Type, cx: &Cx) {
             }
         }
         TypeKind::Dyn(p) => rewrite_path(p, cx),
-        TypeKind::Array { elem, .. } => rewrite_type(elem, cx),
+        // The LENGTH counts too. `[str; CLIP_COUNT]` inside a module names a
+        // sibling const, and dropping it here left the type saying bare
+        // `CLIP_COUNT` while the const had been mangled to `scene::CLIP_COUNT`.
+        // Neither the type checker nor codegen could then resolve the length, so
+        // the array silently became unsized / zero-length - the same class of
+        // miss as the two bugs before it, and for the same reason: an array
+        // type's length is an EXPRESSION hiding inside a type, and every pass
+        // that walks types forgets it.
+        TypeKind::Array { elem, len } => {
+            rewrite_type(elem, cx);
+            if let Some(n) = len {
+                rewrite_expr(n, cx);
+            }
+        }
         TypeKind::Tuple(ts) => {
             for t in ts {
                 rewrite_type(t, cx);
@@ -600,6 +686,42 @@ mod tests {
         assert!(
             calls_qualified,
             "a real sibling-fn call must stay qualified"
+        );
+    }
+
+    /// `[str; N]` inside a module must carry the mangled `m::N`.
+    ///
+    /// The length of an array type is an expression hiding inside a type, and
+    /// `rewrite_type` walked the element and dropped it. The const was mangled
+    /// to `m::N` and the type still said `N`, so nothing downstream could
+    /// resolve the length: the type checker read an unsized `[str]` and codegen
+    /// read zero. In one file it worked, which is why the game only found it
+    /// once a real table moved into a module.
+    #[test]
+    fn an_array_length_naming_a_sibling_const_is_qualified() {
+        let src = "mod m {\n  const N: i64 = 3\n  const T: [str; N] = [\"a\", \"b\", \"c\"]\n}";
+        let (module, diags) = crate::parse_str(src);
+        assert!(
+            !diags.iter().any(|d| d.is_error()),
+            "parse errors: {diags:?}"
+        );
+        let flat = flatten_modules_tracked(module.items).0;
+        let mut seen = None;
+        for it in &flat {
+            if let ItemKind::Const(c) = &it.kind {
+                if c.name.name == "m::T" {
+                    if let aurora_ast::TypeKind::Array { len: Some(n), .. } = &c.ty.as_ref().unwrap().kind {
+                        if let ExprKind::Path(p) = &n.kind {
+                            seen = Some(p.segments[0].ident.name.clone());
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            seen.as_deref(),
+            Some("m::N"),
+            "the array length `N` was left unqualified, so its const cannot be found"
         );
     }
 }
