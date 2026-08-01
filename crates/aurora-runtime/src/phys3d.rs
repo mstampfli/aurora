@@ -1286,6 +1286,39 @@ pub extern "C" fn aurora_phys3d_spherecast(
 /// First body whose collider overlaps a sphere at (x,y,z); -1 if none. Triggers,
 /// pickups, explosion queries.
 #[no_mangle]
+/// Like `phys3d_overlap_sphere`, but only the WORLD - never a character.
+///
+/// A third-person camera needs room around itself and pulls in when it does not
+/// have it. Asking the unfiltered query means a creature walking behind the
+/// player is a wall: the camera lunges in, the creature steps aside, the camera
+/// springs back, and at sixty frames a second that reads as the view shaking
+/// rather than as anything to do with the fight.
+///
+/// Characters are group 2 and the world is group 1, so the distinction already
+/// exists in the physics - it was simply not askable. Which is the same shape as
+/// every other gap this engine has had: the information was there and the
+/// question was not.
+#[no_mangle]
+pub extern "C" fn aurora_phys3d_overlap_world(x: f64, y: f64, z: f64, radius: f64) -> i64 {
+    PHYS3.with(|p| {
+        let mut p = p.borrow_mut();
+        let Some(p) = p.as_mut() else { return -1 };
+        p.sync_queries();
+        let shape = Ball::new(radius as Real);
+        let pos = Isometry::translation(x as Real, y as Real, z as Real);
+        let filter = QueryFilter::default()
+            .groups(InteractionGroups::new(Group::ALL, Group::GROUP_1));
+        match p
+            .query
+            .intersection_with_shape(&p.bodies, &p.colliders, &pos, &shape, filter)
+        {
+            Some(ch) => body_handle_of(p, ch),
+            None => -1,
+        }
+    })
+}
+
+#[no_mangle]
 pub extern "C" fn aurora_phys3d_overlap_sphere(x: f64, y: f64, z: f64, radius: f64) -> i64 {
     PHYS3.with(|p| {
         let mut p = p.borrow_mut();

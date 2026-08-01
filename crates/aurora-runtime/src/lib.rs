@@ -109,6 +109,26 @@ pub extern "C" fn aurora_runtime_shutdown() {
 
 thread_local! {
     static LAST_FRAME: RefCell<Option<std::time::Instant>> = const { RefCell::new(None) };
+    /// This frame's delta, once measured.
+    ///
+    /// `frame_dt` used to be a DESTRUCTIVE read: every call reset the frame
+    /// timer, so the second caller in a frame got roughly zero. That matters
+    /// because `run_systems` calls it too - it is how the fixed stage learns how
+    /// much time it owes - so a game that did the ordinary thing
+    ///
+    ///     let dt = frame_dt()
+    ///     ...
+    ///     run_systems()
+    ///
+    /// starved its own simulation. Played, that is a boss that takes minutes to
+    /// throw its first attack, stamina that never comes back, and an attack
+    /// frozen on its last frame, while every headless test passes - because a
+    /// test pins the step with `set_fixed_dt`, which makes `frame_dt` a constant
+    /// and hides the whole thing.
+    ///
+    /// Measured once per frame now and reused until the frame is presented,
+    /// which is what every engine means by delta time.
+    static FRAME_DT: std::cell::Cell<Option<f64>> = const { std::cell::Cell::new(None) };
 }
 
 /// Real elapsed seconds since the previous call (0.016 on the first call),
@@ -125,14 +145,26 @@ pub extern "C" fn aurora_frame_dt() -> f64 {
         data::advance_virtual_time(fixed);
         return fixed;
     }
-    LAST_FRAME.with(|c| {
+    // Already measured this frame: the same answer, not a fresh near-zero one.
+    if let Some(dt) = FRAME_DT.with(|c| c.get()) {
+        return dt;
+    }
+    let dt = LAST_FRAME.with(|c| {
         let now = std::time::Instant::now();
         let dt = match c.borrow_mut().replace(now) {
             Some(prev) => now.duration_since(prev).as_secs_f64(),
             None => 1.0 / 60.0,
         };
         dt.clamp(0.0001, 0.1)
-    })
+    });
+    FRAME_DT.with(|c| c.set(Some(dt)));
+    dt
+}
+
+/// Forget this frame's delta so the next one is measured afresh. Called when a
+/// frame is presented, which is what ends a frame.
+pub(crate) fn end_frame_dt() {
+    FRAME_DT.with(|c| c.set(None));
 }
 
 /// Sleep the calling thread for `ms` milliseconds. For pacing a loop that has no
@@ -2157,6 +2189,8 @@ pub extern "C" fn aurora_window_present() -> i64 {
     // snapshot that is only advanced when someone remembers to is one that
     // reports every held button as a fresh press forever.
     aurora_input_step();
+    // And this frame's delta is spent. The next call measures a new one.
+    end_frame_dt();
     if open {
         1
     } else {
@@ -2792,6 +2826,8 @@ pub extern "C" fn aurora_r3d_present() -> i64 {
     let open = aurora_window::imm_r3d_present(&rgba, w, h);
     // The frame is over: advance the input edge snapshot. See `input_step`.
     aurora_input_step();
+    // And this frame's delta is spent. The next call measures a new one.
+    end_frame_dt();
     if open {
         1
     } else {
