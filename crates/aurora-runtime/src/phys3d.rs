@@ -65,6 +65,33 @@ struct Phys3 {
     hit_point: [f64; 3],
     hit_normal: [f64; 3],
     hit_body: i64,
+    /// Colliders have changed since the query structure was last rebuilt.
+    ///
+    /// Rapier's `QueryPipeline` only knows about colliders it has been updated
+    /// with, and that update used to happen only in `step`. A program that added
+    /// bodies and then queried without stepping got truthful answers about an
+    /// EMPTY world - indistinguishable at the call site from open space, since
+    /// "nothing there" and "nothing indexed" both come back as -1.
+    ///
+    /// That cost six iterations of chasing a camera that was working perfectly:
+    /// its spherecast reported a clear ray aimed straight at a wall, and every
+    /// guard built on the answer was correct and inert. A query that cannot
+    /// answer must rebuild or refuse, never invent.
+    query_dirty: bool,
+}
+
+impl Phys3 {
+    /// Bring the query structure up to date if colliders have moved or changed.
+    ///
+    /// Called by every spatial query rather than by the caller, so forgetting to
+    /// step can no longer be mistaken for an empty world. The cost lands once per
+    /// batch of mutations, which is where it belongs.
+    fn sync_queries(&mut self) {
+        if self.query_dirty {
+            self.query.update(&self.colliders);
+            self.query_dirty = false;
+        }
+    }
 }
 
 thread_local! {
@@ -123,6 +150,8 @@ pub extern "C" fn aurora_phys3d_init(gx: f64, gy: f64, gz: f64) {
             hit_point: [0.0; 3],
             hit_normal: [0.0; 3],
             hit_body: -1,
+            // Nothing indexed yet, and nothing to index.
+            query_dirty: false,
         });
     });
 }
@@ -142,6 +171,7 @@ fn push_body(p: &mut Phys3, rb: RigidBody, col: Collider) -> i64 {
     if let Some(c) = p.colliders.get_mut(collider) {
         c.user_data = id.to_i64() as u128;
     }
+    p.query_dirty = true;
     id.to_i64()
 }
 
@@ -837,8 +867,9 @@ pub extern "C" fn aurora_phys3d_raycast(
     max: f64,
 ) -> f64 {
     PHYS3.with(|p| {
-        let p = p.borrow();
-        let Some(p) = p.as_ref() else { return -1.0 };
+        let mut p = p.borrow_mut();
+        let Some(p) = p.as_mut() else { return -1.0 };
+        p.sync_queries();
         let dir = vector![dx as Real, dy as Real, dz as Real];
         let ray = Ray::new(point![x as Real, y as Real, z as Real], dir);
         match p.query.cast_ray(
@@ -1094,8 +1125,9 @@ pub extern "C" fn aurora_phys3d_spherecast(
     ignore: i64,
 ) -> f64 {
     PHYS3.with(|p| {
-        let p = p.borrow();
-        let Some(p) = p.as_ref() else { return -1.0 };
+        let mut p = p.borrow_mut();
+        let Some(p) = p.as_mut() else { return -1.0 };
+        p.sync_queries();
         let dir = vector![dx as Real, dy as Real, dz as Real];
         let len = dir.norm();
         if len < 1e-6 {
@@ -1128,8 +1160,9 @@ pub extern "C" fn aurora_phys3d_spherecast(
 #[no_mangle]
 pub extern "C" fn aurora_phys3d_overlap_sphere(x: f64, y: f64, z: f64, radius: f64) -> i64 {
     PHYS3.with(|p| {
-        let p = p.borrow();
-        let Some(p) = p.as_ref() else { return -1 };
+        let mut p = p.borrow_mut();
+        let Some(p) = p.as_mut() else { return -1 };
+        p.sync_queries();
         let shape = Ball::new(radius as Real);
         let pos = Isometry::translation(x as Real, y as Real, z as Real);
         match p.query.intersection_with_shape(
