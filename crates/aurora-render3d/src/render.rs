@@ -774,13 +774,13 @@ impl Renderer3D {
 
         let (obj_cap, joint_cap) = (256u64, 16u64);
         let (obj_buf, joint_buf, obj_bg) = make_ring(device, &obj_layout, obj_cap, joint_cap);
-        let depth = make_depth(device, w.max(1), h.max(1), sample_count);
+        let depth = make_depth(device, crate::tex_dim(w), crate::tex_dim(h), sample_count);
         let msaa_color = if sample_count > 1 {
             Some(make_msaa_color(
                 device,
                 color_format,
-                w.max(1),
-                h.max(1),
+                crate::tex_dim(w),
+                crate::tex_dim(h),
                 sample_count,
             ))
         } else {
@@ -1074,7 +1074,7 @@ impl Renderer3D {
             sky_top: [0.20, 0.40, 0.75, 1.0],
             sky_horizon: [0.70, 0.80, 0.92, 1.0],
             counts: [0.0, 1.0, 0.0, 0.0],
-            screen: [w.max(1) as f32, h.max(1) as f32, 1.0, 0.0],
+            screen: [crate::tex_dim(w) as f32, crate::tex_dim(h) as f32, 1.0, 0.0],
             lights: [PointLightU {
                 pos_range: [0.0; 4],
                 color_int: [0.0; 4],
@@ -1097,7 +1097,7 @@ impl Renderer3D {
             joint_scratch: Vec::new(),
             inst_scratch: Vec::new(),
             depth,
-            depth_size: (w.max(1), h.max(1)),
+            depth_size: (crate::tex_dim(w), crate::tex_dim(h)),
             sample_count,
             color_format,
             msaa_color,

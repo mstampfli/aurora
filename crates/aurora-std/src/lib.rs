@@ -486,6 +486,34 @@ fn fill_rect(x: i64, y: i64, w: i64, h: i64, r: i64, g: i64, b: i64) {
 // bright scene, transparent enough that the scene is still there. `fill_rect`
 // is the opaque case and stays a pair of triangles; this one is a single
 // builtin because it runs every frame over thousands of pixels.
+// Distance between two points on the ground plane (x, z).
+//
+// A 3D game measures range, reach and separation on the floor constantly, and
+// `sqrt(dx*dx + dz*dz)` written inline is both noise and a place to get a sign
+// or an axis wrong. `Vec2::dist` exists but takes structs; this takes the four
+// scalars a position pair actually arrives as.
+// The length of a ground-plane offset.
+//
+// The other half of the same formula: code that needs the DIRECTION as well as
+// the distance keeps the deltas and wants their length, and code that only needs
+// the distance wants `dist2d`. Both are this one line, so there is one line.
+fn len2d(dx: f64, dz: f64) -> f64 {
+    sqrt(dx * dx + dz * dz)
+}
+
+fn dist2d(ax: f64, az: f64, bx: f64, bz: f64) -> f64 {
+    len2d(ax - bx, az - bz)
+}
+
+// The same, squared. For comparing distances without the square root, which is
+// the right thing in a loop over every creature - and a named function so the
+// optimisation cannot be mistaken for a bug by the next reader.
+fn dist2d_sq(ax: f64, az: f64, bx: f64, bz: f64) -> f64 {
+    let dx = ax - bx
+    let dz = az - bz
+    dx * dx + dz * dz
+}
+
 fn fill_rect_a(x: i64, y: i64, w: i64, h: i64, r: i64, g: i64, b: i64, a: i64) {
     fill_rect_alpha(x, y, w, h, r, g, b, a)
 }

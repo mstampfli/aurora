@@ -208,9 +208,7 @@ impl Scene {
     pub fn set_camera(&mut self, eye: Vec3, target: Vec3, fov_deg: f32) {
         self.cam.eye = eye;
         self.cam.target = target;
-        self.cam.fov_y = fov_deg
-            .to_radians()
-            .clamp(0.05, std::f32::consts::PI - 0.05);
+        self.cam.fov_y = crate::fov_radians(fov_deg);
         self.update_camera();
     }
 

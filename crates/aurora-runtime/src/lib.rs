@@ -286,7 +286,7 @@ pub extern "C" fn aurora_clear(r: i64, g: i64, b: i64) {
     let c = color(r, g, b);
     FB.with(|fb| {
         if let Some(f) = fb.borrow_mut().as_mut() {
-            f.clear(aurora_gfx::Color::rgba(c.r, c.g, c.b, 0));
+            f.erase(c);
         }
     });
 }
@@ -343,20 +343,7 @@ pub extern "C" fn aurora_fill_rect_alpha(
     let c = aurora_gfx::Color::rgba(c.r, c.g, c.b, a.clamp(0, 255) as u8);
     FB.with(|fb| {
         if let Some(f) = fb.borrow_mut().as_mut() {
-            let (fw, fh) = (f.width() as i64, f.height() as i64);
-            let x0 = x.max(0);
-            let y0 = y.max(0);
-            let x1 = (x + w).min(fw);
-            let y1 = (y + h).min(fh);
-            let mut py = y0;
-            while py < y1 {
-                let mut px = x0;
-                while px < x1 {
-                    f.set(px as i32, py as i32, c);
-                    px += 1;
-                }
-                py += 1;
-            }
+            f.fill_rect(x, y, w, h, c);
         }
     });
 }

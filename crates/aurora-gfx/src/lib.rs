@@ -82,6 +82,43 @@ impl Framebuffer {
         }
     }
 
+    /// Clear to a colour but TRANSPARENT - what the `clear` builtin means.
+    ///
+    /// The semantic lives here, not in the runtime, because the interpreter
+    /// implements the same builtins against this same type and had its own copy
+    /// of it. The copies had already drifted: the runtime erased (alpha 0) and
+    /// the interpreter cleared opaque, so the same program composited a HUD
+    /// differently depending on which back end ran it.
+    pub fn erase(&mut self, color: Color) {
+        self.clear(Color::rgba(color.r, color.g, color.b, 0));
+    }
+
+    /// Fill a clipped axis-aligned rectangle. `w`/`h` of 0 or less draw nothing,
+    /// and the rectangle is clipped to the framebuffer rather than erroring.
+    ///
+    /// One implementation for both back ends, and a span fill rather than a
+    /// per-pixel builtin loop: a full-width HUD plate is tens of thousands of
+    /// pixels every frame.
+    pub fn fill_rect(&mut self, x: i64, y: i64, w: i64, h: i64, color: Color) {
+        if w <= 0 || h <= 0 {
+            return;
+        }
+        let (fw, fh) = (self.width as i64, self.height as i64);
+        let x0 = x.max(0);
+        let y0 = y.max(0);
+        let x1 = (x + w).min(fw);
+        let y1 = (y + h).min(fh);
+        let mut py = y0;
+        while py < y1 {
+            let mut px = x0;
+            while px < x1 {
+                self.set(px as i32, py as i32, color);
+                px += 1;
+            }
+            py += 1;
+        }
+    }
+
     pub fn get(&self, x: u32, y: u32) -> Color {
         self.pixels[(y * self.width + x) as usize]
     }
@@ -418,5 +455,48 @@ mod alpha_tests {
         let mut ghost = Framebuffer::new(2, 1);
         ghost.set(0, 0, Color::rgba(90, 80, 70, 3));
         assert_eq!(opaque.to_ppm(), ghost.to_ppm());
+    }
+}
+
+#[cfg(test)]
+mod shared_raster_semantics {
+    use super::*;
+
+    // These live on Framebuffer so the compiled runtime and the interpreter
+    // cannot disagree about what a builtin MEANS. They already had: `clear`
+    // erased in one and painted opaque in the other, so the same program
+    // composited a HUD differently depending on which back end ran it.
+    #[test]
+    fn erase_keeps_the_colour_and_drops_the_coverage() {
+        let mut fb = Framebuffer::new(2, 2);
+        fb.erase(Color::rgb(20, 30, 60));
+        let px = fb.get(0, 0);
+        assert_eq!((px.r, px.g, px.b), (20, 30, 60));
+        assert_eq!(px.a, 0, "clear must erase the HUD, not paint over the scene");
+    }
+
+    #[test]
+    fn fill_rect_clips_instead_of_erroring() {
+        let mut fb = Framebuffer::new(4, 4);
+        // Straddles every edge at once.
+        fb.fill_rect(-2, -2, 100, 100, Color::rgba(1, 2, 3, 200));
+        assert_eq!(fb.get(0, 0), Color::rgba(1, 2, 3, 200));
+        assert_eq!(fb.get(3, 3), Color::rgba(1, 2, 3, 200));
+    }
+
+    #[test]
+    fn an_empty_rect_draws_nothing() {
+        let mut fb = Framebuffer::new(2, 2);
+        fb.fill_rect(0, 0, 0, 5, Color::rgb(255, 0, 0));
+        fb.fill_rect(0, 0, 5, 0, Color::rgb(255, 0, 0));
+        fb.fill_rect(0, 0, -3, -3, Color::rgb(255, 0, 0));
+        assert_eq!(fb.get(0, 0), Color::CLEAR);
+    }
+
+    #[test]
+    fn a_rect_entirely_offscreen_touches_nothing() {
+        let mut fb = Framebuffer::new(2, 2);
+        fb.fill_rect(50, 50, 4, 4, Color::rgb(255, 0, 0));
+        assert_eq!(fb.get(1, 1), Color::CLEAR);
     }
 }

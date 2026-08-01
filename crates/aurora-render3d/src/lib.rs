@@ -75,6 +75,29 @@ pub fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
 
 /// Render the renderer's queued draws into a fresh offscreen `Rgba8Unorm`
 /// texture and read the pixels back (tight `w*h*4` bytes). For tests/tools.
+/// A camera's vertical field of view in radians, clamped away from the
+/// degenerate ends.
+///
+/// At 0 or at PI the projection matrix collapses and the scene renders as
+/// nothing or as garbage, so the bounds are structural rather than taste. Named
+/// because the clamp was one inline expression with two magic numbers and no
+/// explanation, which is how a second copy gets written the first time anyone
+/// sets a FOV from a different path - and the second copy never agrees.
+pub fn fov_radians(degrees: f32) -> f32 {
+    degrees
+        .to_radians()
+        .clamp(0.05, std::f32::consts::PI - 0.05)
+}
+
+/// A texture dimension that wgpu will accept: never zero.
+///
+/// A window minimised to 0x0, or a capture requested at zero size, otherwise
+/// reaches texture creation and panics. Repeated at six sites in this crate,
+/// each with its own `.max(1)`, so the rule is named once.
+pub fn tex_dim(v: u32) -> u32 {
+    v.max(1)
+}
+
 pub fn render_offscreen(
     r: &mut Renderer3D,
     device: &wgpu::Device,

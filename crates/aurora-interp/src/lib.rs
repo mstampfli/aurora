@@ -768,9 +768,34 @@ impl<'a> Interp<'a> {
                 Ok(Value::Unit)
             }
             "clear" => {
+                // `erase`, not `clear`: the builtin means "clear to this colour,
+                // TRANSPARENT". That semantic lives on Framebuffer so this back
+                // end and the compiled runtime cannot disagree about it - they
+                // already had, this one clearing opaque while the runtime erased,
+                // so the same program composited a HUD differently depending on
+                // which back end ran it.
                 let c = color_arg(&argv, 0);
                 if let Some(fb) = &mut self.gfx {
-                    fb.clear(c);
+                    fb.erase(c);
+                }
+                Ok(Value::Unit)
+            }
+            "pixel_alpha" => {
+                let (x, y) = (int_arg(&argv, 0) as i32, int_arg(&argv, 1) as i32);
+                let c = color_arg(&argv, 2);
+                let a = int_arg(&argv, 5).clamp(0, 255) as u8;
+                if let Some(fb) = &mut self.gfx {
+                    fb.set(x, y, aurora_gfx::Color::rgba(c.r, c.g, c.b, a));
+                }
+                Ok(Value::Unit)
+            }
+            "fill_rect_alpha" => {
+                let (x, y) = (int_arg(&argv, 0) as i64, int_arg(&argv, 1) as i64);
+                let (w, h) = (int_arg(&argv, 2) as i64, int_arg(&argv, 3) as i64);
+                let c = color_arg(&argv, 4);
+                let a = int_arg(&argv, 7).clamp(0, 255) as u8;
+                if let Some(fb) = &mut self.gfx {
+                    fb.fill_rect(x, y, w, h, aurora_gfx::Color::rgba(c.r, c.g, c.b, a));
                 }
                 Ok(Value::Unit)
             }
