@@ -1075,6 +1075,17 @@ impl Scene {
         }
     }
 
+    /// Start a clip from the top even if it is already playing.
+    ///
+    /// `anim_play` is idempotent so a frame loop can state what should be on
+    /// screen without re-seeding the clock. This is the explicit "again": the
+    /// second light attack of a combo that reuses one clip has to replay it.
+    pub fn anim_restart(&mut self, handle: i64, clip: i64, looping: bool, speed: f32, fade: f32) {
+        if let Some(r) = self.item_mut(handle) {
+            r.player.restart(clip.max(0) as usize, looping, speed, fade);
+        }
+    }
+
     /// Advance a model's current animation by `dt` seconds.
     pub fn anim_update(&mut self, handle: i64, dt: f32) {
         // Split borrow: take the model out by reference for sampling.

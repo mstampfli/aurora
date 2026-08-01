@@ -1139,6 +1139,12 @@ pub fn r3d_anim_play(handle: i64, clip: i64, looping: i64, speed: f32, fade: f32
         s.anim_play(handle, clip, looping != 0, speed, fade);
     });
 }
+pub fn r3d_anim_restart(handle: i64, clip: i64, looping: i64, speed: f32, fade: f32) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.anim_restart(handle, clip, looping != 0, speed, fade);
+    });
+}
 pub fn r3d_anim_update(handle: i64, dt: f32) {
     with_gfx((), |gf| {
         let (_, _, s) = gf.scene_mut();

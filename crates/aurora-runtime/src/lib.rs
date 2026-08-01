@@ -2814,6 +2814,15 @@ pub extern "C" fn aurora_r3d_joint_pos(host: i64, joint: i64, axis: i64) -> f64 
 pub extern "C" fn aurora_r3d_anim_play(h: i64, clip: i64, looping: i64, speed: f64, fade: f64) {
     aurora_window::imm_r3d_anim_play(h, clip, looping, speed as f32, fade as f32);
 }
+/// Start a clip from the top even if it is already the one playing.
+///
+/// `r3d_anim_play` states what SHOULD be playing and is idempotent, so a frame
+/// loop can call it every frame. This is the explicit "again", for the combo
+/// step that reuses a clip.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_anim_restart(h: i64, clip: i64, looping: i64, speed: f64, fade: f64) {
+    aurora_window::imm_r3d_anim_restart(h, clip, looping, speed as f32, fade as f32);
+}
 #[no_mangle]
 pub extern "C" fn aurora_r3d_anim_update(h: i64, dt: f64) {
     aurora_window::imm_r3d_anim_update(h, dt as f32);

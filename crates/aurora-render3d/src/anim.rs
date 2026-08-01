@@ -102,7 +102,35 @@ impl AnimPlayer {
 
     /// Switch to `clip`, crossfading from the current pose over `fade` seconds
     /// (0 = instant). Restarts the clip at time 0.
+    /// Ensure `clip` is the clip playing. Idempotent: calling this every frame
+    /// with what is already running adjusts the speed and otherwise does
+    /// NOTHING.
+    ///
+    /// This used to restart unconditionally - `time = 0.0` on every call - which
+    /// made it unusable from the place games actually drive animation: a frame
+    /// loop that says what state a character is in. Every caller had to
+    /// remember to guard it, ten call sites hand-rolled three different guards
+    /// (`anim_clip` comparisons, a `fell` flag on a component, nothing at all),
+    /// and the ones that forgot re-seeded time every frame. That is a character
+    /// frozen on frame 0, jittering, with no transition ever completing - which
+    /// is exactly how it looked.
+    ///
+    /// "Play" is a statement about what SHOULD be on screen. Use
+    /// [`Player::restart`] for the rare case that genuinely means "again from
+    /// the top", such as the second swing of a combo reusing one clip.
     pub fn play(&mut self, clip: usize, looping: bool, speed: f32, fade: f32) {
+        if self.clip == clip && self.looping == looping && !self.bblend_on {
+            // Already what is asked for. Speed may still be tuned live (a
+            // windup stretched to its frame data), so take that and leave the
+            // clock alone.
+            self.speed = speed;
+            return;
+        }
+        self.restart(clip, looping, speed, fade);
+    }
+
+    /// Start `clip` from the top, even if it is already the clip playing.
+    pub fn restart(&mut self, clip: usize, looping: bool, speed: f32, fade: f32) {
         if fade > 0.0001 {
             self.prev_clip = self.clip;
             self.prev_time = self.time;
@@ -653,3 +681,62 @@ fn resolve_global(
 // Clip sampling and key interpolation live in `aurora-asset`, beside the clip
 // format itself: see `Skeleton::sample`. Keeping a second copy here is how a
 // renderer and an importer quietly start disagreeing about what a clip means.
+
+#[cfg(test)]
+mod play_is_idempotent {
+    use super::*;
+
+    // The bug this pins: `play` restarted unconditionally, so a frame loop that
+    // said "the character is idle" every frame re-seeded the clock every frame.
+    // The character stood frozen on frame 0, jittering, and no crossfade ever
+    // finished. Every symptom of a broken animation layer from one line.
+    #[test]
+    fn replaying_the_current_clip_does_not_rewind_it() {
+        let mut p = AnimPlayer::default();
+        p.play(3, true, 1.0, 0.0);
+        p.time = 0.4;
+        p.play(3, true, 1.0, 0.0);
+        assert_eq!(p.time, 0.4, "a frame loop restating its state must not rewind");
+    }
+
+    #[test]
+    fn a_live_speed_change_still_takes_effect() {
+        let mut p = AnimPlayer::default();
+        p.play(3, true, 1.0, 0.0);
+        p.time = 0.4;
+        p.play(3, true, 2.0, 0.0);
+        assert_eq!(p.speed, 2.0, "a windup stretched to its frame data must retune");
+        assert_eq!(p.time, 0.4);
+    }
+
+    #[test]
+    fn a_different_clip_does_start_from_the_top() {
+        let mut p = AnimPlayer::default();
+        p.play(3, true, 1.0, 0.0);
+        p.time = 0.4;
+        p.play(5, true, 1.0, 0.0);
+        assert_eq!(p.clip, 5);
+        assert_eq!(p.time, 0.0);
+    }
+
+    // Changing looping is a different state, not the same one: a one-shot death
+    // and a looping idle on one clip must not be confused.
+    #[test]
+    fn changing_looping_restarts() {
+        let mut p = AnimPlayer::default();
+        p.play(3, true, 1.0, 0.0);
+        p.time = 0.4;
+        p.play(3, false, 1.0, 0.0);
+        assert_eq!(p.time, 0.0);
+    }
+
+    // And the deliberate replay still works - the combo case.
+    #[test]
+    fn restart_replays_the_same_clip_from_the_top() {
+        let mut p = AnimPlayer::default();
+        p.play(3, false, 1.0, 0.0);
+        p.time = 0.4;
+        p.restart(3, false, 1.0, 0.0);
+        assert_eq!(p.time, 0.0, "the second swing of a combo must actually replay");
+    }
+}
