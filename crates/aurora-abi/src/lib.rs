@@ -204,6 +204,7 @@ macro_rules! for_each_builtin {
         [internal, get_component,                 aurora_get_component,                  [I64, I64],                                      Ptr]
         [internal, query_begin,                   aurora_query_begin,                    [Ptr, I64],                                      I64]
         [internal, query_entity,                  aurora_query_entity,                   [I64],                                           I64]
+        [internal, query_end,                     aurora_query_end,                      [],                                              void]
         [special,  entity_count,                  aurora_entity_count,                   [],                                              I64]
         [special,  world_clear,                   aurora_world_clear,                    [],                                              void]
 

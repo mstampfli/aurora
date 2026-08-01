@@ -1273,6 +1273,7 @@ fn compile_body(
         epilogue: None,
         epilogue_used: false,
         loops: Vec::new(),
+        query_depth: 0,
     };
     if sret {
         // Record the caller's result slot so early returns can copy into it.
@@ -1427,6 +1428,7 @@ fn compile_lambda(
         epilogue: None,
         epilogue_used: false,
         loops: Vec::new(),
+        query_depth: 0,
     };
     // Param 0 is the env pointer; load each captured value from it.
     let env_ptr = b.block_params(entry)[0];
@@ -1518,6 +1520,7 @@ fn compile_system(
         epilogue: None,
         epilogue_used: false,
         loops: Vec::new(),
+        query_depth: 0,
     };
     for pn in pnames {
         let var = b.declare_var(types::I64);
@@ -1704,6 +1707,9 @@ struct Locals {
     /// the exit block. `cont_used` records whether `continue` actually targeted
     /// this loop, so a `for`'s step block isn't left as a dead block.
     loops: Vec<LoopFrame>,
+    /// How many query loops are open at this point in the function being
+    /// lowered. See `end_queries`.
+    query_depth: usize,
 }
 
 #[derive(Clone)]
@@ -1712,6 +1718,29 @@ struct LoopFrame {
     continue_to: cranelift::prelude::Block,
     break_to: cranelift::prelude::Block,
     cont_used: std::rc::Rc<std::cell::Cell<bool>>,
+    /// How many query loops were open when this loop was entered.
+    ///
+    /// A query loop owns a match set on a runtime stack, and it must be closed
+    /// on every path out. `break`ing to a loop OUTSIDE a query loop skips that
+    /// query loop's exit block, so the difference between this and the current
+    /// depth is how many sets the jump has to close on its way.
+    query_depth: usize,
+}
+
+/// Close `n` open query loops, innermost first.
+///
+/// Emitted on every path that leaves a query loop other than its own exit block:
+/// a `return` from inside one, or a `break` to a loop outside it. Without this
+/// the runtime's match-set stack is left with the inner loop's entities on top,
+/// and the enclosing loop reads the wrong entities for the rest of its run.
+fn end_queries(m: &mut dyn Module, b: &mut FunctionBuilder, env: &Env, n: usize) {
+    if n == 0 {
+        return;
+    }
+    let qend = m.declare_func_in_func(env.hosts["query_end"], b.func);
+    for _ in 0..n {
+        b.ins().call(qend, &[]);
+    }
 }
 
 // --- memory helpers --------------------------------------------------------
@@ -2396,6 +2425,7 @@ fn tr_expr(
                 continue_to: header,
                 break_to: exit,
                 cont_used: std::rc::Rc::new(std::cell::Cell::new(false)),
+        query_depth: l.query_depth,
             });
             let term = tr_block(m, b, l, env, body)?;
             l.loops.pop();
@@ -2418,6 +2448,7 @@ fn tr_expr(
                 continue_to: header,
                 break_to: exit,
                 cont_used: std::rc::Rc::new(std::cell::Cell::new(false)),
+        query_depth: l.query_depth,
             });
             let term = tr_block(m, b, l, env, body)?;
             l.loops.pop();
@@ -2435,11 +2466,10 @@ fn tr_expr(
             if let Some(x) = opt {
                 val(m, b, l, env, x)?;
             }
-            let target = l
-                .loops
-                .last()
-                .ok_or("`break` used outside of a loop")?
-                .break_to;
+            let frame = l.loops.last().ok_or("`break` used outside of a loop")?;
+            let target = frame.break_to;
+            let close = l.query_depth.saturating_sub(frame.query_depth);
+            end_queries(m, b, env, close);
             b.ins().jump(target, &[]);
             return Ok(Term::Diverged);
         }
@@ -2467,6 +2497,9 @@ fn tr_expr(
                 Some(inner) => val(m, b, l, env, inner)?.0,
                 None => b.ins().iconst(types::I64, 0),
             };
+            // Every query loop this return is leaving. A callee's own loops are
+            // balanced within it, so only THIS function's are open here.
+            end_queries(m, b, env, l.query_depth);
             // Jump to the single exit carrying the value. The sret copy, the
             // debug/profile hooks and the value-stack pop all live there, so
             // they cannot be forgotten on one return path out of several.
@@ -2870,6 +2903,7 @@ fn tr_for(
         continue_to: step,
         break_to: exit,
         cont_used: cont_used.clone(),
+        query_depth: l.query_depth,
     });
     let term = tr_block(m, b, l, env, body)?;
     l.loops.pop();
@@ -3233,6 +3267,7 @@ fn tr_query_loop(
         continue_to: step,
         break_to: exit,
         cont_used: cont_used.clone(),
+        query_depth: l.query_depth,
     });
     let term = tr_block(m, b, l, env, body)?;
     l.loops.pop();
@@ -3256,6 +3291,9 @@ fn tr_query_loop(
     b.seal_block(header);
     b.switch_to_block(exit);
     b.seal_block(exit);
+    // Done with this loop's matches: the enclosing loop, if any, reads its own
+    // again from here on.
+    end_queries(m, b, env, 1);
     Ok(Term::Val(b.ins().iconst(types::I64, 0), Cty::I64))
 }
 
@@ -3308,6 +3346,7 @@ fn loop_count(
         continue_to: step,
         break_to: exit,
         cont_used: cont_used.clone(),
+        query_depth: l.query_depth,
     });
     let term = tr_block(m, b, l, env, body)?;
     l.loops.pop();

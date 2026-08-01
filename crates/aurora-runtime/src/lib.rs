@@ -1246,7 +1246,22 @@ thread_local! {
     /// Query results are per-thread, so systems running concurrently under the
     /// parallel scheduler each iterate their own match set instead of clobbering
     /// one shared buffer. (Single-threaded execution is unaffected.)
-    static QUERY: RefCell<Vec<i64>> = const { RefCell::new(Vec::new()) };
+    /// The match sets of every query loop currently RUNNING, innermost last.
+    ///
+    /// A stack, not a single list. There used to be one, and a nested query
+    /// overwrote it: the outer loop then read entities out of the inner query's
+    /// matches, ran off the end, got -1 from `query_entity`, and dereferenced
+    /// the null that `get_component(-1, ..)` returns. A segmentation fault, from
+    /// source the checker accepted.
+    ///
+    /// It survived because it needs TWO entities in the outer loop to show. With
+    /// one, the body runs once and the corrupted set is never read again - which
+    /// is every test anyone had written, and every fight in the game that has
+    /// ever had exactly one boss in it.
+    ///
+    /// Pushes and pops are emitted by codegen and are balanced across returns
+    /// and breaks, so the innermost set is always the one the reading loop owns.
+    static QUERY: RefCell<Vec<Vec<i64>>> = const { RefCell::new(Vec::new()) };
 }
 
 // --- scoped shared-world routing (parallel scheduler) ----------------------
@@ -1366,12 +1381,36 @@ pub unsafe extern "C" fn aurora_query_begin(ids: *const i64, n: i64) -> i64 {
             .collect()
     });
     let len = matches.len() as i64;
-    QUERY.with(|q| *q.borrow_mut() = matches);
+    QUERY.with(|q| q.borrow_mut().push(matches));
     len
 }
+
+/// Finish the innermost query loop, so the one enclosing it reads its own
+/// matches again. Emitted by codegen on every path out of a query loop.
+#[no_mangle]
+pub extern "C" fn aurora_query_end() {
+    QUERY.with(|q| {
+        let mut q = q.borrow_mut();
+        // An unbalanced end means codegen closed a query that was never open,
+        // which would leave an ENCLOSING loop reading a set it does not own -
+        // and the symptom of that is a segmentation fault several frames later.
+        // Better to say so here, where the cause is.
+        assert!(
+            q.pop().is_some(),
+            "query_end with no query open: the loop stack is unbalanced"
+        );
+    });
+}
+
 #[no_mangle]
 pub extern "C" fn aurora_query_entity(i: i64) -> i64 {
-    QUERY.with(|q| q.borrow().get(i.max(0) as usize).copied().unwrap_or(-1))
+    QUERY.with(|q| {
+        let q = q.borrow();
+        match q.last() {
+            Some(cur) => cur.get(i.max(0) as usize).copied().unwrap_or(-1),
+            None => -1,
+        }
+    })
 }
 #[no_mangle]
 pub extern "C" fn aurora_entity_count() -> i64 {
