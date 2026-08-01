@@ -198,6 +198,7 @@ dependencies = [
 name = "aurora-check"
 version = "0.1.0"
 dependencies = [
+ "aurora-abi",
  "aurora-ast",
  "aurora-diag",
  "aurora-parser",

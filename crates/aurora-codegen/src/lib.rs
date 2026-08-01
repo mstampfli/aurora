@@ -633,7 +633,7 @@ macro_rules! host_symbol {
 }
 
 macro_rules! gen_register_host_symbols {
-    ($([$kind:ident, $name:ident, $sym:ident, [$($p:ident),*], $ret:ident])*) => {
+    ($([$kind:ident, $name:ident, $sym:ident, [$($p:ident),*], $ret:ident, $home:ident])*) => {
         /// Register the addresses of every `aurora_*` host function with the JIT.
         fn register_host_symbols(builder: &mut JITBuilder) {
             $( host_symbol!(builder, $kind, $sym); )*
@@ -658,7 +658,7 @@ macro_rules! host_import {
 }
 
 macro_rules! gen_host_imports {
-    ($([$kind:ident, $name:ident, $sym:ident, [$($p:ident),*], $ret:ident])*) => {
+    ($([$kind:ident, $name:ident, $sym:ident, [$($p:ident),*], $ret:ident, $home:ident])*) => {
         /// Declare every runtime host function as an import in `jmod`, keyed by
         /// the name the call lowering looks it up by. An Aurora `str` argument
         /// is passed as the `Ptr, I64` pair its two slots hold.

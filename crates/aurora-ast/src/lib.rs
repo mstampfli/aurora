@@ -17,7 +17,8 @@ mod monomorphize;
 pub use monomorphize::monomorphize;
 mod schedule;
 pub use schedule::{
-    parallel_layers, parallel_layers_in, reachable_queries, stage_of, DEFAULT_STAGE, FIXED_STAGE,
+    parallel_layers, parallel_layers_in, reachable_calls, reachable_queries, stage_of,
+    DEFAULT_STAGE, FIXED_STAGE,
 };
 
 // ---------------------------------------------------------------------------

@@ -1388,7 +1388,8 @@ pub(crate) const CELL_NAVMESH: usize = 4;
 pub(crate) const CELL_RNG: usize = 5;
 pub(crate) const CELL_FIXED_DT: usize = 6;
 pub(crate) const CELL_VIRTUAL_TIME: usize = 7;
-pub(crate) const ROUTED_CELLS: usize = 8;
+pub(crate) const CELL_FIXED: usize = 8;
+pub(crate) const ROUTED_CELLS: usize = 9;
 
 /// A `*const ParWorld` that may be moved into a scoped worker thread.
 ///
@@ -1628,10 +1629,37 @@ struct FixedClock {
 }
 
 thread_local! {
-    static FIXED: RefCell<FixedClock> = const {
+    static FIXED_OWN: RefCell<FixedClock> = const {
         RefCell::new(FixedClock { step: 1.0 / 60.0, owed: 0.0, ticks: 0 })
     };
 }
+
+/// The fixed-step clock, routed to the batch owner's while this thread is a
+/// worker. See `ROUTED_CELLS`.
+///
+/// `tick_count` and `fixed_step` are things a system may reasonably ask, so they
+/// are marked shared in the ABI table - and a shared builtin whose state is NOT
+/// routed is exactly the silent bug that column exists to prevent. Either it is
+/// routed or it is owner-only; it may not be neither.
+struct FixedSlot;
+
+impl FixedSlot {
+    fn with<R>(&self, f: impl FnOnce(&RefCell<FixedClock>) -> R) -> R {
+        let batch = par_batch();
+        if batch.is_null() {
+            return FIXED_OWN.with(f);
+        }
+        unsafe {
+            with_par_cell(
+                batch,
+                par_cell(batch, CELL_FIXED) as *const RefCell<FixedClock>,
+                f,
+            )
+        }
+    }
+}
+
+const FIXED: FixedSlot = FixedSlot;
 
 /// Most fixed steps one frame may run before the rest of the debt is written off.
 ///
@@ -1767,6 +1795,7 @@ fn routed_cells() -> [*const (); ROUTED_CELLS] {
     c[CELL_RNG] = crate::data::own_rng();
     c[CELL_FIXED_DT] = crate::data::own_fixed_dt();
     c[CELL_VIRTUAL_TIME] = crate::data::own_virtual_time();
+    c[CELL_FIXED] = FIXED_OWN.with(|c| c as *const _ as *const ());
     c
 }
 
@@ -3981,7 +4010,7 @@ macro_rules! force_link_one {
 }
 
 macro_rules! gen_force_link {
-    ($([$kind:ident, $name:ident, $sym:ident, [$($p:ident),*], $ret:ident])*) => {
+    ($([$kind:ident, $name:ident, $sym:ident, [$($p:ident),*], $ret:ident, $home:ident])*) => {
         /// Touch every host symbol so the linker keeps this crate's object in an
         /// AOT link even when the Rust driver references nothing from it
         /// directly. Generated from `aurora-abi`'s builtin table, so it cannot

@@ -47,6 +47,45 @@ pub(crate) fn check_queries_and_schedule(module: &Module, diags: &mut Vec<Diagno
             accumulate(q, &mut access);
         }
 
+        // A system may not reach the frontend.
+        //
+        // Systems in one stage layer run on worker threads. The world and the
+        // simulation subsystems are routed to the thread that owns the program,
+        // so a worker sees the program's own - but the window, the framebuffer,
+        // the font, the audio mixer and the GPU are not, and never will be:
+        // sharing a window between threads is not a thing to fix.
+        //
+        // Refused for EVERY system rather than only for the ones that happen to
+        // share a layer today, because "happens to share a layer" is not a
+        // property anyone can see. A lone system runs inline and works; add an
+        // unrelated second system and the first silently starts drawing into a
+        // worker's empty framebuffer. A rule that holds only until the next
+        // system is added is a trap, not a rule.
+        //
+        // The failure this replaces was silent: a worker that cannot see a
+        // subsystem reports an empty one, and "nothing there" is a legal answer
+        // every caller already handles. A game shipped four iterations of
+        // creatures that had navigation and never once used it.
+        for call in aurora_ast::reachable_calls(module, &sys.body) {
+            if !aurora_abi::is_owner_only(&call) {
+                continue;
+            }
+            diags.push(
+                Diagnostic::error(format!(
+                    "system `{}` reaches `{call}`, which belongs to the thread that owns the program",
+                    sys.name.name
+                ))
+                .with_code("E0204")
+                .primary(sys.name.span, format!("reaches `{call}`"))
+                .note(
+                    "systems in one stage layer run on worker threads, and the window,                      framebuffer, font, audio mixer and GPU are not shared with them - a call                      from a worker would draw into an empty copy and report success"
+                )
+                .note(
+                    "do it from the frame instead: run_systems() first, then draw what the                      systems decided"
+                ),
+            );
+        }
+
         systems.push(SysInfo {
             name: sys.name.name.clone(),
             span: sys.name.span,

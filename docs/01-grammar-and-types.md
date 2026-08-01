@@ -404,6 +404,14 @@ Ordering is a partial order, not a set of adjacent pairs:
   ordered by nothing else — which is exactly the case `E0202` refuses to let you
   rely on.
 - An ordering **cycle** is an error (`E0203`): it cannot be satisfied.
+- A system that reaches the **frontend** is an error (`E0204`). Systems in one
+  layer run on worker threads; the world and the simulation subsystems are
+  routed to the thread that owns the program, but the window, framebuffer,
+  font, audio mixer and GPU are not and never will be. Refused for every
+  system, not only for ones that share a layer today - a lone system runs
+  inline and works, and adding an unrelated second system would silently start
+  it drawing into a worker's empty framebuffer. Draw from the frame instead:
+  `run_systems()` first, then draw what the systems decided.
 - Ordering does not compose across stages, since stages already run in sequence.
 
 Because access sets are derived from `query<...>` types, the compiler proves the

@@ -302,6 +302,42 @@ pub struct Collected<'a> {
 /// that ultimately performs it. Recursion terminates on the visited set; an
 /// unresolved callee (a builtin, or an `@extern`) contributes nothing, which is
 /// correct - neither runs a query.
+/// Every function name a body can reach, including through the helpers it calls.
+///
+/// The same walk `reachable_queries` does, for the same reason: a system that
+/// calls a helper that draws has drawn, exactly as surely as an inline call
+/// would, and attributing only the body would let anything hide one call deep.
+/// Names that are not functions in this module are builtins - which is what the
+/// caller is usually looking for.
+pub fn reachable_calls(module: &Module, body: &Block) -> Vec<String> {
+    let mut bodies: std::collections::HashMap<&str, &Block> = std::collections::HashMap::new();
+    for item in &module.items {
+        if let ItemKind::Fn(f) = &item.kind {
+            if let Some(b) = &f.body {
+                bodies.insert(f.name.name.as_str(), b);
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut queue = vec![body];
+    while let Some(b) = queue.pop() {
+        let mut found = Collected::default();
+        walk_block(b, &mut found);
+        for name in found.calls {
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            if let Some(next) = bodies.get(name.as_str()) {
+                queue.push(next);
+            }
+            out.push(name);
+        }
+    }
+    out
+}
+
 pub fn reachable_queries<'a>(module: &'a Module, body: &'a Block) -> Vec<&'a QueryExpr> {
     let mut bodies: std::collections::HashMap<&str, &Block> = std::collections::HashMap::new();
     for item in &module.items {

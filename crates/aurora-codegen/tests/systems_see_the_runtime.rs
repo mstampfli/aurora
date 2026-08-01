@@ -259,6 +259,44 @@ fn a_system_reads_the_timestep_the_program_pinned() {
     );
 }
 
+/// The tick count, which is a thing a system may reasonably ask.
+///
+/// Its state was NOT routed while the ABI table called it shared - and a shared
+/// builtin whose state is not routed is exactly the silent bug the column exists
+/// to prevent. Either it is routed or it is owner-only; it may not be neither.
+///
+/// Fixed-stage systems, so the clock is the one `run_systems` is driving. A
+/// worker with its own reads zero for ever, however long the program has run.
+#[test]
+fn a_system_reads_the_clock_the_program_is_running_on() {
+    let n = run("
+         component Ask { v: i64 }
+         component Other { v: i64 }
+
+         system look() stage(FixedUpdate) {
+             for a in query<&mut Ask> { a.v = tick_count() }
+         }
+         system alongside() stage(FixedUpdate) {
+             for o in query<&mut Other> { o.v = 1 }
+         }
+
+         fn run() -> i64 {
+             set_fixed_dt(0.01)
+             set_tick_rate(100.0)
+             spawn(Ask { v: 0 - 1 })
+             spawn(Other { v: 0 })
+             let mut i = 0
+             while i < 8 { run_systems(); i = i + 1 }
+             let mut got = 0
+             for a in query<&Ask> { got = a.v }
+             got
+         }");
+    assert!(
+        n > 0,
+        "a system read tick {n} after the program had run several: the worker has its own clock"
+    );
+}
+
 /// And a layer of ONE still works, which is what made this invisible: every
 /// hand-written test of a runtime call from a system had a single system in it.
 #[test]
