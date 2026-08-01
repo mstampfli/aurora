@@ -3216,12 +3216,42 @@ fn tr_query_loop(
             }
         }
     }
-    if let Term::Val(..) = tr_block(m, b, l, env, body)? {
+    // A query loop is a loop, so `break` and `continue` have to reach it.
+    //
+    // Without a frame of its own the loop stack held whatever was OUTSIDE, which
+    // failed in two ways. At the top level `continue` was rejected as "used
+    // outside of a loop" - wrong, but loud. Nested inside a `while` it COMPILED,
+    // and jumped to the while's step block: the rest of the query iteration and
+    // the rest of the while body both skipped, silently, with no diagnostic
+    // anywhere and no error at runtime. `break` left the outer loop entirely.
+    //
+    // The step block is the index increment, exactly as a counting loop's is, so
+    // `continue` moves to the next entity rather than abandoning the query.
+    let step = b.create_block();
+    let cont_used = std::rc::Rc::new(std::cell::Cell::new(false));
+    l.loops.push(LoopFrame {
+        continue_to: step,
+        break_to: exit,
+        cont_used: cont_used.clone(),
+    });
+    let term = tr_block(m, b, l, env, body)?;
+    l.loops.pop();
+    let body_falls = matches!(term, Term::Val(..));
+    if body_falls {
+        b.ins().jump(step, &[]);
+    }
+    b.seal_block(step);
+    b.switch_to_block(step);
+    if body_falls || cont_used.get() {
         let i2 = b.use_var(idx);
         let one = b.ins().iconst(types::I64, 1);
         let next = b.ins().iadd(i2, one);
         b.def_var(idx, next);
         b.ins().jump(header, &[]);
+    } else {
+        // Every path out of the body was a `break` or a `return`, so the step is
+        // unreachable - but a block still needs a terminator.
+        b.ins().jump(exit, &[]);
     }
     b.seal_block(header);
     b.switch_to_block(exit);
