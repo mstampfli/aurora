@@ -24,8 +24,17 @@ file is passed to `aurorac`; see
 
 A call to a name that is not a function, a builtin, an `@extern` import, a local
 holding a closure, or a `use`d name is a hard error (`E0313`) - a typo in a call
-does not compile. `check`, `run`, and `build` all check the same program (your
-source, its dependencies, and the prelude), so they agree.
+does not compile. A name used as a VALUE that resolves to nothing is `E0314`,
+including a qualified one: `cfg::REACH` where module `cfg` has no such const is
+rejected with a source span, not left to fail in the backend. That is the shape
+a rename produces - the dangling reference is in a file you were not editing -
+so it is the one most likely to be missed. `check`, `run`, and `build` all check
+the same program (your source, its dependencies, and the prelude), so they agree.
+
+Both qualified guards are deliberately narrow: they fire only when the prefix
+demonstrably IS a module, because something else in the program is already
+qualified with it. An enum variant, an associated function or const on a type,
+and a trait path are never at risk.
 
 If a function still fails to lower to native code, `run` and `build` both refuse
 and name every failing function and the reason. Neither falls back to running it:

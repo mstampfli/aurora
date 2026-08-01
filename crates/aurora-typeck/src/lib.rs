@@ -423,6 +423,7 @@ impl Typeck {
                         }
                     }
                 } else {
+                    self.report_unknown_qualified_value(p);
                     Ty::Error
                 }
             }
@@ -830,6 +831,57 @@ impl Typeck {
             Diagnostic::error(format!("module `{prefix}` has no function `{name}`"))
                 .with_code("E0313")
                 .primary(p.span, "not a function in that module"),
+        );
+    }
+
+    /// Report a qualified path used as a VALUE that names nothing.
+    ///
+    /// `mod::CONST` where the const does not exist reached the backend and failed
+    /// there as "unsupported path expression in JIT" - no line, no column, and
+    /// only if you ran it. `check` said the program was fine.
+    ///
+    /// That is precisely the shape a rename produces. Delete a const and the
+    /// dangling reference is in some other file, one the author was never
+    /// editing, so nothing prompts them to look - and the one thing that exists
+    /// to answer "does this program compile" answered yes. It cost a real
+    /// afternoon in the game built on this compiler.
+    ///
+    /// Narrow in exactly the way the callee guard is: it fires only when the
+    /// prefix demonstrably IS a module, because something else is already
+    /// qualified with it. An enum variant (`Opt::Some`), an associated const on
+    /// a type, and a trait path are all excluded before that test is reached,
+    /// so a false error would need a module that shares a name with a type.
+    fn report_unknown_qualified_value(&mut self, p: &aurora_ast::Path) {
+        if self.in_shader || self.lenient_names > 0 || p.segments.len() != 2 {
+            return;
+        }
+        let prefix = &p.segments[0].ident.name;
+        let name = &p.segments[1].ident.name;
+        let joined = format!("{prefix}::{name}");
+        if self.consts.contains(&joined)
+            || self.fns.contains_key(&joined)
+            || self.user_types.contains(&joined)
+            || self.imported.contains(&joined)
+            || self.user_types.contains(prefix)
+            || self.imported.contains(prefix)
+            || aurora_ast::is_builtin(&joined)
+        {
+            return;
+        }
+        // Is `prefix` a module at all? Only complain if something else lives in
+        // it. Flattening has already mangled every module member to `mod::name`,
+        // so this is the only evidence a module ever existed.
+        let prefix_dots = format!("{prefix}::");
+        let inhabited = self.fns.keys().any(|k| k.starts_with(&prefix_dots))
+            || self.consts.iter().any(|k| k.starts_with(&prefix_dots))
+            || self.user_types.iter().any(|k| k.starts_with(&prefix_dots));
+        if !inhabited {
+            return;
+        }
+        self.diags.push(
+            Diagnostic::error(format!("module `{prefix}` has no value `{name}`"))
+                .with_code("E0314")
+                .primary(p.span, "not a const or function in that module"),
         );
     }
 

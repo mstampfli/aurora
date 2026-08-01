@@ -370,6 +370,84 @@ fn check_rejects_an_unknown_function_called_from_a_helper() {
     );
 }
 
+/// The rename form of the bug, across real files.
+///
+/// Delete or rename a const and the dangling reference is in some OTHER module,
+/// one the author was never editing - so nothing prompts them to look, and the
+/// one tool whose job is to answer "does this compile" answered `ok: no errors`.
+/// The program then refused to run with "unsupported path expression in JIT":
+/// no line, no column, and only if you ran it.
+///
+/// Two files rather than one, because that is the shape that makes it invisible.
+#[test]
+fn check_rejects_a_missing_const_in_another_module() {
+    let entry = program(
+        "missingconst",
+        &[
+            (
+                "main.aur",
+                "mod cfg;\nfn main() { println(str(cfg::REACH)) }",
+            ),
+            ("cfg.aur", "const SPEED: f64 = 3.2\n"),
+        ],
+    );
+    let out = aurorac("check", &entry);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "check passed a reference to a const that does not exist: {stdout}"
+    );
+    assert!(
+        !stdout.contains("no errors"),
+        "check reported a false green: {stdout}"
+    );
+    assert!(
+        stderr.contains("E0314"),
+        "expected an E0314 error, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("REACH"),
+        "the error must name the missing const: {stderr}"
+    );
+    assert!(
+        stderr.contains("main.aur"),
+        "the error must point at a source file, which the backend error never did: {stderr}"
+    );
+}
+
+/// And the same two files with the const actually present must check AND run.
+///
+/// This is the half that matters more. Cross-module constants are ordinary - the
+/// game built on this compiler has hundreds - so a checker that rejected them
+/// would be worse than one that missed the typo.
+#[test]
+fn a_real_cross_module_const_still_checks_and_runs() {
+    let entry = program(
+        "realconst",
+        &[
+            (
+                "main.aur",
+                "mod cfg;\nfn main() { println(str(cfg::SPEED)) }",
+            ),
+            ("cfg.aur", "const SPEED: f64 = 3.2\n"),
+        ],
+    );
+    let check = aurorac("check", &entry);
+    assert!(
+        check.status.success(),
+        "check rejected a real cross-module const: {}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+    let run = aurorac("run", &entry);
+    assert!(
+        run.status.success(),
+        "run rejected a real cross-module const: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "3.2");
+}
+
 /// The same unknown call directly in `main`.
 #[test]
 fn check_rejects_an_unknown_function_called_from_main() {

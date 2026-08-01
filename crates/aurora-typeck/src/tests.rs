@@ -396,6 +396,76 @@ fn qualified_paths_that_are_not_module_calls_are_left_alone() {
     );
 }
 
+/// A qualified path used as a VALUE had the same hole, and it is the one a
+/// rename produces.
+///
+/// `mod::CONST` where the const does not exist reached the backend and failed
+/// there as "unsupported path expression in JIT" - no line, no column, and only
+/// if you ran it. Deleting or renaming a const leaves the dangling reference in
+/// some OTHER file, one the author was never editing, so nothing prompts them to
+/// look, and the one tool whose job is to answer "does this compile" said yes.
+#[test]
+fn a_missing_module_const_is_caught() {
+    let errs = errors(
+        "mod cfg { const SPEED: f64 = 3.2 }
+         fn main() { println(str(cfg::REACH)) }",
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("has no value `REACH`")),
+        "a missing module const must be reported, got {errs:?}"
+    );
+}
+
+/// ...and every legitimate shape of the same syntax must stay silent. This is
+/// the half that decides whether the guard is usable: a compiler that cries wolf
+/// on real code gets its check switched off, and then catches nothing at all.
+#[test]
+fn qualified_values_that_do_exist_are_left_alone() {
+    // The const is really there.
+    let errs = errors(
+        "mod cfg { const SPEED: f64 = 3.2 }
+         fn main() { println(str(cfg::SPEED)) }",
+    );
+    assert!(errs.is_empty(), "a real module const errored, got {errs:?}");
+
+    // A function of that module, named rather than called.
+    let errs = errors(
+        "mod cfg { fn tune() -> i64 { 1 } }
+         fn main() { let f = cfg::tune }",
+    );
+    assert!(
+        errs.is_empty(),
+        "a module fn used as a value errored, got {errs:?}"
+    );
+
+    // A unit enum variant: a qualified value that is not a module member.
+    let errs = errors(
+        "enum Side { Left, Right }
+         fn main() { let s = Side::Left }",
+    );
+    assert!(errs.is_empty(), "an enum variant errored, got {errs:?}");
+
+    // A prefix with nothing behind it is not known to be a module, so the
+    // checker stays lenient rather than guessing.
+    let errs = errors("fn main() { let x = Whatever::THING }");
+    assert!(
+        !errs.iter().any(|e| e.contains("has no value")),
+        "an unknown prefix was reported as a module, got {errs:?}"
+    );
+
+    // One module's const read from inside another, which is the whole reason
+    // the syntax exists.
+    let errs = errors(
+        "mod a { const N: i64 = 2 }
+         mod b { fn twice() -> i64 { a::N * 2 } }
+         fn main() { println(str(b::twice())) }",
+    );
+    assert!(
+        errs.is_empty(),
+        "a cross-module const read errored, got {errs:?}"
+    );
+}
+
 /// An undefined variable must be caught by the checker, not by the backend.
 ///
 /// This used to pass `check` and then fail as "unknown variable `x` in JIT" - no
