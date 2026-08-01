@@ -28,11 +28,11 @@ pub struct AnimPlayer {
     // Optional upper-body overlay: a second clip applied only to `umask_root` and its
     // descendants (e.g. shoot/reload on the arms while the legs keep running). `uweight`
     // fades the overlay in/out so it never pops.
-    upper: bool,
-    uclip: usize,
-    utime: f32,
+    pub upper: bool,
+    pub uclip: usize,
+    pub utime: f32,
     uspeed: f32,
-    ulooping: bool,
+    pub ulooping: bool,
     umask_root: usize,
     uweight: f32,
     uweight_target: f32,

@@ -1247,6 +1247,14 @@ pub fn r3d_anim_done(handle: i64) -> i64 {
     })
 }
 
+/// 1 when the upper-body overlay's non-looping clip has played out, else 0.
+pub fn r3d_anim_done_upper(handle: i64) -> i64 {
+    with_gfx(0, |gf| {
+        let (_, _, s) = gf.scene_mut();
+        if s.anim_done_upper(handle) { 1 } else { 0 }
+    })
+}
+
 /// How far into its current clip the model is, in seconds.
 pub fn r3d_anim_time(handle: i64) -> f64 {
     with_gfx(0.0, |gf| {

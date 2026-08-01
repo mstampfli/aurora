@@ -1004,6 +1004,26 @@ impl Scene {
         c.duration > 0.0 && r.player.time >= c.duration
     }
 
+    /// Whether the model's current UPPER-BODY overlay one-shot has played out.
+    ///
+    /// The overlay keeps its own clock, so `anim_done` - which reads the base
+    /// layer - cannot answer for it. Without this, a masked overlay can be
+    /// started and stopped but never SEQUENCED: a game whose guard is a
+    /// begin/hold/end trio on the arms has no way to learn that the raise has
+    /// finished, and sits on the first clip forever.
+    ///
+    /// `anim_stop_upper` and `anim_seek_upper` already treat the overlay as a
+    /// first-class layer. This is the question that was missing from that set.
+    pub fn anim_done_upper(&self, handle: i64) -> bool {
+        let Some(r) = self.item(handle) else { return false };
+        if !r.player.upper || r.player.ulooping {
+            return false;
+        }
+        let Some(m) = r.asset.model.as_ref() else { return false };
+        let Some(c) = m.clips.get(r.player.uclip) else { return false };
+        c.duration > 0.0 && r.player.utime >= c.duration
+    }
+
     /// How far into its current clip the model is, in seconds.
     pub fn anim_time(&self, handle: i64) -> f32 {
         self.item(handle).map(|r| r.player.time).unwrap_or(0.0)

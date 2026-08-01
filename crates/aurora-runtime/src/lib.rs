@@ -2810,6 +2810,16 @@ pub extern "C" fn aurora_r3d_clip_duration(h: i64, i: i64) -> f64 {
 pub extern "C" fn aurora_r3d_anim_done(h: i64) -> i64 {
     aurora_window::imm_r3d_anim_done(h)
 }
+/// `r3d_anim_done_upper(h) -> i64`: 1 once the upper-body overlay's one-shot has
+/// played out.
+///
+/// The overlay keeps its own clock, so `r3d_anim_done` cannot answer for it. A
+/// masked overlay could be started and stopped but never sequenced - a guard
+/// built as begin/hold/end on the arms had no way to learn its raise was over.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_anim_done_upper(h: i64) -> i64 {
+    aurora_window::imm_r3d_anim_done_upper(h)
+}
 /// `r3d_anim_time(h) -> f64`: seconds into the current clip.
 #[no_mangle]
 pub extern "C" fn aurora_r3d_anim_time(h: i64) -> f64 {
