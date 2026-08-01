@@ -27,7 +27,7 @@ struct Grid3 {
     path: Vec<(i32, i32, i32)>,
 }
 thread_local! {
-    static GRID3: RefCell<Option<Grid3>> = const { RefCell::new(None) };
+    static GRID3_OWN: RefCell<Option<Grid3>> = const { RefCell::new(None) };
 }
 
 fn gidx(g: &Grid3, x: i32, y: i32, z: i32) -> usize {
@@ -157,8 +157,59 @@ struct NavMesh {
     path: Vec<V3>,
 }
 thread_local! {
-    static NAVMESH: RefCell<Option<NavMesh>> = const { RefCell::new(None) };
+    static NAVMESH_OWN: RefCell<Option<NavMesh>> = const { RefCell::new(None) };
 }
+
+/// The voxel grid and the navmesh, routed to the batch owner's while this
+/// thread is a worker. See `ROUTED_CELLS` in the crate root: a worker with its
+/// own empty copy answers "no route" to every search, which is the same answer
+/// as "there is no way through" and is therefore believed.
+pub(crate) fn own_grid3() -> *const () {
+    GRID3_OWN.with(|c| c as *const _ as *const ())
+}
+
+pub(crate) fn own_navmesh() -> *const () {
+    NAVMESH_OWN.with(|c| c as *const _ as *const ())
+}
+
+struct Grid3Slot;
+
+impl Grid3Slot {
+    fn with<R>(&self, f: impl FnOnce(&RefCell<Option<Grid3>>) -> R) -> R {
+        let batch = crate::par_batch();
+        if batch.is_null() {
+            return GRID3_OWN.with(f);
+        }
+        unsafe {
+            crate::with_par_cell(
+                batch,
+                crate::par_cell(batch, crate::CELL_GRID3) as *const RefCell<Option<Grid3>>,
+                f,
+            )
+        }
+    }
+}
+
+struct NavMeshSlot;
+
+impl NavMeshSlot {
+    fn with<R>(&self, f: impl FnOnce(&RefCell<Option<NavMesh>>) -> R) -> R {
+        let batch = crate::par_batch();
+        if batch.is_null() {
+            return NAVMESH_OWN.with(f);
+        }
+        unsafe {
+            crate::with_par_cell(
+                batch,
+                crate::par_cell(batch, crate::CELL_NAVMESH) as *const RefCell<Option<NavMesh>>,
+                f,
+            )
+        }
+    }
+}
+
+const GRID3: Grid3Slot = Grid3Slot;
+const NAVMESH: NavMeshSlot = NavMeshSlot;
 
 /// Build a navmesh from `vcount*3` vertex floats and `icount` triangle indices.
 /// Triangles sharing an edge (two vertices) become neighbors.

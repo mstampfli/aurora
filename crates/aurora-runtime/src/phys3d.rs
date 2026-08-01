@@ -134,7 +134,7 @@ impl Phys3Slot {
         unsafe {
             crate::with_par_cell(
                 batch,
-                crate::par_phys3(batch) as *const RefCell<Option<Phys3>>,
+                crate::par_cell(batch, crate::CELL_PHYS3) as *const RefCell<Option<Phys3>>,
                 f,
             )
         }

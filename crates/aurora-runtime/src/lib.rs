@@ -735,8 +735,32 @@ struct Phys {
     registry: aurora_slot::SlotMap<rapier2d::prelude::RigidBodyHandle>,
 }
 thread_local! {
-    static PHYS: RefCell<Option<Phys>> = const { RefCell::new(None) };
+    static PHYS_OWN: RefCell<Option<Phys>> = const { RefCell::new(None) };
 }
+
+/// The 2D physics world, routed to the batch owner's while this thread is a
+/// worker. See `ROUTED_CELLS`.
+struct PhysSlot;
+
+impl PhysSlot {
+    fn with<R>(&self, f: impl FnOnce(&RefCell<Option<Phys>>) -> R) -> R {
+        let batch = par_batch();
+        if batch.is_null() {
+            return PHYS_OWN.with(f);
+        }
+        // SAFETY: as for the world - the owner is blocked in `thread::scope`
+        // until this worker joins, so its cell is alive and untouched.
+        unsafe {
+            with_par_cell(
+                batch,
+                par_cell(batch, CELL_PHYS) as *const RefCell<Option<Phys>>,
+                f,
+            )
+        }
+    }
+}
+
+const PHYS: PhysSlot = PhysSlot;
 
 /// The `i64` an Aurora program holds for a 2D body.
 type Body2 = aurora_slot::Key<rapier2d::prelude::RigidBodyHandle>;
@@ -1022,7 +1046,13 @@ impl NavSlot {
         }
         // SAFETY: the pointer came from `aurora_run_parallel` on the owner
         // thread, which is blocked in `thread::scope` until this worker joins.
-        unsafe { with_par_cell(batch, par_nav(batch) as *const RefCell<Option<Nav>>, f) }
+        unsafe {
+            with_par_cell(
+                batch,
+                par_cell(batch, CELL_NAV) as *const RefCell<Option<Nav>>,
+                f,
+            )
+        }
     }
 }
 
@@ -1331,9 +1361,34 @@ struct ParWorld {
     ///
     /// Opaque because the types live in their own modules and this struct has no
     /// business knowing them; each module casts its own back.
-    nav: *const (),
-    phys3: *const (),
+    ///
+    /// An array rather than a field each, so adding a subsystem is one constant
+    /// and one line in `aurora_run_parallel` rather than a new shape here.
+    cells: [*const (); ROUTED_CELLS],
 }
+
+// Which slot each routed subsystem occupies.
+//
+// Routed means "one simulation shared by the whole batch". Not everything the
+// runtime holds per-thread belongs here, and the distinction is worth stating:
+//
+//   - The query stack and the frame arena are per-thread ON PURPOSE. Two workers
+//     iterating two queries need two iteration states, and a worker's scratch
+//     allocations are its own.
+//   - The window, the framebuffer, the font and the audio mixer are the
+//     frontend's. A worker thread has no business drawing.
+//   - Everything below is the simulation, and there is exactly one of it. A
+//     worker that cannot see it does not fail - it reports an empty world, which
+//     is a legal answer to every question anyone asks of it.
+pub(crate) const CELL_NAV: usize = 0;
+pub(crate) const CELL_PHYS3: usize = 1;
+pub(crate) const CELL_PHYS: usize = 2;
+pub(crate) const CELL_GRID3: usize = 3;
+pub(crate) const CELL_NAVMESH: usize = 4;
+pub(crate) const CELL_RNG: usize = 5;
+pub(crate) const CELL_FIXED_DT: usize = 6;
+pub(crate) const CELL_VIRTUAL_TIME: usize = 7;
+pub(crate) const ROUTED_CELLS: usize = 8;
 
 /// A `*const ParWorld` that may be moved into a scoped worker thread.
 ///
@@ -1381,12 +1436,9 @@ pub(crate) unsafe fn with_par_cell<T, R>(p: *const ParWorld, cell: *const T,
     f(unsafe { &*cell })
 }
 
-pub(crate) fn par_nav(p: *const ParWorld) -> *const () {
-    unsafe { &*p }.nav
-}
-
-pub(crate) fn par_phys3(p: *const ParWorld) -> *const () {
-    unsafe { &*p }.phys3
+/// The batch owner's cell for a routed subsystem.
+pub(crate) fn par_cell(p: *const ParWorld, slot: usize) -> *const () {
+    unsafe { &*p }.cells[slot]
 }
 
 fn with_world<R>(f: impl FnOnce(&mut World) -> R) -> R {
@@ -1556,8 +1608,7 @@ pub unsafe extern "C" fn aurora_run_parallel(fns: *const usize, n: i64) {
         let par = ParWorld {
             lock: std::sync::Mutex::new(()),
             world: w.as_ptr(),
-            nav: NAV.with(|n| n as *const _ as *const ()),
-            phys3: crate::phys3d::own_cell(),
+            cells: routed_cells(),
         };
         run_batch(ParWorldPtr(&par), &addrs);
     });
@@ -1700,6 +1751,25 @@ pub unsafe extern "C" fn aurora_run_fixed(
 /// The binding is installed on the worker threads only, so no thread outside
 /// this scope can ever observe it, and `thread::scope` guarantees every worker
 /// is joined before `par`'s frame goes away.
+/// Every routed subsystem's cell on THIS thread, for handing to workers.
+///
+/// One line per subsystem, in one place. A subsystem missing from here is a
+/// subsystem that answers "nothing there" to every system in a parallel layer,
+/// so the tests in `systems_see_the_runtime` carry one case each and a new
+/// entry without a case is a gap that shows.
+fn routed_cells() -> [*const (); ROUTED_CELLS] {
+    let mut c = [std::ptr::null(); ROUTED_CELLS];
+    c[CELL_NAV] = NAV_OWN.with(|n| n as *const _ as *const ());
+    c[CELL_PHYS3] = crate::phys3d::own_cell();
+    c[CELL_PHYS] = PHYS.with(|n| n as *const _ as *const ());
+    c[CELL_GRID3] = crate::nav3d::own_grid3();
+    c[CELL_NAVMESH] = crate::nav3d::own_navmesh();
+    c[CELL_RNG] = crate::data::own_rng();
+    c[CELL_FIXED_DT] = crate::data::own_fixed_dt();
+    c[CELL_VIRTUAL_TIME] = crate::data::own_virtual_time();
+    c
+}
+
 fn run_batch(par: ParWorldPtr, addrs: &[usize]) {
     std::thread::scope(|scope| {
         for &a in addrs {

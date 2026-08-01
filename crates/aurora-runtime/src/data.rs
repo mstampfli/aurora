@@ -23,8 +23,40 @@ use serde_json::Value;
 const DEFAULT_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 
 thread_local! {
-    static RNG: Cell<u64> = const { Cell::new(DEFAULT_SEED) };
+    static RNG_OWN: Cell<u64> = const { Cell::new(DEFAULT_SEED) };
 }
+
+/// The random stream, routed to the batch owner's while this thread is a
+/// worker. See `ROUTED_CELLS` in the crate root.
+///
+/// Worse here than a missing world would be: a worker does not get an empty
+/// RNG, it gets a fresh one seeded identically. So every worker draws the SAME
+/// numbers, the owner's stream never advances, and a game whose peers replay
+/// each other's rules - which is what this runtime's netcode does - diverges
+/// silently the first time a system rolls anything.
+pub(crate) fn own_rng() -> *const () {
+    RNG_OWN.with(|c| c as *const _ as *const ())
+}
+
+struct RngSlot;
+
+impl RngSlot {
+    fn with<R>(&self, f: impl FnOnce(&Cell<u64>) -> R) -> R {
+        let batch = crate::par_batch();
+        if batch.is_null() {
+            return RNG_OWN.with(f);
+        }
+        unsafe {
+            crate::with_par_cell(
+                batch,
+                crate::par_cell(batch, crate::CELL_RNG) as *const Cell<u64>,
+                f,
+            )
+        }
+    }
+}
+
+const RNG: RngSlot = RngSlot;
 
 fn next_u64() -> u64 {
     RNG.with(|s| {
@@ -79,9 +111,63 @@ pub extern "C" fn aurora_rand_int(lo: i64, hi: i64) -> i64 {
 
 thread_local! {
     /// The program's own `set_fixed_dt` override: Some(dt)=fixed, None=wall clock.
-    static FIXED_DT: Cell<Option<f64>> = const { Cell::new(None) };
-    static VIRTUAL_TIME: Cell<f64> = const { Cell::new(0.0) };
+    static FIXED_DT_OWN: Cell<Option<f64>> = const { Cell::new(None) };
+    static VIRTUAL_TIME_OWN: Cell<f64> = const { Cell::new(0.0) };
 }
+
+/// The pinned timestep and the virtual clock it advances, routed to the batch
+/// owner's while this thread is a worker. See `ROUTED_CELLS` in the crate root.
+///
+/// A worker with its own copy sees no pinned step at all, so `frame_dt()` falls
+/// through to the wall clock and answers 1/60 - a plausible number, on a run the
+/// program had pinned precisely so that it would be reproducible. Determinism
+/// under a fixed step is what the replay tape and the netcode are both built on.
+pub(crate) fn own_fixed_dt() -> *const () {
+    FIXED_DT_OWN.with(|c| c as *const _ as *const ())
+}
+
+pub(crate) fn own_virtual_time() -> *const () {
+    VIRTUAL_TIME_OWN.with(|c| c as *const _ as *const ())
+}
+
+struct FixedDtSlot;
+
+impl FixedDtSlot {
+    fn with<R>(&self, f: impl FnOnce(&Cell<Option<f64>>) -> R) -> R {
+        let batch = crate::par_batch();
+        if batch.is_null() {
+            return FIXED_DT_OWN.with(f);
+        }
+        unsafe {
+            crate::with_par_cell(
+                batch,
+                crate::par_cell(batch, crate::CELL_FIXED_DT) as *const Cell<Option<f64>>,
+                f,
+            )
+        }
+    }
+}
+
+struct VirtualTimeSlot;
+
+impl VirtualTimeSlot {
+    fn with<R>(&self, f: impl FnOnce(&Cell<f64>) -> R) -> R {
+        let batch = crate::par_batch();
+        if batch.is_null() {
+            return VIRTUAL_TIME_OWN.with(f);
+        }
+        unsafe {
+            crate::with_par_cell(
+                batch,
+                crate::par_cell(batch, crate::CELL_VIRTUAL_TIME) as *const Cell<f64>,
+                f,
+            )
+        }
+    }
+}
+
+const FIXED_DT: FixedDtSlot = FixedDtSlot;
+const VIRTUAL_TIME: VirtualTimeSlot = VirtualTimeSlot;
 
 /// The harness reproducibility override, read once from `AURORA_FIXED_DT`.
 /// It WINS over any `set_fixed_dt` the program makes, so a game that requests
