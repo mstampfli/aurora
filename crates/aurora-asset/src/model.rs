@@ -75,6 +75,93 @@ impl Skeleton {
         self.joints.len()
     }
 
+    /// Index of the joint with this name.
+    pub fn index_of(&self, name: &str) -> Option<usize> {
+        self.joints.iter().position(|j| j.name == name)
+    }
+
+    /// Merge `other` into this skeleton by bone name, appending anything new.
+    ///
+    /// A modular pack ships no whole body and no skeleton file: every part
+    /// carries only the bones it needs, and the chain above them to hang from. A
+    /// hand knows its fingers, a helmet knows the spine, and no single file knows
+    /// both. The rig they all belong to therefore exists only as the union of the
+    /// parts, and this builds it.
+    ///
+    /// Shared bones must agree on where they sit. They are the same rig or they
+    /// are not, and a silent disagreement is a seam that opens only in some
+    /// poses - so a bone further than `tolerance` from its counterpart is an
+    /// error rather than an average.
+    ///
+    /// A joint no part deforms with carries a placeholder identity bind matrix
+    /// rather than a measured one, so a real measurement always wins over a
+    /// placeholder no matter which part contributed it first.
+    ///
+    /// Returns how many joints were added.
+    pub fn merge(&mut self, other: &Skeleton, tolerance: f32) -> Result<usize, String> {
+        let other_rest = other.rest_globals();
+        let mut added = 0;
+        let mut remaining: Vec<usize> = (0..other.joints.len()).collect();
+
+        // Parents must exist before their children can point at them, and a part
+        // is not required to list its joints in any particular order, so this
+        // takes repeated passes and adds whatever has become resolvable.
+        while !remaining.is_empty() {
+            let mut deferred = Vec::new();
+            let mut progress = false;
+
+            for &i in &remaining {
+                let joint = &other.joints[i];
+                let parent = match joint.parent {
+                    None => None,
+                    Some(p) => match self.index_of(&other.joints[p].name) {
+                        Some(k) => Some(k),
+                        // Parent not merged yet; try again next pass.
+                        None => {
+                            deferred.push(i);
+                            continue;
+                        }
+                    },
+                };
+
+                match self.index_of(&joint.name) {
+                    Some(k) => {
+                        let here = self.rest_globals()[k].w_axis.truncate();
+                        let there = other_rest[i].w_axis.truncate();
+                        let delta = (here - there).length();
+                        if delta > tolerance {
+                            return Err(format!(
+                                "bone `{}` sits {delta:.4} apart between parts - these are not the same rig",
+                                joint.name
+                            ));
+                        }
+                        if self.joints[k].inverse_bind == Mat4::IDENTITY
+                            && joint.inverse_bind != Mat4::IDENTITY
+                        {
+                            self.joints[k].inverse_bind = joint.inverse_bind;
+                        }
+                    }
+                    None => {
+                        let mut merged = joint.clone();
+                        merged.parent = parent;
+                        self.joints.push(merged);
+                        added += 1;
+                    }
+                }
+                progress = true;
+            }
+
+            if !progress {
+                let orphan = &other.joints[deferred[0]].name;
+                return Err(format!(
+                    "bone `{orphan}` has a parent that is not reachable from any part"
+                ));
+            }
+            remaining = deferred;
+        }
+        Ok(added)
+    }
+
     /// Model-space transform of every joint in the rest (bind) pose.
     ///
     /// Joints are stored parent-before-child by both importers, but this does

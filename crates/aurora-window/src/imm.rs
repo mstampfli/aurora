@@ -583,6 +583,9 @@ struct CharacterRecipe {
     rename: Vec<(String, String)>,
     /// Bones allowed to take translation from a clip - normally just the root.
     translate: Vec<String>,
+    /// Mesh files to assemble into one body, for a modular pack that ships no
+    /// whole character. Consumed by [`r3d_load_assembly`].
+    parts: Vec<String>,
 }
 
 thread_local! {
@@ -598,6 +601,11 @@ pub fn r3d_clip_rig(path: &str) {
 /// Add one clip file to the moveset being gathered.
 pub fn r3d_clip_add(path: &str) {
     RECIPE.with(|r| r.borrow_mut().clips.push(path.to_string()));
+}
+
+/// Add one mesh file to the body being gathered, for [`r3d_load_assembly`].
+pub fn r3d_part_add(path: &str) {
+    RECIPE.with(|r| r.borrow_mut().parts.push(path.to_string()));
 }
 
 /// Map a bone name on the clips' rig to its name on the character. Only bones
@@ -630,6 +638,29 @@ pub fn r3d_load_character(path: &str) -> i64 {
             .collect();
         let translate: Vec<&str> = recipe.translate.iter().map(|t| t.as_str()).collect();
         s.load_character(d, q, path, &clips, &recipe.rig, &rename, &translate)
+    })
+}
+
+/// Assemble one character from the parts gathered since the last load, together
+/// with the moveset gathered the same way. -1 if the parts do not share a rig.
+///
+/// For a modular pack, which ships no whole body and no skeleton file: the rig
+/// exists only as the union of the parts, so it is built from them rather than
+/// loaded. The recipe is cleared afterwards, so one body cannot leak into the
+/// next.
+pub fn r3d_load_assembly() -> i64 {
+    let recipe = RECIPE.with(|r| std::mem::take(&mut *r.borrow_mut()));
+    with_gfx(-1, |g| {
+        let (d, q, s) = g.scene_mut();
+        let parts: Vec<&str> = recipe.parts.iter().map(|p| p.as_str()).collect();
+        let clips: Vec<&str> = recipe.clips.iter().map(|c| c.as_str()).collect();
+        let rename: Vec<(&str, &str)> = recipe
+            .rename
+            .iter()
+            .map(|(a, b)| (a.as_str(), b.as_str()))
+            .collect();
+        let translate: Vec<&str> = recipe.translate.iter().map(|t| t.as_str()).collect();
+        s.load_assembly(d, q, &parts, &clips, &recipe.rig, &rename, &translate)
     })
 }
 

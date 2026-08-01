@@ -421,6 +421,24 @@ impl Scene {
                 Err(e) => eprintln!("aurora: no retargeting reference rig: {e}"),
             }
         }
+        self.upload_model(device, queue, key, model)
+    }
+
+    /// Upload a finished [`Model`] as a cached asset and return a handle to it.
+    ///
+    /// Split from the loading above because a model does not have to come from a
+    /// single file: a modular character is assembled from a dozen of them and
+    /// arrives here already merged. Everything past this point - atlases,
+    /// materials, bounds, caching - is the same work either way, and keeping one
+    /// copy of it means an assembled body cannot drift from a loaded one in how
+    /// its art is resolved.
+    fn upload_model(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        key: String,
+        model: Model,
+    ) -> i64 {
         // Atlases named by material, decoded once for this load rather than once
         // per primitive - a body is a dozen primitives all naming the same one.
         let mut atlases: std::collections::HashMap<&str, Option<crate::model::Tex>> =
@@ -503,6 +521,126 @@ impl Scene {
                 hidden_joints: 0,
             })
             .to_i64()
+    }
+
+    /// Assemble one character from modular parts, deriving the rig from them.
+    ///
+    /// A modular pack ships no whole body and no skeleton file. Every part
+    /// carries only the bones it deforms with, plus the chain above them to hang
+    /// from: a hand knows its fingers, a helmet knows the spine, and no file
+    /// knows both. So there is nothing to pass to [`Scene::load_part`] as a host,
+    /// and the rig has to be built before anything can be bound to it.
+    ///
+    /// The parts are unioned by bone name into one skeleton, every part is
+    /// rebound onto it, and the result is uploaded as a single character: one
+    /// pose evaluation, one moveset, one handle. Bones shared between parts must
+    /// agree on where they sit, so a part built for a different body is refused
+    /// rather than averaged into a seam.
+    ///
+    /// Clips are gathered onto the assembled rig exactly as for a whole-body
+    /// character, because by this point it is one.
+    #[allow(clippy::too_many_arguments)]
+    pub fn load_assembly(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        paths: &[&str],
+        clips: &[&str],
+        source_rest: &str,
+        rename: &[(&str, &str)],
+        translate: &[&str],
+    ) -> i64 {
+        if paths.is_empty() {
+            eprintln!("aurora: load_assembly: no parts gathered");
+            return -1;
+        }
+
+        // Keyed on every part and everything that changes what gets uploaded, so
+        // two characters built from the same recipe share one upload and two
+        // built from different armour do not collide.
+        let mut key = String::from("#assembly");
+        for p in paths {
+            key.push(':');
+            key.push_str(&Scene::asset_key(p));
+        }
+        key.push_str(&format!("#m{}", self.material_generation));
+        if !clips.is_empty() {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            clips.hash(&mut h);
+            rename.hash(&mut h);
+            key.push_str(&format!("#clips:{}", h.finish()));
+        }
+        if let Some(asset) = self.assets.get(&key) {
+            return self
+                .items
+                .insert(Renderable {
+                    asset: Arc::clone(asset),
+                    player: AnimPlayer::new(),
+                    hidden_joints: 0,
+                })
+                .to_i64();
+        }
+
+        let mut parts = Vec::with_capacity(paths.len());
+        for path in paths {
+            match Model::load(path) {
+                Ok(m) => parts.push((*path, m)),
+                Err(e) => {
+                    eprintln!("aurora: {e}");
+                    return -1;
+                }
+            }
+        }
+
+        // Tolerance in metres, matching `load_part`: loose enough to absorb an
+        // exporter's rounding, tight enough to refuse a part from another body.
+        let mut rig = crate::model::Skeleton { joints: Vec::new() };
+        for (path, part) in &parts {
+            let Some(skeleton) = &part.skeleton else {
+                eprintln!("aurora: {path} has no skeleton and cannot be part of a body");
+                return -1;
+            };
+            if let Err(e) = rig.merge(skeleton, 1e-3) {
+                eprintln!("aurora: {path} does not share the rig of the parts before it: {e}");
+                return -1;
+            }
+        }
+
+        // Rebind every part onto the finished rig, then fold them into one model.
+        // The first part donates the container so nothing about a merged model is
+        // special-cased downstream.
+        let mut body: Option<Model> = None;
+        for (path, mut part) in parts {
+            if let Err(e) = part.rebind_skin(&rig, 1e-3) {
+                eprintln!("aurora: cannot bind {path} to the assembled rig: {e}");
+                return -1;
+            }
+            match &mut body {
+                None => body = Some(part),
+                Some(b) => b.primitives.append(&mut part.primitives),
+            }
+        }
+        let mut model = match body {
+            Some(m) => m,
+            None => return -1,
+        };
+        model.skeleton = Some(rig);
+
+        if !clips.is_empty() {
+            match crate::model::Model::load_skeleton(source_rest) {
+                Ok(rest) => {
+                    for clip in clips {
+                        if let Err(e) = model.add_clips_from(clip, &rest, rename, translate) {
+                            eprintln!("aurora: {e}");
+                        }
+                    }
+                }
+                Err(e) => eprintln!("aurora: no retargeting reference rig: {e}"),
+            }
+        }
+
+        self.upload_model(device, queue, key, model)
     }
 
     /// The cache key for a model path: the canonical filesystem path when it resolves, and

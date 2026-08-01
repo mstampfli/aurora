@@ -1,4 +1,4 @@
-//! The single source of truth for Aurora's runtime builtins.
+﻿//! The single source of truth for Aurora's runtime builtins.
 //!
 //! A builtin used to be registered in up to eight hand-maintained places (name
 //! list, signature match arms, JIT symbol table, host import table, the AOT
@@ -353,6 +353,8 @@ macro_rules! for_each_builtin {
         [special,  r3d_load_part,                 aurora_r3d_load_part,                  [Ptr, I64, I64],                                 I64]
         [special,  r3d_clip_rig,                  aurora_r3d_clip_rig,                   [Ptr, I64],                                      void]
         [special,  r3d_clip_add,                  aurora_r3d_clip_add,                   [Ptr, I64],                                      void]
+        [text,     r3d_part_add,                  aurora_r3d_part_add,                   [Ptr, I64],                                      void]
+        [scalar,   r3d_load_assembly,             aurora_r3d_load_assembly,              [],                                              I64]
         [special,  r3d_clip_root,                 aurora_r3d_clip_root,                  [Ptr, I64],                                      void]
         [special,  r3d_bone_map,                  aurora_r3d_bone_map,                   [Ptr, I64, Ptr, I64],                            void]
         [special,  r3d_material_texture,          aurora_r3d_material_texture,           [Ptr, I64, Ptr, I64],                            void]

@@ -1,4 +1,4 @@
-//! Real-time window + input for Aurora games (winit + wgpu).
+﻿//! Real-time window + input for Aurora games (winit + wgpu).
 //!
 //! [`run`] opens a window and drives a frame loop: each frame your callback gets
 //! the current [`Input`] and delta-time and draws into a [`Framebuffer`], which
@@ -50,6 +50,7 @@ pub use imm::{
     r3d_joint_pos as imm_r3d_joint_pos, r3d_light as imm_r3d_light,
     r3d_bone_map as imm_r3d_bone_map, r3d_clip_add as imm_r3d_clip_add,
     r3d_clip_rig as imm_r3d_clip_rig, r3d_clip_root as imm_r3d_clip_root,
+    r3d_load_assembly as imm_r3d_load_assembly, r3d_part_add as imm_r3d_part_add,
     r3d_load_character as imm_r3d_load_character, r3d_load_model as imm_r3d_load_model,
     r3d_load_part as imm_r3d_load_part, r3d_make_box as imm_r3d_make_box,
     r3d_material_texture as imm_r3d_material_texture,
@@ -100,7 +101,7 @@ pub(crate) fn new_event_loop() -> Result<EventLoop<()>, winit::error::EventLoopE
     builder.build()
 }
 
-/// Open a window of `width`×`height` (the framebuffer resolution) titled `title`
+/// Open a window of `width`Ã—`height` (the framebuffer resolution) titled `title`
 /// and run the frame loop until the user closes it (or presses Escape). `frame`
 /// is called once per presented frame with input, delta-seconds, and the
 /// framebuffer to draw into.
@@ -137,7 +138,7 @@ pub fn demo() -> Result<(), String> {
     let mut y = (h / 2) as f32;
     let (mut vx, mut vy) = (48.0f32, 33.0f32);
     run(
-        "Aurora — live window (arrows/WASD move, Esc quits)",
+        "Aurora â€” live window (arrows/WASD move, Esc quits)",
         w,
         h,
         move |input, dt, fb| {

@@ -2072,6 +2072,22 @@ pub unsafe extern "C" fn aurora_r3d_load_part(ptr: *const u8, len: i64, host: i6
     aurora_window::imm_r3d_load_part(&unsafe { arg_str(ptr, len) }, host)
 }
 
+/// Add one mesh file to the body being gathered for `r3d_load_assembly`.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
+#[no_mangle]
+pub unsafe extern "C" fn aurora_r3d_part_add(ptr: *const u8, len: i64) {
+    aurora_window::imm_r3d_part_add(&unsafe { arg_str(ptr, len) });
+}
+
+/// Assemble a character from the gathered parts, deriving the rig from them;
+/// -1 if they do not share one. Clears the gathered recipe.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_load_assembly() -> i64 {
+    aurora_window::imm_r3d_load_assembly()
+}
+
 /// Attach a texture to every mesh whose material is named `material` and that
 /// carries none of its own.
 ///

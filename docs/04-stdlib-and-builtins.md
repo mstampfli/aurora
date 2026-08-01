@@ -422,6 +422,19 @@ These assemble that into one animated body.
 | `r3d_bone_map(from, to)` | rename a bone between the clips' rig and the character's | only bones whose names differ need an entry |
 | `r3d_clip_root(bone)` | let this bone take translation from a clip | the root, so locomotion travels. Every other bone keeps the character's own offsets: a clip-only export has none to give, and its zeroes would collapse the body onto its hip |
 | `r3d_load_character(path) -> i64` | load a character with the moveset gathered so far | retargets each clip onto this skeleton, then clears the gathering so one character's moveset cannot leak into the next |
+| `r3d_part_add(path)` | add one mesh file to the body being gathered | for `r3d_load_assembly` |
+| `r3d_load_assembly() -> i64` | assemble one character from the gathered parts | derives the rig as the union of the parts' skeletons, rebinds each part onto it, and uploads the result as a single character. -1 if the parts do not share a rig |
+
+`r3d_load_assembly` exists because a modular pack ships **no whole body and no
+skeleton file**. Every part carries only the bones it deforms with plus the chain
+above them to hang from: a hand knows its fingers, a helmet knows the spine, and
+no single file knows both. There is therefore nothing to pass `r3d_load_part` as
+a host, and the rig has to be built before anything can bind to it. Bones shared
+between parts must agree on where they rest, so a part authored for a different
+body is refused rather than averaged into a seam that opens only in some poses.
+
+Use `r3d_load_part` when a whole-body character already exists and you are adding
+to it; use `r3d_load_assembly` when the parts are all there is.
 
 The moveset is gathered call by call rather than passed in one go because a
 builtin cannot take a list of strings, and it is attached at load rather than
@@ -441,6 +454,12 @@ let hero = r3d_load_character("art/Character.fbx")
 
 let torso = r3d_load_part("art/parts/Torso_00.fbx", hero)
 let legs  = r3d_load_part("art/parts/LegLeft_00.fbx", hero)
+
+// Or, when the pack ships parts and nothing else, assemble the rig from them:
+r3d_part_add("art/parts/Hips_20.fbx")
+r3d_part_add("art/parts/Torso_20.fbx")
+r3d_part_add("art/parts/HandLeft_17.fbx")
+let boss = r3d_load_assembly()
 
 let swing = r3d_clip_index(hero, "Attack_LightCombo01A")
 r3d_anim_play(hero, swing, 1, 1.0, 0.15)
