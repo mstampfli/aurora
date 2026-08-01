@@ -492,6 +492,30 @@ fn report_stub_failures(failed: &std::collections::HashMap<String, String>, verb
     true
 }
 
+/// Say why there is no runnable `main`, and mean it.
+///
+/// Two entirely different situations wore the same sentence, "`main` did not
+/// compile to native code (codegen gap)":
+///
+///   - the program HAS a `main` and the backend could not lower it, in which case
+///     the reason was sitting in `compile_error` and was never printed; or
+///   - the file has no `main` at all, because it is a module other programs
+///     import, and there was never a gap to report.
+///
+/// The second is what a library module run by mistake looks like, and blaming the
+/// compiler for it sends whoever reads the message looking for a missing language
+/// feature. Both answers were already in hand. This asks for them.
+fn report_no_main(jit: &aurora_codegen::Jit, path: &str) {
+    match jit.compile_error("main") {
+        Some(why) => eprintln!("error: `main` did not compile to native code: {why}"),
+        None => eprintln!(
+            "error: `{path}` has no `main` function, so there is nothing to run.\n\
+             note: a file without `main` is a module - import it with `mod` from a \
+             program that has one."
+        ),
+    }
+}
+
 fn read_program(path: &str) -> Option<String> {
     let src = match std::fs::read_to_string(path) {
         Ok(s) => s,
@@ -919,7 +943,7 @@ fn cmd_native(path: &str, args: &[String]) -> ExitCode {
                 return ExitCode::FAILURE;
             }
             if !jit.compiled("main") {
-                eprintln!("native: `main` did not compile to native code (codegen gap)");
+                report_no_main(&jit, path);
                 return ExitCode::FAILURE;
             }
             match jit.call_i64("main", &[]) {
@@ -1415,7 +1439,7 @@ fn cmd_run(path: &str, args: &[String]) -> ExitCode {
                 return ExitCode::FAILURE;
             }
             if !jit.compiled("main") {
-                eprintln!("error: `main` did not compile to native code (codegen gap)");
+                report_no_main(&jit, path);
                 return ExitCode::FAILURE;
             }
             match jit.call_i64("main", &[]) {

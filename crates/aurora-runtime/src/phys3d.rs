@@ -1283,9 +1283,6 @@ pub extern "C" fn aurora_phys3d_spherecast(
     })
 }
 
-/// First body whose collider overlaps a sphere at (x,y,z); -1 if none. Triggers,
-/// pickups, explosion queries.
-#[no_mangle]
 /// Like `phys3d_overlap_sphere`, but only the WORLD - never a character.
 ///
 /// A third-person camera needs room around itself and pulls in when it does not
@@ -1318,6 +1315,8 @@ pub extern "C" fn aurora_phys3d_overlap_world(x: f64, y: f64, z: f64, radius: f6
     })
 }
 
+/// First body whose collider overlaps a sphere at (x,y,z); -1 if none. Triggers,
+/// pickups, explosion queries.
 #[no_mangle]
 pub extern "C" fn aurora_phys3d_overlap_sphere(x: f64, y: f64, z: f64, radius: f64) -> i64 {
     PHYS3.with(|p| {

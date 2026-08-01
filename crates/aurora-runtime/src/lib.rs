@@ -2184,13 +2184,11 @@ pub extern "C" fn aurora_window_open(w: i64, h: i64) {
 pub extern "C" fn aurora_window_present() -> i64 {
     let rgba = FB.with(|fb| fb.borrow().as_ref().map(|f| f.rgba()).unwrap_or_default());
     let open = aurora_window::imm_present(&rgba);
-    // A frame just ended, so what is held now is what the next frame compares
-    // its presses against. Done here rather than left to the game: an edge
-    // snapshot that is only advanced when someone remembers to is one that
-    // reports every held button as a fresh press forever.
+    // A frame just ended: `input_step` is the boundary, and it advances the edge
+    // snapshot and spends this frame's delta together. Done here rather than left
+    // to the game - an edge snapshot that is only advanced when someone remembers
+    // to is one that reports every held button as a fresh press forever.
     aurora_input_step();
-    // And this frame's delta is spent. The next call measures a new one.
-    end_frame_dt();
     if open {
         1
     } else {
@@ -2824,10 +2822,9 @@ pub extern "C" fn aurora_r3d_present() -> i64 {
             .unwrap_or((Vec::new(), 0, 0))
     });
     let open = aurora_window::imm_r3d_present(&rgba, w, h);
-    // The frame is over: advance the input edge snapshot. See `input_step`.
+    // The frame is over: edge snapshot and this frame's delta both roll. See
+    // `input_step`, which is the one place a frame ends.
     aurora_input_step();
-    // And this frame's delta is spent. The next call measures a new one.
-    end_frame_dt();
     if open {
         1
     } else {
@@ -3119,13 +3116,16 @@ thread_local! {
 /// buttons; the gap between costs a few bits and nothing else.
 const INPUT_CODE_MAX: i64 = 105;
 
-/// Advance the input edge snapshot: what is held now becomes "was held" for the
-/// next frame's `input_pressed` / `input_released`.
+/// End the frame: advance the input edge snapshot (what is held now becomes "was
+/// held" for the next frame's `input_pressed` / `input_released`) and spend this
+/// frame's delta, so the next `frame_dt` measures a fresh one.
 ///
-/// Called automatically by `window_present` and `r3d_present`, because those are
-/// where a frame ends and a game with a window never has to remember. Headless
-/// programs that inject input and step the simulation without presenting have no
-/// frame boundary of their own, and call this where theirs is.
+/// This is THE frame boundary, and the only one. Called automatically by
+/// `window_present` and `r3d_present`, because that is where a frame ends and a
+/// game with a window never has to remember. Headless programs that inject input
+/// and step the simulation without presenting have no frame boundary of their
+/// own, and call this where theirs is - which is also what keeps `frame_dt` from
+/// freezing in a loop that never presents.
 ///
 /// The snapshot records the RAW key state even while input is suppressed. A pause
 /// menu opened with attack held and closed with attack still held must not fire
@@ -3142,6 +3142,7 @@ pub extern "C" fn aurora_input_step() {
         c += 1;
     }
     INPUT_PREV.with(|p| p.set(held));
+    end_frame_dt();
 }
 
 /// Whether an action went down THIS frame (1) or not (0).

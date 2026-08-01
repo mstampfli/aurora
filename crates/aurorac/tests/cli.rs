@@ -845,3 +845,54 @@ fn expected_echo(argv0: &str) -> String {
          role=[host]\nunset=[]\nnoname=[]\n"
     )
 }
+
+/// A file with no `main` is a module, and the compiler must say so.
+///
+/// Two entirely different situations wore one sentence, "`main` did not compile
+/// to native code (codegen gap)": the backend failing to lower a real `main`, and
+/// there being no `main` to lower. The second is what running a library module by
+/// mistake looks like, and blaming the backend for it sends whoever reads the
+/// message hunting for a missing language feature that was never missing.
+///
+/// Found downstream, by a gate script that ran every fight file in a directory
+/// and reported the compiler as broken for the one that was a shared module.
+#[test]
+fn running_a_file_with_no_main_says_so_instead_of_blaming_the_backend() {
+    let entry = program("no_main", &[("lib.aur", "fn helper() -> i64 { 7 }\n")]);
+    let out = aurorac("run", &entry);
+    assert!(
+        !out.status.success(),
+        "a file with no `main` has nothing to run and must fail"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("has no `main` function"),
+        "should name the actual problem; stderr was: {err}"
+    );
+    assert!(
+        !err.contains("codegen gap"),
+        "still blaming the backend for a missing entry point: {err}"
+    );
+}
+
+/// And when a `main` genuinely does fail to lower, the reason is printed rather
+/// than swallowed. `compile_error` has held it all along.
+///
+/// Guarded on the failure actually happening: if every construct lowers, there is
+/// no gap to report and nothing to assert - but the moment one appears, this
+/// insists the message carries the reason.
+#[test]
+fn a_real_codegen_gap_reports_its_reason() {
+    let entry = program(
+        "gap_reason",
+        &[("main.aur", "fn main() { println(\"hello\") }\n")],
+    );
+    let out = aurorac("run", &entry);
+    let err = String::from_utf8_lossy(&out.stderr);
+    if err.contains("did not compile to native code") {
+        assert!(
+            err.contains("did not compile to native code: "),
+            "a real gap must carry its reason, not just the fact; stderr was: {err}"
+        );
+    }
+}
