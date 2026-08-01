@@ -1,4 +1,4 @@
-//! 3D physics for Aurora, backed by Rapier 3D: rigid bodies (box/sphere/capsule
+﻿//! 3D physics for Aurora, backed by Rapier 3D: rigid bodies (box/sphere/capsule
 //! and arbitrary static trimeshes), impulses (jumps/knockback), raycasts, and a
 //! kinematic capsule character controller that slides along walls - the core of
 //! a fluid 3D movement shooter.
@@ -1073,6 +1073,14 @@ pub extern "C" fn aurora_phys3d_hit_body() -> i64 {
 
 /// Sweep a sphere of `radius` from (x,y,z) along (dx,dy,dz); returns the distance
 /// to the first hit, or -1. Thick projectiles, character probes.
+///
+/// `ignore` is a body handle the sweep passes through, or -1 for none. A sweep
+/// that starts INSIDE a body otherwise hits that body at zero distance, which is
+/// the common case rather than an exotic one: a third-person camera probe begins
+/// at the character's own head, and without this it reports the character and
+/// the camera is pulled inside it. Every other cast in this engine can say what
+/// it is not interested in; this one could not.
+#[allow(clippy::too_many_arguments)]
 #[no_mangle]
 pub extern "C" fn aurora_phys3d_spherecast(
     x: f64,
@@ -1083,6 +1091,7 @@ pub extern "C" fn aurora_phys3d_spherecast(
     dz: f64,
     radius: f64,
     max: f64,
+    ignore: i64,
 ) -> f64 {
     PHYS3.with(|p| {
         let p = p.borrow();
@@ -1103,7 +1112,10 @@ pub extern "C" fn aurora_phys3d_spherecast(
             &vel,
             &shape,
             opts,
-            QueryFilter::default(),
+            match rb_of(p, ignore) {
+                Some(hd) => QueryFilter::default().exclude_rigid_body(hd),
+                None => QueryFilter::default(),
+            },
         ) {
             Some((_, hit)) => hit.time_of_impact as f64,
             None => -1.0,
@@ -1319,7 +1331,7 @@ mod tests {
         );
         assert_eq!(aurora_phys3d_overlap_sphere(0.0, 0.0, 0.0, 0.5), -1);
         assert_eq!(
-            aurora_phys3d_spherecast(0.0, 5.0, 0.0, 0.0, -1.0, 0.0, 0.25, 20.0),
+            aurora_phys3d_spherecast(0.0, 5.0, 0.0, 0.0, -1.0, 0.0, 0.25, 20.0, -1),
             -1.0
         );
         // ...and after a step too, once the tree has actually been rebuilt.

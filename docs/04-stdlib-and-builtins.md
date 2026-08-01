@@ -1,4 +1,4 @@
-# Aurora - Builtins & Standard Library Reference
+﻿# Aurora - Builtins & Standard Library Reference
 
 This is the practical reference for writing Aurora programs: the **builtins**
 (functions the compiler lowers to native runtime calls) and the **standard
@@ -18,7 +18,7 @@ newline or `;` (block-form `if`/`while`/`for`/`match` need no separator).
 Split a program across files with `mod NAME;`, which loads `NAME.aur` from the
 declaring file's directory and namespaces its items as `NAME::item`. Only the entry
 file is passed to `aurorac`; see
-[`01-grammar-and-types.md`](01-grammar-and-types.md) §3.1 for the full rule.
+[`01-grammar-and-types.md`](01-grammar-and-types.md) Â§3.1 for the full rule.
 
 ### Compilation failures are never silent
 
@@ -73,7 +73,7 @@ negative index panics with `array index N out of bounds (length L)`.
 `component Position { x: f64 }` declares storage; `spawn(Position { .. }, ..)`
 creates an entity; `system move() { for (p, v) in query<&mut Position, &Velocity> { .. } }`
 defines behaviour. `run_systems()` runs them - **independent systems in a stage
-run in parallel** (the §6.2 checker proves they can't race). `despawn(e)`,
+run in parallel** (the Â§6.2 checker proves they can't race). `despawn(e)`,
 `entity_count()`, `world_clear()`.
 
 `world_clear()` despawns every entity and drops all component storage - what a
@@ -83,7 +83,7 @@ names nothing instead of silently naming whatever entity later takes its number.
 
 A system's access set is what it **reaches**, not what its body spells out:
 queries inside the functions it calls count as its own, transitively. Ordering
-with `after`/`before` is transitive and independent of declaration order (§6.2).
+with `after`/`before` is transitive and independent of declaration order (Â§6.2).
 
 ## Graphics, window, input
 
@@ -102,8 +102,8 @@ with `after`/`before` is transitive and independent of declaration order (§6.2)
 
 | Builtin | Signature | Backed by |
 |---|---|---|
-| `load_ppm(path) -> i64` | PPM → framebuffer | built-in |
-| `load_image(path) -> i64` | **PNG/JPEG** → framebuffer | `image` crate |
+| `load_ppm(path) -> i64` | PPM â†’ framebuffer | built-in |
+| `load_image(path) -> i64` | **PNG/JPEG** â†’ framebuffer | `image` crate |
 | `load_font(path) -> i64` | load a TrueType/OpenType font | `fontdue` |
 | `draw_text(x, y, str, px, color)` | rasterize text (alpha-blended) | `fontdue` |
 | `play_note(semitone, ms)` / `play_sound(...)` | synth audio | `aurora-audio` |
@@ -571,7 +571,7 @@ along walls (the core of a fluid movement shooter). Bodies are `i64` handles.
 | `phys3d_raycast_world(exclude, x,y,z, dx,dy,dz, max) -> i64` | like `raycast_ex`, but WORLD geometry only | for movement: ground checks, walls, mantle. Ignores other character capsules, so a player cannot stand on a player |
 | `phys3d_hit_x/y/z() -> f64` / `phys3d_hit_nx/ny/nz() -> f64` | last hit point + normal | decals, impacts |
 | `phys3d_hit_body() -> i64` | last hit body handle | |
-| `phys3d_spherecast(x,y,z, dx,dy,dz, r, max) -> f64` | swept-sphere distance, or -1 | thick projectiles |
+| `phys3d_spherecast(x,y,z, dx,dy,dz, r, max, ignore) -> f64` | swept-sphere distance, or -1 | thick projectiles, camera probes. `ignore` is a body handle the sweep passes through, or -1 for none - a sweep starting inside a body otherwise hits it at zero distance, which is what a camera probe from the character head always does |
 | `phys3d_overlap_sphere(x,y,z, r) -> i64` | first overlapping body, or -1 | triggers, pickups, blasts |
 | `phys3d_apply_force/apply_torque(h, x,y,z)` / `phys3d_set_angvel(h, x,y,z)` | dynamic forces | |
 | `phys3d_set_rot(h, qx,qy,qz,qw)` / `phys3d_rot_qx/qy/qz/qw(h) -> f64` | orientation quaternion | |

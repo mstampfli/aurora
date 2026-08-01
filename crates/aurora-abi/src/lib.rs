@@ -441,7 +441,7 @@ macro_rules! for_each_builtin {
         [scalar,   phys3d_hit_ny,                 aurora_phys3d_hit_ny,                  [],                                              F64]
         [scalar,   phys3d_hit_nz,                 aurora_phys3d_hit_nz,                  [],                                              F64]
         [scalar,   phys3d_hit_body,               aurora_phys3d_hit_body,                [],                                              I64]
-        [scalar,   phys3d_spherecast,             aurora_phys3d_spherecast,              [F64, F64, F64, F64, F64, F64, F64, F64],        F64]
+        [scalar,   phys3d_spherecast,             aurora_phys3d_spherecast,              [F64, F64, F64, F64, F64, F64, F64, F64, I64],   F64]
         [scalar,   phys3d_overlap_sphere,         aurora_phys3d_overlap_sphere,          [F64, F64, F64, F64],                            I64]
         [scalar,   phys3d_debug_draw,             aurora_phys3d_debug_draw,              [F64, F64, F64],                                 void]
         [scalar,   phys3d_apply_force,            aurora_phys3d_apply_force,             [I64, F64, F64, F64],                            void]
