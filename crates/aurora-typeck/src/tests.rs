@@ -557,3 +557,59 @@ fn shadowing_with_the_same_type_is_silent() {
         "same-type shadowing must not complain, got {errs:?}"
     );
 }
+
+// --- array length in a diagnostic ---------------------------------------
+//
+// A length mismatch has to name BOTH lengths. It once said
+//
+//     expected `[str]`, found `[str; 43]`
+//
+// which is not a formatting quirk - the expected side had no length because the
+// const naming it had not RESOLVED, and an unsized slice is what an unresolved
+// length degrades to. So the message that was meant to report a miscount was
+// simultaneously the symptom of a compiler bug, and read as neither. Three
+// separate passes dropped an array type's length over this project's life; each
+// time the report looked like this.
+//
+// These pin the message rather than the resolution, because the resolution has
+// its own tests (`aurora-codegen/tests/const_array_length.rs`) and this is the
+// part a human reads.
+
+fn expects_both_lengths(errs: &[String], want: &str, got: &str) {
+    assert!(
+        errs.iter().any(|e| e.contains(want) && e.contains(got)),
+        "the diagnostic must name BOTH lengths - want {want:?} and {got:?}, got {errs:?}"
+    );
+}
+
+#[test]
+fn a_length_mismatch_names_the_literal_length_it_expected() {
+    let errs = errors("const T: [i64; 5] = [1, 2, 3]");
+    expects_both_lengths(&errs, "[i64; 5]", "; 3]");
+}
+
+/// The case that regressed: the length is a CONST, so reporting it at all means
+/// the const resolved.
+#[test]
+fn a_length_mismatch_resolves_a_const_length_before_reporting_it() {
+    let errs = errors("const N: i64 = 4\nconst T: [str; N] = [\"a\", \"b\", \"c\"]");
+    expects_both_lengths(&errs, "[str; 4]", "[str; 3]");
+    assert!(
+        !errs.iter().any(|e| e.contains("expected `[str]`")),
+        "an unsized `[str]` means the const length was never resolved: {errs:?}"
+    );
+}
+
+/// And an arithmetic const, which has to be folded first.
+#[test]
+fn a_length_mismatch_folds_an_arithmetic_const_length() {
+    let errs = errors("const N: i64 = 4\nconst W: i64 = N * 2\nconst T: [i64; W] = [1, 2, 3]");
+    expects_both_lengths(&errs, "[i64; 8]", "; 3]");
+}
+
+/// A correct table is silent, so the tests above are reporting a real mismatch
+/// rather than a checker that complains about every array.
+#[test]
+fn a_correctly_sized_table_is_accepted() {
+    assert!(errors("const N: i64 = 3\nconst T: [i64; N] = [1, 2, 3]").is_empty());
+}
