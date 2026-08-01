@@ -37,6 +37,7 @@ use aurora_types::{InferCtx, Ty};
 
 /// Type-check a module, returning diagnostics.
 pub fn check_types(module: &Module) -> Vec<Diagnostic> {
+    convert::set_const_lens(module);
     let mut tc = Typeck::new();
     tc.collect(module);
     tc.run(module);
@@ -491,13 +492,14 @@ impl Typeck {
             ExprKind::ArrayRepeat { value, count } => {
                 self.infer(count);
                 let e = self.infer(value);
-                // A literal repeat count gives a known array size, so `[0; 32]`
-                // matches a `[i64; 32]` field/annotation.
-                let n = if let ExprKind::Int(v, _) = &count.kind {
-                    Some(*v as u64)
-                } else {
-                    None
-                };
+                // A known repeat count gives a known array size, so `[0; 32]`
+                // and `[0; N]` both match a `[i64; 32]` annotation.
+                //
+                // Same resolver as the TYPE position, deliberately: when only
+                // this one understood literals, `let a: [i64; N] = [7; N]`
+                // produced a sized annotation and an unsized value and failed to
+                // unify against itself.
+                let n = convert::array_len_of(&count.kind);
                 Ty::Array(Box::new(self.cx.resolve_deep(&e)), n)
             }
             ExprKind::Tuple(items) => Ty::Tuple(items.iter().map(|it| self.infer(it)).collect()),
