@@ -697,3 +697,126 @@ fn a_skeleton_under_an_armature_node_inherits_its_transform() {
         "armature rotation was dropped: +Y mapped to {py:?}, want (0,0,-4)"
     );
 }
+
+// --- socket scale ---------------------------------------------------------
+//
+// A socket places and orients; it does not resize. `draw_on_joint` divides the
+// bone's own scale out, which is what lets a weapon be drawn at the size it was
+// authored on a rig whose joints carry a unit-conversion factor.
+//
+// The obvious implementation - decompose to a quaternion and recompose - is
+// wrong and was reverted once for being wrong: a mirrored bone has a negative
+// determinant, no quaternion can represent a reflection, and the round trip
+// drops it silently so a prop on the rig's left-hand side comes back flipped.
+// These pin the behaviour that replaced it.
+
+/// A uniform 0.01 (the centimetre rig's factor) is removed.
+#[test]
+fn a_sockets_uniform_scale_is_divided_out() {
+    let m = Mat4::from_scale(Vec3::splat(0.01));
+    let out = super::without_scale(m);
+    let px = out.transform_point3(Vec3::X);
+    assert!(
+        (px.length() - 1.0).abs() < 1e-6,
+        "a 0.01 bone scale survived: |{px:?}| = {}, want 1",
+        px.length()
+    );
+}
+
+/// So is a NON-uniform one, per axis rather than by one averaged factor.
+#[test]
+fn each_axis_is_normalised_separately() {
+    let m = Mat4::from_scale(Vec3::new(0.5, 2.0, 4.0));
+    let out = super::without_scale(m);
+    for (axis, name) in [(Vec3::X, "X"), (Vec3::Y, "Y"), (Vec3::Z, "Z")] {
+        let p = out.transform_point3(axis);
+        assert!(
+            (p.length() - 1.0).abs() < 1e-6,
+            "{name} kept a scale: |{p:?}| = {}, want 1",
+            p.length()
+        );
+    }
+}
+
+/// Rotation is untouched: only the LENGTH of each basis vector changes.
+#[test]
+fn orientation_and_position_survive() {
+    let m = Mat4::from_scale_rotation_translation(
+        Vec3::splat(0.01),
+        glam::Quat::from_rotation_x(std::f32::consts::FRAC_PI_2),
+        Vec3::new(1.0, 2.0, 3.0),
+    );
+    let out = super::without_scale(m);
+
+    // The socket is still where the bone is. Normalising the translation column
+    // would have dragged it to within a metre of the origin.
+    let at = out.transform_point3(Vec3::ZERO);
+    assert!(
+        (at - Vec3::new(1.0, 2.0, 3.0)).length() < 1e-6,
+        "the socket moved: {at:?}, want (1,2,3)"
+    );
+
+    // +90 degrees about X still maps +Y to +Z.
+    let dir = out.transform_point3(Vec3::Y) - at;
+    assert!(
+        (dir - Vec3::Z).length() < 1e-6,
+        "orientation was lost: +Y mapped to {dir:?}, want +Z"
+    );
+}
+
+/// The case that broke the previous attempt: a bone mirrored on one axis.
+///
+/// A negative determinant must stay negative. Through a quaternion it cannot,
+/// so the reflection is dropped and a left-hand prop is drawn inside-out.
+#[test]
+fn a_mirrored_bone_keeps_its_reflection() {
+    let m = Mat4::from_scale(Vec3::new(-0.01, 0.01, 0.01));
+    assert!(m.determinant() < 0.0, "the fixture is not actually mirrored");
+
+    let out = super::without_scale(m);
+    assert!(
+        out.determinant() < 0.0,
+        "the reflection was dropped: determinant {} , want negative",
+        out.determinant()
+    );
+    // And it is a unit reflection now, not a 0.01 one.
+    assert!(
+        (out.determinant() + 1.0).abs() < 1e-6,
+        "determinant {} , want -1",
+        out.determinant()
+    );
+    // The mirrored axis still points the other way.
+    let px = out.transform_point3(Vec3::X);
+    assert!(
+        (px - Vec3::new(-1.0, 0.0, 0.0)).length() < 1e-6,
+        "the mirrored axis moved: {px:?}, want (-1,0,0)"
+    );
+}
+
+/// A collapsed bone must not become NaN. Wrong but finite beats invisible.
+#[test]
+fn a_degenerate_bone_does_not_divide_by_zero() {
+    let m = Mat4::from_scale(Vec3::new(0.0, 1.0, 1.0));
+    let out = super::without_scale(m);
+    for c in [out.x_axis, out.y_axis, out.z_axis, out.w_axis] {
+        assert!(
+            c.is_finite(),
+            "a zero-length basis column produced {c:?}"
+        );
+    }
+}
+
+/// An already-unit socket is left exactly alone, so normalising is idempotent
+/// and costs nothing on a rig that never needed it.
+#[test]
+fn a_unit_socket_is_unchanged() {
+    let m = Mat4::from_rotation_translation(
+        glam::Quat::from_rotation_y(0.7),
+        Vec3::new(4.0, 0.0, -2.0),
+    );
+    let out = super::without_scale(m);
+    assert!(
+        (out - m).to_cols_array().iter().all(|v| v.abs() < 1e-6),
+        "a unit socket was changed"
+    );
+}

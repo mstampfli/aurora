@@ -1399,8 +1399,20 @@ impl Scene {
 
     /// Draw `weapon` attached to `joint` of `host` (posed at `host_xform`), with the
     /// weapon's own `local` offset relative to that bone:
-    ///   weapon_world = host_xform * joint_global(host pose) * local.
+    ///   weapon_world = host_xform * unscaled(joint_global(host pose)) * local.
     /// Falls back to host_xform * local if the joint/skeleton is missing.
+    ///
+    /// A socket PLACES and ORIENTS; it does not resize. The bone's own scale is
+    /// divided out, so a weapon is drawn at the size it was authored on any rig
+    /// and the caller's `local` is the only thing that scales it.
+    ///
+    /// That is not a preference, it is the difference between working and not.
+    /// A rig authored in centimetres and normalised by 0.01 carries that factor
+    /// in every joint's global transform, so anything hung on a bone came out a
+    /// hundredth of its size - which does not read as wrong, it reads as
+    /// nothing at all. Games were cancelling it with a magic `100.0` measured by
+    /// eye against one pack, which is the engine's unit conversion done by the
+    /// caller and wrong for the next rig.
     pub fn draw_on_joint(
         &mut self,
         weapon: i64,
@@ -1418,7 +1430,7 @@ impl Scene {
                     .and_then(|m| r.player.joint_global(m, joint.max(0) as usize))
             })
             .unwrap_or(Mat4::IDENTITY);
-        self.draw(weapon, host_xform * g * local);
+        self.draw(weapon, host_xform * without_scale(g) * local);
     }
 
     /// The full model-space global transform of `joint` in the host's CURRENT
@@ -1548,6 +1560,40 @@ impl Scene {
     fn item_mut(&mut self, handle: i64) -> Option<&mut Renderable> {
         self.items.get_mut(ItemId::from_i64(handle)?)
     }
+}
+
+/// `m` with its scale divided out: same translation, same orientation, unit
+/// basis vectors.
+///
+/// Each basis column is divided by its own length. Deliberately NOT a
+/// decompose-to-quaternion-and-recompose, which is the obvious way to write this
+/// and is wrong: a MIRRORED bone has a negative determinant, no quaternion can
+/// represent a reflection, and the round trip silently drops it - the attached
+/// prop comes back flipped on the rig's left-hand side only. An earlier attempt
+/// at exactly this was reverted for exactly that reason. Dividing a column by
+/// its length changes the column's length and nothing else, so a reflection
+/// survives untouched.
+///
+/// A degenerate column (a collapsed bone, length ~0) is left as it is rather
+/// than divided by zero: the prop then draws at the bone's own scale, which is
+/// wrong but finite, instead of vanishing into NaN.
+fn without_scale(m: Mat4) -> Mat4 {
+    fn unit(v: glam::Vec4) -> glam::Vec4 {
+        let len = glam::Vec3::new(v.x, v.y, v.z).length();
+        if len > 1e-9 {
+            v / len
+        } else {
+            v
+        }
+    }
+    Mat4::from_cols(
+        unit(m.x_axis),
+        unit(m.y_axis),
+        unit(m.z_axis),
+        // The translation column is a POSITION, not a direction: normalising it
+        // would move the socket to within a metre of the origin.
+        m.w_axis,
+    )
 }
 
 #[cfg(test)]
