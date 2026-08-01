@@ -1381,7 +1381,10 @@ pub unsafe extern "C" fn aurora_query_begin(ids: *const i64, n: i64) -> i64 {
             .collect()
     });
     let len = matches.len() as i64;
-    QUERY.with(|q| q.borrow_mut().push(matches));
+    QUERY.with(|q| {
+        let mut q = q.borrow_mut();
+        q.push(matches);
+    });
     len
 }
 
@@ -1406,10 +1409,11 @@ pub extern "C" fn aurora_query_end() {
 pub extern "C" fn aurora_query_entity(i: i64) -> i64 {
     QUERY.with(|q| {
         let q = q.borrow();
-        match q.last() {
+        let out = match q.last() {
             Some(cur) => cur.get(i.max(0) as usize).copied().unwrap_or(-1),
             None => -1,
-        }
+        };
+        out
     })
 }
 #[no_mangle]

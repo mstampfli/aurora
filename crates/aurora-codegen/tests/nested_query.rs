@@ -14,6 +14,14 @@
 //! The set is a stack now, pushed by the loop and popped on every path out:
 //! its own exit, a `return` from inside it, and a `break` to a loop outside it.
 //! These tests are the three paths plus the shape that found it.
+//!
+//! The `return` path took two goes. The first attempt to track how many query
+//! loops were open never reached the file - a scripted edit asserted on its
+//! second substitution and threw, and Python writes at the end, so the first
+//! substitution was discarded while the script had already printed success for
+//! the part that did land. The pops for `return` and `break` were therefore
+//! emitted as zero of them, and the whole thing looked like a subtler bug than
+//! it was.
 
 use aurora_parser::parse_str;
 
@@ -82,19 +90,31 @@ fn a_directly_nested_query_visits_every_pair() {
     assert_eq!(n, 6, "three outer by two inner");
 }
 
-// STILL BROKEN, and deliberately not a test here: a `return` from inside a query
-// loop, in a function called from within another query loop, still faults.
-//
-//     fn first_b() -> i64 { for b in query<&B> { return b.v }  0 }
-//     for a in query<&A> { t = t + a.v + first_b() }        // two A entities
-//
-// It is NOT a regression - it faulted identically before the match-set stack
-// existed, verified against the previous compiler. And it is not an imbalance:
-// the runtime's `query_end` now asserts the stack is non-empty, and that
-// assertion does not fire, so the pushes and pops match and something else is
-// wrong. Left as an open defect with its own task rather than as a test,
-// because a segfaulting test takes the whole binary down and hides the five
-// above it.
+/// A `return` from inside a nested query loop leaves it closed behind.
+///
+/// The last shape of this bug to fall, and the one that showed the diagnosis
+/// mattered: the enclosing loop kept reading the INNER query's entities after
+/// the callee returned, ran off the end and dereferenced null. Two entities in
+/// the outer loop, one in the inner.
+#[test]
+fn a_return_from_inside_a_query_closes_it() {
+    let n = run(&format!(
+        "{W}
+         fn first_b() -> i64 {{
+             for b in query<&B> {{ return b.v }}
+             0
+         }}
+         fn run() -> i64 {{
+             spawn(A {{ v: 10 }})
+             spawn(A {{ v: 20 }})
+             spawn(B {{ v: 7 }})
+             let mut t = 0
+             for a in query<&A> {{ t = t + a.v + first_b() }}
+             t
+         }}"
+    ));
+    assert_eq!(n, 44, "10 + 7 + 20 + 7");
+}
 
 /// A `break` out of the inner query, and a `break` out to a loop OUTSIDE it -
 /// the path that skips the query loop's own exit block entirely.

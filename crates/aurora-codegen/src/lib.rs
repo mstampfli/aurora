@@ -1725,6 +1725,13 @@ struct LoopFrame {
     /// query loop's exit block, so the difference between this and the current
     /// depth is how many sets the jump has to close on its way.
     query_depth: usize,
+    /// Is this loop itself a query loop?
+    ///
+    /// If it is, its own exit block closes its set - so a `break` TO it must
+    /// close everything opened since, and not that one as well. Getting this
+    /// wrong is a double pop, which the runtime's balance assertion catches
+    /// immediately and which it did.
+    is_query: bool,
 }
 
 /// Close `n` open query loops, innermost first.
@@ -2426,6 +2433,7 @@ fn tr_expr(
                 break_to: exit,
                 cont_used: std::rc::Rc::new(std::cell::Cell::new(false)),
         query_depth: l.query_depth,
+        is_query: false,
             });
             let term = tr_block(m, b, l, env, body)?;
             l.loops.pop();
@@ -2449,6 +2457,7 @@ fn tr_expr(
                 break_to: exit,
                 cont_used: std::rc::Rc::new(std::cell::Cell::new(false)),
         query_depth: l.query_depth,
+        is_query: false,
             });
             let term = tr_block(m, b, l, env, body)?;
             l.loops.pop();
@@ -2468,7 +2477,11 @@ fn tr_expr(
             }
             let frame = l.loops.last().ok_or("`break` used outside of a loop")?;
             let target = frame.break_to;
-            let close = l.query_depth.saturating_sub(frame.query_depth);
+            // Everything opened SINCE the target loop. A query loop's own set is
+            // closed by its exit block, which this jump is going to, so it is
+            // not this jump's to close.
+            let base = frame.query_depth + usize::from(frame.is_query);
+            let close = l.query_depth.saturating_sub(base);
             end_queries(m, b, env, close);
             b.ins().jump(target, &[]);
             return Ok(Term::Diverged);
@@ -2904,6 +2917,7 @@ fn tr_for(
         break_to: exit,
         cont_used: cont_used.clone(),
         query_depth: l.query_depth,
+        is_query: false,
     });
     let term = tr_block(m, b, l, env, body)?;
     l.loops.pop();
@@ -3268,8 +3282,16 @@ fn tr_query_loop(
         break_to: exit,
         cont_used: cont_used.clone(),
         query_depth: l.query_depth,
+        // This one IS a query loop: its exit block closes its own set, so a
+        // `break` to it must not close that set as well.
+        is_query: true,
     });
+    // This loop's match set is on the runtime stack for the whole body, so
+    // anything nested inside it is one deeper - and a `return` or a `break` out
+    // of here has to close it on the way.
+    l.query_depth += 1;
     let term = tr_block(m, b, l, env, body)?;
+    l.query_depth -= 1;
     l.loops.pop();
     let body_falls = matches!(term, Term::Val(..));
     if body_falls {
@@ -3347,6 +3369,7 @@ fn loop_count(
         break_to: exit,
         cont_used: cont_used.clone(),
         query_depth: l.query_depth,
+        is_query: false,
     });
     let term = tr_block(m, b, l, env, body)?;
     l.loops.pop();
