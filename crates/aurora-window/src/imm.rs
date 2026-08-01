@@ -7,8 +7,8 @@
 //! its own loop. State lives in a thread-local (the program runs on one thread).
 
 use std::cell::RefCell;
-use std::collections::HashSet;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use winit::application::ApplicationHandler;
@@ -1269,6 +1269,27 @@ pub fn r3d_anim_time(handle: i64) -> f64 {
     })
 }
 
+/// Root motion: how far the last `r3d_anim_update` moved the character, in the
+/// model's own space. One axis each, so game code reads the component it needs.
+pub fn r3d_root_dx(handle: i64) -> f64 {
+    root_delta(handle, 0)
+}
+pub fn r3d_root_dy(handle: i64) -> f64 {
+    root_delta(handle, 1)
+}
+pub fn r3d_root_dz(handle: i64) -> f64 {
+    root_delta(handle, 2)
+}
+
+/// One axis of the last update's root motion. The three builtins above are the
+/// same question asked about a different component, so they share the answer.
+fn root_delta(handle: i64, axis: usize) -> f64 {
+    with_gfx(0.0, |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.root_delta(handle)[axis] as f64
+    })
+}
+
 /// Which clip the model is playing, or -1. Lets a state machine ask "am I
 /// already playing this?" instead of keeping its own copy of the answer.
 pub fn r3d_anim_clip(handle: i64) -> i64 {
@@ -1783,4 +1804,125 @@ fn code_to_key(code: u32) -> Option<KeyCode> {
         40..=65 => LETTERS[(code - 40) as usize],
         _ => return None,
     })
+}
+
+/// Every Aurora key code's NAME, indexed by the code; `None` where a code maps
+/// to no key at all.
+///
+/// DERIVED by walking `code_to_key`, never written out, because a second table
+/// spelling the same mapping is a table that will disagree with it. One did: a
+/// game held `KEY_SPACE = 0`, bound its dodge to it, and shipped with the roll
+/// on Left Arrow while every scripted test passed by reading its own number
+/// back.
+///
+/// The name is the winit `KeyCode` variant's own, which winit documents as the
+/// W3C `KeyboardEvent.code` value ("Space", "KeyW", "ShiftLeft"), so there is no
+/// hand-written inverse to keep in step with winit either.
+fn key_names() -> &'static [Option<String>] {
+    static NAMES: OnceLock<Vec<Option<String>>> = OnceLock::new();
+    NAMES.get_or_init(|| {
+        (0..=KEY_CODE_MAX)
+            .map(|c| code_to_key(c).map(|k| format!("{k:?}")))
+            .collect()
+    })
+}
+
+/// Name to code, derived from [`key_names`]. A map rather than a scan, because
+/// this answers a builtin any program may call.
+fn key_codes() -> &'static HashMap<&'static str, u32> {
+    static CODES: OnceLock<HashMap<&'static str, u32>> = OnceLock::new();
+    CODES.get_or_init(|| {
+        let mut m = HashMap::new();
+        for (code, name) in key_names().iter().enumerate() {
+            if let Some(n) = name {
+                // Codes alias: 5 and 62 both press `KeyW`. The LOWEST wins, so
+                // the answer is one value rather than whichever the iteration
+                // happened to insert last.
+                m.entry(n.as_str()).or_insert(code as u32);
+            }
+        }
+        m
+    })
+}
+
+/// The name of an Aurora key code: 4 is `"Space"`, 0 is `"ArrowLeft"`. `None`
+/// for a code that presses nothing.
+pub fn key_name(code: u32) -> Option<&'static str> {
+    key_names().get(code as usize)?.as_deref()
+}
+
+/// The Aurora key code that presses a named key: `"Space"` is 4. `None` if no
+/// code presses it, so a typo is refused rather than silently binding key 0.
+pub fn key_code(name: &str) -> Option<u32> {
+    key_codes().get(name).copied()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The property that makes the pair safe to bind against: every code that
+    /// has a name resolves back to a code pressing the SAME physical key.
+    #[test]
+    fn every_code_round_trips_through_its_name() {
+        let mut named = 0;
+        for code in 0..=KEY_CODE_MAX {
+            match key_name(code) {
+                Some(name) => {
+                    named += 1;
+                    let back = key_code(name).expect("a named code must resolve back");
+                    assert_eq!(key_name(back), Some(name), "code {code} is named {name}");
+                    assert_eq!(
+                        code_to_key(back),
+                        code_to_key(code),
+                        "{name} resolved to {back}, a different key from {code}"
+                    );
+                }
+                None => assert!(
+                    code_to_key(code).is_none(),
+                    "code {code} presses a key but has no name"
+                ),
+            }
+        }
+        // 0..=20, 30..=39 and 40..=65 are assigned; 21..=29 are not.
+        assert_eq!(named, 57, "the set of assigned key codes changed");
+        // Ten letters have a movement-alias code as well as their letter code.
+        assert_eq!(key_codes().len(), 47, "the set of key NAMES changed");
+    }
+
+    /// The values a game binds against, spelled out. This is the assertion that
+    /// would have caught a dodge bound to 0 and shipped on Left Arrow.
+    #[test]
+    fn the_names_are_the_w3c_key_codes() {
+        assert_eq!(key_code("Space"), Some(4));
+        assert_eq!(key_name(4), Some("Space"));
+        assert_eq!(key_name(0), Some("ArrowLeft"));
+        assert_eq!(key_code("ArrowLeft"), Some(0));
+        assert_eq!(key_code("ShiftLeft"), Some(10));
+        assert_eq!(key_code("Tab"), Some(13));
+        assert_eq!(key_code("Escape"), Some(20));
+        assert_eq!(key_code("Digit1"), Some(30));
+        assert_eq!(key_code("KeyZ"), Some(65));
+    }
+
+    /// An alias answers with its lowest code, and both codes still press it.
+    #[test]
+    fn aliased_letters_answer_with_the_lowest_code() {
+        assert_eq!(key_code("KeyW"), Some(5));
+        assert_eq!(key_name(5), Some("KeyW"));
+        assert_eq!(key_name(62), Some("KeyW"));
+        assert_eq!(key_code("KeyE"), Some(15));
+        assert_eq!(key_name(44), Some("KeyE"));
+    }
+
+    #[test]
+    fn unknown_names_and_codes_answer_none() {
+        assert_eq!(key_code("Spacebar"), None);
+        assert_eq!(key_code("space"), None);
+        assert_eq!(key_code(""), None);
+        assert_eq!(key_code("MouseLeft"), None, "mouse buttons are not keys");
+        assert_eq!(key_name(21), None);
+        assert_eq!(key_name(KEY_CODE_MAX + 1), None);
+        assert_eq!(key_name(u32::MAX), None);
+    }
 }

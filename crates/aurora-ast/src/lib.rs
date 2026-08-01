@@ -13,6 +13,8 @@ pub use aurora_span::Span;
 
 mod builtins;
 pub use builtins::{builtin_names, is_builtin};
+mod constlen;
+pub use constlen::{array_len, const_lengths, eval_const};
 mod monomorphize;
 pub use monomorphize::monomorphize;
 mod schedule;

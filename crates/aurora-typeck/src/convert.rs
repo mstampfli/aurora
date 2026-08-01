@@ -21,37 +21,11 @@ fn const_len(name: &str) -> Option<u64> {
 /// Fold a constant integer expression: a literal, a name already known, or
 /// arithmetic over them. Mirrors codegen's `const_int` so an array length means
 /// the same thing to both layers.
-fn eval_const(
-    k: &aurora_ast::ExprKind,
-    known: &std::collections::HashMap<String, u64>,
-) -> Option<i64> {
-    use aurora_ast::{BinOp, ExprKind, UnOp};
-    match k {
-        ExprKind::Int(v, _) => i64::try_from(*v).ok(),
-        ExprKind::Path(p) => {
-            let joined = p
-                .segments
-                .iter()
-                .map(|s| s.ident.name.as_str())
-                .collect::<Vec<_>>()
-                .join("::");
-            known.get(&joined).map(|v| *v as i64)
-        }
-        ExprKind::Unary(UnOp::Neg, inner) => eval_const(&inner.kind, known)?.checked_neg(),
-        ExprKind::Binary(op, lhs, rhs) => {
-            let a = eval_const(&lhs.kind, known)?;
-            let b = eval_const(&rhs.kind, known)?;
-            match op {
-                BinOp::Add => a.checked_add(b),
-                BinOp::Sub => a.checked_sub(b),
-                BinOp::Mul => a.checked_mul(b),
-                BinOp::Div if b != 0 => a.checked_div(b),
-                _ => None,
-            }
-        }
-        _ => None,
-    }
-}
+// The const evaluator lives in `aurora-ast` so codegen resolves lengths the SAME
+// way this does. It was duplicated, and the copies disagreed about which
+// POSITIONS get an answer - a struct field or a return type silently became a
+// zero-length array while a declaration worked.
+use aurora_ast::eval_const;
 
 /// How long an array-length expression says the array is, or None.
 ///
@@ -82,27 +56,7 @@ pub(crate) fn array_len_of(k: &aurora_ast::ExprKind) -> Option<u64> {
 /// Two passes, because a const may be defined in terms of another
 /// (`const WIDE: i64 = N * 2`) and items are in source order.
 pub fn set_const_lens(module: &aurora_ast::Module) {
-    let mut out: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
-    for _ in 0..8 {
-        let before = out.len();
-        for item in &module.items {
-            if let aurora_ast::ItemKind::Const(c) = &item.kind {
-                if let Some(v) = eval_const(&c.value.kind, &out) {
-                    if v >= 0 {
-                        out.insert(c.name.name.to_string(), v as u64);
-                    }
-                }
-            }
-        }
-        if out.len() == before {
-            break;
-        }
-    }
-    if std::env::var("AURORA_DEBUG_LENS").is_ok() {
-        let mut k: Vec<&String> = out.keys().collect();
-        k.sort();
-        eprintln!("  const-len table: {} entries {:?}", out.len(), k);
-    }
+    let out = aurora_ast::const_lengths(module);
     CONST_LENS.with(|c| *c.borrow_mut() = out);
 }
 

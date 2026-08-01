@@ -105,16 +105,20 @@ fn yes_no(b: i64) -> str { if b != 0 { "yes" } else { "no" } }
 fn labeled(label: str, n: i64) -> str { label + str(n) }
 fn join2(a: str, b: str, sep: str) -> str { a + sep + b }
 
-// Input key codes (match the window builtins' codes).
-fn key_left() -> i64 { 0 }
-fn key_right() -> i64 { 1 }
-fn key_up() -> i64 { 2 }
-fn key_down_arrow() -> i64 { 3 }
-fn key_space() -> i64 { 4 }
-fn key_w() -> i64 { 5 }
-fn key_a() -> i64 { 6 }
-fn key_s() -> i64 { 7 }
-fn key_d() -> i64 { 8 }
+// Input key codes. ASKED for, never written down: a literal here is a copy of
+// the engine's table that nothing keeps in step with it, and every copy of that
+// table written so far has had a wrong row in it. `input_code` answers from
+// `code_to_key` itself, so these cannot drift, and any key not named here is
+// `input_code("KeyJ")` rather than a number guessed from a range.
+fn key_left() -> i64 { input_code("ArrowLeft") }
+fn key_right() -> i64 { input_code("ArrowRight") }
+fn key_up() -> i64 { input_code("ArrowUp") }
+fn key_down_arrow() -> i64 { input_code("ArrowDown") }
+fn key_space() -> i64 { input_code("Space") }
+fn key_w() -> i64 { input_code("KeyW") }
+fn key_a() -> i64 { input_code("KeyA") }
+fn key_s() -> i64 { input_code("KeyS") }
+fn key_d() -> i64 { input_code("KeyD") }
 
 // 2D vector math (the workhorse of game code).
 struct Vec2 { x: f64, y: f64 }

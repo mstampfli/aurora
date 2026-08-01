@@ -842,6 +842,20 @@ fn lower(
     // down as sharing it: `&T` / `&mut T` parameters and a method's `self`. Held by pointer under
     // the hood, so "copy" means copy_agg; see `produces_fresh_storage` for the one case that needs
     // no copy, an expression whose result nothing else can name.
+    // Array lengths named by a const must resolve BEFORE anything is lowered.
+    //
+    // This used to happen ~360 lines further down, after struct fields and
+    // function signatures had already been converted. Those positions therefore
+    // looked a name up in an EMPTY table and `ty_const_len` handed back 0, so a
+    // const-named length silently became a zero-length array in a struct field
+    // and in a return type - while the same const worked in a declaration,
+    // because declarations are lowered after the fill. Three separately-filed
+    // bugs, one ordering.
+    //
+    // Resolved from the AST through `aurora_ast::const_lengths`, the same
+    // function typeck uses, so the two cannot disagree about what a length is.
+    set_ty_consts_from_ast(module);
+
     let mut structs = HashMap::new();
     for item in &module.items {
         if let ItemKind::Struct(s) | ItemKind::Component(s) = &item.kind {
@@ -1211,7 +1225,10 @@ fn lower(
         line_starts,
     };
 
-    // Array lengths named by a const resolve from here on.
+    // A second pass, now that `env` can evaluate consts the AST pass could not
+    // (anything needing type information). It ADDS to the table rather than
+    // replacing it, so the AST-resolved lengths already used for struct layout
+    // cannot change underneath the layout that was built from them.
     set_ty_consts(&env);
     let mut ctx = jmod.make_context();
     // Maps a function/lambda/system that failed to compile to native code → the
@@ -5132,6 +5149,17 @@ fn ty_const_len(name: &str) -> usize {
 
 /// Publish every const that evaluates to a non-negative integer, so array
 /// lengths written as names resolve.
+/// Fill the length table from the AST alone, before anything is lowered.
+fn set_ty_consts_from_ast(module: &aurora_ast::Module) {
+    let out = aurora_ast::const_lengths(module);
+    TY_CONSTS.with(|c| {
+        let mut t = c.borrow_mut();
+        for (k, v) in out {
+            t.insert(k, v as usize);
+        }
+    });
+}
+
 fn set_ty_consts(env: &Env) {
     let mut out = HashMap::new();
     for name in env.consts.keys() {
@@ -5141,7 +5169,12 @@ fn set_ty_consts(env: &Env) {
             }
         }
     }
-    TY_CONSTS.with(|c| *c.borrow_mut() = out);
+    TY_CONSTS.with(|c| {
+        let mut t = c.borrow_mut();
+        for (k, v) in out {
+            t.insert(k, v);
+        }
+    });
 }
 
 /// Reclassify `Cty::Struct(n)` as `Cty::Enum(n)` when `n` names an enum.

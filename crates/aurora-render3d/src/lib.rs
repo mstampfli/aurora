@@ -28,7 +28,7 @@ pub use aurora_asset::model;
 pub use anim::{skin_matrices, skin_matrices_blended, AnimPlayer};
 pub use glam::{Mat4, Quat, Vec3};
 pub use mesh::{GpuMesh, MeshData, Vertex, VERTEX_LAYOUT};
-pub use model::{Channel, Clip, Interp, Joint, Model, Path, Primitive, Skeleton};
+pub use model::{Channel, Clip, Interp, Joint, Model, Path, Primitive, RootMotion, Skeleton};
 pub use render::{
     InstanceRaw, Material, MaterialDesc, MaterialId, MeshId, Renderer3D, DEPTH_FORMAT, MAX_JOINTS,
     MAX_LIGHTS,
@@ -783,6 +783,7 @@ mod tests {
                 times: vec![0.0, 1.0],
                 values: vec![0.0, 0.0, 0.0, 0.0, 2.0, 0.0], // (0,0,0) -> (0,2,0)
             }],
+            root: None,
         };
         // Halfway should interpolate to (0,1,0).
         let m = skin_matrices(&skel, Some(&clip), 0.5);
@@ -814,6 +815,7 @@ mod tests {
             name: "a".into(),
             duration: 1.0,
             channels: vec![],
+            root: None,
         }; // stays at default (0,0,0)
         let up = Clip {
             name: "b".into(),
@@ -825,6 +827,7 @@ mod tests {
                 times: vec![0.0],
                 values: vec![0.0, 2.0, 0.0],
             }],
+            root: None,
         };
         // Blend halfway between "still" (0,0,0) and "up" (0,2,0) -> (0,1,0).
         let m = skin_matrices_blended(&skel, Some(&still), 0.0, Some(&up), 0.0, 0.5);

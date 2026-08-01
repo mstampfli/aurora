@@ -71,6 +71,26 @@ version was written once and reverted for exactly that. Six tests in
 never from raw vertices: skinned geometry stays in the source file's bind space,
 so a centimetre export sizes a collider a hundred times too large.
 
+## Input codes
+
+**`code_to_key` in `crates/aurora-window/src/imm.rs` is the ONLY place a key
+code means a key.** `key_name` and `key_code` beside it are DERIVED from it by
+walking `0..=KEY_CODE_MAX`, and the name they answer with is winit's own
+`KeyCode` variant - the W3C `KeyboardEvent.code` string. There is no inverse
+table to keep in step, with `code_to_key` or with winit.
+
+Never write an input code as a literal, in Rust, in Aurora, or in a doc: it is a
+copy of that table. Four copies existed, one had `Space = 0`, and a shipped game
+had its dodge roll on Left Arrow while its tests passed by reading its own wrong
+number back. Aurora exposes `input_code(name)` / `input_name(code)` so a program
+never holds one.
+
+**`MOUSE_CODE_BASE` in `crates/aurora-runtime/src/lib.rs`** is the other half:
+codes at or above it are mouse buttons. `code_is_down` and `inject_action` are
+the only two things that apply that rule, and `INPUT_CODE_MAX` is derived from
+it plus `MOUSE_NAMES`. A caller that needs to press an action calls
+`inject_action`, never its own key-or-button branch.
+
 ## Adding a builtin
 
 Six places, in this order. Missing one fails at a different layer each time,

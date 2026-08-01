@@ -2948,6 +2948,33 @@ pub extern "C" fn aurora_r3d_anim_done_upper(h: i64) -> i64 {
 pub extern "C" fn aurora_r3d_anim_time(h: i64) -> f64 {
     aurora_window::imm_r3d_anim_time(h)
 }
+/// `r3d_root_dx/dy/dz(h) -> f64`: ROOT MOTION - how far the last
+/// `r3d_anim_update` moved this character, in metres in the model's own space.
+///
+/// The distance an attack was authored to cover. Aurora lifts a clip's travel
+/// out of the pose at import, so the body animates in place and this is what
+/// moves it: add these to the character's position (rotated by the yaw it is
+/// drawn with) and the mesh, its collider and its hitbox travel together, over
+/// exactly the ground the animator laid down. Without it a lunge is a swing on
+/// the spot, and the alternative - a per-clip speed guessed by eye - drifts away
+/// from the animation the first time either is retimed.
+///
+/// Zero before the first update, and zero for a clip authored in place, which
+/// every locomotion loop is: a walk cycle's ground speed belongs to the game.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_root_dx(h: i64) -> f64 {
+    aurora_window::imm_r3d_root_dx(h)
+}
+/// `r3d_root_dy(h) -> f64`: the vertical part of the same delta.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_root_dy(h: i64) -> f64 {
+    aurora_window::imm_r3d_root_dy(h)
+}
+/// `r3d_root_dz(h) -> f64`: the forward part of the same delta.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_root_dz(h: i64) -> f64 {
+    aurora_window::imm_r3d_root_dz(h)
+}
 /// `r3d_anim_clip(h) -> i64`: which clip is playing, or -1.
 ///
 /// Completes the set beside `anim_done` and `anim_time`, which both answer
@@ -3307,9 +3334,29 @@ thread_local! {
     static INPUT_PREV: std::cell::Cell<u128> = const { std::cell::Cell::new(0) };
 }
 
-/// One past the highest input code. 0..65 are keyboard, 100..104 the mouse
-/// buttons; the gap between costs a few bits and nothing else.
-const INPUT_CODE_MAX: i64 = 105;
+/// The first mouse-button input code. Below it a code is a KEY (the
+/// `code_to_key` codes); at it and above, `code - MOUSE_CODE_BASE` is the button
+/// index `mouse_button` takes.
+///
+/// Named because this rule was being re-derived at every site that had to tell a
+/// key from a button - including in game code, where getting it wrong pressed
+/// nothing at all and ran a whole test fight with no guard up. Anything that
+/// needs it calls `code_is_down` or `inject_action` instead of writing 100.
+const MOUSE_CODE_BASE: i64 = 100;
+
+/// The mouse buttons `input_code`/`input_name` know, indexed by button number -
+/// the order `mouse_button` and `inject_mouse_button` use.
+const MOUSE_NAMES: [&str; 5] = [
+    "MouseLeft",
+    "MouseRight",
+    "MouseMiddle",
+    "MouseBack",
+    "MouseForward",
+];
+
+/// One past the highest input code. 0..65 are keyboard, then the mouse buttons;
+/// the gap between costs a few bits and nothing else.
+const INPUT_CODE_MAX: i64 = MOUSE_CODE_BASE + MOUSE_NAMES.len() as i64;
 
 /// End the frame: advance the input edge snapshot (what is held now becomes "was
 /// held" for the next frame's `input_pressed` / `input_released`) and spend this
@@ -3386,10 +3433,86 @@ pub extern "C" fn aurora_input_suppress(on: i64) {
 fn code_is_down(code: i64) -> bool {
     if code < 0 {
         false
-    } else if code >= 100 {
-        aurora_window::imm_mouse_button((code - 100) as u32)
+    } else if code >= MOUSE_CODE_BASE {
+        aurora_window::imm_mouse_button((code - MOUSE_CODE_BASE) as u32)
     } else {
         aurora_window::imm_key_down(code as u32)
+    }
+}
+
+/// `input_code(name) -> i64`: the input code for a NAMED key or mouse button, or
+/// -1 if there is no such input.
+///
+/// Keys are the W3C `KeyboardEvent.code` names winit's `KeyCode` already uses -
+/// "Space", "KeyW", "ShiftLeft", "Tab" - answered from `code_to_key` itself, so
+/// this cannot disagree with the key the code presses. Mouse buttons are
+/// "MouseLeft"/"MouseRight"/"MouseMiddle"/"MouseBack"/"MouseForward".
+///
+/// It exists so that no program ever writes an input code down. Every one that
+/// did got one wrong: a soulslike shipped with `KEY_SPACE = 0`, which is the
+/// LEFT ARROW, and the dodge roll could not be rolled. Nothing caught it,
+/// because the test asked `input_binding` for the code and pressed the same
+/// wrong number back.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
+#[no_mangle]
+pub unsafe extern "C" fn aurora_input_code(ptr: *const u8, len: i64) -> i64 {
+    let name = unsafe { arg_str(ptr, len) };
+    if let Some(b) = MOUSE_NAMES.iter().position(|n| *n == name) {
+        return MOUSE_CODE_BASE + b as i64;
+    }
+    aurora_window::imm_key_code(&name)
+        .map(|c| c as i64)
+        .unwrap_or(-1)
+}
+
+/// `input_name(code) -> str`: the inverse of `input_code`, and "" for a code
+/// that names no input - including -1, which is what `input_binding` answers for
+/// an unbound action.
+///
+/// This is how a test states what a control IS: `input_name(input_binding(a))`
+/// is "Space" or it is not, and the answer comes from the engine's own table
+/// rather than from the number the program bound.
+///
+/// # Safety
+/// `out` must be valid for writes of two `i64`s.
+#[no_mangle]
+pub unsafe extern "C" fn aurora_input_name(out: *mut i64, code: i64) {
+    let name = if code < 0 {
+        ""
+    } else if code >= MOUSE_CODE_BASE {
+        MOUSE_NAMES
+            .get((code - MOUSE_CODE_BASE) as usize)
+            .copied()
+            .unwrap_or("")
+    } else {
+        u32::try_from(code)
+            .ok()
+            .and_then(aurora_window::imm_key_name)
+            .unwrap_or("")
+    };
+    unsafe { write_str(out, name.as_bytes().to_vec()) };
+}
+
+/// `inject_action(action, down)`: press or release whatever input an ACTION is
+/// bound to, key or mouse button. A no-op for an unbound action.
+///
+/// The one place the key-or-button decision is made for injection, matching
+/// `code_is_down` on the reading side. A test that hand-rolled it instead sent a
+/// KEY press for an action bound to the right mouse button - not an error, just
+/// a no-op - and then ran an entire fight with the guard never up, reporting the
+/// player dying as a balance problem.
+#[no_mangle]
+pub extern "C" fn aurora_inject_action(action: i64, down: i64) {
+    let code = aurora_input_binding(action);
+    if code < 0 {
+        return;
+    }
+    if code >= MOUSE_CODE_BASE {
+        aurora_window::imm_inject_mouse_button((code - MOUSE_CODE_BASE) as u32, down != 0);
+    } else {
+        aurora_window::imm_inject_key(code as u32, down != 0);
     }
 }
 

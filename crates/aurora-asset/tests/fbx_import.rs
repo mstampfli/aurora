@@ -11,7 +11,7 @@
 //!   PolygonSyntyCharacter.fbx         the animation packs' reference rig
 //!   A_Attack_LightCombo01A_RootMotion_Sword.fbx   a clip with no geometry
 
-use aurora_asset::model::Model;
+use aurora_asset::model::{Model, Path};
 
 fn fixture(name: &str) -> Option<Model> {
     let dir = std::env::var("AURORA_TEST_FBX_DIR").ok()?;
@@ -104,16 +104,65 @@ fn a_clip_with_no_geometry_imports_as_animation() {
     // 24 frames at 30fps, matching the source.
     assert!((clip.duration - 0.8).abs() < 0.02, "duration {}", clip.duration);
     assert!(clip.channels.len() > 100, "channels {}", clip.channels.len());
+}
 
-    // Root motion: the attack travels forward over its length.
+/// The distance a `_RootMotion_` clip is authored to cover arrives as root
+/// motion, and the pose it comes with animates in place.
+///
+/// The pack puts the travel on a `Root` bone at the character's feet, exactly so
+/// the two can be told apart. Both halves are asserted because either alone is a
+/// bug: travel that stays in the pose slides a mesh away from its own collider,
+/// and travel that is dropped is an attack played on the spot.
+#[test]
+fn a_root_motion_clip_carries_its_travel_off_the_pose() {
+    let m = model!("A_Attack_LightCombo01A_RootMotion_Sword.fbx");
+    let clip = m.clips.first().expect("clip file carries a clip");
     let skel = m.skeleton.as_ref().unwrap();
+
+    // 1.12 m forward over the swing, measured off the source file.
+    let travel = clip.root_pass();
+    assert!(
+        (travel.z - 1.12).abs() < 0.02 && travel.x.abs() < 0.01,
+        "the authored step forward should be 1.12 m, got {travel:?}"
+    );
+    // Halfway through is partway along, not all of it: this is a track over
+    // time, not one number.
+    let half = clip.root_pos(clip.duration * 0.5).z;
+    assert!(half > 0.05 && half < travel.z, "halfway is {half} of {}", travel.z);
+
+    // And the body itself stays where it stands: the hip bobs and leans, it does
+    // not cover the ground.
     let hips = skel.joints.iter().position(|j| j.name == "Hips").unwrap();
     let at = |t: f32| {
         let (tr, r, s) = skel.sample(Some(clip), t);
         skel.globals(&tr, &r, &s)[hips].w_axis.truncate()
     };
-    let travel = (at(clip.duration * 0.5) - at(0.0)).length();
-    assert!(travel > 0.3, "root motion travelled only {travel}");
+    let mut drift: f32 = 0.0;
+    for step in 0..=8 {
+        let p = at(clip.duration * step as f32 / 8.0) - at(0.0);
+        drift = drift.max(p.length());
+    }
+    assert!(drift < 0.3, "the pose should animate in place, but the hip moved {drift} m");
+    assert!(
+        !clip
+            .channels
+            .iter()
+            .any(|c| skel.joints[c.joint].name == "Root" && c.path == Path::Translation),
+        "the motion root's travel must not also be left in the pose"
+    );
+}
+
+/// A clip the pack authored in place stays in place: a walk cycle's ground speed
+/// belongs to the game, and inventing travel for one would double every step.
+#[test]
+fn a_locomotion_loop_reports_no_travel() {
+    let m = model!("A_Walk_F_Masc.fbx");
+    let clip = m.clips.first().expect("clip file carries a clip");
+    assert!(
+        clip.root_pass().length() < 0.01,
+        "a walk cycle is authored in place, got {:?}",
+        clip.root_pass()
+    );
 }
 
 /// The eleven slots that make up a whole modular body.
@@ -306,15 +355,26 @@ fn a_sword_clip_retargets_onto_a_character() {
     );
 
     // Composition of the retargeted clip: rotation for every mapped bone, and
-    // translation for the root alone. A clip-only export has no bone offsets, so
+    // translation for the hips alone. A clip-only export has no bone offsets, so
     // any other translation track would be a zero that wipes a bone length.
     {
         use aurora_asset::model::Path as P;
         let n = |p: P| clip.channels.iter().filter(|c| c.path == p).count();
         assert!(n(P::Rotation) >= 40, "only {} rotation tracks", n(P::Rotation));
-        assert_eq!(n(P::Translation), 1, "root travel should be the only translation");
+        assert_eq!(n(P::Translation), 1, "the hips' bob should be the only translation");
         assert_eq!(n(P::Scale), 0, "scale must never transfer");
     }
+
+    // And the whole reason this pipeline exists: the swing still covers the
+    // ground it was authored to cover, on a character rig whose bones are named
+    // nothing like the ones the animator used. The clip's travel lives on a
+    // `Root` bone no modular part carries, so matching by name found nothing and
+    // every authored distance in the moveset used to be dropped right here.
+    let travel = clip.root_pass();
+    assert!(
+        (travel.z - 1.12).abs() < 0.05,
+        "the retargeted swing should still step 1.12 m forward, got {travel:?}"
+    );
     let index = |n: &str| skel.joints.iter().position(|j| j.name == n).unwrap();
     let (pelvis, head, hand_r, foot_l) = (
         index("Pelvis"),

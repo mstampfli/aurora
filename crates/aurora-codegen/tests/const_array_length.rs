@@ -116,3 +116,74 @@ fn a_const_length_survives_module_flattening() {
     assert_eq!(call_in(MOD_SRC, "name_len"), 4, "a [str; N] table in a module");
     assert_eq!(call_in(MOD_SRC, "third_name_len"), 1, "and its contents");
 }
+
+/// Every OTHER position a length can appear in.
+///
+/// The three bugs above were each fixed where their symptom appeared, and the
+/// file above tests exactly those positions. Two more were left: a STRUCT FIELD
+/// and a RETURN TYPE both silently became length ZERO, because codegen lowered
+/// struct layouts and function signatures BEFORE it filled its const-length
+/// table, so those positions looked a name up in an empty map and took the
+/// `unwrap_or(0)`. Declarations are lowered after the fill, which is exactly why
+/// they worked and these did not.
+///
+/// It cost a fourth discovery, in game code that was then forced to carry
+/// literal lengths and hand-written asserts as a workaround. So this covers
+/// every position a length can appear in, not only the ones known to have
+/// broken - the whole point of the family is that the next one is somewhere
+/// nobody has looked.
+const POSITIONS: &str = r#"
+const N: i64 = 3
+
+struct Bag {
+    v: [i64; N],
+}
+
+fn from_return() -> [i64; N] {
+    let mut a: [i64; N] = [7, 8, 9]
+    a
+}
+
+fn through_param(a: [i64; N]) -> i64 {
+    len(a)
+}
+
+fn nested() -> i64 {
+    let g: [[i64; N]; N] = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+    len(g) * len(g[0])
+}
+
+fn return_len() -> i64 { len(from_return()) }
+fn return_sum() -> i64 {
+    let r = from_return()
+    r[0] + r[1] + r[2]
+}
+fn field_len() -> i64 {
+    let b = Bag { v: [1, 2, 3] }
+    len(b.v)
+}
+fn field_sum() -> i64 {
+    let b = Bag { v: [4, 5, 6] }
+    b.v[0] + b.v[1] + b.v[2]
+}
+fn param_len() -> i64 { through_param([1, 2, 3]) }
+fn nested_len() -> i64 { nested() }
+"#;
+
+#[test]
+fn a_const_length_survives_a_return_type() {
+    assert_eq!(call_in(POSITIONS, "return_len"), 3, "a returned [i64; N] lost its length");
+    assert_eq!(call_in(POSITIONS, "return_sum"), 24, "its contents were dropped");
+}
+
+#[test]
+fn a_const_length_survives_a_struct_field() {
+    assert_eq!(call_in(POSITIONS, "field_len"), 3, "a [i64; N] field lost its length");
+    assert_eq!(call_in(POSITIONS, "field_sum"), 15, "its contents were dropped");
+}
+
+#[test]
+fn a_const_length_survives_a_parameter_and_a_nested_array() {
+    assert_eq!(call_in(POSITIONS, "param_len"), 3, "a [i64; N] parameter");
+    assert_eq!(call_in(POSITIONS, "nested_len"), 9, "[[i64; N]; N]");
+}

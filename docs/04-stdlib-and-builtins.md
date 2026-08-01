@@ -257,7 +257,9 @@ that as BLOCKED, never as a pass.
 - Input injection (indistinguishable from a player; works windowed too):
   `inject_key(code, down)`, `inject_mouse_move(dx, dy)`,
   `inject_mouse_pos(x, y)`, `inject_mouse_button(b, down)`,
-  `inject_scroll(dy)`, `inject_char(c)`.
+  `inject_scroll(dy)`, `inject_char(c)`. A game with rebindable actions presses
+  `inject_action(action, down)` instead, which sends whichever of the two that
+  action is bound to.
 - Tapes: `AURORA_INPUT_RECORD=file` writes one line of full input state per
   present; `AURORA_INPUT_REPLAY=file` replays it (real input is overridden)
   and CLOSES the window when the tape ends. Replay + `srand` defaults +
@@ -409,6 +411,7 @@ window. Colors are 0..1 floats; angles are radians; handles are `i64`.
 | `r3d_anim_done(h) -> i64` | 1 when the current non-looping clip has played out | always 0 while the clip loops. Answered here rather than by exposing raw time, because "compare the time to the duration and get the looping case right" is exactly the check that rots when it is written five times. This is how a one-shot sequences into the next state without a second timer kept beside the animation's own |
 | `r3d_anim_done_upper(h) -> i64` | the same, for the upper-body overlay | the overlay keeps its own clock, so `r3d_anim_done` (which reads the base layer) cannot answer for it. Without this a masked overlay can be started and stopped but never SEQUENCED - a guard built as begin/hold/end on the arms has no way to learn its raise has finished, and sits on the first clip forever |
 | `r3d_anim_time(h) -> f64` | seconds into the current clip | |
+| `r3d_root_dx/dy/dz(h) -> f64` | ROOT MOTION: the ground the last `r3d_anim_update` covered, in metres | in the MODEL'S own space, so rotate it by the yaw you draw with and scale it by the scale you draw at. Add it to the character's position and the mesh, its collider and its hitbox travel exactly the distance the clip was authored to travel: a lunge reaches, a roll clears. 0 before the first update and 0 for a clip authored in place - every locomotion loop is, because a walk cycle's ground speed belongs to the game. See [Root motion](#root-motion) |
 | `r3d_anim_clip(h) -> i64` | WHICH clip is playing | -1 for a handle that is not a model. `r3d_anim_done` and `r3d_anim_time` both answer about the current clip without ever saying which one it is, so a state machine without this keeps its own copy of what it last asked for - and that copy goes stale the moment anything else plays a clip on the same model |
 | `r3d_anim_clip_upper(h) -> i64` | which clip the upper-body overlay is playing | -1 when no overlay is running |
 | `r3d_material_count(h) -> i64` | how many drawable pieces (and so materials) a model has | |
@@ -457,7 +460,7 @@ These assemble that into one animated body.
 | `r3d_clip_rig(path)` | the rig the clips were authored on | a clip-only export has no usable rest pose of its own, and a joint's local rotation means nothing without one |
 | `r3d_clip_add(path)` | add one clip file to the moveset | |
 | `r3d_bone_map(from, to)` | rename a bone between the clips' rig and the character's | only bones whose names differ need an entry |
-| `r3d_clip_root(bone)` | let this bone take translation from a clip | the root, so locomotion travels. Every other bone keeps the character's own offsets: a clip-only export has none to give, and its zeroes would collapse the body onto its hip |
+| `r3d_clip_root(bone)` | let this bone take translation from a clip | the hips, so the body's own bob, crouch and lean come across. Every other bone keeps the character's own offsets: a clip-only export has none to give, and its zeroes would collapse the body onto its hip. This is NOT how a clip travels - travel is [root motion](#root-motion), which comes across on its own and never needs naming |
 | `r3d_load_character(path) -> i64` | load a character with the moveset gathered so far | retargets each clip onto this skeleton, then clears the gathering so one character's moveset cannot leak into the next |
 | `r3d_part_add(path)` | add one mesh file to the body being gathered | for `r3d_load_assembly` |
 | `r3d_load_assembly() -> i64` | assemble one character from the gathered parts | derives the rig as the union of the parts' skeletons, rebinds each part onto it, and uploads the result as a single character. -1 if the parts do not share a rig |
@@ -507,6 +510,39 @@ r3d_draw_skinned(torso, hero, 0.0,0.0,0.0, 0.0,0.0,0.0, 1.0)
 r3d_draw_skinned(legs,  hero, 0.0,0.0,0.0, 0.0,0.0,0.0, 1.0)
 ```
 
+### Root motion
+
+**Travel is never in the pose.** A clip that covers ground is authored with that
+distance on the rig's dedicated root bone - the one named `Root` that sits at the
+character's feet and carries no anatomy - and Aurora lifts it off that bone when
+the model loads. The body animates in place; the distance becomes a per-update
+delta you read with `r3d_root_dx/dy/dz` and apply to the position you already
+own:
+
+```aurora
+r3d_anim_update(hero, dt)
+// Model space -> world. `r3d_draw` turns a model about +Y by `yaw` and scales it
+// by `scale`, so the travel it reports has to be turned and scaled the same way.
+let dx = r3d_root_dx(hero) * scale
+let dz = r3d_root_dz(hero) * scale
+x = x + dx * cos(yaw) + dz * sin(yaw)
+z = z - dx * sin(yaw) + dz * cos(yaw)
+```
+
+That arrangement is the point. Left in the pose, an attack's lunge slides the
+mesh away from its own collider and its own hitbox, and no rule can ask how far
+it went; taken out, one number moves all three together, and a swing that was
+animated to close a metre closes a metre. The alternative - a hand-tuned speed
+per attack, guessed to look about right - drifts from the animation the moment
+either is retimed, and is why an attack can otherwise land nowhere near where it
+looked like it would.
+
+It comes across a retarget scaled by the two rigs' proportions, so the same
+moveset on a three-metre boss covers proportionally more ground. A rig whose
+topmost bone IS a body part (a hips-rooted Mixamo character) has no separable
+travel and is left exactly as it is: there the hips' translation is bob and lean,
+not distance, and the delta reads zero.
+
 ### Asset lifetime
 
 `r3d_load_model` and the `r3d_make_*` primitives each upload their own GPU
@@ -535,14 +571,38 @@ r3d_draw(level, 0.0,0.0,0.0, 0.0,0.0,0.0, 1.0)   // no-op, not a wrong model
 | `mouse_dx() / mouse_dy() -> f64` | raw mouse motion this frame | the look delta |
 | `mouse_scroll() -> f64` | scroll-wheel delta this frame | |
 | `mouse_button(b) -> i64` | held: 0 = left, 1 = right, 2 = middle | |
-| `key_down(code)` | extended codes | 0-9 movement/action, 10-13 Shift/Ctrl/Alt/Tab, 30-39 digits, 40-65 A-Z |
+| `key_down(code)` | is that key held? | the codes below - but ask `input_code`, do not write one |
+
+#### Input codes, and why you should not type one
+
+**Never write an input code as a literal.** `input_code(name)` answers from the
+engine's own table, so it cannot be wrong; a number in your source is a copy of
+that table which nothing keeps in step with it. A game shipped `KEY_SPACE = 0`
+and its dodge roll was on the LEFT ARROW, undetected, because its test asked
+`input_binding` for the code and pressed the same wrong number back.
+
+| Builtin | Signature | Notes |
+|---|---|---|
+| `input_code(name) -> i64` | the code for a named key or mouse button | -1 if there is no such input |
+| `input_name(code) -> str` | the inverse | "" for a code that names nothing, including -1 |
+
+Names are the W3C `KeyboardEvent.code` values: `"KeyA"`..`"KeyZ"`,
+`"Digit0"`..`"Digit9"`, `"ArrowLeft"`/`"ArrowRight"`/`"ArrowUp"`/`"ArrowDown"`,
+`"Space"`, `"Enter"`, `"Escape"`, `"Tab"`, `"ShiftLeft"`, `"ControlLeft"`,
+`"AltLeft"`; plus `"MouseLeft"`, `"MouseRight"`, `"MouseMiddle"`, `"MouseBack"`,
+`"MouseForward"` for the buttons.
+
+The codes themselves, for reading a value someone else stored: 0-3 the arrows,
+4 Space, 5-8 W/A/S/D, 9 Enter, 10-13 Shift/Ctrl/Alt/Tab, 14-19 R/E/Q/F/C/V,
+20 Escape, 30-39 the digits `1..9,0`, 40-65 `A`..`Z`, and 100-104 the mouse
+buttons in the `mouse_button` order. Ten letters therefore have two codes (5 and
+62 both press `KeyW`); `input_code` answers with the lower and both work.
 
 ### Rebindable input actions
 
 Decouple the game from physical keys: bind abstract **actions** (your own integer
 ids) to input codes, then query actions, never raw keys. Rebind any time (e.g.
-from a settings menu). Codes are the `key_down` codes for the keyboard; 100/101/102
-are the left/right/middle mouse buttons.
+from a settings menu). Bind with `input_code("Space")`, never with a number.
 
 | Builtin | Signature | Notes |
 |---|---|---|
@@ -566,6 +626,16 @@ Edges are tracked per input CODE, not per action, so rebinding an action while
 its old key is held cannot manufacture a press on the new one. The snapshot
 records the raw key state even while `input_suppress` is on, so a pause menu
 opened and closed with attack held does not fire an attack on the way out.
+
+To press an action in a test, use `inject_action(action, down)`: it looks the
+binding up and sends a key or a mouse button as that binding requires. Hand-
+rolling it is how a script sent a KEY press for an action bound to the right
+mouse button - not an error, simply a no-op - and ran a whole fight with the
+guard never up.
+
+To ASSERT a control, compare `input_name(input_binding(action))` against the key
+name your manual documents. Comparing `input_binding(action)` against your own
+constant only proves the program agrees with itself.
 
 ### Raw float-blob accessors
 

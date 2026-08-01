@@ -162,6 +162,102 @@ impl Skeleton {
         Ok(added)
     }
 
+    /// The joint that carries the character's TRAVEL rather than any of its
+    /// anatomy: the rig's `root` bone, with the whole body hanging off it.
+    ///
+    /// Every UE-style rig has one - Unreal requires the name, and Synty, Mixamo
+    /// and the DCC exporters all write it - and an animation pack authors the
+    /// ground a clip is meant to cover on exactly that bone. That is what makes
+    /// travel separable from the pose at all, and the whole of root motion: the
+    /// body animates in place and the distance becomes a number the simulation
+    /// can move a collider by.
+    ///
+    /// Identified by NAME, and by the structure around it, because nothing else
+    /// survives an animation-only export: those ship no bind data, so a clip's
+    /// own rest pose is wherever the exporter left the nodes - for a root-motion
+    /// clip, somewhere out along the travel itself. A rest position at the origin
+    /// looks like the obvious test and is measurably the wrong one.
+    ///
+    /// `None` when the topmost joint IS a body part (a hips-rooted rig, which is
+    /// what most glTF characters ship). There the root's translation is the
+    /// character's bob and lean rather than travel, and lifting it out of the
+    /// pose would flatten the animation instead of freeing it.
+    pub fn motion_root(&self) -> Option<usize> {
+        let mut best: Option<(usize, usize)> = None;
+        for (i, j) in self.joints.iter().enumerate() {
+            if j.parent.is_some() || !is_root_bone(&j.name) {
+                continue;
+            }
+            let body = self.descendants(i);
+            if body == 0 {
+                continue;
+            }
+            // A rig can have several parentless bones - `ik_foot_root` and
+            // `ik_hand_root` sit beside the real one. The body hangs off exactly
+            // one of them, and that is the one whose travel is the character's.
+            if best.is_none_or(|(_, n)| body > n) {
+                best = Some((i, body));
+            }
+        }
+        best.map(|(i, _)| i)
+    }
+
+    /// How many joints descend from `joint`, however deep.
+    fn descendants(&self, joint: usize) -> usize {
+        let mut n = 0;
+        for i in 0..self.joints.len() {
+            if i == joint {
+                continue;
+            }
+            let mut up = self.joints[i].parent;
+            // Bounded by the joint count so a malformed parent cycle terminates.
+            for _ in 0..self.joints.len() {
+                match up {
+                    Some(p) if p == joint => {
+                        n += 1;
+                        break;
+                    }
+                    Some(p) if p != i => up = self.joints[p].parent,
+                    _ => break,
+                }
+            }
+        }
+        n
+    }
+
+    /// How high the body hangs above the ground in the rest pose, in metres:
+    /// hip height, the standard proxy for leg length. What a stride scales with
+    /// when a clip moves to a body of a different size.
+    ///
+    /// Hip height rather than total height because a rig assembled from modular
+    /// parts is only as tall as the parts it was given: measure the top of it and
+    /// a body loaded without its head reports a shorter character and shortens
+    /// every step it takes. The hip is in every assembly by construction - every
+    /// part carries the chain up to the root, and that chain runs through it.
+    pub fn hip_height(&self) -> f32 {
+        let Some(body) = self.body_joint() else {
+            return 0.0;
+        };
+        self.rest_globals()[body].w_axis.y
+    }
+
+    /// The joint the body hangs from: the motion root's principal child, or the
+    /// topmost body joint on a rig that has no motion root.
+    fn body_joint(&self) -> Option<usize> {
+        let under = self.motion_root();
+        let mut best: Option<(usize, usize)> = None;
+        for (i, j) in self.joints.iter().enumerate() {
+            if j.parent != under || Some(i) == under {
+                continue;
+            }
+            let body = self.descendants(i);
+            if best.is_none_or(|(_, n)| body > n) {
+                best = Some((i, body));
+            }
+        }
+        best.map(|(i, _)| i)
+    }
+
     /// Model-space transform of every joint in the rest (bind) pose.
     ///
     /// Joints are stored parent-before-child by both importers, but this does
@@ -206,10 +302,16 @@ impl Skeleton {
                 if ch.joint >= n {
                     continue;
                 }
+                // A channel with no complete key is a HOLE, not a pose, and there is no value to
+                // stand in for one: zero is right for travel, ONE for scale, and identity is a
+                // real rotation that would throw away the joint's authored orientation. So the
+                // joint keeps its rest transform, which is what an undriven joint gets anyway -
+                // a keyless channel becomes harmless by construction instead of by every
+                // producer remembering not to emit one.
                 match ch.path {
-                    Path::Translation => t[ch.joint] = sample_vec3(ch, time),
-                    Path::Scale => s[ch.joint] = sample_vec3(ch, time),
-                    Path::Rotation => r[ch.joint] = sample_quat(ch, time),
+                    Path::Translation => t[ch.joint] = sample_vec3(ch, time).unwrap_or(t[ch.joint]),
+                    Path::Scale => s[ch.joint] = sample_vec3(ch, time).unwrap_or(s[ch.joint]),
+                    Path::Rotation => r[ch.joint] = sample_quat(ch, time).unwrap_or(r[ch.joint]),
                 }
             }
         }
@@ -274,17 +376,36 @@ fn locate(times: &[f32], time: f32) -> (usize, usize, f32) {
     (i, i + 1, f)
 }
 
-fn sample_vec3(ch: &Channel, time: f32) -> Vec3 {
-    let (i0, i1, f) = locate(&ch.times, time);
-    let get = |k: usize| Vec3::new(ch.values[k * 3], ch.values[k * 3 + 1], ch.values[k * 3 + 2]);
-    if ch.interp == Interp::Step || i0 == i1 {
+fn sample_vec3(ch: &Channel, time: f32) -> Option<Vec3> {
+    sample_track3(&ch.times, &ch.values, ch.interp, time)
+}
+
+/// Sample a 3-per-key track. Shared by bone translation/scale channels and by
+/// the root motion track, so a clip's travel and its pose can never come to
+/// disagree about what a key at a given time means.
+///
+/// `None` when the track holds no complete key. That is not the same fact as a
+/// zero, and the difference is a model on screen or a model collapsed to a
+/// point: the caller knows what an absent key means for what it is asking, and
+/// this function does not.
+fn sample_track3(times: &[f32], values: &[f32], interp: Interp, time: f32) -> Option<Vec3> {
+    if values.len() < 3 {
+        return None;
+    }
+    let (i0, i1, f) = locate(times, time);
+    let get = |k: usize| Vec3::new(values[k * 3], values[k * 3 + 1], values[k * 3 + 2]);
+    Some(if interp == Interp::Step || i0 == i1 {
         get(i0)
     } else {
         get(i0).lerp(get(i1), f)
-    }
+    })
 }
 
-fn sample_quat(ch: &Channel, time: f32) -> Quat {
+/// Sample a rotation channel, `None` when it holds no complete key.
+fn sample_quat(ch: &Channel, time: f32) -> Option<Quat> {
+    if ch.values.len() < 4 {
+        return None;
+    }
     let (i0, i1, f) = locate(&ch.times, time);
     let get = |k: usize| {
         Quat::from_xyzw(
@@ -295,11 +416,11 @@ fn sample_quat(ch: &Channel, time: f32) -> Quat {
         )
         .normalize()
     };
-    if ch.interp == Interp::Step || i0 == i1 {
+    Some(if ch.interp == Interp::Step || i0 == i1 {
         get(i0)
     } else {
         get(i0).slerp(get(i1), f)
-    }
+    })
 }
 
 /// Resolve one joint's rest global, memoizing into `out`.
@@ -327,6 +448,58 @@ fn resolve_rest(skel: &Skeleton, joint: usize, out: &mut Vec<Option<Mat4>>) {
     }
 }
 
+/// The name proper, with any exporter decoration stripped: the segment after the
+/// last `:` or `|`, trimmed.
+///
+/// Exporters prefix a bone or clip with the namespace or armature it came from
+/// (`mixamorig:Spine_01`, `CharacterArmature|Walk`), and that prefix is an export
+/// setting rather than authored intent.
+pub fn name_tail(name: &str) -> &str {
+    name.rsplit([':', '|']).next().unwrap_or(name).trim()
+}
+
+/// Whether two bone or clip names name the same thing: equal ignoring case, or
+/// equal once the exporter's decoration is stripped from BOTH.
+///
+/// Symmetric on purpose. A decorated name can turn up on either side - a source
+/// rig's `Armature|Hips` looked up in a target that spells it `Hips`, or a game
+/// asking for `mixamorig:Spine_01` on a rig that does not - and a rule that only
+/// undecorates one side answers those two questions differently.
+///
+/// THE one rule. It used to be three that disagreed: this one, a `|`-only copy in
+/// the renderer's clip lookup, and an exact-only compare in the retarget - so a
+/// decorated bone silently dropped its channel, which is the class of failure the
+/// lost root motion already was.
+pub fn names_match(a: &str, b: &str) -> bool {
+    a.trim().eq_ignore_ascii_case(b.trim()) || name_tail(a).eq_ignore_ascii_case(name_tail(b))
+}
+
+/// The position of `want` in `names` under [`names_match`], or `None`.
+///
+/// Exact matches are searched for across the WHOLE list before any decorated one,
+/// so a model that really does have a clip called `Walk` is never beaten by some
+/// other armature's `Rig|Walk`.
+pub fn find_name<'a, I>(mut names: I, want: &str) -> Option<usize>
+where
+    I: Iterator<Item = &'a str> + Clone,
+{
+    let want = want.trim();
+    if let Some(i) = names
+        .clone()
+        .position(|n| n.trim().eq_ignore_ascii_case(want))
+    {
+        return Some(i);
+    }
+    let want = name_tail(want);
+    names.position(|n| name_tail(n).eq_ignore_ascii_case(want))
+}
+
+/// Whether a bone name is the rig's motion root - the same name rule as
+/// everything else, because it is the same function.
+fn is_root_bone(name: &str) -> bool {
+    names_match(name, "root")
+}
+
 /// Which transform component an animation channel drives.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Path {
@@ -351,12 +524,38 @@ pub struct Channel {
     pub values: Vec<f32>,
 }
 
-/// A named animation: a set of per-joint TRS channels.
+/// The ground a clip is authored to cover, as a position over time in the
+/// model's own space. Addressed to no joint, because it is the character's
+/// travel and not any bone's pose.
+#[derive(Clone, Debug)]
+pub struct RootMotion {
+    pub interp: Interp,
+    pub times: Vec<f32>,
+    /// Flattened positions, 3 per key.
+    pub values: Vec<f32>,
+}
+
+/// A named animation: a set of per-joint TRS channels, plus the travel the clip
+/// covers.
 #[derive(Clone, Debug)]
 pub struct Clip {
     pub name: String,
     pub duration: f32,
     pub channels: Vec<Channel>,
+    /// The clip's ROOT MOTION: how far the character moves over the clip,
+    /// lifted out of the pose at import (see [`Skeleton::motion_root`]).
+    ///
+    /// The pose and the travel are two different facts and a character needs
+    /// both, separately. Left in the pose, a lunge slides the mesh a metre
+    /// forward while its collider stays put, and nothing downstream can see how
+    /// far it went; taken out, the body animates in place and the distance is a
+    /// number the simulation moves the character by - so the mesh, the collider
+    /// and the hitbox are still one thing at the end of the swing.
+    ///
+    /// `None` for a clip that authors no travel, which is most of them: a
+    /// locomotion loop is authored in place on purpose, because the game decides
+    /// how fast it walks.
+    pub root: Option<RootMotion>,
 }
 
 /// Everything a retarget needs to move a clip from one rig to another.
@@ -389,16 +588,13 @@ impl Retarget<'_> {
     {
         self.rename
             .iter()
-            .find(|(a, _)| a.eq_ignore_ascii_case(source_name))
+            .find(|(a, _)| names_match(a, source_name))
             .map(|(_, b)| *b)
             .unwrap_or(source_name)
     }
 
     fn joint_by_name<'s>(skel: &'s Skeleton, name: &str) -> Option<(usize, &'s Joint)> {
-        skel.joints
-            .iter()
-            .position(|j| j.name.eq_ignore_ascii_case(name))
-            .map(|i| (i, &skel.joints[i]))
+        find_name(skel.joints.iter().map(|j| j.name.as_str()), name).map(|i| (i, &skel.joints[i]))
     }
 }
 
@@ -447,6 +643,28 @@ fn rest_global_rotations(skel: &Skeleton) -> Vec<Quat> {
 }
 
 impl Clip {
+    /// Where this clip's root motion stands at `time`, in the model's own space.
+    ///
+    /// The origin for a clip that authors no travel, so nothing calling this has
+    /// to ask first - and the difference between two of these is zero, which is
+    /// the right answer for a clip that does not move.
+    pub fn root_pos(&self, time: f32) -> Vec3 {
+        match &self.root {
+            // A track with no keys covers no ground, which is what the origin means here.
+            Some(rm) => sample_track3(&rm.times, &rm.values, rm.interp, time).unwrap_or(Vec3::ZERO),
+            None => Vec3::ZERO,
+        }
+    }
+
+    /// The travel one whole pass of this clip covers - what a looping clip adds
+    /// each time it comes round.
+    pub fn root_pass(&self) -> Vec3 {
+        match &self.root {
+            Some(_) => self.root_pos(self.duration) - self.root_pos(0.0),
+            None => Vec3::ZERO,
+        }
+    }
+
     /// Rewrite this clip's channels to address `target`'s joints instead of
     /// `source`'s, matching by bone name.
     ///
@@ -480,6 +698,13 @@ impl Clip {
     /// routinely drives bones no character has, like a jaw or a weapon socket.
     /// A clip where NOTHING matched is an error rather than an empty clip,
     /// because that means the map is wrong and silence would hide it.
+    ///
+    /// The clip's ROOT MOTION comes across too, scaled by the proportion between
+    /// the two rigs. It is not a bone channel and so cannot be matched by name -
+    /// which is exactly how an authored lunge used to be lost here. The source
+    /// pack puts the travel on a `Root` bone the target character does not have,
+    /// so every distance a moveset was authored to cover was dropped on the floor
+    /// and every attack played on the spot.
     pub fn retarget(&self, opts: &Retarget) -> Result<Clip, String> {
         // One timeline for the whole clip.
         //
@@ -496,7 +721,7 @@ impl Clip {
             .collect();
         times.sort_by(f32::total_cmp);
         times.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
-        if times.is_empty() {
+        if times.is_empty() && self.root.is_none() {
             return Err(format!("clip {} has no keyframes", self.name));
         }
 
@@ -568,14 +793,21 @@ impl Clip {
         }
 
         let mut channels = Vec::with_capacity(pairs.len() + 1);
-        for (k, (_, ti, _)) in pairs.iter().enumerate() {
-            channels.push(Channel {
-                joint: *ti,
-                path: Path::Rotation,
-                interp: Interp::Linear,
-                times: times.clone(),
-                values: std::mem::take(&mut rot_tracks[k]),
-            });
+        // A clip that is nothing but travel poses no bone, so it gets no tracks at
+        // all rather than keyless ones: a channel with no keys is a hole, not an
+        // empty pose. `Skeleton::sample` holds the joint's REST transform for one
+        // either way now, so this is tidiness rather than a duty owed to it - the
+        // sampler's correctness no longer rests on every producer remembering.
+        if !times.is_empty() {
+            for (k, (_, ti, _)) in pairs.iter().enumerate() {
+                channels.push(Channel {
+                    joint: *ti,
+                    path: Path::Rotation,
+                    interp: Interp::Linear,
+                    times: times.clone(),
+                    values: std::mem::take(&mut rot_tracks[k]),
+                });
+            }
         }
 
         // Root travel, carried over as the same distance relative to the body.
@@ -587,7 +819,7 @@ impl Clip {
                 continue;
             };
             let want = opts.target_name(&from.name);
-            if !opts.translate.iter().any(|n| n.eq_ignore_ascii_case(want)) {
+            if !opts.translate.iter().any(|n| names_match(n, want)) {
                 continue;
             }
             let Some((ti, to_rest)) = Retarget::joint_by_name(opts.target, want) else {
@@ -612,7 +844,7 @@ impl Clip {
             });
         }
 
-        if channels.is_empty() {
+        if channels.is_empty() && self.root.is_none() {
             return Err(format!(
                 "clip {} retargeted to nothing: none of its {} joints matched the target \
                  skeleton, so the bone map is wrong",
@@ -621,11 +853,34 @@ impl Clip {
             ));
         }
 
+        // The travel, at the target's size. A stride is a proportion of the body
+        // that walks it: replayed unscaled on a three-metre troll the same clip
+        // would mince, and on a child it would skate.
+        let scale = rig_scale(opts.source_rest, opts.target);
+        let root = self.root.as_ref().map(|rm| RootMotion {
+            interp: rm.interp,
+            times: rm.times.clone(),
+            values: rm.values.iter().map(|v| v * scale).collect(),
+        });
+
         Ok(Clip {
             name: self.name.clone(),
             duration: self.duration,
             channels,
+            root,
         })
+    }
+}
+
+/// How much longer a stride authored on `source` is when the body walking it is
+/// `target`: the ratio of the two rigs' hip heights, 1.0 when either is
+/// unmeasurable.
+fn rig_scale(source: &Skeleton, target: &Skeleton) -> f32 {
+    let (a, b) = (target.hip_height(), source.hip_height());
+    if a > 1e-6 && b > 1e-6 {
+        a / b
+    } else {
+        1.0
     }
 }
 
@@ -859,12 +1114,46 @@ impl Model {
     /// Load a model by file extension (`.gltf`/`.glb`, `.obj`, or `.fbx`).
     pub fn load(path: &str) -> Result<Model, String> {
         let lower = path.to_ascii_lowercase();
-        if lower.ends_with(".obj") {
+        let mut model = if lower.ends_with(".obj") {
             Self::load_obj(path)
         } else if lower.ends_with(".fbx") {
             crate::fbx::load(path)
         } else {
             Self::load_gltf(path)
+        }?;
+        model.split_root_motion();
+        Ok(model)
+    }
+
+    /// Lift each clip's travel off the rig's motion root and onto the clip's own
+    /// [`Clip::root`] track.
+    ///
+    /// Here, at the one door every format comes through, so the rule holds for
+    /// everything Aurora can read: TRAVEL IS NEVER IN THE POSE. A character
+    /// animates in place and the game moves it, which is the only arrangement in
+    /// which the mesh, the collider and the hitbox stay one object. Two
+    /// arrangements - some clips travelling in the pose, some reporting a delta -
+    /// is how a character ends up moving twice as far as it was animated to.
+    ///
+    /// Rigs with no dedicated motion root are left exactly as they are, because
+    /// there the root's translation is anatomy rather than travel.
+    fn split_root_motion(&mut self) {
+        let Some(root) = self.skeleton.as_ref().and_then(|s| s.motion_root()) else {
+            return;
+        };
+        for clip in &mut self.clips {
+            let found = clip
+                .channels
+                .iter()
+                .position(|c| c.joint == root && c.path == Path::Translation);
+            if let Some(k) = found {
+                let ch = clip.channels.remove(k);
+                clip.root = Some(RootMotion {
+                    interp: ch.interp,
+                    times: ch.times,
+                    values: ch.values,
+                });
+            }
         }
     }
 
@@ -1211,6 +1500,9 @@ impl Model {
                 name,
                 duration,
                 channels,
+                // Split off the rig's motion root once the whole model is in
+                // hand: see `Model::split_root_motion`.
+                root: None,
             });
         }
 

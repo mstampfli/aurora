@@ -478,6 +478,9 @@ fn build_clips(scene: &ufbx::Scene, joint_of: &JointIndex) -> Vec<Clip> {
                 name: stack.element.name.to_string(),
                 duration,
                 channels,
+                // Split off the rig's motion root once the whole model is in
+                // hand: see `Model::split_root_motion`.
+                root: None,
             });
         }
     }

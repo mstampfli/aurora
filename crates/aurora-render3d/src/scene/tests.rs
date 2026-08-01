@@ -385,6 +385,7 @@ fn every_handle_accessor_refuses_a_stale_handle() {
     assert_eq!(s.clip_count(a), 0);
     assert_eq!(s.joint_global_mat(a, 0), None);
     assert_eq!(s.joint_pos(a, 0), None);
+    assert_eq!(s.root_delta(a), [0.0; 3], "a dead handle moves nothing");
     assert!(!s.free_model(a));
 
     // The mutating ones must be no-ops rather than panics or writes through to
@@ -527,11 +528,17 @@ fn freeing_a_model_does_not_strand_its_queued_draws() {
 
 /// The clip-name matching rule, which is what lets a game bind animations by
 /// name instead of by a magic index. Needs no GPU, so it runs everywhere.
+///
+/// The rule now lives with the asset format ([`crate::model::find_name`]) and is
+/// the SAME function the retarget and the motion-root test use. It was three
+/// functions: this one stripped `|`, the asset side stripped `:` as well, and a
+/// comment there claimed they agreed - so a `mixamorig:` name resolved here and
+/// not there. The `mixamorig:` case below is that drift, pinned.
 #[test]
 fn names_resolve_by_prefix_and_case() {
     // What a Quaternius/Blender glTF export actually looks like.
     let names = ["CharacterArmature|Death", "CharacterArmature|Walk", "Idle"];
-    let at = |want: &str| super::match_name(names.iter().copied(), want);
+    let at = |want: &str| super::index_or_missing(super::find_name(names.iter().copied(), want));
 
     // The armature prefix is an export setting, so the bare name must match.
     assert_eq!(at("Walk"), 1);
@@ -556,10 +563,24 @@ fn names_resolve_by_prefix_and_case() {
     // An exact name beats another armature's suffix.
     let shadowed = ["Rig|Walk", "Walk"];
     assert_eq!(
-        super::match_name(shadowed.iter().copied(), "Walk"),
-        1,
+        super::find_name(shadowed.iter().copied(), "Walk"),
+        Some(1),
         "an exact match must win over a suffix match"
     );
+
+    // A namespace is the same kind of export decoration as an armature prefix, on
+    // whichever side of the question it turns up.
+    let namespaced = ["mixamorig:Hips", "mixamorig:Spine_01"];
+    let ns =
+        |want: &str| super::index_or_missing(super::find_name(namespaced.iter().copied(), want));
+    assert_eq!(ns("Spine_01"), 1, "a namespaced rig must answer to the bare name");
+    assert_eq!(ns("mixamorig:Hips"), 0, "and to its own full name");
+    assert_eq!(
+        at("mixamorig:Walk"),
+        1,
+        "a decorated request must find an undecorated name too"
+    );
+    assert_eq!(ns("Neck"), -1, "and a bone that is not there is still not there");
 }
 
 /// A skinned model whose joints hang off an ARMATURE node must be posed through

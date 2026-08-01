@@ -9,38 +9,19 @@ use glam::{Mat4, Vec3};
 
 use crate::anim::AnimPlayer;
 use crate::mesh::MeshData;
-use crate::model::Model;
+// Resolving a name against a model's clip or joint names is ONE rule, and it lives
+// with the asset format beside the other name rules (`names_match`, the motion-root
+// test). The renderer used to keep its own copy that stripped only `|` while the
+// asset side stripped `:` too, and a comment there claimed the two agreed. They did
+// not, so a `mixamorig:` bone resolved here and nowhere else.
+use crate::model::{find_name, Model};
 use crate::render::{MaterialDesc, MaterialId, MeshId, Renderer3D};
 use aurora_slot::{Key, SlotMap};
 
-/// Resolve a name against a model's clip or joint names, returning an index or -1.
-///
-/// The rule, in order: an exact (case-insensitive) match, then a match on the
-/// segment after the last `|`. Exporters prefix clips with the armature they came
-/// from (`CharacterArmature|Walk`), and that prefix is an export setting rather
-/// than authored intent, so a game asking for `"Walk"` must find it. Exact wins
-/// over suffix so a model that really does have a clip named `Walk` is never
-/// beaten by some other armature's `Rig|Walk`.
-///
-/// Split out from [`Scene::clip_index`] / [`Scene::joint_index`] so the rule is
-/// testable without a GPU, and so clips and joints cannot drift to two rules.
-fn match_name<'a, I>(names: I, want: &str) -> i64
-where
-    I: Iterator<Item = &'a str> + Clone,
-{
-    let want = want.trim();
-    for (i, n) in names.clone().enumerate() {
-        if n.eq_ignore_ascii_case(want) {
-            return i as i64;
-        }
-    }
-    for (i, n) in names.enumerate() {
-        let tail = n.rsplit('|').next().unwrap_or(n);
-        if tail.eq_ignore_ascii_case(want) {
-            return i as i64;
-        }
-    }
-    -1
+/// The builtin ABI answers "which index" with -1 for "no such thing", so the two
+/// lookups below convert at the boundary rather than each writing the rule again.
+fn index_or_missing(found: Option<usize>) -> i64 {
+    found.map_or(-1, |i| i as i64)
 }
 
 /// A stable identifier for a skeleton's joint layout.
@@ -1027,6 +1008,25 @@ impl Scene {
         self.item(handle).map(|r| r.player.time).unwrap_or(0.0)
     }
 
+    /// ROOT MOTION: the ground the last [`Scene::anim_update`] covered, as
+    /// `[dx, dy, dz]` metres in the MODEL'S OWN space (rotate it by the yaw you
+    /// draw the model with, and scale it by the scale you draw it at).
+    ///
+    /// This is how far the clip says the character travelled over that step, and
+    /// it is the only place that fact exists: the travel is lifted out of the
+    /// pose at import, so the body animates in place and the simulation is what
+    /// moves it. A lunge that covers a metre reaches a boss that is a metre
+    /// away, its collider and its hitbox arrive with it, and none of it depends
+    /// on a hand-tuned speed guessed to match an animation.
+    ///
+    /// Zero before the first update, zero for a clip authored in place (every
+    /// locomotion loop is), and zero for a stale handle.
+    pub fn root_delta(&self, handle: i64) -> [f32; 3] {
+        self.item(handle)
+            .map(|r| r.player.root_delta().into())
+            .unwrap_or([0.0; 3])
+    }
+
     /// Which clip the model is playing on its base layer, or -1 for a handle
     /// that is not a model.
     ///
@@ -1054,15 +1054,15 @@ impl Scene {
 
     /// Index of the clip called `name`, or -1 if this model has no such clip.
     ///
-    /// Exporters routinely prefix a clip with its armature (Blender/glTF emit
-    /// `CharacterArmature|Walk`), so an exact match is tried first and then the
-    /// segment after the last `|`. Matching is case-insensitive because that
-    /// prefix and the casing are export settings, not authored intent.
+    /// Exporters routinely prefix a clip with its armature or namespace
+    /// (`CharacterArmature|Walk`, `mixamorig:Walk`), so the match is by
+    /// [`crate::model::find_name`]: exact first, then undecorated, ignoring case,
+    /// because that prefix and the casing are export settings, not authored intent.
     pub fn clip_index(&self, handle: i64, name: &str) -> i64 {
         let Some(m) = self.item(handle).and_then(|r| r.asset.model.as_ref()) else {
             return -1;
         };
-        match_name(m.clips.iter().map(|c| c.name.as_str()), name)
+        index_or_missing(find_name(m.clips.iter().map(|c| c.name.as_str()), name))
     }
 
     /// Start (or crossfade to) an animation clip on a model handle, blending from
@@ -1467,7 +1467,7 @@ impl Scene {
         else {
             return -1;
         };
-        match_name(skel.joints.iter().map(|j| j.name.as_str()), name)
+        index_or_missing(find_name(skel.joints.iter().map(|j| j.name.as_str()), name))
     }
 
     /// The name of joint `i`, or `None` for a stale handle or a bad index. The

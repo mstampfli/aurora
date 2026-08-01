@@ -107,6 +107,7 @@ fn translation_clip(joint: usize, times: Vec<f32>, ys: Vec<f32>) -> Clip {
             times,
             values: ys.into_iter().flat_map(|y| [0.0, y, 0.0]).collect(),
         }],
+        root: None,
     }
 }
 
@@ -150,6 +151,50 @@ fn a_clip_only_moves_the_joints_it_names() {
     assert_eq!(t[0], skel.joints[0].t);
     assert_eq!(t[1].y, 7.0);
     assert_eq!(t[2], skel.joints[2].t);
+}
+
+/// A channel with no complete key is a HOLE, not a pose.
+///
+/// The sampler used to substitute a value for one: ZERO for a 3-per-key track and
+/// IDENTITY for a rotation. A keyless SCALE channel therefore collapsed its joint -
+/// and every vertex bound to it - to a point, a keyless translation snapped the bone
+/// onto its parent's origin, and a keyless rotation threw the authored orientation
+/// away. There is no value that is right for all three, so none is substituted: the
+/// joint keeps the rest transform it would have had if the channel were not there.
+///
+/// The retarget documents a standing obligation on producers never to emit one. An
+/// obligation every producer has to remember is the fix that is wrong.
+#[test]
+fn a_channel_with_no_keys_leaves_the_joint_at_its_rest_transform() {
+    let mut skel = chain();
+    skel.joints[1].s = Vec3::new(2.0, 3.0, 4.0);
+    skel.joints[1].r = Quat::from_rotation_z(0.5);
+
+    let keyless = |path, times: Vec<f32>, values: Vec<f32>| Clip {
+        name: "c".into(),
+        duration: 1.0,
+        channels: vec![Channel {
+            joint: 1,
+            path,
+            interp: Interp::Linear,
+            times,
+            values,
+        }],
+        root: None,
+    };
+    for path in [Path::Scale, Path::Translation, Path::Rotation] {
+        // A rotation key is 4 floats, a T/S key 3. No keys at all, and one float short
+        // of a key, are both "no complete key" - a truncated track is a hole too.
+        let need = if path == Path::Rotation { 4 } else { 3 };
+        for values in [Vec::new(), vec![0.0f32; need - 1]] {
+            let times = if values.is_empty() { Vec::new() } else { vec![0.0] };
+            let clip = keyless(path, times, values);
+            let (t, r, s) = skel.sample(Some(&clip), 0.5);
+            assert_eq!(s[1], skel.joints[1].s, "{path:?} collapsed the joint's scale");
+            assert_eq!(t[1], skel.joints[1].t, "{path:?} moved the joint off its rest");
+            assert_eq!(r[1], skel.joints[1].r, "{path:?} lost the joint's rest orientation");
+        }
+    }
 }
 
 #[test]
@@ -283,4 +328,138 @@ fn bounding_radius_is_never_zero() {
     m.vertices.push(vertex_at([0.0, 0.0, 0.0]));
     assert!(m.bounding_radius() > 0.0);
     assert!(MeshData::default().bounding_radius() > 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// The motion root: which bone carries a clip's travel
+// ---------------------------------------------------------------------------
+
+/// A UE-style rig: a `Root` at the character's feet, the body hanging off it,
+/// and the IK roots sitting beside it at the same origin.
+fn rooted_rig() -> Skeleton {
+    Skeleton {
+        joints: vec![
+            joint("Root", None, Vec3::ZERO),
+            joint("Pelvis", Some(0), Vec3::new(0.0, 0.9, 0.0)),
+            joint("spine_01", Some(1), Vec3::new(0.0, 0.2, 0.0)),
+            joint("head", Some(2), Vec3::new(0.0, 0.5, 0.0)),
+            joint("ik_foot_root", None, Vec3::ZERO),
+            joint("ik_foot_l", Some(4), Vec3::ZERO),
+        ],
+    }
+}
+
+#[test]
+fn the_motion_root_is_the_bone_the_body_hangs_off() {
+    let skel = rooted_rig();
+    assert_eq!(skel.motion_root(), Some(0), "Root carries the body; ik_foot_root does not");
+}
+
+/// A hips-rooted rig (Mixamo, most glTF characters) has no bone whose motion is
+/// pure travel: the hips' translation is the character's bob and lean. Lifting
+/// that out of the pose would flatten the animation, so nothing is lifted.
+#[test]
+fn a_hips_rooted_rig_has_no_separable_travel() {
+    let skel = Skeleton {
+        joints: vec![
+            joint("Hips", None, Vec3::new(0.0, 0.9, 0.0)),
+            joint("Spine", Some(0), Vec3::new(0.0, 0.2, 0.0)),
+        ],
+    };
+    assert_eq!(skel.motion_root(), None);
+}
+
+#[test]
+fn a_lone_root_bone_is_not_a_motion_root() {
+    // Nothing hangs off it, so there is no body for it to move.
+    let skel = Skeleton {
+        joints: vec![joint("Root", None, Vec3::ZERO)],
+    };
+    assert_eq!(skel.motion_root(), None);
+}
+
+/// The rest pose of an animation-only export is a placeholder: it ships no bind
+/// data, so its bones sit wherever the exporter left them - for a root-motion
+/// clip, out along the travel itself.
+///
+/// This is not hypothetical. "The motion root is the bone at the origin" is the
+/// obvious rule, and it identifies the bone correctly on every character rig and
+/// on exactly none of the clips that have travel to give: the real pack's
+/// `Root` rests 1.52 m down its own +Z.
+#[test]
+fn a_placeholder_rest_pose_does_not_hide_the_motion_root() {
+    let mut skel = rooted_rig();
+    skel.joints[0].t = Vec3::new(0.0, 0.0, 1.52);
+    assert_eq!(skel.motion_root(), Some(0));
+}
+
+/// An exporter decorates a bone name with the namespace or armature it came
+/// from. That is an export setting, not a different bone.
+#[test]
+fn a_namespaced_root_is_still_the_root() {
+    let mut skel = rooted_rig();
+    skel.joints[0].name = "mixamorig:root".into();
+    assert_eq!(skel.motion_root(), Some(0));
+    skel.joints[0].name = "Armature|Root".into();
+    assert_eq!(skel.motion_root(), Some(0));
+}
+
+/// A bone that only sounds like the root is not it.
+#[test]
+fn a_bone_merely_named_like_the_root_is_not_the_root() {
+    let mut skel = rooted_rig();
+    skel.joints[0].name = "root_motion_helper".into();
+    assert_eq!(skel.motion_root(), None);
+}
+
+#[test]
+fn a_rig_with_no_joints_has_no_motion_root() {
+    assert_eq!(Skeleton { joints: vec![] }.motion_root(), None);
+}
+
+#[test]
+fn a_parent_cycle_does_not_hang_the_motion_root_search() {
+    let skel = Skeleton {
+        joints: vec![
+            joint("Root", None, Vec3::ZERO),
+            joint("a", Some(2), Vec3::Y),
+            joint("b", Some(1), Vec3::Y),
+        ],
+    };
+    // The cycle is unreachable from Root, so Root carries nothing and is not a
+    // motion root. The point is that this ANSWERS.
+    assert_eq!(skel.motion_root(), None);
+}
+
+/// A stride scales with the body's leg length, and hip height is what stands in
+/// for it.
+#[test]
+fn hip_height_is_where_the_body_hangs_from_the_root() {
+    assert!((rooted_rig().hip_height() - 0.9).abs() < 1e-5);
+}
+
+/// A rig assembled from modular parts is only as tall as the parts it was given.
+/// Measured at the top, a body loaded without its head would report a shorter
+/// character and shorten every step it takes; measured at the hip - which every
+/// part carries, because every part carries the chain up to the root - it does
+/// not.
+#[test]
+fn hip_height_does_not_depend_on_which_parts_were_assembled() {
+    let whole = rooted_rig().hip_height();
+    let mut headless = rooted_rig();
+    headless.joints.truncate(3); // Root, Pelvis, spine_01: no head
+    assert!((headless.hip_height() - whole).abs() < 1e-5);
+}
+
+/// A hips-rooted rig has no root bone to hang from, so the topmost body joint is
+/// the measurement.
+#[test]
+fn hip_height_of_a_hips_rooted_rig_is_its_own_root() {
+    let skel = Skeleton {
+        joints: vec![
+            joint("Hips", None, Vec3::new(0.0, 0.95, 0.0)),
+            joint("Spine", Some(0), Vec3::new(0.0, 0.2, 0.0)),
+        ],
+    };
+    assert!((skel.hip_height() - 0.95).abs() < 1e-5);
 }
