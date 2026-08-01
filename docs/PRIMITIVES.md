@@ -73,8 +73,8 @@ so a centimetre export sizes a collider a hundred times too large.
 
 ## Adding a builtin
 
-Five places, in this order. Missing one fails at a different layer each time,
-and only the last is caught automatically.
+Six places, in this order. Missing one fails at a different layer each time,
+and only the last two are caught automatically.
 
 1. `crates/aurora-render3d/src/scene.rs` (or whichever crate owns the state) -
    the implementation, as a method on `Scene`.
