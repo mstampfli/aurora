@@ -1166,6 +1166,8 @@ fn lower(
         line_starts,
     };
 
+    // Array lengths named by a const resolve from here on.
+    set_ty_consts(&env);
     let mut ctx = jmod.make_context();
     // Maps a function/lambda/system that failed to compile to native code → the
     // specific reason, so callers can report *why* (not just "codegen gap").
@@ -4958,8 +4960,30 @@ fn ty_to_cty(kind: &TypeKind) -> Cty {
         ),
         TypeKind::Tuple(ts) => Cty::Tuple(ts.iter().map(|t| ty_to_cty(&t.kind)).collect()),
         TypeKind::Array { elem, len } => {
+            // A length may be a literal OR a const - `[i64; TOWN_COUNT]`.
+            //
+            // Only the literal used to be honoured and everything else fell to
+            // 0, so a const-named length produced a SILENT zero-length array.
+            // The program type-checked, ran, and panicked at the first read with
+            // "index 0 out of bounds (length 0)" - pointing at the read, nowhere
+            // near the declaration that was wrong.
+            //
+            // `ty_to_cty` has no `env` and so cannot reach the const table
+            // directly. That is a known shape here: `fix_enums` exists eight
+            // lines below for exactly the same reason. This resolves the names
+            // through a table filled once per build, which keeps all seventeen
+            // call sites unchanged.
             let n = match len.as_ref().map(|e| &e.kind) {
                 Some(ExprKind::Int(v, _)) => *v as usize,
+                Some(ExprKind::Path(path)) => {
+                    let joined = path
+                        .segments
+                        .iter()
+                        .map(|seg| seg.ident.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join("::");
+                    ty_const_len(&joined)
+                }
                 _ => 0,
             };
             Cty::Array(Box::new(ty_to_cty(&elem.kind)), n)
@@ -4972,6 +4996,34 @@ fn ty_to_cty(kind: &TypeKind) -> Cty {
 
 /// Codegen ABI for a top-level function: parameter types + return type. A unit
 /// return maps to i64 (returns 0).
+thread_local! {
+    /// Integer consts usable as array lengths in TYPE positions, by name.
+    ///
+    /// Filled once per build. `ty_to_cty` is a free function with no `env` and
+    /// seventeen callers, so a side table costs one fill and no signature
+    /// churn - the same trade `fix_enums` makes for structs versus enums.
+    static TY_CONSTS: std::cell::RefCell<HashMap<String, usize>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+fn ty_const_len(name: &str) -> usize {
+    TY_CONSTS.with(|c| c.borrow().get(name).copied().unwrap_or(0))
+}
+
+/// Publish every const that evaluates to a non-negative integer, so array
+/// lengths written as names resolve.
+fn set_ty_consts(env: &Env) {
+    let mut out = HashMap::new();
+    for name in env.consts.keys() {
+        if let Some(v) = const_int(env, &env.consts[name], 0) {
+            if v >= 0 {
+                out.insert(name.clone(), v as usize);
+            }
+        }
+    }
+    TY_CONSTS.with(|c| *c.borrow_mut() = out);
+}
+
 /// Reclassify `Cty::Struct(n)` as `Cty::Enum(n)` when `n` names an enum.
 /// `ty_to_cty` can't tell structs from enums (no env), so enum types in function
 /// signatures / fields would otherwise be mis-sized (e.g. for sret returns).
