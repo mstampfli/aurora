@@ -3675,10 +3675,7 @@ fn tr_call(
     }
 
     // Builtin graphics — native calls into the host rasterizer.
-    if matches!(
-        name.as_str(),
-        "framebuffer" | "clear" | "pixel" | "triangle" | "fb_get"
-    ) {
+    if aurora_abi::lookup(name.as_str()).is_some_and(|r| r.kind == aurora_abi::Kind::Raster) {
         let mut argv = Vec::with_capacity(args.len());
         for a in args {
             let (v, t) = val(m, b, l, env, &a.value)?;

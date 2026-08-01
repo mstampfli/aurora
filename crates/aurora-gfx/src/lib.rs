@@ -23,7 +23,17 @@ impl Color {
     pub const fn rgb(r: u8, g: u8, b: u8) -> Color {
         Color { r, g, b, a: 255 }
     }
+    /// A colour with an explicit alpha. `a` is coverage, not a colour key: 0 is
+    /// invisible, 255 is opaque, and the values between are what a HUD needs to
+    /// put a readable plate over a scene without hiding it.
+    pub const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Color {
+        Color { r, g, b, a }
+    }
     pub const BLACK: Color = Color::rgb(0, 0, 0);
+    /// Nothing there. What a framebuffer starts as and what `clear` writes, so
+    /// an untouched HUD pixel shows the scene behind it because it is EMPTY -
+    /// not because its colour happened to match a key.
+    pub const CLEAR: Color = Color::rgba(0, 0, 0, 0);
     pub const WHITE: Color = Color::rgb(255, 255, 255);
 
     fn lerp3(a: Color, b: Color, c: Color, w: [f32; 3]) -> Color {
@@ -55,7 +65,7 @@ impl Framebuffer {
         Framebuffer {
             width,
             height,
-            pixels: vec![Color::BLACK; (width * height) as usize],
+            pixels: vec![Color::CLEAR; (width * height) as usize],
         }
     }
 
@@ -161,23 +171,27 @@ impl Framebuffer {
         }
     }
 
-    /// Overwrite the framebuffer from tightly-packed RGBA8 bytes (ignores alpha).
+    /// Overwrite the framebuffer from tightly-packed RGBA8 bytes.
     /// Bytes beyond the pixel count are ignored; missing pixels stay unchanged.
     pub fn set_rgba(&mut self, rgba: &[u8]) {
         for (i, px) in self.pixels.iter_mut().enumerate() {
             let o = i * 4;
-            if o + 2 < rgba.len() {
-                *px = Color::rgb(rgba[o], rgba[o + 1], rgba[o + 2]);
+            if o + 3 < rgba.len() {
+                *px = Color::rgba(rgba[o], rgba[o + 1], rgba[o + 2], rgba[o + 3]);
             }
         }
     }
 
-    /// Tightly-packed RGBA8 bytes (row-major, top-left origin, alpha = 255).
+    /// Tightly-packed RGBA8 bytes (row-major, top-left origin), alpha included.
+    ///
+    /// The alpha is REAL and the HUD overlay composites with it, which is what
+    /// lets a dialogue plate be a translucent grey instead of an opaque slab.
+    /// The 2D blit and PPM paths ignore it, so a plain 2D game is unaffected.
     /// Suitable for uploading to a GPU texture for real-time presentation.
     pub fn rgba(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.pixels.len() * 4);
         for p in &self.pixels {
-            out.extend_from_slice(&[p.r, p.g, p.b, 255]);
+            out.extend_from_slice(&[p.r, p.g, p.b, p.a]);
         }
         out
     }
@@ -327,7 +341,82 @@ mod tests {
         fb.set(-1, 0, Color::WHITE);
         fb.set(0, 100, Color::WHITE);
         fb.set(4, 4, Color::WHITE);
-        // Nothing crashed and no in-bounds pixel changed.
-        assert_eq!(fb.get(0, 0), Color::BLACK);
+        // Nothing crashed and no in-bounds pixel changed. CLEAR rather than
+        // BLACK: an untouched pixel is empty, not opaque black.
+        assert_eq!(fb.get(0, 0), Color::CLEAR);
+    }
+}
+
+#[cfg(test)]
+mod alpha_tests {
+    use super::*;
+
+    // The bug this channel exists to kill: a HUD backing plate could only be
+    // opaque, because transparency was a pure-black colour key. So a dark plate
+    // was a slab over the game, and a BLACK plate was a hole.
+    #[test]
+    fn a_fresh_framebuffer_is_transparent_not_opaque_black() {
+        let fb = Framebuffer::new(4, 4);
+        assert_eq!(fb.get(0, 0).a, 0, "an untouched HUD pixel must not cover the scene");
+    }
+
+    #[test]
+    fn clear_erases_the_hud_rather_than_painting_over_the_scene() {
+        let mut fb = Framebuffer::new(2, 2);
+        fb.set(0, 0, Color::rgb(200, 30, 30));
+        assert_eq!(fb.get(0, 0).a, 255);
+        fb.clear(Color::CLEAR);
+        assert_eq!(fb.get(0, 0).a, 0);
+    }
+
+    // A drawn pixel is opaque unless it says otherwise, so every existing
+    // caller keeps the behaviour it had.
+    #[test]
+    fn a_plain_draw_is_still_fully_opaque() {
+        let mut fb = Framebuffer::new(2, 2);
+        fb.set(1, 1, Color::rgb(10, 10, 12));
+        assert_eq!(fb.get(1, 1).a, 255);
+    }
+
+    // And black is now a colour you can actually draw - it used to vanish.
+    #[test]
+    fn pure_black_is_drawable_rather_than_being_a_hole() {
+        let mut fb = Framebuffer::new(2, 2);
+        fb.set(0, 1, Color::rgb(0, 0, 0));
+        let px = fb.get(0, 1);
+        assert_eq!((px.r, px.g, px.b), (0, 0, 0));
+        assert_eq!(px.a, 255, "black text must reach the screen, not be keyed out");
+    }
+
+    // The alpha has to SURVIVE to the GPU or none of the above matters; this is
+    // the boundary that discarded it, hardcoding 255 for every pixel.
+    #[test]
+    fn the_gpu_upload_carries_alpha_instead_of_forcing_it_opaque() {
+        let mut fb = Framebuffer::new(2, 1);
+        fb.set(0, 0, Color::rgba(34, 36, 42, 150));
+        let bytes = fb.rgba();
+        assert_eq!(&bytes[0..4], &[34, 36, 42, 150]);
+        // And the untouched neighbour is fully transparent.
+        assert_eq!(bytes[7], 0);
+    }
+
+    #[test]
+    fn an_rgba_round_trip_preserves_coverage() {
+        let mut fb = Framebuffer::new(2, 1);
+        fb.set(0, 0, Color::rgba(1, 2, 3, 77));
+        let bytes = fb.rgba();
+        let mut back = Framebuffer::new(2, 1);
+        back.set_rgba(&bytes);
+        assert_eq!(back.get(0, 0), Color::rgba(1, 2, 3, 77));
+    }
+
+    // PPM has no alpha, so the file path must be unchanged by all of this.
+    #[test]
+    fn ppm_output_ignores_alpha_so_2d_games_are_unaffected() {
+        let mut opaque = Framebuffer::new(2, 1);
+        opaque.set(0, 0, Color::rgb(90, 80, 70));
+        let mut ghost = Framebuffer::new(2, 1);
+        ghost.set(0, 0, Color::rgba(90, 80, 70, 3));
+        assert_eq!(opaque.to_ppm(), ghost.to_ppm());
     }
 }

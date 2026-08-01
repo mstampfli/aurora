@@ -394,7 +394,7 @@ pub fn present(rgba: &[u8]) -> bool {
             let expected = (app.width * app.height * 4) as usize;
             if let Some(g) = app.gfx.as_mut() {
                 if rgba.len() >= expected {
-                    g.present_rgba(&rgba[..expected]);
+                    g.present_rgba(&rgba[..expected], app.width, app.height);
                 }
             }
         }
@@ -1631,27 +1631,30 @@ pub fn r3d_capture(
         // Match the camera aspect to the capture size before rendering.
         scene.resize(device, w, hh);
         let clear = scene.clear_color();
-        let mut px =
-            aurora_render3d::render_offscreen(&mut scene.renderer, device, queue, w, hh, clear);
-        // Composite the HUD (CPU framebuffer) over the render: nearest-neighbor
-        // scale, near-black is the transparent key (same threshold as HUD_WGSL).
-        if hud_w > 0 && hud_h > 0 && hud_rgba.len() >= (hud_w * hud_h * 4) as usize {
-            for y in 0..hh {
-                let sy = (y as u64 * hud_h as u64 / hh as u64) as u32;
-                for x in 0..w {
-                    let sx = (x as u64 * hud_w as u64 / w as u64) as u32;
-                    let so = ((sy * hud_w + sx) * 4) as usize;
-                    let (r, g, b) = (hud_rgba[so], hud_rgba[so + 1], hud_rgba[so + 2]);
-                    if r as u32 + g as u32 + b as u32 >= 3 {
-                        let o = ((y * w + x) * 4) as usize;
-                        px[o] = r;
-                        px[o + 1] = g;
-                        px[o + 2] = b;
-                        px[o + 3] = 255;
-                    }
-                }
-            }
-        }
+        // Composite the HUD through the renderer's overlay - the SAME pass the
+        // live window presents with. This used to be a hand-rolled pixel loop
+        // here, a second implementation of the blend rule; a capture composited
+        // by a different rule is a screenshot of a frame the game never draws.
+        let mut px = if hud_w > 0 && hud_h > 0 && hud_rgba.len() >= (hud_w * hud_h * 4) as usize {
+            let mut overlay = aurora_render3d::HudOverlay::new(
+                device,
+                wgpu::TextureFormat::Rgba8Unorm,
+                hud_w,
+                hud_h,
+            );
+            let ok = overlay.upload(device, queue, &hud_rgba, hud_w, hud_h);
+            aurora_render3d::render_offscreen_with_hud(
+                &mut scene.renderer,
+                device,
+                queue,
+                w,
+                hh,
+                clear,
+                if ok { Some(&overlay) } else { None },
+            )
+        } else {
+            aurora_render3d::render_offscreen(&mut scene.renderer, device, queue, w, hh, clear)
+        };
         for p in px.chunks_exact_mut(4) {
             p[3] = 255;
         }

@@ -480,6 +480,15 @@ fn fill_rect(x: i64, y: i64, w: i64, h: i64, r: i64, g: i64, b: i64) {
     triangle(x, y, x + w, y, x, y + h, r, g, b)
     triangle(x + w, y, x + w, y + h, x, y + h, r, g, b)
 }
+// A rectangle you can see through. `a` is 0..255 coverage.
+//
+// The HUD's readable backing plate: dark enough that light text reads over a
+// bright scene, transparent enough that the scene is still there. `fill_rect`
+// is the opaque case and stays a pair of triangles; this one is a single
+// builtin because it runs every frame over thousands of pixels.
+fn fill_rect_a(x: i64, y: i64, w: i64, h: i64, r: i64, g: i64, b: i64, a: i64) {
+    fill_rect_alpha(x, y, w, h, r, g, b, a)
+}
 fn ui_label(x: i64, y: i64, text: str, px: i64) { draw_text(x, y, text, px, rgb(230, 230, 235)) }
 // Returns 1 when the button is hovered and the mouse is down.
 fn ui_button(x: i64, y: i64, w: i64, h: i64, label: str) -> i64 {

@@ -98,8 +98,10 @@ with `after`/`before` is transitive and independent of declaration order (Â§6.
 
 | Builtin | Signature |
 |---|---|
-| `framebuffer(w, h)` / `clear(r,g,b)` | create / clear the CPU framebuffer |
-| `pixel(x,y,r,g,b)` / `triangle(x0,y0,x1,y1,x2,y2,r,g,b)` | draw |
+| `framebuffer(w, h)` / `clear(r,g,b)` | create / clear the CPU framebuffer. `clear` writes alpha 0 - it ERASES, so a HUD clear does not paint over the 3D scene |
+| `pixel(x,y,r,g,b)` / `triangle(x0,y0,x1,y1,x2,y2,r,g,b)` | draw, fully opaque |
+| `pixel_alpha(x,y,r,g,b,a)` | draw with explicit coverage: `a` 0 invisible, 255 opaque |
+| `fill_rect_alpha(x,y,w,h,r,g,b,a)` | fill a clipped rectangle with coverage. A builtin, not a loop over `pixel_alpha`, because a full-width HUD plate is tens of thousands of pixels every frame. `w`/`h` <= 0 draw nothing. The prelude wraps it as `fill_rect_a` |
 | `fb_get(x,y) -> i64` | read a packed `0xRRGGBB` pixel |
 | `fb_width() / fb_height() -> i64` | the framebuffer's size, 0 if there is none - a HUD cannot lay itself out without them |
 | `save_ppm(path)` | write the framebuffer to a PPM |
@@ -249,7 +251,8 @@ that as BLOCKED, never as a pass.
 
 - `r3d_capture(path) -> 1|0` / `r3d_capture_size(path, w, h)`: render the
   queued scene offscreen to a PNG with the HUD framebuffer composited on top
-  (black = transparent, same as the live overlay). Headless-only; call it
+  (source-over on the HUD's alpha, by the same rule as the live overlay).
+  Headless-only; call it
   INSTEAD of `r3d_present` for a captured frame.
 - Input injection (indistinguishable from a player; works windowed too):
   `inject_key(code, down)`, `inject_mouse_move(dx, dy)`,
@@ -433,8 +436,11 @@ More rendering controls:
 | `r3d_screen_x/y(wx,wy,wz) -> f64` | project a world point to pixels | -1 if behind the camera |
 
 The CPU framebuffer (`clear`/`pixel`/`triangle`/`draw_text`) is composited over
-the 3D scene as a **HUD** each `r3d_present()`, with pure black as the
-transparent key (clear to black, draw the crosshair/ammo in color).
+the 3D scene as a **HUD** each `r3d_present()`, composited source-over on a
+real alpha channel. `clear` erases (alpha 0); `pixel`/`triangle`/`draw_text`
+are opaque; `pixel_alpha` and `fill_rect_alpha` set their own coverage, which
+is what a readable translucent backing plate needs. Black is a drawable colour,
+not a key - it used to be keyed out, so black text and outlines were invisible.
 
 ### Modular characters
 

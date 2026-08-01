@@ -274,11 +274,19 @@ fn color(r: i64, g: i64, b: i64) -> aurora_gfx::Color {
     let c = |v: i64| v.clamp(0, 255) as u8;
     aurora_gfx::Color::rgb(c(r), c(g), c(b))
 }
+/// Clear the framebuffer to a colour, TRANSPARENT.
+///
+/// Alpha 0 rather than opaque, because the dominant use of `clear` is erasing a
+/// HUD that composites over a 3D scene, and a HUD that cleared to an opaque
+/// colour would hide the game. The 2D path presents the framebuffer as the
+/// image and forces alpha opaque in its blit, so a 2D game that clears to a
+/// background colour is unaffected.
 #[no_mangle]
 pub extern "C" fn aurora_clear(r: i64, g: i64, b: i64) {
+    let c = color(r, g, b);
     FB.with(|fb| {
         if let Some(f) = fb.borrow_mut().as_mut() {
-            f.clear(color(r, g, b));
+            f.clear(aurora_gfx::Color::rgba(c.r, c.g, c.b, 0));
         }
     });
 }
@@ -287,6 +295,68 @@ pub extern "C" fn aurora_pixel(x: i64, y: i64, r: i64, g: i64, b: i64) {
     FB.with(|fb| {
         if let Some(f) = fb.borrow_mut().as_mut() {
             f.set(x as i32, y as i32, color(r, g, b));
+        }
+    });
+}
+/// A pixel with explicit coverage: 0 invisible, 255 opaque.
+///
+/// The alpha-taking counterpart to `pixel`, and the primitive every translucent
+/// 2D thing is built from - `fill_rect_a` in the prelude is a loop over it.
+/// Needed because a HUD plate that is readable over a bright scene has to be
+/// dark AND see-through, which a colour key cannot express.
+#[no_mangle]
+pub extern "C" fn aurora_pixel_alpha(x: i64, y: i64, r: i64, g: i64, b: i64, a: i64) {
+    FB.with(|fb| {
+        if let Some(f) = fb.borrow_mut().as_mut() {
+            let c = color(r, g, b);
+            f.set(
+                x as i32,
+                y as i32,
+                aurora_gfx::Color::rgba(c.r, c.g, c.b, a.clamp(0, 255) as u8),
+            );
+        }
+    });
+}
+/// Fill an axis-aligned rectangle with an explicit alpha.
+///
+/// A builtin rather than a loop over `pixel_alpha` in the prelude because this
+/// is a per-frame HUD call: a full-width dialogue plate is tens of thousands of
+/// pixels, and that is a span fill here versus tens of thousands of native
+/// calls there. Clipped to the framebuffer, so a plate wider than the screen is
+/// not an error - `w`/`h` of 0 or less draw nothing.
+#[allow(clippy::too_many_arguments)]
+#[no_mangle]
+pub extern "C" fn aurora_fill_rect_alpha(
+    x: i64,
+    y: i64,
+    w: i64,
+    h: i64,
+    r: i64,
+    g: i64,
+    b: i64,
+    a: i64,
+) {
+    if w <= 0 || h <= 0 {
+        return;
+    }
+    let c = color(r, g, b);
+    let c = aurora_gfx::Color::rgba(c.r, c.g, c.b, a.clamp(0, 255) as u8);
+    FB.with(|fb| {
+        if let Some(f) = fb.borrow_mut().as_mut() {
+            let (fw, fh) = (f.width() as i64, f.height() as i64);
+            let x0 = x.max(0);
+            let y0 = y.max(0);
+            let x1 = (x + w).min(fw);
+            let y1 = (y + h).min(fh);
+            let mut py = y0;
+            while py < y1 {
+                let mut px = x0;
+                while px < x1 {
+                    f.set(px as i32, py as i32, c);
+                    px += 1;
+                }
+                py += 1;
+            }
         }
     });
 }

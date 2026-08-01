@@ -331,10 +331,12 @@ pub(crate) struct Gfx {
     tex_h: u32,
     /// Lazily-created 3D scene (only for programs that use the 3D builtins).
     pub(crate) scene: Option<aurora_render3d::Scene>,
-    /// HUD overlay: blits the CPU framebuffer over the 3D scene, treating pure
-    /// black as transparent (a color key).
-    hud_pipeline: wgpu::RenderPipeline,
-    hud_bind_group: wgpu::BindGroup,
+    /// HUD overlay: blits the CPU framebuffer over the 3D scene, compositing
+    /// source-over on the framebuffer's real alpha channel.
+    ///
+    /// The renderer's type, not a private one, because `r3d_capture` composites
+    /// the same overlay offscreen and the two must be the same pass.
+    hud: aurora_render3d::HudOverlay,
     /// Procedural speed/wind lines overlay (a uniform-driven fullscreen pass).
     sl_pipeline: wgpu::RenderPipeline,
     sl_bind_group: wgpu::BindGroup,
@@ -355,27 +357,6 @@ pub(crate) struct Gfx {
     blur_buf: wgpu::Buffer,
 }
 
-const HUD_WGSL: &str = r#"
-struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
-@vertex
-fn vs(@builtin(vertex_index) i: u32) -> VOut {
-    var p = array<vec2<f32>, 3>(vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
-    var o: VOut;
-    let xy = p[i];
-    o.pos = vec4<f32>(xy, 0.0, 1.0);
-    o.uv = vec2<f32>(xy.x * 0.5 + 0.5, 1.0 - (xy.y * 0.5 + 0.5));
-    return o;
-}
-@group(0) @binding(0) var tex: texture_2d<f32>;
-@group(0) @binding(1) var samp: sampler;
-@fragment
-fn fs(in: VOut) -> @location(0) vec4<f32> {
-    let c = textureSample(tex, samp, in.uv);
-    // Pure black is the transparent key; everything else is HUD.
-    if (c.r + c.g + c.b < 0.012) { discard; }
-    return vec4<f32>(c.rgb, 1.0);
-}
-"#;
 
 // Procedural radial speed/wind lines: soft, diffuse white streaks anchored at the
 // screen edges, fading to a clear centre. Driven by a wind intensity + time uniform.
@@ -484,7 +465,10 @@ fn vs(@builtin(vertex_index) i: u32) -> VOut {
 @group(0) @binding(1) var samp: sampler;
 @fragment
 fn fs(in: VOut) -> @location(0) vec4<f32> {
-    return textureSample(tex, samp, in.uv);
+    // The 2D path presents the framebuffer AS the image, so alpha is not
+    // coverage over anything - force opaque. Without this a 2D game that
+    // cleared its background would present a transparent frame.
+    return vec4<f32>(textureSample(tex, samp, in.uv).rgb, 1.0);
 }
 "#;
 
@@ -691,60 +675,8 @@ impl Gfx {
             ],
         });
 
-        // HUD overlay pipeline (alpha-blended, black = transparent key).
-        let hud_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("hud"),
-            source: wgpu::ShaderSource::Wgsl(HUD_WGSL.into()),
-        });
-        let hud_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("hud"),
-            layout: None,
-            vertex: wgpu::VertexState {
-                module: &hud_module,
-                entry_point: "vs",
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &hud_module,
-                entry_point: "fs",
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
-        // The HUD overlay is a low-res framebuffer stretched over the full surface,
-        // so sample it LINEARLY (the 2D retro `present` path keeps the Nearest
-        // `sampler` for crisp pixel art). Linear smooths the upscale so the HUD
-        // reads clean instead of chunky/blocky.
-        let hud_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("hud-linear"),
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
-        let hud_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("hud"),
-            layout: &hud_pipeline.get_bind_group_layout(0),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&hud_sampler),
-                },
-            ],
-        });
+        // HUD overlay: the renderer's shared pass (see `aurora_render3d::hud`).
+        let hud = aurora_render3d::HudOverlay::new(&device, format, tex_w, tex_h);
 
         // Speed/wind lines: a uniform-driven procedural fullscreen pass (alpha-blended).
         let sl_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -996,8 +928,7 @@ impl Gfx {
             tex_w,
             tex_h,
             scene: None,
-            hud_pipeline,
-            hud_bind_group,
+            hud,
             sl_pipeline,
             sl_bind_group,
             sl_buf,
@@ -1033,11 +964,12 @@ impl Gfx {
         (&self.device, &self.queue, self.scene.as_mut().unwrap())
     }
 
-    /// Render the 3D scene to the surface, then overlay the HUD framebuffer
-    /// (`hud_rgba`, the CPU framebuffer; pure-black pixels are transparent).
-    /// Recreate the HUD/blit texture (and its bind groups) at a new size, so the
-    /// HUD framebuffer can track the window size dynamically.
-    fn resize_hud_texture(&mut self, w: u32, h: u32) {
+    /// Recreate the 2D BLIT texture and its bind group at a new size, so a 2D
+    /// game's framebuffer can track the window.
+    ///
+    /// The HUD overlay used to share this texture; it owns its own now and
+    /// resizes itself in `HudOverlay::upload`.
+    fn resize_blit_texture(&mut self, w: u32, h: u32) {
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("framebuffer"),
             size: wgpu::Extent3d {
@@ -1059,12 +991,6 @@ impl Gfx {
             min_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
-        let linear = self.device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("hud-linear"),
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
         self.bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("blit"),
             layout: &self.pipeline.get_bind_group_layout(0),
@@ -1076,20 +1002,6 @@ impl Gfx {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(&nearest),
-                },
-            ],
-        });
-        self.hud_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("hud"),
-            layout: &self.hud_pipeline.get_bind_group_layout(0),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&linear),
                 },
             ],
         });
@@ -1184,35 +1096,11 @@ impl Gfx {
         } else {
             return;
         }
-        // Resize the HUD texture to match the framebuffer the game gave us, so a
-        // game can size its HUD to the live window and have it blit 1:1 (crisp).
-        if hud_w > 0 && hud_h > 0 && (hud_w != self.tex_w || hud_h != self.tex_h) {
-            self.resize_hud_texture(hud_w, hud_h);
-        }
-        // Upload the HUD framebuffer for the overlay pass.
-        let hud_bytes = (self.tex_w * self.tex_h * 4) as usize;
-        let has_hud = hud_rgba.len() >= hud_bytes && hud_bytes > 0;
-        if has_hud {
-            self.queue.write_texture(
-                wgpu::ImageCopyTexture {
-                    texture: &self.texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                &hud_rgba[..hud_bytes],
-                wgpu::ImageDataLayout {
-                    offset: 0,
-                    bytes_per_row: Some(self.tex_w * 4),
-                    rows_per_image: Some(self.tex_h),
-                },
-                wgpu::Extent3d {
-                    width: self.tex_w,
-                    height: self.tex_h,
-                    depth_or_array_layers: 1,
-                },
-            );
-        }
+        // Upload the HUD framebuffer for the overlay pass. It sizes itself to
+        // what the game gave us, so a HUD can track the live window.
+        let has_hud = self
+            .hud
+            .upload(&self.device, &self.queue, hud_rgba, hud_w, hud_h);
         let surface_tex = match self.surface.get_current_texture() {
             Ok(t) => t,
             Err(e) => {
@@ -1298,23 +1186,7 @@ impl Gfx {
         }
         // HUD overlay pass (load the 3D result, blend the HUD on top).
         if has_hud {
-            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("hud"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            pass.set_pipeline(&self.hud_pipeline);
-            pass.set_bind_group(0, &self.hud_bind_group, &[]);
-            pass.draw(0..3, 0..1);
+            self.hud.composite(&mut enc, &view);
         }
         self.queue.submit(Some(enc.finish()));
         surface_tex.present();
@@ -1359,11 +1231,18 @@ impl Gfx {
     }
 
     fn present(&mut self, fb: &Framebuffer) {
-        self.present_rgba(&fb.rgba());
+        self.present_rgba(&fb.rgba(), fb.width(), fb.height());
     }
 
-    /// Present tightly-packed RGBA8 bytes (`tex_w * tex_h * 4`).
-    pub(crate) fn present_rgba(&mut self, rgba: &[u8]) {
+    /// Present tightly-packed RGBA8 bytes for a `w` x `h` framebuffer.
+    pub(crate) fn present_rgba(&mut self, rgba: &[u8], w: u32, h: u32) {
+        // Track the framebuffer's size. This used to be done only by the HUD
+        // path, which shared this texture - so a 2D-only game that resized its
+        // framebuffer uploaded at the old stride. The HUD owns its own texture
+        // now, so the blit does its own resizing.
+        if w > 0 && h > 0 && (w != self.tex_w || h != self.tex_h) {
+            self.resize_blit_texture(w, h);
+        }
         // Upload the pixels into the GPU texture.
         self.queue.write_texture(
             wgpu::ImageCopyTexture {

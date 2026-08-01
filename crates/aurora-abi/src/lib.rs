@@ -43,6 +43,7 @@
 //! | `scalar` | an Aurora builtin taking plain `i64`/`f64` arguments; the backend's generic dispatch lowers the call, so it needs no bespoke code |
 //! | `text` | an Aurora builtin that takes and/or returns a `str`, also lowered by a generic dispatch and so needing no bespoke code either |
 //! | `special` | an Aurora builtin with bespoke lowering in `aurora-codegen` (arrays, closures, and the string builtins that predate `text`) |
+//! | `raster` | a CPU rasterizer builtin: all-integer arguments, lowered as a plain host call into `aurora-gfx` |
 //! | `internal` | a runtime host function that Aurora source cannot call: printing primitives, string helpers, ECS plumbing, debugger hooks |
 //! | `inline` | an Aurora builtin the backend expands inline, with no runtime call at all; its symbol column is `none` and it has no signature |
 //! | `linkonly` | a runtime function that only needs a JIT symbol and an AOT link edge, so an `@extern` declaration can bind it |
@@ -84,6 +85,14 @@ pub enum Kind {
     Text,
     /// Aurora builtin with bespoke lowering in `aurora-codegen`.
     Special,
+    /// CPU rasterizer builtin: all-integer arguments, lowered as a plain host
+    /// call into `aurora-gfx` through the framebuffer.
+    ///
+    /// Its own kind rather than a name list beside the lowering, because that
+    /// list existed and drifted: `fill_rect_alpha` was a row in this table and
+    /// the compiler still refused to find it. The row is the only place that
+    /// says a builtin is one of these.
+    Raster,
     /// Runtime host function that Aurora source cannot call.
     Internal,
     /// Aurora builtin expanded inline, with no runtime call.
@@ -97,7 +106,7 @@ impl Kind {
     pub const fn is_aurora_visible(self) -> bool {
         matches!(
             self,
-            Kind::Scalar | Kind::Text | Kind::Special | Kind::Inline
+            Kind::Scalar | Kind::Text | Kind::Special | Kind::Raster | Kind::Inline
         )
     }
 
@@ -111,7 +120,7 @@ impl Kind {
     pub const fn is_host_import(self) -> bool {
         matches!(
             self,
-            Kind::Scalar | Kind::Text | Kind::Special | Kind::Internal
+            Kind::Scalar | Kind::Text | Kind::Special | Kind::Raster | Kind::Internal
         )
     }
 }
@@ -197,7 +206,7 @@ impl Builtin {
     /// the table fully describes ([`Kind::Scalar`] and [`Kind::Text`]): a `str`
     /// argument takes two ABI slots (`Ptr, I64`) but is one argument in the
     /// source. `None` for the kinds it does not model - `special` (arrays,
-    /// closures), `inline`, and the rows Aurora cannot call at all.
+    /// closures), `raster`, `inline`, and the rows Aurora cannot call at all.
     pub fn arity(&self) -> Option<usize> {
         match self.kind {
             Kind::Scalar | Kind::Text => {
@@ -230,11 +239,13 @@ macro_rules! for_each_builtin {
         [internal, print_f64,                     aurora_print_f64,                      [F64],                                           void, shared]
         [internal, print_str,                     aurora_print_str,                      [Ptr, I64],                                      void, shared]
         [internal, print_nl,                      aurora_print_nl,                       [],                                              void, shared]
-        [special,  framebuffer,                   aurora_framebuffer,                    [I64, I64],                                      void, owner]
-        [special,  clear,                         aurora_clear,                          [I64, I64, I64],                                 void, owner]
-        [special,  pixel,                         aurora_pixel,                          [I64, I64, I64, I64, I64],                       void, owner]
-        [special,  triangle,                      aurora_triangle,                       [I64, I64, I64, I64, I64, I64, I64, I64, I64],   void, owner]
-        [special,  fb_get,                        aurora_fb_get,                         [I64, I64],                                      I64, owner]
+        [raster,  framebuffer,                   aurora_framebuffer,                    [I64, I64],                                      void, owner]
+        [raster,  clear,                         aurora_clear,                          [I64, I64, I64],                                 void, owner]
+        [raster,  pixel,                         aurora_pixel,                          [I64, I64, I64, I64, I64],                       void, owner]
+        [raster,  pixel_alpha,                   aurora_pixel_alpha,                    [I64, I64, I64, I64, I64, I64],                  void, owner]
+        [raster,  fill_rect_alpha,               aurora_fill_rect_alpha,                [I64, I64, I64, I64, I64, I64, I64, I64],        void, owner]
+        [raster,  triangle,                      aurora_triangle,                       [I64, I64, I64, I64, I64, I64, I64, I64, I64],   void, owner]
+        [raster,  fb_get,                        aurora_fb_get,                         [I64, I64],                                      I64, owner]
         [special,  save_ppm,                      aurora_save_ppm,                       [Ptr, I64],                                      void, owner]
         [internal, spawn_entity,                  aurora_spawn_entity,                   [],                                              I64, shared]
         [special,  despawn,                       aurora_despawn,                        [I64],                                           void, shared]
@@ -741,6 +752,9 @@ macro_rules! kind_of {
     };
     (special) => {
         $crate::Kind::Special
+    };
+    (raster) => {
+        $crate::Kind::Raster
     };
     (internal) => {
         $crate::Kind::Internal

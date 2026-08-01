@@ -15,6 +15,8 @@ mod anim;
 mod mesh;
 mod render;
 mod scene;
+pub mod hud;
+pub use hud::HudOverlay;
 pub mod terrain;
 
 // Geometry, skeletons, clips and the importers that produce them live in
@@ -81,6 +83,24 @@ pub fn render_offscreen(
     h: u32,
     clear: [f32; 4],
 ) -> Vec<u8> {
+    render_offscreen_with_hud(r, device, queue, w, h, clear, None)
+}
+
+/// The same, compositing a HUD overlay over the scene before readback.
+///
+/// `hud` is the SAME [`HudOverlay`] type and pass the live window presents
+/// with, so a capture is the frame the game draws rather than a second
+/// compositor's opinion of it. Pass `None` for a scene-only render.
+#[allow(clippy::too_many_arguments)]
+pub fn render_offscreen_with_hud(
+    r: &mut Renderer3D,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    w: u32,
+    h: u32,
+    clear: [f32; 4],
+    hud: Option<&HudOverlay>,
+) -> Vec<u8> {
     let fmt = wgpu::TextureFormat::Rgba8Unorm;
     let tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("offscreen"),
@@ -111,6 +131,9 @@ pub fn render_offscreen(
 
     let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
     r.render(device, queue, &mut enc, &view, clear);
+    if let Some(hud) = hud {
+        hud.composite(&mut enc, &view);
+    }
     enc.copy_texture_to_buffer(
         wgpu::ImageCopyTexture {
             texture: &tex,
