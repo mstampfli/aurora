@@ -537,6 +537,7 @@ macro_rules! for_each_builtin {
         [scalar,   net_respawn_trigger_slot,      aurora_net_respawn_trigger_slot,       [I64],                                           void]
         [scalar,   net_force_respawn,             aurora_net_force_respawn,              [I64],                                           void]
         [scalar,   net_fire,                      aurora_net_fire,                       [F64, F64, F64, F64, F64, F64, I64],             void]
+        [scalar,   net_melee,                     aurora_net_melee,                      [F64, F64, F64, F64, F64, F64, F64, F64, I64],   void]
         [scalar,   net_server_hit_count,          aurora_net_server_hit_count,           [],                                              I64]
         [scalar,   net_server_hit_shooter,        aurora_net_server_hit_shooter,         [I64],                                           I64]
         [scalar,   net_server_hit_victim,         aurora_net_server_hit_victim,          [I64],                                           I64]

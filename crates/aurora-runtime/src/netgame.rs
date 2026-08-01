@@ -34,6 +34,9 @@ const TAG_WORLD: u8 = 13; // host -> clients: the authoritative WORLD-STATE arra
 const TAG_BOOM: u8 = 12; // host -> clients: an explosion detonated (source, point, intensity) so every
                          // machine renders the blast flash + sparks + boom sound. The machine that
                          // CAUSED it (source == my id) skips its own (it predicted the blast locally).
+const TAG_MELEE: u8 = 14; // client -> host: I SWUNG (origin, facing, reach, arc) at a view tick.
+                          // Validated the way a shot is, but as a reach-and-arc sweep: a blade is
+                          // not a ray, and one swing may cleave several targets at once.
 
 /// Reserved id range for host-controlled bots. They ride the SAME player
 /// replication channel as humans (state + meta + name), so a guest receives and
@@ -675,6 +678,48 @@ impl Session {
             let _ = self.sock.send_to(&encode_fire(vt, o, d, weapon), addr);
         }
     }
+    /// Swing a melee weapon: everything within `reach` of `o` and inside an arc
+    /// of `arc` degrees about `facing`. On the host it resolves now; on a client
+    /// it goes to the host with the view tick, so the swing is judged against
+    /// where targets were on this screen rather than where latency left them.
+    ///
+    /// Cleaves. `last_hit` reports the nearest for the swinger's own hitmarker,
+    /// but every target the swing covered is queued for authoritative damage:
+    /// how many one swing may hit is the weapon's business, not the netcode's.
+    #[allow(clippy::too_many_arguments)]
+    pub fn melee(
+        &mut self,
+        ox: f32,
+        oy: f32,
+        oz: f32,
+        fx: f32,
+        fy: f32,
+        fz: f32,
+        reach: f32,
+        arc: f32,
+        weapon: u8,
+    ) {
+        let o = [ox, oy, oz];
+        let f = [fx, fy, fz];
+        if self.is_server {
+            // The host's own swing resolves against the live world: it IS the
+            // authority, and its game applies that damage locally, so nothing is
+            // enqueued for it.
+            let hits = self.lag.melee_at_tick(o, f, reach, arc, self.server_tick, 0);
+            self.last_hit = match hits.first() {
+                Some(h) => (h.entity as i64, contact_point(o, f, h.distance)),
+                None => (-1, [0.0; 3]),
+            };
+        } else if let Some(addr) = self.server_addr {
+            // The same rewind a shot uses: remotes are rendered INTERP_TICKS
+            // behind, so that is the moment a swing has to be judged at too.
+            let vt = self.last_server_tick.saturating_sub(INTERP_TICKS);
+            let _ = self
+                .sock
+                .send_to(&encode_melee(vt, o, f, reach, arc, weapon), addr);
+        }
+    }
+
     /// Client: tell the host we're leaving the lobby so it drops us immediately (no ghost). Sent a
     /// few times since UDP can lose a single packet; harmless on the host (no server_addr).
     pub fn leave(&mut self) {
@@ -1123,6 +1168,38 @@ impl Session {
                     // host relays it verbatim - it is the client's claim ABOUT itself, and the
                     // point of it is that peers can compare claims byte-for-byte.
                     self.clients[idx].state.tag = tag;
+                }
+            }
+            Some(TAG_MELEE) => {
+                let Some((vt, o, f, reach, arc, weapon)) = decode_melee(pkt) else {
+                    return;
+                };
+                let Some(swinger) = self.clients.iter().find(|c| c.addr == from).map(|c| c.id)
+                else {
+                    return;
+                };
+                // Clamped to the present: a client claiming a future view tick
+                // would be asking the host to rewind forwards.
+                let tick = (vt as u64).min(self.server_tick);
+                let hits = self
+                    .lag
+                    .melee_at_tick(o, f, reach, arc, tick, swinger as u64);
+
+                // The nearest goes back for the swinger's hitmarker; every one
+                // of them is queued, because a swing that cleaves two enemies has
+                // hit two enemies.
+                let echo = match hits.first() {
+                    Some(h) => (h.entity as i64, contact_point(o, f, h.distance)),
+                    None => (-1, [0.0; 3]),
+                };
+                let _ = self.sock.send_to(&encode_hit(echo.0, echo.1), from);
+                for h in &hits {
+                    self.server_hits.push(ServerHit {
+                        shooter: swinger,
+                        victim: h.entity as i64,
+                        point: contact_point(o, f, h.distance),
+                        weapon,
+                    });
                 }
             }
             Some(TAG_FIRE) => {
@@ -2411,6 +2488,56 @@ fn decode_fire(b: &[u8]) -> Option<(u32, [f32; 3], [f32; 3], u8)> {
     let weapon = b[29];
     Some((vt, o, d, weapon))
 }
+/// Where a swing met its target, for the hitmarker.
+///
+/// Along the facing at the reported distance. That distance is measured to the
+/// capsule's surface, so this lands on the body rather than inside it - which is
+/// what a hit spark wants, and what a point taken from the target's centre would
+/// get wrong on anything large.
+fn contact_point(o: [f32; 3], f: [f32; 3], distance: f32) -> [f32; 3] {
+    let len = (f[0] * f[0] + f[1] * f[1] + f[2] * f[2]).sqrt();
+    if len <= 1e-6 {
+        return o;
+    }
+    [
+        o[0] + f[0] / len * distance,
+        o[1] + f[1] / len * distance,
+        o[2] + f[2] / len * distance,
+    ]
+}
+
+fn encode_melee(
+    view_tick: u32,
+    o: [f32; 3],
+    f: [f32; 3],
+    reach: f32,
+    arc: f32,
+    weapon: u8,
+) -> Vec<u8> {
+    let mut b = Vec::with_capacity(38);
+    b.push(TAG_MELEE);
+    put_u32(&mut b, view_tick);
+    for v in o.iter().chain(f.iter()) {
+        put_f32(&mut b, *v);
+    }
+    put_f32(&mut b, reach);
+    put_f32(&mut b, arc);
+    b.push(weapon);
+    b
+}
+
+fn decode_melee(b: &[u8]) -> Option<(u32, [f32; 3], [f32; 3], f32, f32, u8)> {
+    if b.len() < 38 || b[0] != TAG_MELEE {
+        return None;
+    }
+    let vt = rd_u32(b, 1);
+    let o = [rd_f32(b, 5), rd_f32(b, 9), rd_f32(b, 13)];
+    let f = [rd_f32(b, 17), rd_f32(b, 21), rd_f32(b, 25)];
+    let reach = rd_f32(b, 29);
+    let arc = rd_f32(b, 33);
+    Some((vt, o, f, reach, arc, b[37]))
+}
+
 fn encode_hit(id: i64, p: [f32; 3]) -> Vec<u8> {
     let mut b = Vec::with_capacity(17);
     b.push(TAG_HIT);
@@ -3058,6 +3185,37 @@ pub extern "C" fn aurora_net_fire(
     });
 }
 // --- host: drain the validated-shot queue and apply authoritative damage game-side ---
+/// Swing a melee weapon: reach and arc rather than a ray, lag-compensated the
+/// same way a shot is. One swing may cleave several targets; each arrives in the
+/// host's validated-hit queue.
+#[allow(clippy::too_many_arguments)]
+#[no_mangle]
+pub extern "C" fn aurora_net_melee(
+    ox: f64,
+    oy: f64,
+    oz: f64,
+    fx: f64,
+    fy: f64,
+    fz: f64,
+    reach: f64,
+    arc_degrees: f64,
+    weapon: i64,
+) {
+    with((), |s| {
+        s.melee(
+            ox as f32,
+            oy as f32,
+            oz as f32,
+            fx as f32,
+            fy as f32,
+            fz as f32,
+            reach as f32,
+            arc_degrees as f32,
+            weapon.max(0) as u8,
+        )
+    });
+}
+
 #[no_mangle]
 pub extern "C" fn aurora_net_server_hit_count() -> i64 {
     read(0, |s| s.server_hit_count() as i64)

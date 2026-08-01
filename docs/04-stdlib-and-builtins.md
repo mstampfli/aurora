@@ -297,8 +297,9 @@ accessors.
 | `net_local_x/y/z/yaw() -> f64` | the local player's transform | shorthand for the predicted self |
 | `net_state(id, i) -> f64` / `net_local_state(i) -> f64` | read any game-defined state float | velocity, flags, etc. |
 | `net_interest(radius)` | relevancy radius | clients are only told about players within it |
-| `net_hit_radius(r)` | per-player hit sphere radius | used by the lag-compensated raycast |
+| `net_hit_radius(r)` | per-player hit sphere radius | used by the lag-compensated raycast and melee sweep |
 | `net_fire(ox,oy,oz, dx,dy,dz, weapon)` | lag-compensated hitscan | server rewinds targets to the shooter's view; `weapon` is a 0..255 id carried through to `net_server_hit_weapon` so the server can apply per-weapon damage |
+| `net_melee(ox,oy,oz, fx,fy,fz, reach, arc_degrees, weapon)` | lag-compensated melee swing | everything within `reach` of the origin and inside `arc_degrees` about the facing, rewound to the swinger's view. **Cleaves**: every target covered reaches the host's validated-hit queue, and `net_hit_player` reports the nearest for the hitmarker |
 | `net_hit_player() -> i64` / `net_hit_x/y/z() -> f64` | last validated hit | player id (-1 none) + world point |
 | `net_set_meta(slot, v)` / `net_player_meta(id, slot) -> f64` | per-player gameplay scalars (hp, shield, kills) | **f32 on the wire**: a value needing more than 24 bits of mantissa comes back rounded |
 | `net_player_input(id, i) -> f64` | what a player is TRYING to do | the authority acts on this for doors, purchases and revives; answers for the local player too, so one code path drives the whole squad |

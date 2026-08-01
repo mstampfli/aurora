@@ -134,6 +134,121 @@ impl LagComp {
         }
         best
     }
+
+    /// A melee swing, rewound: everything within `reach` of `origin` and inside
+    /// an arc of `arc_degrees` about `facing`, as of `tick`.
+    ///
+    /// A sword is not a ray. Validating a swing with `raycast_at_tick` asks
+    /// whether an infinitely thin line passed through a target, which misses the
+    /// case melee is mostly made of - a wide blade sweeping past a body slightly
+    /// off the centre line - and cannot express a cleave through two of them at
+    /// once. Reach and arc are what the frame data actually specifies, so they
+    /// are what the server checks.
+    ///
+    /// The arc is measured in the horizontal plane. A swing that connects or
+    /// misses depending on whether the target stood on a step would be a rule no
+    /// player could see; height is handled by the capsule test, which is what
+    /// height is for.
+    ///
+    /// Returns every hit, nearest first. Melee cleaves - refusing to report the
+    /// second target would make "how many can one swing hit" a property of this
+    /// function rather than of the weapon.
+    pub fn melee_at_tick(
+        &self,
+        origin: V3,
+        facing: V3,
+        reach: f32,
+        arc_degrees: f32,
+        tick: u64,
+        ignore: u64,
+    ) -> Vec<Hit> {
+        let mut hits: Vec<Hit> = Vec::new();
+        if reach <= 0.0 {
+            return hits;
+        }
+        // A swing with no width still has its centre line, and one at or past a
+        // full circle covers everything: clamping here keeps both ends sane
+        // rather than letting a negative cosine invert the test.
+        let half = (arc_degrees.max(0.0) * 0.5).min(180.0).to_radians();
+        let min_cos = half.cos();
+
+        // Flattened once. A facing of straight up has no horizontal direction to
+        // compare against, so every target would be "in front"; that is a caller
+        // error, and answering nothing is the safe reading of it.
+        let (fx, fz) = match normalize_xz(facing[0], facing[2]) {
+            Some(v) => v,
+            None => return hits,
+        };
+
+        for (&entity, ring) in &self.hist {
+            if entity == ignore {
+                continue;
+            }
+            let snap = match self.snapshot_at(entity, tick) {
+                Some(s) => s,
+                None => match ring.iter().min_by_key(|s| s.tick) {
+                    Some(s) => *s,
+                    None => continue,
+                },
+            };
+
+            // Distance to the capsule's surface, so reach means reach from the
+            // body rather than from a point inside it. A big target is easier to
+            // touch, which is what being big should mean.
+            let distance = point_capsule_distance(origin, snap.pos, snap.radius, snap.half_h);
+            if distance > reach {
+                continue;
+            }
+
+            // Inside the arc, measured to the target's centre. A target close
+            // enough to be overlapping the swing's origin has no meaningful
+            // direction, and refusing it there would make the swing miss the one
+            // thing it is definitely touching.
+            match normalize_xz(snap.pos[0] - origin[0], snap.pos[2] - origin[2]) {
+                Some((dx, dz)) => {
+                    if dx * fx + dz * fz < min_cos {
+                        continue;
+                    }
+                }
+                None => {}
+            }
+
+            hits.push(Hit { entity, distance });
+        }
+
+        // Nearest first, then by entity so two targets at equal distance always
+        // come back in the same order - a swing that resolved differently between
+        // two servers on a tie would desync the fight.
+        hits.sort_by(|a, b| {
+            a.distance
+                .partial_cmp(&b.distance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.entity.cmp(&b.entity))
+        });
+        hits
+    }
+}
+
+/// A horizontal direction, or `None` when there is not one.
+fn normalize_xz(x: f32, z: f32) -> Option<(f32, f32)> {
+    let len = (x * x + z * z).sqrt();
+    if len <= 1e-6 {
+        return None;
+    }
+    Some((x / len, z / len))
+}
+
+/// Shortest distance from a point to a vertical capsule's surface, clamped at 0
+/// when the point is inside it.
+fn point_capsule_distance(point: V3, center: V3, radius: f32, half_h: f32) -> f32 {
+    // Nearest point on the capsule's spine, then treat the capsule as that point
+    // inflated by its radius.
+    let y = (point[1]).clamp(center[1] - half_h, center[1] + half_h);
+    let dx = point[0] - center[0];
+    let dy = point[1] - y;
+    let dz = point[2] - center[2];
+    let to_axis = (dx * dx + dy * dy + dz * dz).sqrt();
+    (to_axis - radius).max(0.0)
 }
 
 /// Ray vs a vertical (Y-axis) capsule: a cylinder of `radius`/`half_h` capped by
