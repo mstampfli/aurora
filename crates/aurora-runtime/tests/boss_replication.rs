@@ -120,7 +120,7 @@ fn a_boss_the_host_owns_is_seen_by_a_client() {
 /// An "did it eventually arrive" test passes against that bug. Counting
 /// distinct observations does not.
 #[test]
-fn a_stationary_objects_state_reaches_the_client_and_advances() {
+fn a_stationary_objects_state_streams_rather_than_waiting_for_keyframes() {
     use std::sync::mpsc;
 
     let port = 46102u16;
@@ -140,7 +140,6 @@ fn a_stationary_objects_state_reaches_the_client_and_advances() {
                 return;
             }
             posture += 1.0;
-            if posture as i64 % 50 == 0 { eprintln!("DIAG host update #{} readback={} count={}", posture, aurora_runtime::aurora_net_object_state(0, 3), aurora_runtime::aurora_net_object_count()); }
             aurora_runtime::aurora_net_set_object_state(0, 3, posture);
             aurora_runtime::aurora_net_update(1.0 / 60.0);
             std::thread::sleep(Duration::from_millis(4));
@@ -165,6 +164,13 @@ fn a_stationary_objects_state_reaches_the_client_and_advances() {
                "the client to learn the object exists");
 
     // Watch for a while and count how many different values actually landed.
+    //
+    // Counting distinct arrivals rather than checking that the last one turned
+    // up eventually. Objects are ALSO re-sent on a keyframe every 30 ticks, so
+    // "did it arrive" is satisfied even by change detection that ignores state
+    // entirely - and a boss telegraph delivered twice a second is a lie, since
+    // 30 ticks is longer than the 24-tick window an attack must stay readable
+    // for. Freshness is the property worth asserting, so freshness is measured.
     let mut seen = std::collections::BTreeSet::new();
     for _ in 0..200 {
         step();
@@ -173,31 +179,15 @@ fn a_stationary_objects_state_reaches_the_client_and_advances() {
         std::thread::sleep(Duration::from_millis(3));
     }
 
-    // Keyframes alone would deliver a handful over this window. Per-slot change
-    // detection delivers a stream.
-    // MEASURED, and currently only about one value per keyframe (30 ticks).
-    //
-    // What this asserts is what is true today: a stationary object's state does
-    // reach the client and does keep advancing. What it deliberately does NOT
-    // assert is freshness, because freshness is not there yet - the host sends
-    // an object packet on every update, but only about every thirtieth is
-    // applied by the client, so state lands at roughly 2 Hz.
-    //
-    // That is a real defect for a boss: 30 ticks is longer than the 24-tick
-    // window the design requires an attack to stay readable for, so a remote
-    // player could see a windup begin after the blade had already landed. It is
-    // recorded as the next task rather than asserted here, because an assertion
-    // that fails is not a finding, it is a broken build - and one quietly
-    // relaxed to pass would be worse than either.
+    // Measured at ~155 distinct values over ~660 ms, against 5 keyframes in the
+    // same window. Fifty is far above anything keyframes alone could produce and
+    // far below the observed rate, so this catches a regression to keyframe-only
+    // delivery without failing on a slow machine.
     assert!(
-        seen.len() >= 3,
-        "a stationary object's state must reach the client and keep advancing: \
+        seen.len() >= 50,
+        "a stationary object's state must stream, not arrive on keyframes: \
          saw only {} distinct values",
         seen.len()
-    );
-    assert!(
-        *seen.iter().next_back().unwrap() > *seen.iter().next().unwrap(),
-        "the values must advance, not merely repeat"
     );
 
     let _ = to_host.send(0);
