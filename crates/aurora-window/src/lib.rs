@@ -38,6 +38,7 @@ pub use imm::{
     r3d_camera as imm_r3d_camera, r3d_camera_roll as imm_r3d_camera_roll,
     r3d_capture as imm_r3d_capture, r3d_clear as imm_r3d_clear,
     r3d_clear_lights as imm_r3d_clear_lights, r3d_clear_pose as imm_r3d_clear_pose,
+    r3d_material_count as imm_r3d_material_count, r3d_material_name as imm_r3d_material_name,
     r3d_clip_count as imm_r3d_clip_count, r3d_clip_duration as imm_r3d_clip_duration,
     r3d_clip_index as imm_r3d_clip_index,
     r3d_clip_name as imm_r3d_clip_name, r3d_debug_line as imm_r3d_debug_line,

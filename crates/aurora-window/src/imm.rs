@@ -1255,6 +1255,22 @@ pub fn r3d_anim_time(handle: i64) -> f64 {
     })
 }
 
+/// How many drawable pieces (and so materials) a model has.
+pub fn r3d_material_count(handle: i64) -> i64 {
+    with_gfx(0, |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.material_count(handle)
+    })
+}
+
+/// The material name mesh `i` carries in the source file, or "".
+pub fn r3d_material_name(handle: i64, i: i64) -> String {
+    with_gfx(String::new(), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.material_name(handle, i).unwrap_or("").to_string()
+    })
+}
+
 /// How long clip `i` runs, in seconds, or 0.0 for a stale handle / bad index.
 pub fn r3d_clip_duration(handle: i64, i: i64) -> f64 {
     with_gfx(0.0, |gf| {

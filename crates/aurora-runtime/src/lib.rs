@@ -2769,6 +2769,25 @@ pub extern "C" fn aurora_r3d_anim_stop_upper(h: i64, fade: f64) {
 pub extern "C" fn aurora_r3d_clip_count(h: i64) -> i64 {
     aurora_window::imm_r3d_clip_count(h)
 }
+/// `r3d_material_count(h) -> i64`: how many materials a model carries.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_material_count(h: i64) -> i64 {
+    aurora_window::imm_r3d_material_count(h)
+}
+/// `r3d_material_name(h, i) -> str`: the material name mesh `i` declares, or "".
+///
+/// `r3d_material_texture` attaches an atlas BY NAME and there was no way to ask
+/// what the names were, so binding a new art pack was guesswork - list every
+/// name you have ever seen and hope. When none matched, the model drew flat
+/// grey, which is indistinguishable from a textured model unless you look.
+///
+/// # Safety
+/// `out` must be valid for writes of two `i64`s.
+#[no_mangle]
+pub unsafe extern "C" fn aurora_r3d_material_name(out: *mut i64, h: i64, i: i64) {
+    let name = aurora_window::imm_r3d_material_name(h, i);
+    unsafe { write_str(out, name.into_bytes()) };
+}
 /// `r3d_clip_duration(h, i) -> f64`: how long clip `i` runs, in seconds.
 ///
 /// For making an animation agree with the rules that own the move. A game whose

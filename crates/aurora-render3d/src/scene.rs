@@ -922,6 +922,37 @@ impl Scene {
         m.clips.get(i as usize).map(|c| c.name.as_str())
     }
 
+    /// How many drawable pieces a model has, each with one material.
+    pub fn material_count(&self, handle: i64) -> i64 {
+        self.item(handle)
+            .and_then(|r| r.asset.model.as_ref())
+            .map(|m| m.primitives.len() as i64)
+            .unwrap_or(0)
+    }
+
+    /// The material name mesh `i` carries in the source file, or `None`.
+    ///
+    /// `set_material_texture` attaches an atlas BY NAME, and until now there was
+    /// no way to ask what the names were. So binding a new art pack meant
+    /// guessing: a game would list every material name it had ever seen and hope
+    /// one matched, and when none did the model drew flat grey - which looks
+    /// exactly like a model that is textured, if you only reason about it.
+    ///
+    /// Measured downstream: a pack's weapons came out white for a long time
+    /// because their material is `lambert` and every body's is `lambert1`. One
+    /// character, invisible from the outside, and unanswerable without this.
+    ///
+    /// The same shape as `clip_name` and `joint_name`, and for the same reason:
+    /// the asset says what things are called, so a game can address them by name
+    /// instead of by a guess that silently stops matching.
+    pub fn material_name(&self, handle: i64, i: i64) -> Option<&str> {
+        let m = self.item(handle)?.asset.model.as_ref()?;
+        if i < 0 {
+            return None;
+        }
+        m.primitives.get(i as usize).map(|x| x.material.as_str())
+    }
+
     /// How long clip `i` runs, in seconds; 0.0 for a stale handle or bad index.
     ///
     /// A game that knows how many ticks an attack is allowed to take, and how

@@ -433,6 +433,8 @@ macro_rules! for_each_builtin {
         [scalar,   r3d_clear_pose,                aurora_r3d_clear_pose,                 [I64],                                           void, owner]
         [scalar,   r3d_anim_stop_upper,           aurora_r3d_anim_stop_upper,            [I64, F64],                                      void, owner]
         [scalar,   r3d_clip_count,                aurora_r3d_clip_count,                 [I64],                                           I64, owner]
+        [scalar,   r3d_material_count,            aurora_r3d_material_count,             [I64],                                           I64, owner]
+        [text,     r3d_material_name,             aurora_r3d_material_name,              [I64, I64],                                      Str, owner]
         [scalar,   r3d_clip_duration,             aurora_r3d_clip_duration,              [I64, I64],                                      F64, owner]
         [scalar,   r3d_anim_done,                 aurora_r3d_anim_done,                  [I64],                                           I64, owner]
         [scalar,   r3d_anim_time,                 aurora_r3d_anim_time,                  [I64],                                           F64, owner]
