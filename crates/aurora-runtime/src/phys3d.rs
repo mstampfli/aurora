@@ -54,6 +54,14 @@ struct Body3 {
     /// player is solid and is stopped by a crowd, the crowd is not solid and
     /// does not jam itself.
     solid: bool,
+    /// The capsule this character was built with, or `None` for anything that
+    /// is not a character.
+    ///
+    /// Stored because SEPARATION has to measure an overlap, and an overlap
+    /// needs both shapes. Reading it back off the collider would work and would
+    /// also be a second answer to "how big is this character" living beside the
+    /// one the program gave.
+    capsule: Option<(Real, Real)>,
 }
 
 /// The `i64` an Aurora program holds for a body.
@@ -227,6 +235,7 @@ fn push_body(p: &mut Phys3, rb: RigidBody, col: Collider) -> i64 {
         collider,
         grounded: false,
         solid: false,
+        capsule: None,
     });
     // Stamp the handle into the collider. A query answers with a collider, and
     // the program wants a body handle back; reading it out of `user_data` is
@@ -549,7 +558,151 @@ pub extern "C" fn aurora_phys3d_add_character(x: f64, y: f64, z: f64, hh: f64, r
         let col = ColliderBuilder::capsule_y(hh as Real, r as Real)
             .collision_groups(InteractionGroups::new(Group::GROUP_2, Group::ALL))
             .build();
-        push_body(p, rb, col)
+        let id = push_body(p, rb, col);
+        if let Some(k) = Key::from_i64(id) {
+            if let Some(b) = p.registry.get_mut(k) {
+                b.capsule = Some((hh as Real, r as Real));
+            }
+        }
+        id
+    })
+}
+
+/// NO TWO KINEMATIC CHARACTERS MAY OCCUPY THE SAME SPACE.
+///
+/// Run at the end of every step, so it is a property of the world rather than
+/// something a game has to remember to ask for. That distinction is the whole
+/// point: a soulslike had one hand-written call that pushed the player out of
+/// one creature - the one they had LOCKED - and it went unnoticed for the life
+/// of the project that it pushed against a capsule which was never moved to
+/// where its creature was. A rule enforced by a call site is off whenever
+/// nobody calls it.
+///
+/// WHO MOVES is the `solid` flag, unchanged in meaning: solid asks "am I
+/// stopped by other characters", so a solid character is one that respects
+/// them and is therefore the one that gives way. A non-solid character passes
+/// through by design and is left where it is. If both are solid the correction
+/// is split, so neither is privileged. If neither is, nothing happens - a crowd
+/// of ghosts is allowed to overlap, which is what that flag is for.
+///
+/// A character is only pushed out of a BLOCKING one (group 2). A ghost (group
+/// 3) is something you walk through, so it cannot displace anybody.
+///
+/// Horizontal only. These are upright capsules on a floor; correcting along Y
+/// would lift a character off the ground or push it through one, and standing
+/// on someone's head is not a thing this resolves.
+///
+/// Answers how many pairs it separated, so a test can assert it did something.
+#[no_mangle]
+pub extern "C" fn aurora_phys3d_separate_characters() -> i64 {
+    PHYS3.with(|p| {
+        let mut p = p.borrow_mut();
+        let Some(p) = p.as_mut() else { return 0 };
+        // Snapshot first: the correction below writes positions, and reading
+        // them while writing would make the result depend on iteration order.
+        let mut chars: Vec<(Key<Body3>, Vector<Real>, Real, Real, bool, bool)> = Vec::new();
+        for (k, b) in p.registry.iter() {
+            let Some((hh, r)) = b.capsule else { continue };
+            let Some(rb) = p.bodies.get(b.body) else { continue };
+            let blocking = p
+                .colliders
+                .get(b.collider)
+                .map(|c| c.collision_groups().memberships.contains(Group::GROUP_2))
+                .unwrap_or(false);
+            chars.push((k, *rb.translation(), hh, r, b.solid, blocking));
+        }
+        let mut moved: Vec<(Key<Body3>, Vector<Real>)> = Vec::new();
+        let mut pairs = 0i64;
+        for i in 0..chars.len() {
+            for j in (i + 1)..chars.len() {
+                let (ka, pa, hha, ra, sa, ba) = chars[i];
+                let (kb, pb, hhb, rb_, sb, bb) = chars[j];
+                // Neither gives way: they are meant to pass through each other.
+                if !sa && !sb {
+                    continue;
+                }
+                let want = ra + rb_;
+                let dx = pa.x - pb.x;
+                let dz = pa.z - pb.z;
+                let d2 = dx * dx + dz * dz;
+                if d2 >= want * want {
+                    continue;
+                }
+                // And they have to be at the same HEIGHT to be in each other.
+                let (top_a, bot_a) = (pa.y + hha + ra, pa.y - hha - ra);
+                let (top_b, bot_b) = (pb.y + hhb + rb_, pb.y - hhb - rb_);
+                if top_a <= bot_b || top_b <= bot_a {
+                    continue;
+                }
+                let d = d2.sqrt();
+                // Dead centre: no separating direction exists. Pick one rather
+                // than dividing by zero, and pick it deterministically so a
+                // stack does not jitter between two answers on consecutive
+                // frames.
+                let (ux, uz) = if d > 1.0e-4 {
+                    (dx / d, dz / d)
+                } else {
+                    (1.0, 0.0)
+                };
+                let push = want - d;
+                // Only a BLOCKING character can displace somebody.
+                let a_gives = sa && bb;
+                let b_gives = sb && ba;
+                let (fa, fb) = match (a_gives, b_gives) {
+                    (true, true) => (0.5, 0.5),
+                    (true, false) => (1.0, 0.0),
+                    (false, true) => (0.0, 1.0),
+                    (false, false) => continue,
+                };
+                if fa > 0.0 {
+                    let mut t = pa;
+                    t.x += ux * push * fa;
+                    t.z += uz * push * fa;
+                    moved.push((ka, t));
+                }
+                if fb > 0.0 {
+                    let mut t = pb;
+                    t.x -= ux * push * fb;
+                    t.z -= uz * push * fb;
+                    moved.push((kb, t));
+                }
+                pairs += 1;
+            }
+        }
+        for (k, t) in moved {
+            let Some(b) = p.registry.get(k) else { continue };
+            let h = b.body;
+            if let Some(rb) = p.bodies.get_mut(h) {
+                rb.set_next_kinematic_translation(t);
+                rb.set_translation(t, true);
+            }
+        }
+        // The query structures have to see the new positions, or the next
+        // overlap test answers about where these bodies used to be - the exact
+        // class of bug that made a teleport invisible to the camera.
+        p.query_dirty = true;
+        pairs
+    })
+}
+
+/// How many kinematic CHARACTERS the world holds.
+///
+/// A character is a body built by `phys3d_add_character`, and this counts the
+/// ones separation can see. It exists because "the separation found no
+/// overlapping pair" and "the separation does not think these are characters"
+/// look identical from a game, and the second is the one that has happened.
+#[no_mangle]
+pub extern "C" fn aurora_phys3d_character_count() -> i64 {
+    PHYS3.with(|p| {
+        let p = p.borrow();
+        let Some(p) = p.as_ref() else { return 0 };
+        // Exactly what `separate_characters` collects, including the live-body
+        // check - otherwise this answers 2 while the separation sees 1, and the
+        // two numbers disagreeing is the thing it exists to rule out.
+        p.registry
+            .iter()
+            .filter(|(_, b)| b.capsule.is_some() && p.bodies.get(b.body).is_some())
+            .count() as i64
     })
 }
 
@@ -788,6 +941,16 @@ pub extern "C" fn aurora_phys3d_step(dt: f64) {
         // would make every step cost a second rebuild on the first query after it.
         p.query_dirty = false;
     });
+    // AND NO TWO CHARACTERS ARE LEFT INSIDE EACH OTHER.
+    //
+    // Part of the step rather than something a game calls, because the version
+    // where a game calls it is the version that is off whenever somebody
+    // forgets - which is exactly how a soulslike shipped a shove that pushed
+    // against a capsule nobody had moved.
+    //
+    // After the solver, not before: the step is what moves bodies, so
+    // separating first resolves last frame's overlaps and leaves this frame's.
+    let _ = aurora_phys3d_separate_characters();
 }
 
 fn axis(h: i64, i: usize) -> f64 {
@@ -2239,4 +2402,71 @@ mod tests {
         );
     }
 
+    /// Two characters standing INSIDE each other come apart, and the one that
+    /// gives way is the SOLID one.
+    ///
+    /// The rule the whole depenetration exists for, stated on the primitive
+    /// rather than on a game's shove. A soulslike had this as one hand-written
+    /// call that pushed against a capsule nobody had moved, and it measured a
+    /// perfect result while doing nothing.
+    #[test]
+    fn characters_do_not_stand_inside_each_other() {
+        aurora_phys3d_init(0.0, -22.0, 0.0);
+        // A floor, or gravity walks them out of the test.
+        aurora_phys3d_add_box(0.0, -0.5, 0.0, 60.0, 0.5, 60.0, 0);
+        // Dead centre on each other. The player is SOLID - stopped by others -
+        // so the player is the one that moves.
+        let player = aurora_phys3d_add_character(0.0, 1.0, 0.0, 0.55, 0.35);
+        let creature = aurora_phys3d_add_character(0.0, 1.0, 0.0, 0.9, 0.6);
+        aurora_phys3d_character_solid(player, 1);
+
+        let want = 0.35 + 0.6;
+        let gap0 = gap(player, creature);
+        assert!(gap0 < 0.01, "the two did not start on top of each other: {gap0}");
+
+        aurora_phys3d_step(1.0 / 60.0);
+        let gap1 = gap(player, creature);
+        assert!(
+            gap1 >= want - 0.001,
+            "one step left them {gap1}m apart, wanted {want}m - separation is              not running, or is not finishing in one step"
+        );
+
+        // The creature did NOT move: it is not solid, so it does not give way.
+        assert!(
+            aurora_phys3d_x(creature).abs() < 1e-4 && aurora_phys3d_z(creature).abs() < 1e-4,
+            "a non-solid character was displaced"
+        );
+
+        // And it STAYS apart: a correction that fights the next step's solver
+        // oscillates, which reads as a jitter rather than as a push.
+        for _ in 0..30 {
+            aurora_phys3d_step(1.0 / 60.0);
+        }
+        let gap2 = gap(player, creature);
+        assert!(
+            gap2 >= want - 0.001,
+            "thirty steps later they are {gap2}m apart, wanted {want}m"
+        );
+    }
+
+    /// Neither solid: they are meant to pass through each other, and a crowd
+    /// that separates itself is a crowd that cannot walk through a doorway.
+    #[test]
+    fn two_ghosts_are_left_alone() {
+        aurora_phys3d_init(0.0, -22.0, 0.0);
+        aurora_phys3d_add_box(0.0, -0.5, 0.0, 60.0, 0.5, 60.0, 0);
+        let a = aurora_phys3d_add_character(0.0, 1.0, 0.0, 0.55, 0.35);
+        let b = aurora_phys3d_add_character(0.0, 1.0, 0.0, 0.55, 0.35);
+        aurora_phys3d_step(1.0 / 60.0);
+        assert!(
+            gap(a, b) < 0.01,
+            "two non-solid characters were pushed apart; neither gives way"
+        );
+    }
+
+    fn gap(a: i64, b: i64) -> f64 {
+        let dx = aurora_phys3d_x(a) - aurora_phys3d_x(b);
+        let dz = aurora_phys3d_z(a) - aurora_phys3d_z(b);
+        (dx * dx + dz * dz).sqrt()
+    }
 }

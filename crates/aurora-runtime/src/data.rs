@@ -747,12 +747,33 @@ mod tests {
 
     #[test]
     fn fixed_dt_overrides_and_restores() {
+        crate::end_frame_dt();
         aurora_set_fixed_dt(1.0 / 120.0);
+        let before = virtual_time_seconds();
         let d1 = crate::aurora_frame_dt();
         let d2 = crate::aurora_frame_dt();
         assert_eq!(d1, 1.0 / 120.0);
         assert_eq!(d2, 1.0 / 120.0);
-        assert!(virtual_time_seconds() >= 2.0 / 120.0 - 1e-9);
+        // ONE step per frame, however many callers ask. The clock belongs to the
+        // frame, not to the question - it advanced per CALL, so a frame that
+        // asked twice (the game's does: once for the frame, once for the camera)
+        // ran the virtual clock at double speed, and everything stamped against
+        // it drifted by however many callers there happened to be.
+        let one = virtual_time_seconds() - before;
+        assert!(
+            (one - 1.0 / 120.0).abs() < 1e-9,
+            "two asks in one frame advance the clock once, got {one}"
+        );
+        // And the next frame does advance it again - the cache is per frame, not
+        // a latch that stops the clock forever.
+        crate::end_frame_dt();
+        let _ = crate::aurora_frame_dt();
+        let two = virtual_time_seconds() - before;
+        assert!(
+            (two - 2.0 / 120.0).abs() < 1e-9,
+            "a second frame is a second step, got {two}"
+        );
+        crate::end_frame_dt();
         aurora_set_fixed_dt(0.0);
         let d3 = crate::aurora_frame_dt();
         assert!(d3 > 0.0 && d3 <= 0.1, "wall clock restored, got {d3}");

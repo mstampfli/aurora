@@ -456,6 +456,8 @@ window. Colors are 0..1 floats; angles are radians; handles are `i64`.
 | `r3d_root_dx/dy/dz(h) -> f64` | ROOT MOTION: the ground the last `r3d_anim_update` covered, in metres | in the MODEL'S own space, so rotate it by the yaw you draw with and scale it by the scale you draw at. Add it to the character's position and the mesh, its collider and its hitbox travel exactly the distance the clip was authored to travel: a lunge reaches, a roll clears. 0 before the first update and 0 for a clip authored in place - every locomotion loop is, because a walk cycle's ground speed belongs to the game. See [Root motion](#root-motion) |
 | `r3d_anim_clip(h) -> i64` | WHICH clip is playing | -1 for a handle that is not a model. `r3d_anim_done` and `r3d_anim_time` both answer about the current clip without ever saying which one it is, so a state machine without this keeps its own copy of what it last asked for - and that copy goes stale the moment anything else plays a clip on the same model |
 | `r3d_anim_clip_upper(h) -> i64` | which clip the upper-body overlay is playing | -1 when no overlay is running |
+| `r3d_anim_blend_clip(h) -> i64` | the SECOND clip of a sustained base blend | -1 when the base is a single clip |
+| `r3d_anim_blend_weight(h) -> f64` | how far through a sustained base blend the base layer is (0 = first clip, 1 = second) | -1 when not blending. A walking character IS a two-clip blend, so this is the only thing that says what its legs look like: a body thrown between standing and sprinting changes no clip and advances every clock normally |
 | `r3d_material_count(h) -> i64` | how many drawable pieces (and so materials) a model has | |
 | `r3d_material_name(h, i) -> str` | the asset's own name for material `i` | `""` for a stale handle or a bad index. The counterpart of `r3d_clip_name`, for textures: `r3d_material_texture` binds BY NAME, so a pack whose material is called `Weapons` rather than `lambert1` renders white and says nothing. Guessing the name is how a whole weapon set stays untextured for a project's lifetime; asking takes one run |
 | `r3d_present() -> i64` | render the queue to the window | 1 while open, 0 when closed |
@@ -656,6 +658,41 @@ from a settings menu). Bind with `input_code("Space")`, never with a number.
 | `input_released(action) -> i64` | did it come up THIS frame? | 1/0 |
 | `input_suppress(on)` | freeze all bound-action reads | raw key/mouse untouched |
 | `input_step()` | advance the edge snapshot | automatic in `present` |
+| `input_bind_also(action, code)` | ADD a second code to an action | keyboard and pad on one action |
+| `input_binding_count(action) -> i64` | how many codes an action carries | 0 if unbound |
+| `input_binding_at(action, i) -> i64` | the i'th code bound to an action | -1 out of range |
+| `input_value(action) -> f64` | how far the action is pressed, 0..1 | a key answers 0 or 1; a stick or trigger answers the analog amount |
+| `inject_input(code, value)` | drive a code to an analog value | for tests; `inject_action` is the digital form |
+
+An action carries a LIST of codes, not one, because a game bound to both a
+keyboard and a pad wants one action pressed by either. `input_binding` is the
+first of them and stays the answer for "which key is this on".
+
+`input_value` is the primitive and `input_down`/`input_axis` are built on it -
+`input_down` is `input_value >= 0.5` and `input_axis` is one value minus the
+other - so analog movement is not a separate path that could disagree with the
+digital one. A half-leaned stick walks at half speed through the same call a key
+sprints through.
+
+### Gamepads
+
+Up to four pads, polled by `input_step` (so by `present`). Sticks are
+deadzoned radially and rescaled from the deadzone edge, so a stick just outside
+the deadzone reads near zero rather than jumping to it.
+
+| Builtin | Signature | Notes |
+|---|---|---|
+| `pad_count() -> i64` | how many pad slots exist | the fixed maximum, not how many are plugged in |
+| `pad_connected(pad) -> i64` | is a pad in that slot | 1/0 |
+| `pad_button(pad, btn) -> i64` | is that button held | 1/0 |
+| `pad_axis(pad, axis) -> f64` | that axis, deadzoned | sticks -1..1, triggers 0..1 |
+| `pad_rumble(pad, low, high, ms)` | play a rumble effect | low and high frequency motors, 0..1 |
+| `inject_pad_button(pad, btn, down)` | drive a pad button | for tests |
+| `inject_pad_axis(pad, axis, v)` | drive a pad axis | for tests; bypasses the deadzone |
+| `inject_pad_disconnect(pad)` | unplug an injected pad | undoes the two above |
+
+Pad inputs also have INPUT CODES, so a pad button is bound to an action exactly
+as a key is and nothing downstream of `input_bind` knows the difference.
 
 `input_pressed` is the difference between "drink one flask" and "drink five": a
 held button is one press, not sixty. The snapshot it compares against is advanced
@@ -719,6 +756,8 @@ along walls (the core of a fluid movement shooter). Bodies are `i64` handles.
 | `phys3d_apply_impulse(h, ix,iy,iz)` | instantaneous (jumps, knockback) | dynamic bodies |
 | `phys3d_move_character(h, dx,dy,dz, dt)` | move + slide a character | read position after `step` |
 | `phys3d_grounded(h) -> i64` | is the character on the ground | 1/0 |
+| `phys3d_character_count() -> i64` | how many kinematic characters exist | for tests and diagnostics |
+| `phys3d_separate_characters() -> i64` | push overlapping characters apart, returns the pairs moved | called for you at the end of `phys3d_step` |
 | `phys3d_character_solid(h, on)` | am I stopped by other characters | off by default. This is a FILTER: what `h`'s own movement is allowed to pass through |
 | `phys3d_character_blocking(h, on)` | do other characters stop at me | on by default. This is MEMBERSHIP: whether `h` is in the group other characters' movement collides with. Two flags rather than one because they are two questions, and a single boolean answering both gives the wrong answer to one of them - which one depends on how you collapse it. A corpse wants `blocking` off (so the living walk over it) while still being solid to nothing; a boss wants to shove the player rather than be stopped by them, which is `solid` off and `blocking` on |
 | `phys3d_raycast(x,y,z, dx,dy,dz, max) -> f64` | distance to first hit, or -1 | it hits ANY body, INCLUDING the one the ray starts inside: fired from a character's own centre it returns 0 and every shot silently stops at the muzzle. For shooting or ground probes from a body, use `phys3d_raycast_ex` / `phys3d_raycast_world` and pass that body as `exclude` |

@@ -1495,6 +1495,22 @@ fn cmd_check(path: &str) -> ExitCode {
             .iter()
             .filter(|it| it.span.lo < boundary)
             .count();
+        // A file with NO items of its own is almost never what somebody meant,
+        // and reporting it as a success is a silent failure with a green tick
+        // on it. Measured: a script truncated a source file to zero bytes and
+        // `check` answered "ok: checked 0 item(s), no errors" for it - the only
+        // signal that 597 lines had just been destroyed was a number nobody
+        // reads.
+        //
+        // A comment-only file is the one legitimate case and it is not a thing
+        // anybody checks, so this refuses rather than warning.
+        if items == 0 {
+            eprintln!(
+                "error: {} declares no items - an empty or comment-only file is                  almost always a truncated one, and reporting it as checked is                  how a deleted file passes",
+                path
+            );
+            return ExitCode::FAILURE;
+        }
         println!("ok: checked {items} item(s), no errors");
         ExitCode::SUCCESS
     } else {

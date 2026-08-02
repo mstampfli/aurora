@@ -94,11 +94,25 @@ const META_LEN: usize = 24; // per-player metadata floats (hp/shield/oc/respawn/
                             // replicated SEPARATELY from the sim state, so never touch reconciliation.
 const NAME_MAX: usize = 20; // per-player display name: a fixed byte field (NOT chars packed into
                             // floats), re-sent on the input/snapshot stream so UDP loss self-heals.
-/// Remote interpolation delay (seconds) and the MATCHING lag-comp rewind in server ticks (~62.5 Hz,
-/// so 0.05 s ~= 3 ticks). These two MUST agree: the host rewinds a target to exactly the moment we
-/// rendered it, so a clean shot on a moving enemy registers where it looked like it should.
+/// How far behind the server a remote player is rendered, in seconds.
+///
+/// The host rewinds a target to exactly the moment we rendered it, so a clean
+/// shot on a moving enemy registers where it looked like it should.
 const INTERP_DELAY: f32 = 0.05;
-const INTERP_TICKS: u32 = 3;
+
+/// The rate the server ticks its simulation at, in Hz.
+const SERVER_HZ: f32 = 60.0;
+
+/// The same delay, in server ticks - DERIVED, not written down twice.
+///
+/// The comment here used to say "these two MUST agree", which is an admission
+/// that nothing made them: two numbers, one fact, and a drift between them
+/// rewinds a target to a moment nobody rendered - a clean shot that misses and
+/// a phantom hit that lands, neither of which looks like a constant.
+///
+/// Rounded to the nearest tick, so a delay that is not a whole number of them
+/// picks the closer one rather than silently truncating toward zero.
+const INTERP_TICKS: u32 = (INTERP_DELAY * SERVER_HZ + 0.5) as u32;
 
 /// A client is considered disconnected once it has gone this long (seconds) without
 /// a snapshot. `connected()` reports it and the game bails to the menu on it.

@@ -143,14 +143,25 @@ thread_local! {
 /// determinism hook replays and headless runs rely on.
 #[no_mangle]
 pub extern "C" fn aurora_frame_dt() -> f64 {
+    // Already answered this frame: the same answer, not a fresh near-zero one
+    // and not a second advance of the clock. Checked BEFORE the fixed-step
+    // branch, because "how long was this frame" has one answer per frame however
+    // it is measured.
+    //
+    // The fixed path used to advance virtual time on every call while the
+    // wall-clock path cached, so a frame that asked the time twice - and the
+    // game's does, once for the frame and once for the camera - ran the virtual
+    // clock at twice the rate it claimed. Everything hanging off that clock
+    // (offline audio capture, telemetry timestamps) was stamped at a time that
+    // depended on how many callers happened to ask.
+    if let Some(dt) = FRAME_DT.with(|c| c.get()) {
+        return dt;
+    }
     let fixed = data::fixed_dt_override();
     if fixed > 0.0 {
         data::advance_virtual_time(fixed);
+        FRAME_DT.with(|c| c.set(Some(fixed)));
         return fixed;
-    }
-    // Already measured this frame: the same answer, not a fresh near-zero one.
-    if let Some(dt) = FRAME_DT.with(|c| c.get()) {
-        return dt;
     }
     let dt = LAST_FRAME.with(|c| {
         let now = std::time::Instant::now();
@@ -3007,6 +3018,25 @@ pub extern "C" fn aurora_r3d_root_dz(h: i64) -> f64 {
 pub extern "C" fn aurora_r3d_anim_clip(h: i64) -> i64 {
     aurora_window::imm_r3d_anim_clip(h)
 }
+/// `r3d_anim_blend_clip(h) -> i64`: the SECOND clip of a sustained base blend,
+/// or -1 when the base layer is a single clip.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_anim_blend_clip(h: i64) -> i64 {
+    aurora_window::imm_r3d_anim_blend_clip(h)
+}
+/// `r3d_anim_blend_weight(h) -> f64`: how far through a sustained base blend the
+/// base layer is (0 = entirely the first clip, 1 = entirely the second), or -1
+/// when it is not blending.
+///
+/// A walking character IS a two-clip blend, and its WEIGHT is what the body
+/// looks like. Without this a caller can read which clips are loaded and how far
+/// each clock has run and still not see a body being thrown between a standing
+/// pose and a sprint on alternate frames - no clip changes, no clock jumps, and
+/// the character is unwatchable.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_anim_blend_weight(h: i64) -> f64 {
+    aurora_window::imm_r3d_anim_blend_weight(h) as f64
+}
 /// `r3d_anim_clip_upper(h) -> i64`: which clip the upper-body overlay is
 /// playing, or -1 when no overlay is running.
 #[no_mangle]
@@ -3335,7 +3365,16 @@ pub extern "C" fn aurora_grab_mouse(on: i64) {
 // left/right/middle mouse buttons.
 
 thread_local! {
-    static BINDINGS: RefCell<std::collections::HashMap<i64, i64>> =
+    // A LIST of codes per action, not one.
+    //
+    // A game that supports a controller has to answer to the keyboard AND the
+    // pad at the same time - nobody should have to open a rebind screen before
+    // their controller does anything - and "the action fires on any of these"
+    // is the only shape that expresses it. One code per action forced a choice
+    // between the two, or a second parallel binding table beside this one,
+    // which is the same fact in two places and the defect this project has the
+    // most history with.
+    static BINDINGS: RefCell<std::collections::HashMap<i64, Vec<i64>>> =
         RefCell::new(std::collections::HashMap::new());
     // When set, the bind-layer reads (input_down / input_axis) all report "not held",
     // so a game can freeze player actions in one call (e.g. a pause overlay) without
@@ -3351,9 +3390,32 @@ thread_local! {
     // that was already down when an action moved onto it read as freshly
     // pressed, which is the exact case a rebind screen produces.
     //
-    // A bitmask rather than a set: the whole code space fits in one word, so the
-    // per-frame snapshot costs no allocation and the lookup is a shift.
-    static INPUT_PREV: std::cell::Cell<u128> = const { std::cell::Cell::new(0) };
+    // A bitmask rather than a set: the per-frame snapshot costs no allocation
+    // and the lookup is a shift. It was one `u128` and the gamepad codes took
+    // the space past 128, so the width is DERIVED from the code space now -
+    // a snapshot narrower than the codes it must hold would silently stop
+    // reporting edges for everything above the cut.
+    static INPUT_PREV: std::cell::Cell<[u64; INPUT_WORDS]> =
+        const { std::cell::Cell::new([0; INPUT_WORDS]) };
+}
+
+/// How many 64-bit words the edge snapshot needs to cover every input code.
+const INPUT_WORDS: usize = (INPUT_CODE_MAX as usize).div_ceil(64);
+
+fn bit_get(mask: &[u64; INPUT_WORDS], code: i64) -> bool {
+    if code < 0 || code >= INPUT_CODE_MAX {
+        return false;
+    }
+    let c = code as usize;
+    mask[c / 64] >> (c % 64) & 1 == 1
+}
+
+fn bit_set(mask: &mut [u64; INPUT_WORDS], code: i64) {
+    if code < 0 || code >= INPUT_CODE_MAX {
+        return;
+    }
+    let c = code as usize;
+    mask[c / 64] |= 1u64 << (c % 64);
 }
 
 /// The first mouse-button input code. Below it a code is a KEY (the
@@ -3376,9 +3438,65 @@ const MOUSE_NAMES: [&str; 5] = [
     "MouseForward",
 ];
 
-/// One past the highest input code. 0..65 are keyboard, then the mouse buttons;
-/// the gap between costs a few bits and nothing else.
-const INPUT_CODE_MAX: i64 = MOUSE_CODE_BASE + MOUSE_NAMES.len() as i64;
+/// The first gamepad input code. Above it, `code - PAD_CODE_BASE` indexes
+/// `PAD_INPUTS`.
+const PAD_CODE_BASE: i64 = 200;
+
+/// What a gamepad input code reads.
+#[derive(Clone, Copy)]
+enum PadSource {
+    /// A digital button.
+    Button(usize),
+    /// ONE HALF of an analog axis: which axis, and the sign that counts.
+    ///
+    /// A stick axis is bipolar and an action is not, so a stick is four named
+    /// directions rather than two signed axes. `PadLeftStickUp` gives 0 when
+    /// the stick is pulled back, which is what lets it be bound to "forward"
+    /// beside the W key and behave like a better W key.
+    Half(usize, f64),
+}
+
+/// Every gamepad input by name, in code order.
+///
+/// The names are the Xbox letters because that is what is printed on the pad in
+/// the player's hands and what a prompt has to say; underneath they are
+/// POSITIONS (`BTN_SOUTH`), so the same code is the bottom face button on a
+/// Nintendo pad rather than the one labelled A there.
+///
+/// One table, so `input_code`, `input_name`, `code_value` and `inject_action`
+/// cannot disagree about what a code is. The keyboard learned this the hard
+/// way: a soulslike shipped with the dodge on the LEFT ARROW because the game
+/// wrote a number down and the test read the same number back.
+const PAD_INPUTS: [(&str, PadSource); 24] = [
+    ("PadA", PadSource::Button(aurora_window::pad::BTN_SOUTH)),
+    ("PadB", PadSource::Button(aurora_window::pad::BTN_EAST)),
+    ("PadX", PadSource::Button(aurora_window::pad::BTN_WEST)),
+    ("PadY", PadSource::Button(aurora_window::pad::BTN_NORTH)),
+    ("PadLB", PadSource::Button(aurora_window::pad::BTN_LEFT_BUMPER)),
+    ("PadRB", PadSource::Button(aurora_window::pad::BTN_RIGHT_BUMPER)),
+    ("PadBack", PadSource::Button(aurora_window::pad::BTN_SELECT)),
+    ("PadStart", PadSource::Button(aurora_window::pad::BTN_START)),
+    ("PadLS", PadSource::Button(aurora_window::pad::BTN_LEFT_STICK)),
+    ("PadRS", PadSource::Button(aurora_window::pad::BTN_RIGHT_STICK)),
+    ("PadUp", PadSource::Button(aurora_window::pad::BTN_DPAD_UP)),
+    ("PadDown", PadSource::Button(aurora_window::pad::BTN_DPAD_DOWN)),
+    ("PadLeft", PadSource::Button(aurora_window::pad::BTN_DPAD_LEFT)),
+    ("PadRight", PadSource::Button(aurora_window::pad::BTN_DPAD_RIGHT)),
+    ("PadLT", PadSource::Half(aurora_window::pad::AXIS_LEFT_TRIGGER, 1.0)),
+    ("PadRT", PadSource::Half(aurora_window::pad::AXIS_RIGHT_TRIGGER, 1.0)),
+    ("PadLeftStickUp", PadSource::Half(aurora_window::pad::AXIS_LEFT_Y, 1.0)),
+    ("PadLeftStickDown", PadSource::Half(aurora_window::pad::AXIS_LEFT_Y, -1.0)),
+    ("PadLeftStickRight", PadSource::Half(aurora_window::pad::AXIS_LEFT_X, 1.0)),
+    ("PadLeftStickLeft", PadSource::Half(aurora_window::pad::AXIS_LEFT_X, -1.0)),
+    ("PadRightStickUp", PadSource::Half(aurora_window::pad::AXIS_RIGHT_Y, 1.0)),
+    ("PadRightStickDown", PadSource::Half(aurora_window::pad::AXIS_RIGHT_Y, -1.0)),
+    ("PadRightStickRight", PadSource::Half(aurora_window::pad::AXIS_RIGHT_X, 1.0)),
+    ("PadRightStickLeft", PadSource::Half(aurora_window::pad::AXIS_RIGHT_X, -1.0)),
+];
+
+/// One past the highest input code. 0..65 are keyboard, then the mouse buttons,
+/// then the gamepad; the gaps between cost a few bits and nothing else.
+const INPUT_CODE_MAX: i64 = PAD_CODE_BASE + PAD_INPUTS.len() as i64;
 
 /// End the frame: advance the input edge snapshot (what is held now becomes "was
 /// held" for the next frame's `input_pressed` / `input_released`) and spend this
@@ -3397,11 +3515,18 @@ const INPUT_CODE_MAX: i64 = MOUSE_CODE_BASE + MOUSE_NAMES.len() as i64;
 /// read "not held".
 #[no_mangle]
 pub extern "C" fn aurora_input_step() {
-    let mut held: u128 = 0;
+    // The gamepads are read HERE, at the one frame boundary, and nowhere else.
+    //
+    // Polling them lazily inside each read would let a pad change state halfway
+    // through a frame's logic - the button that was down when movement was
+    // resolved is up by the time the attack is - and would make the edge
+    // snapshot below compare against a state that no longer exists.
+    aurora_window::pad::poll();
+    let mut held = [0u64; INPUT_WORDS];
     let mut c = 0;
     while c < INPUT_CODE_MAX {
         if code_is_down(c) {
-            held |= 1u128 << c;
+            bit_set(&mut held, c);
         }
         c += 1;
     }
@@ -3431,17 +3556,32 @@ fn input_edge(action: i64, want_press: bool) -> i64 {
     if INPUT_SUPPRESS.with(|s| s.get()) {
         return 0;
     }
-    let code = BINDINGS.with(|b| b.borrow().get(&action).copied().unwrap_or(-1));
-    if code < 0 || code >= INPUT_CODE_MAX {
-        return 0;
-    }
-    let was = INPUT_PREV.with(|p| p.get()) >> code & 1 == 1;
-    let now = code_is_down(code);
+    // The edge is the ACTION's, over every code bound to it: an action held on
+    // the keyboard and then also pressed on the pad has not been pressed twice.
+    // Per-code edges would fire a second attack for the second input.
+    let prev = INPUT_PREV.with(|p| p.get());
+    let mut was = false;
+    let mut now = false;
+    for_each_binding(action, |code| {
+        was |= bit_get(&prev, code);
+        now |= code_is_down(code);
+    });
     if want_press {
         (now && !was) as i64
     } else {
         (was && !now) as i64
     }
+}
+
+/// Run `f` over every input code bound to `action`, in bind order.
+fn for_each_binding(action: i64, mut f: impl FnMut(i64)) {
+    BINDINGS.with(|b| {
+        if let Some(codes) = b.borrow().get(&action) {
+            for c in codes {
+                f(*c);
+            }
+        }
+    });
 }
 
 /// Suppress (1) or restore (0) all bound-action input. While suppressed, every
@@ -3452,14 +3592,42 @@ pub extern "C" fn aurora_input_suppress(on: i64) {
     INPUT_SUPPRESS.with(|s| s.set(on != 0));
 }
 
-fn code_is_down(code: i64) -> bool {
+/// HOW MUCH an input is giving, in 0..1.
+///
+/// The primitive the whole layer is built on, and the reason analog movement
+/// needs no second mechanism. A key or a button answers 1.0 or 0.0; a trigger
+/// answers its pull; a stick direction answers its lean. `input_axis` subtracts
+/// two of these, so binding a stick direction as an alternate for "forward"
+/// makes every existing `input_axis` call analog with no change at the call
+/// site and no branch anywhere asking whether a controller is plugged in.
+fn code_value(code: i64) -> f64 {
     if code < 0 {
-        false
-    } else if code >= MOUSE_CODE_BASE {
-        aurora_window::imm_mouse_button((code - MOUSE_CODE_BASE) as u32)
-    } else {
-        aurora_window::imm_key_down(code as u32)
+        return 0.0;
     }
+    if code >= PAD_CODE_BASE {
+        let Some((_, src)) = PAD_INPUTS.get((code - PAD_CODE_BASE) as usize) else {
+            return 0.0;
+        };
+        return match src {
+            PadSource::Button(b) => aurora_window::pad::any_button(*b) as i64 as f64,
+            // The half that is not being pushed gives nothing, rather than a
+            // negative - an action is not bipolar.
+            PadSource::Half(a, sign) => (aurora_window::pad::any_axis(*a) * sign).max(0.0),
+        };
+    }
+    if code >= MOUSE_CODE_BASE {
+        return aurora_window::imm_mouse_button((code - MOUSE_CODE_BASE) as u32) as i64 as f64;
+    }
+    aurora_window::imm_key_down(code as u32) as i64 as f64
+}
+
+/// Whether an input counts as HELD - a digital read of an analog world.
+///
+/// The threshold is well past the deadzone, so resting a thumb on the stick
+/// does not fire an action bound to it and a trigger bound to attack needs a
+/// deliberate pull. A key is 1.0 and is unaffected.
+fn code_is_down(code: i64) -> bool {
+    code_value(code) >= aurora_window::pad::DIGITAL_THRESHOLD
 }
 
 /// `input_code(name) -> i64`: the input code for a NAMED key or mouse button, or
@@ -3484,6 +3652,9 @@ pub unsafe extern "C" fn aurora_input_code(ptr: *const u8, len: i64) -> i64 {
     if let Some(b) = MOUSE_NAMES.iter().position(|n| *n == name) {
         return MOUSE_CODE_BASE + b as i64;
     }
+    if let Some(b) = PAD_INPUTS.iter().position(|(n, _)| *n == name) {
+        return PAD_CODE_BASE + b as i64;
+    }
     aurora_window::imm_key_code(&name)
         .map(|c| c as i64)
         .unwrap_or(-1)
@@ -3503,6 +3674,11 @@ pub unsafe extern "C" fn aurora_input_code(ptr: *const u8, len: i64) -> i64 {
 pub unsafe extern "C" fn aurora_input_name(out: *mut i64, code: i64) {
     let name = if code < 0 {
         ""
+    } else if code >= PAD_CODE_BASE {
+        PAD_INPUTS
+            .get((code - PAD_CODE_BASE) as usize)
+            .map(|(n, _)| *n)
+            .unwrap_or("")
     } else if code >= MOUSE_CODE_BASE {
         MOUSE_NAMES
             .get((code - MOUSE_CODE_BASE) as usize)
@@ -3531,43 +3707,271 @@ pub extern "C" fn aurora_inject_action(action: i64, down: i64) {
     if code < 0 {
         return;
     }
+    inject_code(code, down != 0);
+}
+
+/// `inject_input(code, value)`: drive a named input to a VALUE, 0..1.
+///
+/// The analog counterpart of `inject_action`, and the one a controller test
+/// wants: `inject_input(input_code("PadLeftStickUp"), 0.33)` is a stick pushed
+/// a third of the way, which no press can express and which is the whole thing
+/// analog movement has to be checked against.
+///
+/// Through the input CODE, so a test never writes an axis index down - the same
+/// rule that stopped a soulslike shipping its dodge on the Left Arrow. A
+/// digital input takes the value as a press past the same threshold a real one
+/// is read at, so one call drives either kind.
+#[no_mangle]
+pub extern "C" fn aurora_inject_input(code: i64, value: f64) {
+    if code < 0 {
+        return;
+    }
+    if code >= PAD_CODE_BASE {
+        let Some((_, src)) = PAD_INPUTS.get((code - PAD_CODE_BASE) as usize) else {
+            return;
+        };
+        match src {
+            PadSource::Button(b) => aurora_window::pad::inject_button(
+                0,
+                *b,
+                value >= aurora_window::pad::DIGITAL_THRESHOLD,
+            ),
+            PadSource::Half(a, sign) => {
+                aurora_window::pad::inject_axis(0, *a, value.clamp(0.0, 1.0) * *sign)
+            }
+        }
+        return;
+    }
+    inject_code(code, value >= aurora_window::pad::DIGITAL_THRESHOLD);
+}
+
+/// Press or release a raw input code, whatever kind it is.
+///
+/// The one place the key-or-button-or-pad decision is made for injection,
+/// matching `code_value` on the reading side. A test that hand-rolled it sent a
+/// KEY press for an action bound to the right mouse button - not an error, just
+/// a no-op - and then ran an entire fight with the guard never up, reporting
+/// the player dying as a balance problem.
+fn inject_code(code: i64, down: bool) {
+    if code < 0 {
+        return;
+    }
+    if code >= PAD_CODE_BASE {
+        let Some((_, src)) = PAD_INPUTS.get((code - PAD_CODE_BASE) as usize) else {
+            return;
+        };
+        // Pad 0: a test driving "the controller" means the one somebody would
+        // be holding.
+        match src {
+            PadSource::Button(b) => aurora_window::pad::inject_button(0, *b, down),
+            // Injected to FULL lean, so a digital press of an analog input is
+            // the whole input rather than something that happens to clear the
+            // threshold - `inject_pad_axis` is there for a partial one.
+            PadSource::Half(a, sign) => {
+                aurora_window::pad::inject_axis(0, *a, if down { *sign } else { 0.0 })
+            }
+        }
+        return;
+    }
     if code >= MOUSE_CODE_BASE {
-        aurora_window::imm_inject_mouse_button((code - MOUSE_CODE_BASE) as u32, down != 0);
+        aurora_window::imm_inject_mouse_button((code - MOUSE_CODE_BASE) as u32, down);
     } else {
-        aurora_window::imm_inject_key(code as u32, down != 0);
+        aurora_window::imm_inject_key(code as u32, down);
     }
 }
 
-/// Bind an action id to an input code (rebindable any time).
+/// Bind an action id to an input code, REPLACING everything it was bound to.
+///
+/// The primary binding, and the one `input_binding` and `inject_action` speak
+/// about. Use `input_bind_also` to add a second input that fires the same
+/// action - a pad button beside a key - without taking the first one away.
 #[no_mangle]
 pub extern "C" fn aurora_input_bind(action: i64, code: i64) {
     BINDINGS.with(|b| {
-        b.borrow_mut().insert(action, code);
+        b.borrow_mut().insert(action, vec![code]);
     });
 }
 
-/// The input code currently bound to an action, or -1 if unbound.
+/// Add another input that fires `action`, keeping the ones already bound.
+///
+/// Idempotent: binding the same code twice leaves one. Without that, a setup
+/// function called on every room transition would grow the list forever, and
+/// `input_binding_count` - which a rebind screen lists from - would fill with
+/// duplicates of the same key.
 #[no_mangle]
-pub extern "C" fn aurora_input_binding(action: i64) -> i64 {
-    BINDINGS.with(|b| b.borrow().get(&action).copied().unwrap_or(-1))
+pub extern "C" fn aurora_input_bind_also(action: i64, code: i64) {
+    BINDINGS.with(|b| {
+        let mut b = b.borrow_mut();
+        let codes = b.entry(action).or_default();
+        if !codes.contains(&code) {
+            codes.push(code);
+        }
+    });
 }
 
-/// Whether an action's bound input is currently held (1) or not (0).
+/// The PRIMARY input code bound to an action, or -1 if unbound.
+#[no_mangle]
+pub extern "C" fn aurora_input_binding(action: i64) -> i64 {
+    aurora_input_binding_at(action, 0)
+}
+
+/// The `i`-th input code bound to an action, or -1 past the end. With
+/// `input_binding_count`, this is what a controls screen lists from.
+#[no_mangle]
+pub extern "C" fn aurora_input_binding_at(action: i64, i: i64) -> i64 {
+    if i < 0 {
+        return -1;
+    }
+    BINDINGS.with(|b| {
+        b.borrow()
+            .get(&action)
+            .and_then(|c| c.get(i as usize))
+            .copied()
+            .unwrap_or(-1)
+    })
+}
+
+/// How many inputs fire this action.
+#[no_mangle]
+pub extern "C" fn aurora_input_binding_count(action: i64) -> i64 {
+    BINDINGS.with(|b| b.borrow().get(&action).map(|c| c.len()).unwrap_or(0) as i64)
+}
+
+/// Whether ANY input bound to this action is currently held (1) or not (0).
 #[no_mangle]
 pub extern "C" fn aurora_input_down(action: i64) -> i64 {
     if INPUT_SUPPRESS.with(|s| s.get()) {
         return 0;
     }
-    let code = BINDINGS.with(|b| b.borrow().get(&action).copied().unwrap_or(-1));
-    code_is_down(code) as i64
+    let mut down = false;
+    for_each_binding(action, |code| down |= code_is_down(code));
+    down as i64
 }
 
-/// A -1/0/+1 axis from two opposing actions (e.g. back/forward).
+/// HOW MUCH this action is being asked for, in 0..1.
+///
+/// 1.0 for a held key, the pull for a trigger, the lean for a stick direction -
+/// and the LARGEST of them when an action has several inputs bound, so a hand
+/// resting on the keyboard cannot cap what the stick is asking for.
+#[no_mangle]
+pub extern "C" fn aurora_input_value(action: i64) -> f64 {
+    if INPUT_SUPPRESS.with(|s| s.get()) {
+        return 0.0;
+    }
+    let mut v = 0.0f64;
+    for_each_binding(action, |code| v = v.max(code_value(code)));
+    v
+}
+
+/// A -1..+1 axis from two opposing actions (e.g. back/forward).
+///
+/// ANALOG, and that is the whole design: it subtracts two `input_value`s rather
+/// than two held/not-held reads, so a key answers the 1.0 it always did and a
+/// stick pushed a third of the way answers 0.33. Every caller that already
+/// asked for a movement axis became analog the moment a stick direction was
+/// bound beside the key, without one of them changing.
 #[no_mangle]
 pub extern "C" fn aurora_input_axis(neg: i64, pos: i64) -> f64 {
-    let p = aurora_input_down(pos) as f64;
-    let n = aurora_input_down(neg) as f64;
-    p - n
+    aurora_input_value(pos) - aurora_input_value(neg)
+}
+
+// --- gamepads, raw -----------------------------------------------------------
+//
+// Below the action layer. A game should bind `input_code("PadA")` and read
+// actions like it reads keys; these are for the cases the action layer cannot
+// express - "is a controller plugged in", telling pad 1 from pad 2 for local
+// co-op, and shaking the thing in the player's hands.
+
+/// `pad_count()`: how many controllers are connected.
+#[no_mangle]
+pub extern "C" fn aurora_pad_count() -> i64 {
+    aurora_window::pad::count() as i64
+}
+
+/// `pad_connected(i)`: is controller `i` plugged in?
+///
+/// What a HUD asks to decide whether to draw "A" or "Space" on a prompt. A game
+/// that guesses from a config file tells half its players the wrong button.
+#[no_mangle]
+pub extern "C" fn aurora_pad_connected(i: i64) -> i64 {
+    if i < 0 {
+        return 0;
+    }
+    aurora_window::pad::connected(i as usize) as i64
+}
+
+/// `pad_button(i, b)`: is button `b` held on controller `i`?
+#[no_mangle]
+pub extern "C" fn aurora_pad_button(i: i64, b: i64) -> i64 {
+    if i < 0 || b < 0 {
+        return 0;
+    }
+    aurora_window::pad::button(i as usize, b as usize) as i64
+}
+
+/// `pad_axis(i, a)`: axis `a` of controller `i`, deadzoned - sticks in -1..1,
+/// triggers in 0..1.
+///
+/// The deadzone is applied HERE rather than by the game, radially, with the
+/// remainder rescaled to the full range. Every game that does its own gets a
+/// character that drifts at rest or cannot walk slowly, and most do it per-axis,
+/// which lets a slow diagonal through the corner of a square deadzone.
+#[no_mangle]
+pub extern "C" fn aurora_pad_axis(i: i64, a: i64) -> f64 {
+    if i < 0 || a < 0 {
+        return 0.0;
+    }
+    aurora_window::pad::axis(i as usize, a as usize)
+}
+
+/// `pad_rumble(i, strong, weak, seconds)`: shake controller `i`. `strong` is the
+/// heavy low-frequency motor and `weak` the light one, both 0..1. Answers 1 if
+/// the pad actually shook - a pad with no motors, or none plugged in, is 0.
+///
+/// The duration goes to the driver, so nothing in the game has to remember to
+/// stop it: a motor set spinning keeps spinning, and a design that depends on a
+/// later frame arriving leaves the pad buzzing when that frame does not.
+#[no_mangle]
+pub extern "C" fn aurora_pad_rumble(i: i64, strong: f64, weak: f64, seconds: f64) -> i64 {
+    if i < 0 {
+        return 0;
+    }
+    aurora_window::pad::rumble(i as usize, strong, weak, seconds) as i64
+}
+
+/// `inject_pad_button(i, b, down)`: press or release a pad button, writing the
+/// same state a real controller writes.
+///
+/// The pad half of `inject_key`, and the basis of every headless controller
+/// test. `poll` leaves a slot alone when no physical device is at it, so an
+/// injected pad survives on a build machine with nothing plugged in.
+#[no_mangle]
+pub extern "C" fn aurora_inject_pad_button(i: i64, b: i64, down: i64) {
+    if i < 0 || b < 0 {
+        return;
+    }
+    aurora_window::pad::inject_button(i as usize, b as usize, down != 0);
+}
+
+/// `inject_pad_axis(i, a, v)`: set an axis, already deadzoned. This is how a
+/// test asks for HALF forward rather than for forward.
+#[no_mangle]
+pub extern "C" fn aurora_inject_pad_axis(i: i64, a: i64, v: f64) {
+    if i < 0 || a < 0 {
+        return;
+    }
+    aurora_window::pad::inject_axis(i as usize, a as usize, v);
+}
+
+/// `inject_pad_disconnect(i)`: unplug a pad and forget its state, for a test
+/// that needs "no controller" - including the one that proves a prompt says
+/// "Space" when nothing is plugged in.
+#[no_mangle]
+pub extern "C" fn aurora_inject_pad_disconnect(i: i64) {
+    if i < 0 {
+        return;
+    }
+    aurora_window::pad::inject_disconnect(i as usize);
 }
 
 /// Read the `i`-th `f32` at a raw pointer (passed as integer bits), widened to
@@ -4439,7 +4843,7 @@ mod input_edge_tests {
         std::env::set_var("AURORA_HEADLESS", "1");
         aurora_window_open(1, 1);
         BINDINGS.with(|b| b.borrow_mut().clear());
-        INPUT_PREV.with(|p| p.set(0));
+        INPUT_PREV.with(|p| p.set([0; INPUT_WORDS]));
         aurora_input_suppress(0);
         aurora_inject_key(KEY_A, 0);
         aurora_inject_key(KEY_B, 0);
@@ -4536,6 +4940,285 @@ mod input_edge_tests {
         aurora_inject_key(KEY_A, 1);
         assert_eq!(aurora_input_pressed(OTHER), 0);
         assert_eq!(aurora_input_released(OTHER), 0);
+    }
+}
+
+#[cfg(test)]
+mod pad_input_tests {
+    use super::*;
+    use aurora_window::pad;
+
+    const FORWARD: i64 = 10;
+    const BACK: i64 = 11;
+    const DODGE: i64 = 12;
+
+    fn reset() {
+        std::env::set_var("AURORA_HEADLESS", "1");
+        aurora_window_open(1, 1);
+        BINDINGS.with(|b| b.borrow_mut().clear());
+        INPUT_PREV.with(|p| p.set([0; INPUT_WORDS]));
+        aurora_input_suppress(0);
+        for i in 0..pad::PAD_MAX {
+            aurora_inject_pad_disconnect(i as i64);
+        }
+    }
+
+    fn code(name: &str) -> i64 {
+        let c = unsafe { aurora_input_code(name.as_ptr(), name.len() as i64) };
+        assert!(c >= 0, "no input code named {name}");
+        c
+    }
+
+    fn name_of(c: i64) -> String {
+        let mut out = [0i64; 2];
+        unsafe { aurora_input_name(out.as_mut_ptr(), c) };
+        if out[1] <= 0 {
+            return String::new();
+        }
+        unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(
+                out[0] as *const u8,
+                out[1] as usize,
+            ))
+            .to_string()
+        }
+    }
+
+    /// The SPEC, in a vocabulary the input layer does not own: a name a human
+    /// reads off the pad in their hands, against the number the layer answers.
+    ///
+    /// This is the shape the dodge-on-Space defect was fixed by. A test that
+    /// asks `input_binding` for a code and presses the same code back agrees
+    /// with itself however wrong the number is.
+    #[test]
+    fn every_pad_input_round_trips_through_its_name() {
+        reset();
+        for (n, _) in PAD_INPUTS.iter() {
+            let c = code(n);
+            assert_eq!(&name_of(c), n, "{n} did not survive a round trip");
+        }
+        // And a name nothing answers to is -1 rather than something plausible.
+        let missing = "PadTurbo";
+        assert_eq!(
+            unsafe { aurora_input_code(missing.as_ptr(), missing.len() as i64) },
+            -1
+        );
+        assert_eq!(name_of(INPUT_CODE_MAX), "");
+        assert_eq!(name_of(-1), "");
+    }
+
+    /// A key and a pad button on the SAME action, which is the whole point:
+    /// nobody should have to open a rebind screen before their controller does
+    /// anything.
+    #[test]
+    fn an_action_answers_to_the_keyboard_and_the_pad_at_once() {
+        reset();
+        let key = code("Space");
+        let pad_a = code("PadA");
+        aurora_input_bind(DODGE, key);
+        aurora_input_bind_also(DODGE, pad_a);
+        assert_eq!(aurora_input_binding_count(DODGE), 2);
+        // The PRIMARY is still the key, so `input_binding` and every existing
+        // caller of it are unchanged.
+        assert_eq!(aurora_input_binding(DODGE), key);
+        assert_eq!(aurora_input_binding_at(DODGE, 1), pad_a);
+        assert_eq!(aurora_input_binding_at(DODGE, 2), -1);
+
+        assert_eq!(aurora_input_down(DODGE), 0);
+        aurora_inject_pad_button(0, pad::BTN_SOUTH as i64, 1);
+        assert_eq!(aurora_input_down(DODGE), 1, "the pad did not fire the action");
+        aurora_inject_pad_button(0, pad::BTN_SOUTH as i64, 0);
+        assert_eq!(aurora_input_down(DODGE), 0);
+        aurora_inject_key(key, 1);
+        assert_eq!(aurora_input_down(DODGE), 1, "the key stopped firing it");
+        aurora_inject_key(key, 0);
+
+        // Binding again REPLACES, so a rebind screen does not accumulate.
+        aurora_input_bind(DODGE, pad_a);
+        assert_eq!(aurora_input_binding_count(DODGE), 1);
+        // And an alternate cannot be added twice - a setup function called on
+        // every room transition would otherwise grow the list forever.
+        aurora_input_bind_also(DODGE, key);
+        aurora_input_bind_also(DODGE, key);
+        assert_eq!(aurora_input_binding_count(DODGE), 2);
+    }
+
+    /// ANALOG. The claim the whole design turns on: `input_axis` is the same
+    /// call the keyboard has always made, and a stick makes it continuous.
+    #[test]
+    fn a_stick_gives_a_movement_axis_between_zero_and_one() {
+        reset();
+        aurora_input_bind(FORWARD, code("KeyW"));
+        aurora_input_bind_also(FORWARD, code("PadLeftStickUp"));
+        aurora_input_bind(BACK, code("KeyS"));
+        aurora_input_bind_also(BACK, code("PadLeftStickDown"));
+
+        assert_eq!(aurora_input_axis(BACK, FORWARD), 0.0);
+
+        // A third of the way forward is a third, not "forward".
+        aurora_inject_pad_axis(0, pad::AXIS_LEFT_Y as i64, 0.33);
+        let v = aurora_input_axis(BACK, FORWARD);
+        assert!(
+            (v - 0.33).abs() < 1e-9,
+            "a stick a third forward asked for {v}"
+        );
+        // And it does not read as HELD - a walk is not a press.
+        assert_eq!(
+            aurora_input_down(FORWARD),
+            0,
+            "a third of a stick counted as holding the key down"
+        );
+
+        // Past the digital threshold it is both: analog for movement, held for
+        // anything that only asks yes or no.
+        aurora_inject_pad_axis(0, pad::AXIS_LEFT_Y as i64, 1.0);
+        assert!((aurora_input_axis(BACK, FORWARD) - 1.0).abs() < 1e-9);
+        assert_eq!(aurora_input_down(FORWARD), 1);
+
+        // The other half of the same axis is the opposing action, and gives
+        // NOTHING while the stick is pushed forward. Without that, pushing
+        // forward would drive back as well and the axis would always be zero.
+        assert_eq!(aurora_input_value(BACK), 0.0);
+        aurora_inject_pad_axis(0, pad::AXIS_LEFT_Y as i64, -0.5);
+        assert!((aurora_input_axis(BACK, FORWARD) + 0.5).abs() < 1e-9);
+        assert_eq!(aurora_input_value(FORWARD), 0.0);
+
+        // A KEY on the same action is still worth exactly 1.0, so the keyboard
+        // is not quietly downgraded by living beside a stick.
+        aurora_inject_pad_axis(0, pad::AXIS_LEFT_Y as i64, 0.0);
+        aurora_inject_key(code("KeyW"), 1);
+        assert!((aurora_input_axis(BACK, FORWARD) - 1.0).abs() < 1e-9);
+        // ...and the LARGEST wins rather than the last one read: a hand resting
+        // on the keyboard must not cap what the stick is asking for, and a
+        // stick at rest must not cap the key.
+        aurora_inject_pad_axis(0, pad::AXIS_LEFT_Y as i64, 0.2);
+        assert!((aurora_input_value(FORWARD) - 1.0).abs() < 1e-9);
+        aurora_inject_key(code("KeyW"), 0);
+    }
+
+    /// A trigger is analog too, and it is where a souls game puts attack and
+    /// block. Bound digitally it must still need a deliberate pull.
+    #[test]
+    fn a_trigger_is_analog_and_needs_a_deliberate_pull() {
+        reset();
+        let lt = code("PadLT");
+        aurora_input_bind(DODGE, lt);
+        aurora_inject_pad_axis(0, pad::AXIS_LEFT_TRIGGER as i64, 0.2);
+        assert!((aurora_input_value(DODGE) - 0.2).abs() < 1e-9);
+        assert_eq!(
+            aurora_input_down(DODGE),
+            0,
+            "a fifth of a trigger counted as a press"
+        );
+        aurora_inject_pad_axis(0, pad::AXIS_LEFT_TRIGGER as i64, 0.9);
+        assert_eq!(aurora_input_down(DODGE), 1);
+    }
+
+    /// The EDGE is the action's, not each code's. An action already held on the
+    /// keyboard and then also pressed on the pad has not been pressed twice -
+    /// which as a second attack is a real one.
+    #[test]
+    fn two_inputs_on_one_action_are_still_one_press() {
+        reset();
+        let key = code("Space");
+        let pad_a = code("PadA");
+        aurora_input_bind(DODGE, key);
+        aurora_input_bind_also(DODGE, pad_a);
+        aurora_input_step();
+        assert_eq!(aurora_input_pressed(DODGE), 0);
+
+        aurora_inject_key(key, 1);
+        assert_eq!(aurora_input_pressed(DODGE), 1, "the key press was missed");
+        aurora_input_step();
+        assert_eq!(aurora_input_pressed(DODGE), 0, "a held key pressed twice");
+
+        // The pad joins in while the key is still held: no second press.
+        aurora_inject_pad_button(0, pad::BTN_SOUTH as i64, 1);
+        assert_eq!(
+            aurora_input_pressed(DODGE),
+            0,
+            "a second input on a held action manufactured a press"
+        );
+        // And the action is not RELEASED until both are up.
+        aurora_input_step();
+        aurora_inject_key(key, 0);
+        assert_eq!(
+            aurora_input_released(DODGE),
+            0,
+            "letting go of one of two inputs released the action"
+        );
+        aurora_input_step();
+        aurora_inject_pad_button(0, pad::BTN_SOUTH as i64, 0);
+        assert_eq!(aurora_input_released(DODGE), 1);
+    }
+
+    /// The edge snapshot has to reach the pad codes at all. It was one `u128`
+    /// and the pad codes start at 200: every assertion above would pass while
+    /// `input_pressed` silently answered 0 forever for a pad-bound action.
+    #[test]
+    fn the_edge_snapshot_covers_the_highest_input_code() {
+        reset();
+        let last = PAD_CODE_BASE + PAD_INPUTS.len() as i64 - 1;
+        assert!(
+            (INPUT_WORDS * 64) as i64 > last,
+            "the snapshot is {} bits and the codes run to {last}",
+            INPUT_WORDS * 64
+        );
+        aurora_input_bind(DODGE, last);
+        aurora_input_step();
+        // Injected through the ACTION, which is what proves `inject_code` knows
+        // a pad code from a key - injecting the number as a key is a silent
+        // no-op and the test would pass by never pressing anything.
+        aurora_inject_action(DODGE, 1);
+        assert_eq!(aurora_input_down(DODGE), 1, "inject_action missed a pad code");
+        assert_eq!(aurora_input_pressed(DODGE), 1);
+        aurora_input_step();
+        assert_eq!(aurora_input_pressed(DODGE), 0);
+        aurora_inject_action(DODGE, 0);
+        assert_eq!(aurora_input_released(DODGE), 1);
+    }
+
+    /// Suppression covers the pad too. A pause menu that freezes the keyboard
+    /// and not the controller is a pause menu you can be killed through.
+    #[test]
+    fn suppression_covers_the_controller() {
+        reset();
+        aurora_input_bind(FORWARD, code("PadLeftStickUp"));
+        aurora_inject_pad_axis(0, pad::AXIS_LEFT_Y as i64, 1.0);
+        assert_eq!(aurora_input_down(FORWARD), 1);
+        aurora_input_suppress(1);
+        assert_eq!(aurora_input_down(FORWARD), 0);
+        assert_eq!(aurora_input_value(FORWARD), 0.0);
+        assert_eq!(aurora_input_axis(BACK, FORWARD), 0.0);
+        aurora_input_suppress(0);
+        assert_eq!(aurora_input_down(FORWARD), 1);
+    }
+
+    /// With nothing plugged in, every pad read is nothing - so a prompt asking
+    /// "is there a controller" gets a truthful no, and a game on a machine with
+    /// no gamepad support at all still runs.
+    #[test]
+    fn no_controller_is_answered_honestly() {
+        reset();
+        assert_eq!(aurora_pad_count(), 0);
+        assert_eq!(aurora_pad_connected(0), 0);
+        assert_eq!(aurora_pad_button(0, pad::BTN_SOUTH as i64), 0);
+        assert_eq!(aurora_pad_axis(0, pad::AXIS_LEFT_X as i64), 0.0);
+        assert_eq!(aurora_pad_rumble(0, 1.0, 1.0, 0.2), 0);
+        // Negative indexes answer nothing rather than panicking.
+        assert_eq!(aurora_pad_connected(-1), 0);
+        assert_eq!(aurora_pad_axis(-1, -1), 0.0);
+        aurora_inject_pad_button(-1, 0, 1);
+        aurora_inject_pad_disconnect(-1);
+
+        aurora_input_bind(FORWARD, code("PadLeftStickUp"));
+        assert_eq!(aurora_input_value(FORWARD), 0.0);
+        // And an unbound action is nothing, not a panic on an empty list.
+        assert_eq!(aurora_input_value(999), 0.0);
+        assert_eq!(aurora_input_down(999), 0);
+        assert_eq!(aurora_input_binding(999), -1);
+        assert_eq!(aurora_input_binding_count(999), 0);
+        assert_eq!(aurora_input_binding_at(999, -1), -1);
     }
 }
 

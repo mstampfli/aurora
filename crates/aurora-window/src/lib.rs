@@ -22,6 +22,10 @@
 
 mod imm;
 mod input;
+// Gamepads. A module rather than a pile of `imm_pad_*` re-exports: pad state is
+// not window state - it exists with no window open, which is what lets a
+// headless test drive a controller.
+pub mod pad;
 pub use imm::{
     blur as imm_blur, damage as imm_damage, grab_mouse as imm_grab_mouse, imm_leak,
     inject_char as imm_inject_char, inject_key as imm_inject_key,
@@ -31,7 +35,8 @@ pub use imm::{
     key_name as imm_key_name, mouse as imm_mouse,
     mouse_button as imm_mouse_button, mouse_delta as imm_mouse_delta, open as imm_open,
     present as imm_present, r3d_anim_aim_upper as imm_r3d_anim_aim_upper,
-    r3d_anim_blend as imm_r3d_anim_blend, r3d_anim_play as imm_r3d_anim_play,
+    r3d_anim_blend as imm_r3d_anim_blend, r3d_anim_blend_clip as imm_r3d_anim_blend_clip,
+    r3d_anim_blend_weight as imm_r3d_anim_blend_weight, r3d_anim_play as imm_r3d_anim_play,
     r3d_anim_play_upper as imm_r3d_anim_play_upper,
     r3d_anim_restart as imm_r3d_anim_restart, r3d_anim_seek as imm_r3d_anim_seek,
     r3d_anim_seek_upper as imm_r3d_anim_seek_upper, r3d_anim_stop_upper as imm_r3d_anim_stop_upper,

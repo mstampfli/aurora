@@ -1314,6 +1314,23 @@ pub fn r3d_anim_clip(handle: i64) -> i64 {
     })
 }
 
+/// The second clip of a sustained base blend, or -1 when the base is one clip.
+pub fn r3d_anim_blend_clip(handle: i64) -> i64 {
+    with_gfx(-1, |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.anim_blend_clip(handle)
+    })
+}
+
+/// How far through a sustained base blend the base layer is, or -1 when it is
+/// not blending.
+pub fn r3d_anim_blend_weight(handle: i64) -> f32 {
+    with_gfx(-1.0, |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.anim_blend_weight(handle)
+    })
+}
+
 /// Which clip the upper-body overlay is playing, or -1 when none is running.
 pub fn r3d_anim_clip_upper(handle: i64) -> i64 {
     with_gfx(-1, |gf| {

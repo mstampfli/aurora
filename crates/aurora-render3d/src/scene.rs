@@ -1084,6 +1084,35 @@ impl Scene {
         }
     }
 
+    /// The SECOND clip of a sustained base blend, or -1 when the base is a
+    /// single clip.
+    ///
+    /// [`Scene::anim_clip`] answers for the first half and had no counterpart,
+    /// so nothing outside the renderer could tell a blend from a plain clip -
+    /// and a two-clip locomotion blend is what a walking character IS.
+    pub fn anim_blend_clip(&self, handle: i64) -> i64 {
+        match self.item(handle) {
+            Some(r) => r.player.blend_clip(),
+            None => -1,
+        }
+    }
+
+    /// How far through a sustained base blend the base layer is (0 = entirely
+    /// the first clip, 1 = entirely the second), or -1 when it is not blending.
+    ///
+    /// The one number that says what a walking body actually looks like. Without
+    /// it a test can see WHICH clips are loaded and how far their clocks have
+    /// run, and still cannot see that the character is being thrown between a
+    /// standing pose and a sprint every frame - which is a pose flip with no
+    /// clip change and no clock discontinuity, invisible to every other question
+    /// the renderer answers.
+    pub fn anim_blend_weight(&self, handle: i64) -> f32 {
+        match self.item(handle) {
+            Some(r) => r.player.blend_weight(),
+            None => -1.0,
+        }
+    }
+
     /// The same for the upper-body overlay: which clip it is playing, or -1 when
     /// no overlay is running.
     pub fn anim_clip_upper(&self, handle: i64) -> i64 {
@@ -1169,14 +1198,20 @@ impl Scene {
         speed: f32,
         fade: f32,
     ) {
+        // Split borrow, as `anim_update` does: swapping the pair re-times the
+        // incoming clips against the outgoing ones, and a clip's duration is a
+        // fact about the model.
         if let Some(r) = self.item_mut(handle) {
-            r.player.blend(
-                clip_a.max(0) as usize,
-                clip_b.max(0) as usize,
-                weight,
-                speed,
-                fade,
-            );
+            if let Some(model) = &r.asset.model {
+                r.player.blend(
+                    model,
+                    clip_a.max(0) as usize,
+                    clip_b.max(0) as usize,
+                    weight,
+                    speed,
+                    fade,
+                );
+            }
         }
     }
 

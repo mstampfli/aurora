@@ -170,21 +170,67 @@ impl AnimPlayer {
 
     /// Drive the FULL-BODY base as a sustained weighted blend of two clips (`clip_a` at weight 0,
     /// `clip_b` at weight 1) - e.g. idle <-> run by movement speed, so the legs ease smoothly into
-    /// standing still instead of snapping. Call every frame to update the weight; the first call
-    /// that enters blend mode crossfades in over `fade` (so a jump->land transition is smooth too).
-    pub fn blend(&mut self, clip_a: usize, clip_b: usize, weight: f32, speed: f32, fade: f32) {
-        if !self.bblend_on {
+    /// standing still instead of snapping. Call every frame to update the weight.
+    ///
+    /// Changing the PAIR is a transition and is treated as one. This used to
+    /// assign the two clip indices straight over the old ones and leave both
+    /// clocks alone, which produced two distinct failures in one line:
+    ///
+    /// - the new clip was sampled at the OUTGOING clip's phase, so a walk cycle
+    ///   caught mid-stride resumed wherever the idle happened to stand. Every
+    ///   change of direction popped, and the pair changes on a threshold - so
+    ///   walking at the speed where idle<->walk becomes walk<->run popped on
+    ///   every frame the speed crossed it.
+    /// - a shorter incoming clip wrapped that stale clock (`advance_time` takes
+    ///   `rem_euclid` of a looping clip), so the animation clock went BACKWARDS
+    ///   with no state change - indistinguishable, in a still frame, from a clip
+    ///   playing normally.
+    ///
+    /// Both are answered here rather than by asking callers to notice: a clip
+    /// carried across the swap keeps its own clock exactly (so idle<->walk
+    /// becoming walk<->run is seamless, the walk simply moves slots), a clip
+    /// being replaced hands over its normalised PHASE (so the feet of a forward
+    /// stride land where the feet of a strafe would), and the composed outgoing
+    /// pose is crossfaded out over `fade` like any other transition.
+    pub fn blend(
+        &mut self,
+        model: &Model,
+        clip_a: usize,
+        clip_b: usize,
+        weight: f32,
+        speed: f32,
+        fade: f32,
+    ) {
+        let entering = !self.bblend_on;
+        let swapped = !entering && (self.clip != clip_a || self.bclip2 != clip_b);
+        if entering || swapped {
+            // Crossfade out of whatever the base layer is SHOWING - which, when
+            // already blending, is a composed pose rather than one clip. Its
+            // dominant half is the source, exactly as `play_upper` takes the
+            // dominant half of an aim blend.
             if fade > 0.0001 {
-                self.prev_clip = self.clip;
-                self.prev_time = self.time;
-                self.prev_looping = self.looping;
-                self.prev_speed = self.base_speed();
+                let (c, t, looping, spd) = self.base_dominant();
+                self.prev_clip = c;
+                self.prev_time = t;
+                self.prev_looping = looping;
+                self.prev_speed = spd;
                 self.blend = 0.0;
                 self.blend_rate = 1.0 / fade;
             } else {
                 self.blend = 1.0;
+                self.blend_rate = 0.0;
             }
+        }
+        if entering {
+            // A fresh pair starts at the top of both cycles. The crossfade above
+            // covers the join, and inheriting the phase of whatever one-shot was
+            // playing is meaningless.
+            self.time = 0.0;
             self.btime2 = 0.0;
+        } else if swapped {
+            let (ta, tb) = self.reclocked(model, clip_a, clip_b);
+            self.time = ta;
+            self.btime2 = tb;
         }
         self.bblend_on = true;
         self.clip = clip_a;
@@ -192,6 +238,67 @@ impl AnimPlayer {
         self.bblend = weight.clamp(0.0, 1.0);
         self.looping = true;
         self.speed = speed;
+    }
+
+    /// The second clip of a sustained base blend, or -1 when the base is one clip.
+    pub fn blend_clip(&self) -> i64 {
+        if self.bblend_on {
+            self.bclip2 as i64
+        } else {
+            -1
+        }
+    }
+
+    /// How far through a sustained base blend the base layer is, or -1 when it
+    /// is not blending. See [`Scene::anim_blend_weight`] for why this is asked.
+    pub fn blend_weight(&self) -> f32 {
+        if self.bblend_on {
+            self.bblend
+        } else {
+            -1.0
+        }
+    }
+
+    /// Where each half of an incoming blend pair should pick up the cycle.
+    ///
+    /// Called with the pair about to be installed, while `self` still holds the
+    /// outgoing one. Three cases, in order of how much continuity they preserve:
+    /// the same clip in the other slot hands over its clock untouched, the same
+    /// clip in the same slot keeps its own, and a genuinely new clip enters at
+    /// the phase - the fraction through the cycle - its predecessor had reached.
+    fn reclocked(&self, model: &Model, clip_a: usize, clip_b: usize) -> (f32, f32) {
+        let dur = |c: usize| model.clips.get(c).map(|c| c.duration).unwrap_or(0.0);
+        let ta = if clip_a == self.clip {
+            self.time
+        } else if clip_a == self.bclip2 {
+            self.btime2
+        } else {
+            phase_across(self.time, dur(self.clip), dur(clip_a))
+        };
+        let tb = if clip_b == self.bclip2 {
+            self.btime2
+        } else if clip_b == self.clip {
+            self.time
+        } else {
+            phase_across(self.btime2, dur(self.bclip2), dur(clip_b))
+        };
+        (ta, tb)
+    }
+
+    /// The single clip + playback state currently dominating the BASE layer (the
+    /// crossfade source): the higher-weighted half of a sustained blend, else the
+    /// base clip. The mirror of [`AnimPlayer::upper_dominant`] for the full body.
+    fn base_dominant(&self) -> (usize, f32, bool, f32) {
+        if self.bblend_on && self.bblend >= 0.5 {
+            // A sustained blend always loops both halves, and its halves run at
+            // their own cadence with `speed` applied to the second - which is
+            // what `advance` gives `bclip2`.
+            (self.bclip2, self.btime2, true, self.speed)
+        } else if self.bblend_on {
+            (self.clip, self.time, true, self.base_speed())
+        } else {
+            (self.clip, self.time, self.looping, self.base_speed())
+        }
     }
 
     /// Start (or swap) an upper-body overlay clip, masked to `mask_root` + its descendants,
@@ -571,6 +678,23 @@ let (mut t, mut r, mut s) = if self.bblend_on {
         resolve_global(skel, &local, joint, &mut global);
         global[joint]
     }
+}
+
+/// The same point in the CYCLE, expressed on a different clip's clock.
+///
+/// Locomotion clips are the same walk cycle authored in different directions and
+/// at different lengths, so what has to be continuous when one replaces another
+/// is the fraction through the stride - not the seconds, which would land the
+/// feet wherever the two durations happened to differ.
+///
+/// A clip with no duration (a missing index, a single-pose clip) has no phase to
+/// carry, so the incoming clock starts at the top rather than at a fabricated
+/// offset into a cycle that does not exist.
+fn phase_across(time: f32, from: f32, to: f32) -> f32 {
+    if from <= 0.0 || to <= 0.0 {
+        return 0.0;
+    }
+    (time.rem_euclid(from) / from) * to
 }
 
 /// Advance `time` by `dt`, wrapping a looping clip.
@@ -1146,7 +1270,7 @@ mod root_motion {
         let step = 0.25;
         for (weight, want) in [(0.0, 0.0), (0.5, 0.5), (1.0, 1.0)] {
             let mut p = AnimPlayer::default();
-            p.blend(0, 1, weight, 1.0, 0.0);
+            p.blend(&m, 0, 1, weight, 1.0, 0.0);
             p.advance(&m, step);
             assert!(
                 close(p.root_delta(), Vec3::new(0.0, 0.0, 4.0 * step * want)),
@@ -1155,6 +1279,120 @@ mod root_motion {
                 p.root_delta()
             );
         }
+    }
+
+    // --- changing the PAIR of a sustained blend --------------------------
+    //
+    // Locomotion is driven as idle<->walk below half pace and walk<->run above
+    // it, from clips named per direction. So the pair changes constantly in
+    // play: every time the pace crosses the threshold, and every time the
+    // character turns. Each of the four tests below is a failure that shipped.
+
+    // A clip that survives a pair change keeps its own clock, whichever slot it
+    // lands in. Crossing the pace threshold moves the walk from the second slot
+    // to the first, and at that instant the blend is 100% walk on both sides -
+    // so anything but an untouched clock is a visible hitch at exactly the pace
+    // a player spends most of their time at.
+    #[test]
+    fn a_clip_carried_across_a_pair_change_keeps_its_clock() {
+        // idle 4 s, walk 1 s, run 0.8 s - three different lengths, as authored
+        // clips are.
+        let m = model(&[(4.0, None), (1.0, None), (0.8, None)]);
+        let mut p = AnimPlayer::default();
+        p.blend(&m, 0, 1, 1.0, 1.0, 0.0);
+        p.advance(&m, 0.3);
+        let walk_was = p.btime2;
+        assert!(walk_was > 0.0, "the walk clock has to have moved at all");
+        p.blend(&m, 1, 2, 0.0, 1.0, 0.15);
+        assert_eq!(
+            p.time, walk_was,
+            "the walk moved slots, not phase - it must not restart or wrap"
+        );
+    }
+
+    // And the clock may never go BACKWARDS across the change. This is the exact
+    // shipped bug: the stale seconds of a 4 s idle were handed to a 1 s walk,
+    // and `advance_time` wrapped them - so the animation clock rewound with no
+    // state change, which in a still frame is indistinguishable from a clip
+    // playing normally.
+    #[test]
+    fn a_pair_change_to_a_shorter_clip_does_not_rewind_the_clock() {
+        let m = model(&[(4.0, None), (1.0, None), (0.8, None)]);
+        let mut p = AnimPlayer::default();
+        p.blend(&m, 0, 1, 0.0, 1.0, 0.0);
+        p.advance(&m, 3.0); // 3 s into a 4 s idle: 75% through
+        p.blend(&m, 2, 1, 0.0, 1.0, 0.15);
+        // 75% of the 0.8 s clip, not 3.0 wrapped into it.
+        assert!(
+            (p.time - 0.6).abs() < 1e-5,
+            "phase, not seconds: 75% of 0.8 s is 0.6, got {}",
+            p.time
+        );
+        assert!(
+            p.time < 0.8,
+            "and it is inside the new clip, so the next advance cannot wrap it"
+        );
+    }
+
+    // A pair change is a transition and crossfades like one. Without this the
+    // pose jumps between two clips in a single frame - a strafe becoming a
+    // forward stride with no join, which is what "no crossfade between walk
+    // directions" looked like.
+    #[test]
+    fn a_pair_change_crossfades_out_of_the_composed_pose() {
+        let m = model(&[(1.0, None), (1.0, None), (1.0, None)]);
+        let mut p = AnimPlayer::default();
+        p.blend(&m, 0, 1, 0.8, 1.0, 0.0);
+        p.advance(&m, 0.2);
+        assert_eq!(p.blend, 1.0, "settled before the change");
+        p.blend(&m, 2, 1, 0.8, 1.0, 0.2);
+        assert_eq!(p.blend, 0.0, "the change starts a fade");
+        // From the DOMINANT half of the outgoing blend. At weight 0.8 that is
+        // the second clip, and taking the first would fade out of a pose the
+        // character was not in.
+        assert_eq!(p.prev_clip, 1, "faded out of what was actually on screen");
+        p.advance(&m, 0.1);
+        assert!(
+            p.blend > 0.0 && p.blend < 1.0,
+            "and it is still mid-fade half way through, got {}",
+            p.blend
+        );
+    }
+
+    // Restating the SAME pair is free. A frame loop says what the character is
+    // doing every frame, so a blend that treated each restatement as a change
+    // would fade from itself forever and never advance - the same class of bug
+    // `play` was made idempotent to kill.
+    #[test]
+    fn restating_the_same_pair_disturbs_nothing() {
+        let m = model(&[(4.0, None), (1.0, None)]);
+        let mut p = AnimPlayer::default();
+        p.blend(&m, 0, 1, 0.3, 1.0, 0.2);
+        // Restated every frame WHILE the entering fade is still running, which
+        // is the case that would deadlock: a fade reset each frame never
+        // finishes, and the character stays half way into the pose it left.
+        let mut fade_was = p.blend;
+        for _ in 0..10 {
+            p.advance(&m, 1.0 / 60.0);
+            p.blend(&m, 0, 1, 0.3, 1.0, 0.2);
+            assert!(
+                p.blend > fade_was,
+                "restating the pair must not reset the fade in progress: {} then {}",
+                fade_was,
+                p.blend
+            );
+            fade_was = p.blend;
+        }
+        for _ in 0..20 {
+            p.advance(&m, 1.0 / 60.0);
+            p.blend(&m, 0, 1, 0.3, 1.0, 0.2);
+        }
+        assert_eq!(p.blend, 1.0, "and it does finish");
+        let (t, t2) = (p.time, p.btime2);
+        p.blend(&m, 0, 1, 0.9, 1.0, 0.2); // weight moves, pair does not
+        assert_eq!((p.time, p.btime2), (t, t2), "the clocks are untouched");
+        assert_eq!(p.blend, 1.0, "and no new fade was started");
+        assert!(t > 0.45, "the clock really did run: {t}");
     }
 
     // An upper-body overlay is masked to the upper body: it cannot move the legs,
