@@ -669,12 +669,55 @@ pub extern "C" fn aurora_phys3d_separate_characters() -> i64 {
                 pairs += 1;
             }
         }
+        // THE CORRECTION IS A MOVE, NOT A TELEPORT.
+        //
+        // It used to write the position straight in, and a written position
+        // obeys nothing: a creature walking onto a player standing near a wall
+        // pushed them THROUGH it. Measured in the Keep - a fight that ended at
+        // z = -6.93 in a room whose far wall is at -6.0, and the assertion that
+        // caught it says "the fight left the Keep through a wall".
+        //
+        // So it goes through the character controller, the same one
+        // `phys3d_move_character` walks with. A shove now slides along whatever
+        // it meets and stops at it, which also means two characters wedged into
+        // a corner stay wedged rather than being squeezed out through the
+        // masonry - the right answer, because the alternative is a shove that
+        // can put anybody anywhere.
+        //
+        // Group 1 only: the world stops a shove, other characters do not. If
+        // they did, separating A from B could be refused by B, and the pair
+        // would stay inside each other forever.
+        p.sync_queries();
         for (k, t) in moved {
             let Some(b) = p.registry.get(k) else { continue };
-            let h = b.body;
+            let (h, col_h) = (b.body, b.collider);
+            let Some(rb) = p.bodies.get(h) else { continue };
+            let from = *rb.translation();
+            let desired = t - from;
+            let Some(collider) = p.colliders.get(col_h) else { continue };
+            let shape = collider.shape();
+            let mut pos = *collider.position();
+            pos.translation.vector = from;
+            let filter = QueryFilter::default()
+                .exclude_collider(col_h)
+                .groups(InteractionGroups::new(Group::GROUP_2, Group::GROUP_1));
+            let mvt = p.controller.move_shape(
+                // A separation is not a span of time - it is a correction owed
+                // right now - so the step is the whole of it.
+                1.0,
+                &p.bodies,
+                &p.colliders,
+                &p.query,
+                shape,
+                &pos,
+                desired,
+                filter,
+                |_| {},
+            );
+            let landed = from + mvt.translation;
             if let Some(rb) = p.bodies.get_mut(h) {
-                rb.set_next_kinematic_translation(t);
-                rb.set_translation(t, true);
+                rb.set_next_kinematic_translation(landed);
+                rb.set_translation(landed, true);
             }
         }
         // The query structures have to see the new positions, or the next
@@ -2468,5 +2511,86 @@ mod tests {
         let dx = aurora_phys3d_x(a) - aurora_phys3d_x(b);
         let dz = aurora_phys3d_z(a) - aurora_phys3d_z(b);
         (dx * dx + dz * dz).sqrt()
+    }
+}
+
+#[cfg(test)]
+mod separation_tests {
+    use super::*;
+
+    /// A SHOVE CANNOT PUT ANYBODY THROUGH A WALL.
+    ///
+    /// Separation used to write the corrected position straight into the body,
+    /// and a written position obeys nothing. So a creature walking onto a player
+    /// who was standing against a wall pushed them out the far side of it.
+    ///
+    /// Found by a scripted fight in the Keep, which ended with the player at
+    /// z = -6.93 in a room whose wall stands at -6.0 - and the assertion that
+    /// caught it reads "the fight left the Keep through a wall", which is the
+    /// only reason anybody looked.
+    ///
+    /// The pair here is deliberately the tightest case: two characters on top of
+    /// one another with a wall immediately behind the one being pushed, so the
+    /// correction it is owed is entirely into the wall. Wedged is the right
+    /// answer; through is not.
+    #[test]
+    fn a_shove_stops_at_a_wall_instead_of_going_through_it() {
+        aurora_phys3d_init(0.0, 0.0, 0.0);
+        // A wall at z = -2, thin and tall, spanning x.
+        aurora_phys3d_add_box(0.0, 1.0, -2.0, 8.0, 4.0, 0.25, 0);
+        // The player, right up against it, and something standing IN them.
+        let player = aurora_phys3d_add_character(0.0, 1.0, -1.5, 0.55, 0.35);
+        aurora_phys3d_character_solid(player, 1);
+        let creature = aurora_phys3d_add_character(0.0, 1.0, -1.35, 0.55, 0.35);
+        aurora_phys3d_character_solid(creature, 0);
+        // A step, so the colliders are where the bodies are.
+        aurora_phys3d_step(1.0 / 60.0);
+
+        // Many separations, because one is a nudge and the failure is a body
+        // walked out of the room over several frames.
+        for _ in 0..120 {
+            aurora_phys3d_separate_characters();
+            aurora_phys3d_step(1.0 / 60.0);
+        }
+
+        let z = aurora_phys3d_z(player);
+        assert!(
+            z > -2.0,
+            "the player was shoved to z={z}, past a wall standing at z=-2.0"
+        );
+        // WEDGED is the right answer here and is not a bug. The whole
+        // correction points into the wall, so the only way to obey it is to go
+        // through - and a shove that can put anybody anywhere is worse than a
+        // pair that stays inside each other for a moment. That they DO come
+        // apart when there is room is the next test.
+        let _ = creature;
+    }
+
+    /// And in the open, a shove actually separates them.
+    ///
+    /// The twin of the test above, and the reason it is a separate one: "nothing
+    /// went through the wall" is trivially true of a separation that does
+    /// nothing at all, so the wall case cannot also be the case that proves it
+    /// works.
+    #[test]
+    fn a_shove_in_the_open_pushes_them_apart() {
+        aurora_phys3d_init(0.0, 0.0, 0.0);
+        let player = aurora_phys3d_add_character(0.0, 1.0, 0.0, 0.55, 0.35);
+        aurora_phys3d_character_solid(player, 1);
+        let creature = aurora_phys3d_add_character(0.0, 1.0, 0.15, 0.55, 0.35);
+        aurora_phys3d_character_solid(creature, 0);
+        aurora_phys3d_step(1.0 / 60.0);
+
+        let pairs = aurora_phys3d_separate_characters();
+        assert_eq!(pairs, 1, "the two overlap, so there is a pair to separate");
+        for _ in 0..30 {
+            aurora_phys3d_separate_characters();
+            aurora_phys3d_step(1.0 / 60.0);
+        }
+        let gap = (aurora_phys3d_z(creature) - aurora_phys3d_z(player)).abs();
+        assert!(
+            gap > 0.6,
+            "two capsules of radius 0.35 must end up at least their radii apart,              got {gap}m"
+        );
     }
 }
