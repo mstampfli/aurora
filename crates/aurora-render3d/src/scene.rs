@@ -1483,6 +1483,65 @@ impl Scene {
     /// The model-space position of `joint` in the host's CURRENT pose (the translation of its
     /// global transform, before the draw transform). Lets a first-person rig cancel the bone offset
     /// so a bone-attached weapon lands at a fixed camera-space spot. None if missing.
+    /// Where a joint is IN THE WORLD, for a host drawn at `x, y, z`, turned by
+    /// `yaw` and scaled by `scale`.
+    ///
+    /// `joint_pos` answers in the model's own space, so every caller wanting a
+    /// world position was applying the host's scale, rotation and translation
+    /// itself - re-deriving the composition `draw_on_joint` already does.
+    ///
+    /// The placement is a parameter rather than remembered state: a joint's
+    /// world position is only meaningful against one.
+    pub fn joint_world(
+        &self,
+        host: i64,
+        joint: i64,
+        x: f32,
+        y: f32,
+        z: f32,
+        yaw: f32,
+        scale: f32,
+    ) -> Option<[f32; 3]> {
+        let local = self.joint_pos(host, joint)?;
+        let host_xform = Mat4::from_scale_rotation_translation(
+            glam::Vec3::splat(scale),
+            glam::Quat::from_rotation_y(yaw),
+            glam::Vec3::new(x, y, z),
+        );
+        let p = host_xform * glam::Vec4::new(local[0], local[1], local[2], 1.0);
+        Some([p.x, p.y, p.z])
+    }
+
+    /// One column of a joint's world ROTATION basis: which way the joint FACES.
+    ///
+    /// `joint_world` says where a joint IS. Without this there is no way to
+    /// compute the DIRECTION a socketed prop points, so "is this weapon held
+    /// correctly" could only be judged from a render - which is how a wrong
+    /// grip survived being looked at repeatedly.
+    ///
+    /// `axis` picks the column (0 = X, 1 = Y, 2 = Z), normalised, so a caller
+    /// can rotate the prop's own axis by the socket and get a world direction.
+    pub fn joint_basis(&self, host: i64, joint: i64, axis: i64, yaw: f32) -> Option<[f32; 3]> {
+        let r = self.item(host)?;
+        let g = r
+            .asset
+            .model
+            .as_ref()
+            .and_then(|m| r.player.joint_global(m, joint.max(0) as usize))?;
+        let m = Mat4::from_rotation_y(yaw) * g;
+        let c = match axis.clamp(0, 2) {
+            0 => m.x_axis,
+            1 => m.y_axis,
+            _ => m.z_axis,
+        };
+        let v = glam::Vec3::new(c.x, c.y, c.z);
+        if v.length() < 1e-9 {
+            return None;
+        }
+        let u = v.normalize();
+        Some([u.x, u.y, u.z])
+    }
+
     pub fn joint_pos(&self, host: i64, joint: i64) -> Option<[f32; 3]> {
         let r = self.item(host)?;
         let g = r

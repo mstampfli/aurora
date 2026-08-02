@@ -1125,6 +1125,21 @@ pub fn r3d_joint_dump(host: i64) {
     });
 }
 /// Model-space position of `joint` in the host's current pose, component `axis` (0=x,1=y,2=z).
+#[allow(clippy::too_many_arguments)]
+pub fn r3d_joint_world(host: i64, joint: i64, axis: i64, x: f32, y: f32, z: f32, yaw: f32, scale: f32) -> f32 {
+    with_gfx(0.0f32, |gf| {
+        let (_, _, s) = gf.scene_mut();
+        let p = s.joint_world(host, joint, x, y, z, yaw, scale).unwrap_or([0.0, 0.0, 0.0]);
+        p[(axis.max(0) as usize).min(2)]
+    })
+}
+pub fn r3d_joint_basis(host: i64, joint: i64, axis: i64, comp: i64, yaw: f32) -> f32 {
+    with_gfx(0.0f32, |gf| {
+        let (_, _, s) = gf.scene_mut();
+        let v = s.joint_basis(host, joint, axis, yaw).unwrap_or([0.0, 0.0, 0.0]);
+        v[(comp.max(0) as usize).min(2)]
+    })
+}
 pub fn r3d_joint_pos(host: i64, joint: i64, axis: i64) -> f32 {
     with_gfx(0.0f32, |gf| {
         let (_, _, s) = gf.scene_mut();

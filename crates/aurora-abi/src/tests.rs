@@ -20,7 +20,6 @@ const UNDOCUMENTED: &[&str] = &[
     "r3d_draw_tint",
     "r3d_draw_shield",
     "r3d_draw_on_joint",
-    "r3d_joint_pos",
     "r3d_anim_play_upper",
     "r3d_anim_aim_upper",
     "r3d_anim_blend",

@@ -2797,6 +2797,17 @@ pub extern "C" fn aurora_r3d_joint_dump(host: i64) {
 pub extern "C" fn aurora_r3d_joint_pos(host: i64, joint: i64, axis: i64) -> f64 {
     aurora_window::imm_r3d_joint_pos(host, joint, axis) as f64
 }
+/// A joint's position IN THE WORLD, for a host at a given placement.
+#[allow(clippy::too_many_arguments)]
+#[no_mangle]
+pub extern "C" fn aurora_r3d_joint_world(h: i64, joint: i64, axis: i64, x: f64, y: f64, z: f64, yaw: f64, scale: f64) -> f64 {
+    aurora_window::imm_r3d_joint_world(h, joint, axis, x as f32, y as f32, z as f32, yaw as f32, scale as f32) as f64
+}
+/// One column of a joint's world rotation basis: which way the joint faces.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_joint_basis(h: i64, joint: i64, axis: i64, comp: i64, yaw: f64) -> f64 {
+    aurora_window::imm_r3d_joint_basis(h, joint, axis, comp, yaw as f32) as f64
+}
 #[no_mangle]
 pub extern "C" fn aurora_r3d_anim_play(h: i64, clip: i64, looping: i64, speed: f64, fade: f64) {
     aurora_window::imm_r3d_anim_play(h, clip, looping, speed as f32, fade as f32);
