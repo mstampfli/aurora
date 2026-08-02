@@ -376,7 +376,27 @@ fn rewrite_type(ty: &mut Type, cx: &Cx) {
             rewrite_type(ret, cx);
         }
         TypeKind::Region(_, inner) => rewrite_type(inner, cx),
-        _ => {}
+        // BEHIND A REFERENCE, and behind an owning pointer.
+        //
+        // `fn step(s: &mut Session)` written inside a module left `Session`
+        // unmangled while the layout was registered as `frame::Session`, so every
+        // field access in the body failed to compile with "no field `x` in JIT".
+        // Only the reference case broke: a by-value parameter of the same type goes
+        // through the Path arm above and was rewritten correctly, which is what made
+        // it look like a bug about `&mut` rather than a bug about this match.
+        TypeKind::Ref { inner, .. } => rewrite_type(inner, cx),
+        TypeKind::Owned(inner) => rewrite_type(inner, cx),
+        // EXHAUSTIVE ON PURPOSE - do not add a `_` arm here.
+        //
+        // This function has now missed a nested type position six times: an array
+        // element, an array LENGTH, a tuple member, a fn parameter/return, a dyn
+        // trait, and a reference. Every one was silent, and surfaced much later as an
+        // unresolvable field or a zero-length array. A wildcard arm is what made that
+        // possible: it makes "a type position nobody thought about" indistinguishable
+        // from "a type position with nothing to rewrite". Naming the leaves turns the
+        // next variant added to `TypeKind` into a compile error right here, which is
+        // the only thing that has ever stopped this class recurring.
+        TypeKind::Infer | TypeKind::Error => {}
     }
 }
 
