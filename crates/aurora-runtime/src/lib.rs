@@ -3624,6 +3624,25 @@ pub extern "C" fn aurora_exp(x: f64) -> f64 {
 pub extern "C" fn aurora_atan2(y: f64, x: f64) -> f64 {
     y.atan2(x)
 }
+/// Inverse trig, so an ANGLE can be measured rather than eyeballed.
+///
+/// A game needs these constantly - the angle between a blade and a forearm, a
+/// facing against a target, a slope. Their absence is why a weapon grip was
+/// judged from renders instead of computed, and got the wrong answer repeatedly.
+/// Inputs are clamped to the valid domain, so a dot product that lands at
+/// 1.0000001 through rounding returns 0 rather than NaN.
+#[no_mangle]
+pub extern "C" fn aurora_acos(x: f64) -> f64 {
+    x.clamp(-1.0, 1.0).acos()
+}
+#[no_mangle]
+pub extern "C" fn aurora_asin(x: f64) -> f64 {
+    x.clamp(-1.0, 1.0).asin()
+}
+#[no_mangle]
+pub extern "C" fn aurora_atan(x: f64) -> f64 {
+    x.atan()
+}
 
 /// Play a note WITHOUT blocking - mixed into the persistent audio engine, so
 /// sounds and music overlap. `looped` != 0 repeats it until volume/stop.

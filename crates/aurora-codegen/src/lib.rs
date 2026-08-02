@@ -4422,7 +4422,7 @@ fn tr_call(
     // builtin is float-width-preserving like the native ones.
     if matches!(
         name.as_str(),
-        "sin" | "cos" | "tan" | "pow" | "log" | "exp" | "atan2"
+        "sin" | "cos" | "tan" | "pow" | "log" | "exp" | "atan2" | "acos" | "asin" | "atan"
     ) {
         let want = if matches!(name.as_str(), "pow" | "atan2") {
             2
