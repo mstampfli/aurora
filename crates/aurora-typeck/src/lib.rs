@@ -544,13 +544,17 @@ impl Typeck {
                 self.infer(index);
                 self.cx.fresh()
             }
-            ExprKind::Field { base, .. } => {
+            ExprKind::Field { base, field } => {
                 // The head of a dotted access may be a type or module with no CPU
                 // declaration, so a bare name here is not judged.
                 self.lenient_names += 1;
-                self.infer(base);
+                let base_ty = self.infer(base);
                 self.lenient_names -= 1;
-                Ty::Error // field types require nominal field resolution (later)
+                // Tuple access (`.0`) is a different lookup and is left alone.
+                match field {
+                    aurora_ast::FieldAccess::Named(id) => self.infer_field(&base_ty, id, e.span),
+                    aurora_ast::FieldAccess::Index(_) => Ty::Error,
+                }
             }
             ExprKind::Range { start, end, .. } => {
                 if let Some(s) = start {
@@ -795,6 +799,27 @@ impl Typeck {
     }
 
     fn infer_call(&mut self, callee: &Expr, args: &[aurora_ast::Arg]) -> Ty {
+        // A METHOD call, not a field read.
+        //
+        // `a.b(c)` is a Call whose callee is a Field, so judging that Field as a
+        // struct member reports every method in the language as a missing field:
+        // `v.scale(2.0)`, `r.intersects(other)`, `p.step(dt)`. The prelude's own
+        // examples lit up the moment field checking was switched on, which is
+        // what "widening it is how a checker starts rejecting correct programs"
+        // looks like from the inside.
+        //
+        // Methods are not modelled yet, so the receiver is inferred leniently and
+        // the result is unknown - exactly the behaviour a dotted callee has
+        // always had.
+        if let ExprKind::Field { base, .. } = &callee.kind {
+            for a in args {
+                self.infer(&a.value);
+            }
+            self.lenient_names += 1;
+            self.infer(base);
+            self.lenient_names -= 1;
+            return Ty::Error;
+        }
         let arg_tys: Vec<(Span, Ty)> = args
             .iter()
             .map(|a| (a.value.span, self.infer(&a.value)))
@@ -1055,17 +1080,92 @@ impl Typeck {
         );
     }
 
+    /// Which declared name a path refers to.
+    ///
+    /// The flattener mangles an item in another module to `module::Name` - one
+    /// identifier with the `::` inside it - so a qualified path has to be joined
+    /// before it is looked up, and only falls back to its last segment when the
+    /// joined form names nothing.
+    ///
+    /// This is the FOURTH place that had to learn it. `array_len_of` joined,
+    /// `type_to_ty` did not until a parameter written `arena::Meshes` read as a
+    /// bare `Meshes` and fifty files lit up at once; `infer_call` did not until
+    /// argument types went unchecked for every cross-module call; and this one
+    /// did not, so `arena::Stage { bogus: 3 }` was accepted while the identical
+    /// same-module literal was rejected. Reading a path by its last segment is
+    /// the recurring defect, so it is one function now.
+    fn declared_name(&self, path: &aurora_ast::Path) -> String {
+        let joined = path
+            .segments
+            .iter()
+            .map(|s| s.ident.name.as_str())
+            .collect::<Vec<_>>()
+            .join("::");
+        if self.structs.contains_key(&joined) || self.user_types.contains(&joined) {
+            return joined;
+        }
+        path.segments
+            .last()
+            .map(|s| s.ident.name.clone())
+            .unwrap_or_default()
+    }
+
+    /// The type of `base.name`, and an error when the struct has no such field.
+    ///
+    /// This used to answer `Ty::Error` unconditionally with a note that field
+    /// resolution would come later, so NOTHING about a dotted access was
+    /// checked: `s.nonexistent` type-checked green and failed in the backend as
+    /// "no field `nonexistent` in JIT" - no line, no column, and only if you ran
+    /// it. That is the same shape as the qualified-value hole `E0314` closed.
+    ///
+    /// It cost a real cycle in Poly Souls: a struct literal was edited to read a
+    /// field off the wrong value, `check` passed, and the JIT refused the whole
+    /// function.
+    ///
+    /// Deliberately narrow. A field is only judged when the base resolves to a
+    /// struct this program declares - anything else (a tuple index, a method
+    /// receiver, an engine type, an unresolved generic) answers `Ty::Error` and
+    /// is left alone, exactly as before. Widening it is how a checker starts
+    /// rejecting correct programs.
+    fn infer_field(&mut self, base_ty: &Ty, field: &aurora_ast::Ident, span: Span) -> Ty {
+        let resolved = self.cx.resolve_deep(base_ty);
+        // Through references and owning pointers: `(&mut Session).hero` is a
+        // field of the Session, and the game passes `&mut` sessions everywhere.
+        let mut cur = &resolved;
+        loop {
+            match cur {
+                Ty::Ref { inner, .. } | Ty::Owned(inner) | Ty::Rc(inner) => cur = inner,
+                _ => break,
+            }
+        }
+        let Ty::Named(name) = cur else {
+            return Ty::Error;
+        };
+        let Some(fields) = self.structs.get(name) else {
+            return Ty::Error;
+        };
+        match fields.iter().find(|(f, _)| f == &field.name) {
+            Some((_, ty)) => ty.clone(),
+            None => {
+                // A generic struct's fields are monomorphized later, but a field
+                // that does not EXIST is wrong at any instantiation.
+                self.diags.push(
+                    Diagnostic::error(format!("no field `{}` on `{name}`", field.name))
+                        .with_code("E0301")
+                        .primary(span, "unknown field"),
+                );
+                Ty::Error
+            }
+        }
+    }
+
     fn infer_struct(
         &mut self,
         path: &aurora_ast::Path,
         fields: &[aurora_ast::FieldInit],
         base: Option<&Expr>,
     ) -> Ty {
-        let name = path
-            .segments
-            .last()
-            .map(|s| s.ident.name.clone())
-            .unwrap_or_default();
+        let name = self.declared_name(path);
         let known = self.structs.get(&name).cloned();
 
         for f in fields {

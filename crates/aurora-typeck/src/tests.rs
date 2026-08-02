@@ -697,3 +697,87 @@ fn one_typo_in_one_place_is_one_error() {
     let hits = errs.iter().filter(|e| e.contains("unknown type")).count();
     assert_eq!(hits, 1, "expected one error for one typo, got {errs:?}");
 }
+
+// --- reading a field that is not there (E0301) --------------------------------
+//
+// `ExprKind::Field` answered `Ty::Error` unconditionally with a note that field
+// resolution would come later, so nothing about a dotted access was checked at
+// all: `s.nonexistent` type-checked green and failed in the backend as "no field
+// `nonexistent` in JIT" - no line, no column, and only if you ran it.
+
+#[test]
+fn reading_a_field_that_does_not_exist_is_an_error() {
+    let errs = errors("struct S { a: i64 }\nfn f() { let s = S { a: 1 }\n println(str(s.b)) }");
+    assert!(
+        errs.iter().any(|e| e.contains("no field `b`")),
+        "expected a missing-field error, got {errs:?}"
+    );
+}
+
+#[test]
+fn reading_a_field_through_a_reference_still_resolves() {
+    // The game passes `&mut Session` everywhere, so a checker that only looked
+    // at bare struct types would go quiet on nearly every real access.
+    let errs = errors("struct S { a: i64 }\nfn f(s: &mut S) { println(str(s.b)) }");
+    assert!(
+        errs.iter().any(|e| e.contains("no field `b`")),
+        "a field read through &mut was not checked: {errs:?}"
+    );
+}
+
+#[test]
+fn a_field_that_exists_is_not_reported_and_carries_its_type() {
+    // Both halves: no false positive, and the field's TYPE flows out - a bool
+    // field assigned to an i64 has to be caught by the mismatch, which only
+    // works if the access answers something better than `Error`.
+    let errs = errors("struct S { a: bool }\nfn f(s: &S) { let x: i64 = s.a }");
+    assert!(
+        !errs.iter().any(|e| e.contains("no field")),
+        "a real field was reported missing: {errs:?}"
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("type mismatch")),
+        "the field's type did not reach the let annotation: {errs:?}"
+    );
+}
+
+#[test]
+fn a_qualified_struct_literal_checks_its_fields() {
+    // The fourth place that read a path by its last segment only. The flattener
+    // mangles another module's struct to `m::S`, so `m::S { bogus: 1 }` missed
+    // the table entirely and was accepted, while the identical same-module
+    // literal was rejected.
+    let errs = errors("mod m { struct S { a: i64 } }\nfn f() { let s = m::S { a: 1, bogus: 2 } }");
+    assert!(
+        errs.iter().any(|e| e.contains("no field `bogus`")),
+        "a qualified struct literal went unchecked: {errs:?}"
+    );
+}
+
+#[test]
+fn a_tuple_index_is_left_alone() {
+    // `.0` is a different lookup; judging it with the struct-field table would
+    // reject every tuple in the language.
+    let errs = errors("fn f() { let t = (1, 2)\n println(str(t.0)) }");
+    assert!(
+        !errs.iter().any(|e| e.contains("no field")),
+        "tuple access was judged as a struct field: {errs:?}"
+    );
+}
+
+#[test]
+fn a_method_call_is_not_a_missing_field() {
+    // `a.b(c)` is a Call whose callee is a Field. Judging that Field as a struct
+    // member reports every method in the language as missing, which is exactly
+    // what happened: the prelude's own examples lit up with `no field `scale` on
+    // `Vec2``, `no field `intersects` on `Rect``, `no field `step` on
+    // `Particle`` the moment field checking was switched on.
+    let errs = errors(
+        "struct S { a: i64 }\nimpl S { fn twice(self) -> i64 { self.a * 2 } }\n\
+         fn f(s: &S) { println(str(s.twice())) }",
+    );
+    assert!(
+        !errs.iter().any(|e| e.contains("no field")),
+        "a method call was judged as a field read: {errs:?}"
+    );
+}
