@@ -879,3 +879,122 @@ fn a_real_binding_change_is_a_change() {
     // And a material nothing has bound yet.
     assert!(super::binding_changes(&table, "Wall71", "atlas_01.png"));
 }
+
+/// An atlas named by MANY materials is READ and uploaded ONCE.
+///
+/// The case that made this necessary: an art pack is one 4096 x 4096 image -
+/// 64 MiB as RGBA - and every mesh in it carries its own material name, all
+/// pointing at that one file. Poly Souls' bailey has dozens. Before textures
+/// were shared by source, each name decoded its own copy and uploaded its own
+/// GPU texture, and standing up one courtyard cost 4.3 GB; the allocation that
+/// finally failed was 67108864 bytes, which is that atlas exactly.
+///
+/// Asserted in BYTES rather than in "it worked", because the only symptom of
+/// this regressing is memory: a scene that uploads forty copies of an atlas
+/// renders identically to one that uploads a single copy.
+#[test]
+fn one_atlas_named_by_many_materials_uploads_once() {
+    let Some((device, queue)) = device() else {
+        eprintln!("no GPU adapter - skipping the shared texture test");
+        return;
+    };
+    let _g = crate::gpu_guard();
+    let mut s = scene(&device, &queue, 64, 64);
+
+    // A real file on disk, because naming a file is now the whole mechanism -
+    // a test that handed pixels over could not exercise it.
+    let dir = std::env::temp_dir().join("aurora-shared-tex");
+    let _ = std::fs::create_dir_all(&dir);
+    let atlas = dir.join("atlas.png");
+    let other = dir.join("other.png");
+    let img = image::RgbaImage::from_pixel(64, 64, image::Rgba([200, 180, 60, 255]));
+    img.save(&atlas).expect("write the test atlas");
+    img.save(&other).expect("write the second test atlas");
+    let atlas = atlas.to_string_lossy().to_string();
+    let other = other.to_string_lossy().to_string();
+    let one = 64u64 * 64 * 4;
+
+    let base = s.renderer.tex_bytes();
+    assert_eq!(s.renderer.tex_count(), 0, "nothing shared yet");
+
+    // A free function rather than a closure: a closure capturing `s` would hold
+    // the borrow across every assertion below it.
+    fn named(s: &mut Scene, d: &wgpu::Device, q: &wgpu::Queue, file: &str, srgb_slot: bool) {
+        let src = crate::render::TexSrc::File(file);
+        let desc = MaterialDesc {
+            base_color: [1.0, 1.0, 1.0, 1.0],
+            metallic: 0.0,
+            roughness: 1.0,
+            emissive: [0.0; 3],
+            base_tex: if srgb_slot { Some(src) } else { None },
+            normal_tex: if srgb_slot { None } else { Some(src) },
+            mr_tex: None,
+            emissive_tex: None,
+        };
+        s.renderer.add_material(d, q, &desc);
+    }
+
+    // Twenty materials, every one of them naming the same file.
+    for _ in 0..20 {
+        named(&mut s, &device, &queue, &atlas, true);
+    }
+    assert_eq!(
+        s.renderer.tex_bytes() - base,
+        one,
+        "twenty materials naming one file must upload it once, not twenty times"
+    );
+    assert_eq!(s.renderer.tex_count(), 1, "one distinct image");
+
+    // A DIFFERENT file is a different image, even with identical pixels: the
+    // cache is keyed on where the image came from, not on what it contains.
+    named(&mut s, &device, &queue, &other, true);
+    assert_eq!(s.renderer.tex_bytes() - base, one * 2, "a second file");
+
+    // The SAME file in a different colour space is a different GPU texture and
+    // must not be handed over. An sRGB atlas served as a linear normal map is a
+    // silently WRONG picture, which is worse than a missing one.
+    named(&mut s, &device, &queue, &atlas, false);
+    assert_eq!(
+        s.renderer.tex_bytes() - base,
+        one * 3,
+        "the same file as sRGB and as linear are two textures"
+    );
+
+    // THE FILE IS NOT READ AGAIN once it is uploaded. Deleting it and asking for
+    // it a twenty-first time must still work: if the read still happened this
+    // would fall back to a 1x1 white pixel and the count would not move.
+    std::fs::remove_file(&atlas).expect("remove the atlas");
+    named(&mut s, &device, &queue, &atlas, true);
+    assert_eq!(
+        s.renderer.tex_bytes() - base,
+        one * 3,
+        "an uploaded file is never read again - the decode is skipped too"
+    );
+    assert_eq!(s.renderer.tex_count(), 3);
+
+    // And pixels with NO named source are never entered into the shared cache -
+    // nothing else can be holding them, and sharing them would alias two
+    // models' embedded textures onto whichever loaded first.
+    let px = vec![200u8; 64 * 64 * 4];
+    let before = s.renderer.tex_bytes();
+    for _ in 0..5 {
+        let desc = MaterialDesc {
+            base_color: [1.0, 1.0, 1.0, 1.0],
+            metallic: 0.0,
+            roughness: 1.0,
+            emissive: [0.0; 3],
+            base_tex: Some(crate::render::TexSrc::own(&px, 64, 64)),
+            normal_tex: None,
+            mr_tex: None,
+            emissive_tex: None,
+        };
+        s.renderer.add_material(&device, &queue, &desc);
+    }
+    assert_eq!(
+        s.renderer.tex_bytes(),
+        before,
+        "unnamed pixels are not entered into the shared cache at all"
+    );
+
+    let _ = std::fs::remove_file(&other);
+}

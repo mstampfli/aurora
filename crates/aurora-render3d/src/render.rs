@@ -138,15 +138,48 @@ struct MatU {
 }
 
 /// Describes a material to register.
+/// One image handed to a material, and a stable name for WHERE IT CAME FROM.
+///
+/// The name is what lets two materials share one GPU texture. Without it every
+/// material uploads its own copy of whatever pixels it was given, and an art
+/// pack is exactly the case where that is ruinous: a Synty atlas is one 4096 x
+/// 4096 image - 64 MiB as RGBA - named by dozens of different material names
+/// across a room's walls, props and buildings. Measured on Poly Souls' bailey
+/// before this existed: 4.3 GB to stand up one courtyard, and the failing
+/// allocation was 67108864 bytes, which is that atlas exactly.
+///
+/// Naming the file rather than carrying its pixels is also what stops the
+/// DECODE from happening. A caller that decodes first and hands the pixels over
+/// pays for it whether or not the image is already on the GPU, and a room loads
+/// a dozen models all naming one atlas - so that 64 MiB PNG was decoded a dozen
+/// times to produce pixels the renderer already had and immediately dropped.
+#[derive(Clone, Copy)]
+pub enum TexSrc<'a> {
+    /// Pixels this material owns - a texture embedded in one model file, or a
+    /// generated image. Uploaded for this material alone, which is correct
+    /// because nothing else can be holding them.
+    Own { px: &'a [u8], w: u32, h: u32 },
+    /// An image FILE: uploaded once for the process, shared by every material
+    /// that names it, and read from disk only when it is not already uploaded.
+    File(&'a str),
+}
+
+impl<'a> TexSrc<'a> {
+    /// Pixels with no shared source: uploaded for this material alone.
+    pub fn own(px: &'a [u8], w: u32, h: u32) -> TexSrc<'a> {
+        TexSrc::Own { px, w, h }
+    }
+}
+
 pub struct MaterialDesc<'a> {
     pub base_color: [f32; 4],
     pub metallic: f32,
     pub roughness: f32,
     pub emissive: [f32; 3],
-    pub base_tex: Option<(&'a [u8], u32, u32)>,
-    pub normal_tex: Option<(&'a [u8], u32, u32)>,
-    pub mr_tex: Option<(&'a [u8], u32, u32)>,
-    pub emissive_tex: Option<(&'a [u8], u32, u32)>,
+    pub base_tex: Option<TexSrc<'a>>,
+    pub normal_tex: Option<TexSrc<'a>>,
+    pub mr_tex: Option<TexSrc<'a>>,
+    pub emissive_tex: Option<TexSrc<'a>>,
 }
 
 impl<'a> MaterialDesc<'a> {
@@ -293,6 +326,22 @@ pub struct Renderer3D {
     /// every add/free/reupload so [`Self::mesh_bytes`] is O(1). The terrain tile
     /// cache reads it every frame to stay inside its budget.
     mesh_bytes: u64,
+    /// GPU textures shared between materials that name the same SOURCE, keyed
+    /// on that name and the colour space it was uploaded in.
+    ///
+    /// An art pack is one atlas named by dozens of material names, and without
+    /// this each of them uploaded its own copy: Poly Souls' bailey cost 4.3 GB
+    /// to stand up, all of it the same handful of images. See [`TexSrc`].
+    ///
+    /// Never evicted, deliberately: an atlas is named again by the next room
+    /// that uses the pack, and the whole point is that the second room is free.
+    /// The bound is the number of distinct image FILES a game ships, which is
+    /// small and fixed, rather than the number of materials, which is not.
+    tex_cache: std::collections::HashMap<(String, bool), Arc<wgpu::TextureView>>,
+    /// Bytes of GPU texture the cache above holds, counted once per shared
+    /// image. Exposed for the same reason as [`Self::mesh_bytes`]: the only
+    /// symptom of this going wrong is memory, so it has to be readable.
+    tex_bytes: u64,
     materials: SlotMap<Material>,
     /// A plain white material, created at startup and never freeable. A draw
     /// whose material has gone away binds this instead, which is the same
@@ -1198,6 +1247,8 @@ impl Renderer3D {
             pshadow_bg,
             meshes: SlotMap::new(),
             mesh_bytes: 0,
+            tex_cache: std::collections::HashMap::new(),
+            tex_bytes: 0,
             materials: SlotMap::new(),
             // Replaced immediately below, once `build_material` can borrow the
             // fully-formed renderer for its bind group layout.
@@ -1403,30 +1454,83 @@ impl Renderer3D {
         self.materials.insert(m)
     }
 
+    /// The GPU texture for one slot, SHARED when its source is named.
+    ///
+    /// A named source uploads once and every later material naming it gets the
+    /// same view. The colour space is part of the key because the same file is a
+    /// different GPU texture as sRGB base colour and as a linear normal map, and
+    /// handing one to the other would be a silently wrong picture rather than a
+    /// missing one.
+    fn slot_tex(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        src: Option<TexSrc>,
+        srgb: bool,
+        fallback: [u8; 4],
+    ) -> Arc<wgpu::TextureView> {
+        let file = match src {
+            None => return Arc::new(make_pixel_tex(device, queue, fallback, srgb)),
+            Some(TexSrc::Own { px, w, h }) => {
+                if w == 0 || h == 0 {
+                    return Arc::new(make_pixel_tex(device, queue, fallback, srgb));
+                }
+                return Arc::new(make_tex(device, queue, px, w, h, srgb));
+            }
+            Some(TexSrc::File(f)) => f,
+        };
+        // Already uploaded: no read, no decode, no upload.
+        let ck = (file.to_string(), srgb);
+        if let Some(v) = self.tex_cache.get(&ck) {
+            return Arc::clone(v);
+        }
+        // A file that will not load is LOUD and then flat, rather than silently
+        // flat: the whole pack draws untextured, and a grey room with no
+        // explanation is the kind of thing that gets called a lighting bug.
+        let (px, w, h) = match aurora_asset::load_texture_file(file) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("aurora: texture {file}: {e}");
+                return Arc::new(make_pixel_tex(device, queue, fallback, srgb));
+            }
+        };
+        if w == 0 || h == 0 {
+            return Arc::new(make_pixel_tex(device, queue, fallback, srgb));
+        }
+        let v = Arc::new(make_tex(device, queue, &px, w, h, srgb));
+        self.tex_cache.insert(ck, Arc::clone(&v));
+        self.tex_bytes += (w as u64) * (h as u64) * 4;
+        v
+    }
+
+    /// Is this file already uploaded in this colour space?
+    ///
+    /// For a caller that needs to know whether a material HAS a texture without
+    /// forcing the read - the base colour is replaced by white when an atlas is
+    /// attached, and that decision cannot be what makes the decode happen.
+    pub fn has_tex(&self, file: &str, srgb: bool) -> bool {
+        self.tex_cache.contains_key(&(file.to_string(), srgb))
+    }
+
     fn build_material(
-        &self,
+        &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         desc: &MaterialDesc,
     ) -> Material {
-        // Each material binds its own textures; missing ones get a 1x1 default
-        // (white base, flat normal, white metallic-roughness, white emissive).
-        let base_v = match desc.base_tex {
-            Some((px, w, h)) if w > 0 && h > 0 => make_tex(device, queue, px, w, h, true),
-            _ => make_pixel_tex(device, queue, [255, 255, 255, 255], true),
-        };
-        let normal_v = match desc.normal_tex {
-            Some((px, w, h)) if w > 0 && h > 0 => make_tex(device, queue, px, w, h, false),
-            _ => make_pixel_tex(device, queue, [128, 128, 255, 255], false),
-        };
-        let mr_v = match desc.mr_tex {
-            Some((px, w, h)) if w > 0 && h > 0 => make_tex(device, queue, px, w, h, false),
-            _ => make_pixel_tex(device, queue, [255, 255, 255, 255], false),
-        };
-        let em_v = match desc.emissive_tex {
-            Some((px, w, h)) if w > 0 && h > 0 => make_tex(device, queue, px, w, h, true),
-            _ => make_pixel_tex(device, queue, [255, 255, 255, 255], true),
-        };
+        // Textures with a named source are shared; the rest, and the missing
+        // ones, get their own (a 1x1 default: white base, flat normal, white
+        // metallic-roughness, white emissive).
+        let base_v = self.slot_tex(device, queue, desc.base_tex, true, [255, 255, 255, 255]);
+        let normal_v = self.slot_tex(device, queue, desc.normal_tex, false, [128, 128, 255, 255]);
+        let mr_v = self.slot_tex(device, queue, desc.mr_tex, false, [255, 255, 255, 255]);
+        let em_v = self.slot_tex(
+            device,
+            queue,
+            desc.emissive_tex,
+            true,
+            [255, 255, 255, 255],
+        );
 
         let u = MatU {
             base_color: desc.base_color,
@@ -1519,6 +1623,21 @@ impl Renderer3D {
     /// these units.
     pub fn mesh_bytes(&self) -> u64 {
         self.mesh_bytes
+    }
+
+    /// Total bytes of GPU texture held by the SHARED texture cache, counted
+    /// once per distinct image rather than once per material that names it.
+    ///
+    /// Readable for the same reason `mesh_bytes` is: when texture sharing
+    /// breaks, the only symptom is memory, and memory is the one thing a test
+    /// cannot see unless something reports it.
+    pub fn tex_bytes(&self) -> u64 {
+        self.tex_bytes
+    }
+
+    /// How many distinct images the shared texture cache holds.
+    pub fn tex_count(&self) -> usize {
+        self.tex_cache.len()
     }
 
     pub fn begin(&mut self) {

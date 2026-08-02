@@ -457,6 +457,27 @@ window. Colors are 0..1 floats; angles are radians; handles are `i64`.
 | `r3d_anim_clip(h) -> i64` | WHICH clip is playing | -1 for a handle that is not a model. `r3d_anim_done` and `r3d_anim_time` both answer about the current clip without ever saying which one it is, so a state machine without this keeps its own copy of what it last asked for - and that copy goes stale the moment anything else plays a clip on the same model |
 | `r3d_anim_clip_upper(h) -> i64` | which clip the upper-body overlay is playing | -1 when no overlay is running |
 | `r3d_anim_blend_clip(h) -> i64` | the SECOND clip of a sustained base blend | -1 when the base is a single clip |
+
+### What the loaded art costs
+
+Standing a level up is the largest allocation a game makes, and the only symptom
+of getting it wrong is memory - a scene that uploads forty copies of one atlas
+renders exactly like a scene that uploads one, so no frame, timing or rule
+assertion can tell them apart. These make it assertable.
+
+| Builtin | Signature | Notes |
+|---|---|---|
+| `r3d_mesh_bytes() -> i64` | GPU vertex + index bytes held by live meshes | the real allocation, not a proxy |
+| `r3d_mesh_count() -> i64` | how many meshes are live | freed ones do not count |
+| `r3d_mesh_slots() -> i64` | mesh slots ever allocated, live or free | a load/free loop keeps this FLAT while `mesh_count` cycles; a growing gap is a leak |
+| `r3d_texture_bytes() -> i64` | GPU texture bytes held | counted once per distinct image, not once per material |
+| `r3d_texture_count() -> i64` | how many distinct images are uploaded | a pack's atlas is ONE however many materials name it |
+
+Textures are shared by their SOURCE. Two materials that name the same file get
+one upload; a game binding a pack's atlas to the fifty material names its meshes
+happen to carry pays for the atlas once. The colour space is part of that
+identity, so the same file used as an sRGB base colour and as a linear normal
+map is correctly two textures.
 | `r3d_anim_blend_weight(h) -> f64` | how far through a sustained base blend the base layer is (0 = first clip, 1 = second) | -1 when not blending. A walking character IS a two-clip blend, so this is the only thing that says what its legs look like: a body thrown between standing and sprinting changes no clip and advances every clock normally |
 | `r3d_material_count(h) -> i64` | how many drawable pieces (and so materials) a model has | |
 | `r3d_material_name(h, i) -> str` | the asset's own name for material `i` | `""` for a stale handle or a bad index. The counterpart of `r3d_clip_name`, for textures: `r3d_material_texture` binds BY NAME, so a pack whose material is called `Weapons` rather than `lambert1` renders white and says nothing. Guessing the name is how a whole weapon set stays untextured for a project's lifetime; asking takes one run |

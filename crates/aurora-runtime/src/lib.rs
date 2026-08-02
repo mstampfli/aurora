@@ -3018,6 +3018,42 @@ pub extern "C" fn aurora_r3d_root_dz(h: i64) -> f64 {
 pub extern "C" fn aurora_r3d_anim_clip(h: i64) -> i64 {
     aurora_window::imm_r3d_anim_clip(h)
 }
+/// `r3d_mesh_bytes() -> i64`: bytes of GPU vertex + index buffer the live
+/// meshes hold.
+///
+/// What the loaded art COSTS, so a game can assert on it. Standing a room up is
+/// the largest allocation a game makes, and the only symptom of getting it
+/// wrong is memory: a scene that uploads forty copies of one atlas renders
+/// exactly like a scene that uploads one, and no still frame, timing or rule
+/// assertion can tell them apart.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_mesh_bytes() -> i64 {
+    aurora_window::imm_r3d_mesh_bytes()
+}
+/// `r3d_mesh_count() -> i64`: how many meshes are live.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_mesh_count() -> i64 {
+    aurora_window::imm_r3d_mesh_count()
+}
+/// `r3d_mesh_slots() -> i64`: mesh slots ever allocated, live or free.
+///
+/// A load/free workload keeps this flat while `r3d_mesh_count` cycles. A gap
+/// that grows is the signature of a leak.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_mesh_slots() -> i64 {
+    aurora_window::imm_r3d_mesh_slots()
+}
+/// `r3d_texture_bytes() -> i64`: bytes of GPU texture held, counted ONCE per
+/// distinct image rather than once per material that names it.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_texture_bytes() -> i64 {
+    aurora_window::imm_r3d_texture_bytes()
+}
+/// `r3d_texture_count() -> i64`: how many distinct images are uploaded.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_texture_count() -> i64 {
+    aurora_window::imm_r3d_texture_count()
+}
 /// `r3d_anim_blend_clip(h) -> i64`: the SECOND clip of a sustained base blend,
 /// or -1 when the base layer is a single clip.
 #[no_mangle]
@@ -3521,7 +3557,10 @@ pub extern "C" fn aurora_input_step() {
     // through a frame's logic - the button that was down when movement was
     // resolved is up by the time the attack is - and would make the edge
     // snapshot below compare against a state that no longer exists.
-    aurora_window::pad::poll();
+    // Through `poll_pads`, which reads the hardware only when this process
+    // should be receiving it - see its comment. Calling `pad::poll` here read
+    // whatever the player was doing on a pad in ANOTHER game.
+    aurora_window::poll_pads();
     let mut held = [0u64; INPUT_WORDS];
     let mut c = 0;
     while c < INPUT_CODE_MAX {

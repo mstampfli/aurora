@@ -15,7 +15,7 @@ use crate::mesh::MeshData;
 // asset side stripped `:` too, and a comment there claimed the two agreed. They did
 // not, so a `mixamorig:` bone resolved here and nowhere else.
 use crate::model::{find_name, Model};
-use crate::render::{MaterialDesc, MaterialId, MeshId, Renderer3D};
+use crate::render::{MaterialDesc, MaterialId, MeshId, Renderer3D, TexSrc};
 use aurora_slot::{Key, SlotMap};
 
 /// The builtin ABI answers "which index" with -1 for "no such thing", so the two
@@ -51,7 +51,10 @@ fn skeleton_fingerprint(skel: &crate::model::Skeleton) -> u64 {
 /// second copy of the game could fit on an 8 GB card.
 struct Asset {
     prims: Vec<(MeshId, MaterialId)>,
-    model: Option<Model>,
+    /// SHARED with the parsed-model cache and with every other asset built from
+    /// the same file. Two assets differ when their MATERIALS differ; the
+    /// geometry, skeleton and clips behind them are the same parse.
+    model: Option<Arc<Model>>,
     skinned: bool,
     /// Axis-aligned bounds of the whole asset in model space, as
     /// `[min_x, min_y, min_z, max_x, max_y, max_z]`. Computed once here because the
@@ -61,6 +64,12 @@ struct Asset {
     /// The file this came from, and the key it is cached under. `None` for a primitive
     /// built in code, which is cheap and never shared.
     path: Option<String>,
+    /// The key the PARSE behind this asset is cached under, when it came from
+    /// one. Carried so that freeing the last asset built from a file also
+    /// releases the parse - otherwise the parsed-model cache is a store that
+    /// only ever grows, which is fine for a game with a fixed set of art and
+    /// wrong for one that streams a world.
+    model_key: Option<String>,
 }
 
 /// One drawable: a shared [`Asset`] plus the state that must NOT be shared - where this
@@ -119,6 +128,32 @@ pub struct Scene {
     /// before an atlas was registered would be handed straight back afterwards,
     /// still untextured, with nothing to indicate why.
     material_textures: std::collections::HashMap<String, String>,
+    /// Clip libraries already read and retargeted, keyed on the file and the
+    /// SKELETON they were retargeted onto.
+    ///
+    /// Both are what the work depends on, and neither varies across a cast that
+    /// shares a rig - which is the only situation a shared animation library
+    /// makes sense in. Poly Souls loads 43 clip files onto each of five bodies
+    /// in one room, and before this the last four characters paid for 172 full
+    /// FBX parses to produce results identical to the first character's.
+    ///
+    /// Held as `Arc` so the hit is a refcount rather than a copy; the clips are
+    /// then cloned into the model that asked, because a `Model` owns its clips
+    /// and samples them by index.
+    clip_cache: std::collections::HashMap<(String, u64), Arc<Vec<crate::model::Clip>>>,
+    /// Files already PARSED, keyed on everything that changes the parse - the
+    /// path, the skeleton it was rebound to, the moveset gathered into it - and
+    /// deliberately NOT on the material bindings in force at the time.
+    ///
+    /// Which texture a material names cannot change a mesh's vertices, and the
+    /// asset key includes the binding generation because the uploaded MATERIALS
+    /// do depend on it. Keying the parse the same way meant a room re-read files
+    /// it already had in memory: measured on Poly Souls' bailey, 244 loads of
+    /// 105 distinct files. Half of those are `assets::textured_mesh`, which
+    /// loads a file to read its material names off it, binds them, and loads it
+    /// again - a game-side workaround for exactly this, and one that costs
+    /// nothing now.
+    models: std::collections::HashMap<String, Arc<Model>>,
     material_generation: u64,
 }
 
@@ -162,6 +197,8 @@ impl Scene {
             terrain: None,
             terrain_color: [0.32, 0.40, 0.24],
             material_textures: std::collections::HashMap::new(),
+            clip_cache: std::collections::HashMap::new(),
+            models: std::collections::HashMap::new(),
             material_generation: 0,
         };
         s.update_camera();
@@ -356,6 +393,30 @@ impl Scene {
         self.material_generation += 1;
     }
 
+    /// What the loaded art COSTS, so a check can assert on it.
+    ///
+    /// Standing a room up is the single largest allocation a game makes and the
+    /// only symptom of getting it wrong is memory - a scene that uploads forty
+    /// copies of one atlas renders exactly like a scene that uploads one. These
+    /// existed inside the renderer, their doc comments said a growing gap
+    /// between them was the signature of a leak, and nothing outside could read
+    /// them, so no check in any game could ever assert it.
+    pub fn mesh_bytes(&self) -> u64 {
+        self.renderer.mesh_bytes()
+    }
+    pub fn mesh_count(&self) -> usize {
+        self.renderer.mesh_count()
+    }
+    pub fn mesh_slot_count(&self) -> usize {
+        self.renderer.mesh_slot_count()
+    }
+    pub fn texture_bytes(&self) -> u64 {
+        self.renderer.tex_bytes()
+    }
+    pub fn texture_count(&self) -> usize {
+        self.renderer.tex_count()
+    }
+
     /// How many times the material table has actually CHANGED.
     ///
     /// Exposed so a test can assert that a redundant rebind does not move it -
@@ -384,18 +445,26 @@ impl Scene {
         // The key names everything that changes what gets uploaded: which file,
         // which skeleton it was bound to, which atlases were registered, and
         // which moveset was gathered into it.
-        let mut key = Scene::asset_key(path);
+        // TWO keys, because two different things are being cached.
+        //
+        // `model_key` names everything that changes the PARSE: the file, the
+        // skeleton it was rebound to, the moveset gathered into it. `key` adds
+        // the material binding generation, because the uploaded materials do
+        // depend on which atlas was bound when they were built - but a mesh's
+        // vertices do not, and keying the parse on the generation too made a
+        // room re-read files it already had in memory.
+        let mut model_key = Scene::asset_key(path);
         if let Some(skel) = rebind {
-            key.push_str(&format!("#bound:{}", skeleton_fingerprint(skel)));
+            model_key.push_str(&format!("#bound:{}", skeleton_fingerprint(skel)));
         }
-        key.push_str(&format!("#m{}", self.material_generation));
         if !clips.is_empty() {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
             clips.hash(&mut h);
             rename.hash(&mut h);
-            key.push_str(&format!("#clips:{}", h.finish()));
+            model_key.push_str(&format!("#clips:{}", h.finish()));
         }
+        let key = format!("{model_key}#m{}", self.material_generation);
         if let Some(asset) = self.assets.get(&key) {
             return self
                 .items
@@ -405,6 +474,11 @@ impl Scene {
                     hidden_joints: 0,
                 })
                 .to_i64();
+        }
+        // Already parsed under a different set of bindings: reuse it whole.
+        if let Some(m) = self.models.get(&model_key) {
+            let m = Arc::clone(m);
+            return self.upload_model(device, queue, key, model_key, m);
         }
         let mut model = match Model::load(path) {
             Ok(m) => m,
@@ -430,18 +504,104 @@ impl Scene {
         // no usable rest pose of their own, and a joint's local rotation means
         // nothing without the rest orientation it was authored from.
         if !clips.is_empty() {
+            self.gather_clips(&mut model, source_rest, clips, rename, translate);
+        }
+        let model = Arc::new(model);
+        self.models.insert(model_key.clone(), Arc::clone(&model));
+        self.upload_model(device, queue, key, model_key, model)
+    }
+
+    /// Read a moveset onto `model`'s skeleton, reusing anything already read.
+    ///
+    /// The reference rig is loaded once for the whole library: clip files ship no
+    /// usable rest pose of their own, and a joint's local rotation means nothing
+    /// without the rest orientation it was authored from. It is loaded only when
+    /// something is actually missing from the cache, because a cast that shares a
+    /// rig needs it exactly once for the whole process.
+    ///
+    /// A clip file that fails is reported and skipped: one bad export in a
+    /// library of hundreds should cost that clip, not the character.
+    fn gather_clips(
+        &mut self,
+        model: &mut Model,
+        source_rest: &str,
+        clips: &[&str],
+        rename: &[(&str, &str)],
+        translate: &[&str],
+    ) {
+        let Some(target) = model.skeleton.clone() else {
+            eprintln!("aurora: cannot add clips to a model with no skeleton");
+            return;
+        };
+        let rig = skeleton_fingerprint(&target);
+        let missing: Vec<&&str> = clips
+            .iter()
+            .filter(|c| !self.clip_cache.contains_key(&((**c).to_string(), rig)))
+            .collect();
+        let rest = if missing.is_empty() {
+            None
+        } else {
             match crate::model::Model::load_skeleton(source_rest) {
-                Ok(rest) => {
-                    for clip in clips {
-                        if let Err(e) = model.add_clips_from(clip, &rest, rename, translate) {
+                Ok(r) => Some(r),
+                Err(e) => {
+                    eprintln!("aurora: no retargeting reference rig: {e}");
+                    return;
+                }
+            }
+        };
+        for clip in clips {
+            let ck = ((*clip).to_string(), rig);
+            let got = match self.clip_cache.get(&ck) {
+                Some(c) => Arc::clone(c),
+                None => {
+                    // `rest` is Some whenever anything was missing, and this arm
+                    // only runs for something missing.
+                    let Some(rest) = rest.as_ref() else { continue };
+                    // Parsed through the shared model cache, so a clip file is
+                    // READ once however many rigs retarget it. A modular cast
+                    // has several rigs - a body of fewer parts carries fewer
+                    // bones - so the retarget cache above genuinely misses
+                    // across characters while the parse behind it never should.
+                    let Some(library) = self.parsed(clip) else { continue };
+                    match crate::model::retarget_clips_from(
+                        &library, clip, rest, &target, rename, translate,
+                    ) {
+                        Ok(cs) => {
+                            let cs = Arc::new(cs);
+                            self.clip_cache.insert(ck, Arc::clone(&cs));
+                            cs
+                        }
+                        Err(e) => {
                             eprintln!("aurora: {e}");
+                            continue;
                         }
                     }
                 }
-                Err(e) => eprintln!("aurora: no retargeting reference rig: {e}"),
+            };
+            model.clips.extend(got.iter().cloned());
+        }
+    }
+
+    /// A parsed model from the shared cache, reading the file only on a miss.
+    ///
+    /// Keyed on the path alone: this is the raw parse, before any rebinding or
+    /// moveset, so nothing about who wants it can change what comes back.
+    fn parsed(&mut self, path: &str) -> Option<Arc<Model>> {
+        let key = Scene::asset_key(path);
+        if let Some(m) = self.models.get(&key) {
+            return Some(Arc::clone(m));
+        }
+        match Model::load(path) {
+            Ok(m) => {
+                let m = Arc::new(m);
+                self.models.insert(key, Arc::clone(&m));
+                Some(m)
+            }
+            Err(e) => {
+                eprintln!("aurora: {e}");
+                None
             }
         }
-        self.upload_model(device, queue, key, model)
     }
 
     /// Upload a finished [`Model`] as a cached asset and return a handle to it.
@@ -457,31 +617,43 @@ impl Scene {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         key: String,
-        model: Model,
+        model_key: String,
+        model: Arc<Model>,
     ) -> i64 {
-        // Atlases named by material, decoded once for this load rather than once
-        // per primitive - a body is a dozen primitives all naming the same one.
-        let mut atlases: std::collections::HashMap<&str, Option<crate::model::Tex>> =
-            std::collections::HashMap::new();
-        for p in &model.primitives {
-            if p.texture.is_some() || p.material.is_empty() {
-                continue;
-            }
-            let Some(file) = self.material_textures.get(p.material.as_str()) else {
-                continue;
-            };
-            atlases.entry(p.material.as_str()).or_insert_with(|| {
-                aurora_asset::load_texture_file(file)
-                    .map_err(|e| eprintln!("aurora: atlas for material {}: {e}", p.material))
-                    .ok()
-            });
-        }
+        // An atlas is NAMED here, not decoded here.
+        //
+        // This used to read and decode the file - once per material NAME, which
+        // is the thing that varies - and hand the pixels to `add_material`,
+        // which then uploaded its own GPU texture from each copy. A Synty pack
+        // gives every mesh its own material name (Wall71, lambert179, Wall73)
+        // and points all of them at one 4096 x 4096 atlas, so a room decoded
+        // 64 MiB of RGBA per name and uploaded it per primitive. One courtyard
+        // cost 4.3 GB.
+        //
+        // The renderer now holds one texture per (file, colour space) for the
+        // whole process and reads the file only when it does not already have
+        // it - so the second room that uses a pack pays nothing at all, and the
+        // decode does not happen either. See `TexSrc`.
+        // Owned, because the loop below takes `&mut self.renderer` and cannot
+        // also hold a borrow of `self.material_textures`.
+        let atlas_file: std::collections::HashMap<String, String> = model
+            .primitives
+            .iter()
+            .filter(|p| p.texture.is_none() && !p.material.is_empty())
+            .filter_map(|p| {
+                self.material_textures
+                    .get(p.material.as_str())
+                    .map(|f| (p.material.clone(), f.clone()))
+            })
+            .collect();
 
         let mut prims = Vec::new();
         let mut skinned = false;
         for p in &model.primitives {
             let mesh = self.renderer.add_mesh(device, &p.mesh);
-            let atlas = atlases.get(p.material.as_str()).and_then(|t| t.as_ref());
+            let atlas = atlas_file
+                .get(p.material.as_str())
+                .map(|f| TexSrc::File(f.as_str()));
             let desc = MaterialDesc {
                 // An attached atlas REPLACES the material's flat colour rather
                 // than tinting it. The file's colour describes a material that
@@ -496,20 +668,26 @@ impl Scene {
                 metallic: p.metallic,
                 roughness: p.roughness,
                 emissive: p.emissive,
+                // The model's OWN texture wins over an engine-supplied atlas,
+                // and it is unshared: pixels embedded in one file belong to that
+                // file, so nothing else can be holding them.
                 base_tex: p
                     .texture
                     .as_ref()
-                    .or(atlas)
-                    .map(|(px, w, h)| (px.as_slice(), *w, *h)),
+                    .map(|(px, w, h)| TexSrc::own(px.as_slice(), *w, *h))
+                    .or(atlas),
                 normal_tex: p
                     .normal_tex
                     .as_ref()
-                    .map(|(px, w, h)| (px.as_slice(), *w, *h)),
-                mr_tex: p.mr_tex.as_ref().map(|(px, w, h)| (px.as_slice(), *w, *h)),
+                    .map(|(px, w, h)| TexSrc::own(px.as_slice(), *w, *h)),
+                mr_tex: p
+                    .mr_tex
+                    .as_ref()
+                    .map(|(px, w, h)| TexSrc::own(px.as_slice(), *w, *h)),
                 emissive_tex: p
                     .emissive_tex
                     .as_ref()
-                    .map(|(px, w, h)| (px.as_slice(), *w, *h)),
+                    .map(|(px, w, h)| TexSrc::own(px.as_slice(), *w, *h)),
             };
             let mat = self.renderer.add_material(device, queue, &desc);
             prims.push((mesh, mat));
@@ -532,6 +710,7 @@ impl Scene {
             skinned,
             bounds,
             path: Some(key.clone()),
+            model_key: Some(model_key),
         });
         self.assets.insert(key, Arc::clone(&asset));
         self.items
@@ -578,19 +757,21 @@ impl Scene {
         // Keyed on every part and everything that changes what gets uploaded, so
         // two characters built from the same recipe share one upload and two
         // built from different armour do not collide.
-        let mut key = String::from("#assembly");
+        // Two keys, for the same reason as `load_model_inner`: the parse does not
+        // depend on which atlas happened to be bound when it ran.
+        let mut model_key = String::from("#assembly");
         for p in paths {
-            key.push(':');
-            key.push_str(&Scene::asset_key(p));
+            model_key.push(':');
+            model_key.push_str(&Scene::asset_key(p));
         }
-        key.push_str(&format!("#m{}", self.material_generation));
         if !clips.is_empty() {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
             clips.hash(&mut h);
             rename.hash(&mut h);
-            key.push_str(&format!("#clips:{}", h.finish()));
+            model_key.push_str(&format!("#clips:{}", h.finish()));
         }
+        let key = format!("{model_key}#m{}", self.material_generation);
         if let Some(asset) = self.assets.get(&key) {
             return self
                 .items
@@ -600,6 +781,13 @@ impl Scene {
                     hidden_joints: 0,
                 })
                 .to_i64();
+        }
+
+        // Every part already merged, rebound and gathered under a previous set of
+        // bindings: none of that has to happen again.
+        if let Some(m) = self.models.get(&model_key) {
+            let m = Arc::clone(m);
+            return self.upload_model(device, queue, key, model_key, m);
         }
 
         let mut parts = Vec::with_capacity(paths.len());
@@ -647,20 +835,19 @@ impl Scene {
         };
         model.skeleton = Some(rig);
 
+        // Through `gather_clips`, the same one `load_model_inner` uses.
+        //
+        // This was a second copy of the moveset loop, and being a second copy it
+        // did not get the caching the first one did: every clip file was read
+        // again for every assembled body, which is every character in the game -
+        // the whole cast goes through THIS path, not the other one.
         if !clips.is_empty() {
-            match crate::model::Model::load_skeleton(source_rest) {
-                Ok(rest) => {
-                    for clip in clips {
-                        if let Err(e) = model.add_clips_from(clip, &rest, rename, translate) {
-                            eprintln!("aurora: {e}");
-                        }
-                    }
-                }
-                Err(e) => eprintln!("aurora: no retargeting reference rig: {e}"),
-            }
+            self.gather_clips(&mut model, source_rest, clips, rename, translate);
         }
 
-        self.upload_model(device, queue, key, model)
+        let model = Arc::new(model);
+        self.models.insert(model_key.clone(), Arc::clone(&model));
+        self.upload_model(device, queue, key, model_key, model)
     }
 
     /// The cache key for a model path: the canonical filesystem path when it resolves, and
@@ -687,6 +874,7 @@ impl Scene {
                     skinned: false,
                     bounds,
                     path: None,
+                    model_key: None,
                 }),
                 player: AnimPlayer::new(),
                 hidden_joints: 0,
@@ -754,6 +942,17 @@ impl Scene {
         if let Some(path) = asset.path.clone() {
             if Arc::strong_count(&asset) == 2 {
                 self.assets.remove(&path);
+                // And the parse behind it, when no other asset is built from it.
+                // Two references means this asset and the cache entry we just
+                // removed; the model's own count then tells us whether any other
+                // asset - the same file under different bindings - still holds
+                // it. Without this the parsed-model cache only ever grows.
+                if let Some(mk) = &asset.model_key {
+                    let others = asset.model.as_ref().map(Arc::strong_count).unwrap_or(0);
+                    if others <= 2 {
+                        self.models.remove(mk);
+                    }
+                }
             }
         }
         if Arc::strong_count(&asset) == 1 {

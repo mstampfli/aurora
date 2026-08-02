@@ -1077,25 +1077,7 @@ impl Model {
         let Some(target) = &self.skeleton else {
             return Err(format!("cannot add clips to {path}: model has no skeleton"));
         };
-        let library = Model::load(path)?;
-        let Some(source) = &library.skeleton else {
-            return Err(format!("{path} has no skeleton to retarget from"));
-        };
-        let opts = Retarget {
-            source,
-            source_rest,
-            target,
-            rename,
-            translate,
-        };
-
-        let mut added = Vec::new();
-        for clip in &library.clips {
-            match clip.retarget(&opts) {
-                Ok(c) => added.push(c),
-                Err(e) => eprintln!("aurora: {e}"),
-            }
-        }
+        let added = retargeted_clips(path, source_rest, target, rename, translate)?;
         let n = added.len();
         self.clips.extend(added);
         Ok(n)
@@ -1553,4 +1535,65 @@ fn rgba_from_gltf(img: &gltf::image::Data) -> Option<(Vec<u8>, u32, u32)> {
         _ => return None,
     };
     Some((rgba, w, h))
+}
+
+/// Read a clip library and retarget every clip in it onto `target`.
+///
+/// Split out of [`Model::add_clips_from`] so a CALLER CAN CACHE THE RESULT. The
+/// work here is a full FBX parse plus one retarget per clip, and it depends on
+/// exactly two things: the file, and the skeleton being retargeted onto. A game
+/// whose cast shares one rig - which is the normal case, and the only case a
+/// shared animation library makes sense in - was paying for both once per
+/// character. Poly Souls loads 43 clip files onto each of five bodies in a room
+/// and every one of those 215 parses produced identical output for the last four
+/// characters.
+///
+/// Clips that retarget to nothing are reported and skipped rather than aborting
+/// the file, so one bad export does not cost a library.
+pub fn retargeted_clips(
+    path: &str,
+    source_rest: &Skeleton,
+    target: &Skeleton,
+    rename: &[(&str, &str)],
+    translate: &[&str],
+) -> Result<Vec<Clip>, String> {
+    let library = Model::load(path)?;
+    retarget_clips_from(&library, path, source_rest, target, rename, translate)
+}
+
+/// The same, from a library ALREADY PARSED.
+///
+/// The parse depends only on the file; the retarget depends on the file and the
+/// target rig. Splitting them is what lets a caller parse a clip once and
+/// retarget it onto every rig that wants it - and a modular cast does have
+/// several rigs, because a body assembled from fewer parts carries fewer bones,
+/// so a retarget cache keyed on the rig misses across characters while the parse
+/// behind it would have hit every time. Measured on Poly Souls: 43 clip files
+/// read three times each for one room.
+pub fn retarget_clips_from(
+    library: &Model,
+    path: &str,
+    source_rest: &Skeleton,
+    target: &Skeleton,
+    rename: &[(&str, &str)],
+    translate: &[&str],
+) -> Result<Vec<Clip>, String> {
+    let Some(source) = &library.skeleton else {
+        return Err(format!("{path} has no skeleton to retarget from"));
+    };
+    let opts = Retarget {
+        source,
+        source_rest,
+        target,
+        rename,
+        translate,
+    };
+    let mut added = Vec::new();
+    for clip in &library.clips {
+        match clip.retarget(&opts) {
+            Ok(c) => added.push(c),
+            Err(e) => eprintln!("aurora: {e}"),
+        }
+    }
+    Ok(added)
 }

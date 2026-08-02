@@ -64,6 +64,20 @@ struct ImmApp {
     /// 3D renders offscreen on demand (`r3d_capture`); input comes from the
     /// inject_* builtins or a replay tape.
     headless: bool,
+    /// Does this window have the keyboard focus?
+    ///
+    /// Keyboard and mouse arrive as winit events, which only reach the focused
+    /// window, so they need no such flag. A GAMEPAD does: gilrs reads the device
+    /// itself, and a device does not know or care which window is in front. So
+    /// without this a background process reads the pad somebody is using in
+    /// another game - which is exactly how it was found, with a headless test
+    /// run picking up a DualSense being used to play something else, and every
+    /// timing-sensitive check in the suite going intermittently red because of
+    /// it.
+    ///
+    /// True until told otherwise: a window that never receives a focus event is
+    /// the only window there is.
+    focused: bool,
     /// Lazily-created headless GPU + scene (only when 3D builtins are used).
     hgfx: Option<HeadlessGfx>,
     /// Present counter (frames elapsed), for AURORA_MAX_FRAMES and tapes.
@@ -116,6 +130,7 @@ impl ApplicationHandler for ImmApp {
     fn window_event(&mut self, _el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => self.open = false,
+            WindowEvent::Focused(on) => self.focused = on,
             WindowEvent::Resized(size) => {
                 self.win_size = (size.width.max(1) as f64, size.height.max(1) as f64);
                 // Track the REAL window size so the cursor mapping + surface_w()/_h()
@@ -288,6 +303,7 @@ pub fn open(width: u32, height: u32) {
         dmg_oc: 0.0,
         blur: 0.0,
         headless,
+        focused: true,
         hgfx: None,
         frame: 0,
         max_frames,
@@ -1245,6 +1261,38 @@ pub fn r3d_anim_stop_upper(handle: i64, fade: f32) {
         s.anim_stop_upper(handle, fade);
     });
 }
+/// What the loaded art costs: GPU mesh bytes, live meshes, mesh slots ever
+/// allocated, GPU texture bytes and distinct shared images.
+pub fn r3d_mesh_bytes() -> i64 {
+    with_gfx(0, |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.mesh_bytes() as i64
+    })
+}
+pub fn r3d_mesh_count() -> i64 {
+    with_gfx(0, |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.mesh_count() as i64
+    })
+}
+pub fn r3d_mesh_slots() -> i64 {
+    with_gfx(0, |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.mesh_slot_count() as i64
+    })
+}
+pub fn r3d_texture_bytes() -> i64 {
+    with_gfx(0, |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.texture_bytes() as i64
+    })
+}
+pub fn r3d_texture_count() -> i64 {
+    with_gfx(0, |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.texture_count() as i64
+    })
+}
 pub fn r3d_clip_count(handle: i64) -> i64 {
     with_gfx(0, |gf| {
         let (_, _, s) = gf.scene_mut();
@@ -1416,6 +1464,36 @@ pub fn r3d_present(hud_rgba: &[u8], hud_w: u32, hud_h: u32) -> bool {
         }
         app.open
     })
+}
+
+/// Read the gamepads, but only when this process should be receiving them.
+///
+/// A gamepad is not delivered by the window system: gilrs reads the device, and
+/// the device has no idea which window is in front. So a headless test - or a
+/// game sitting behind another one - reads whatever the player is doing on the
+/// pad RIGHT NOW, in whatever they are actually playing.
+///
+/// That is not hypothetical. It was found by a headless check going
+/// intermittently red while a DualSense was being used to play a different game
+/// on the same machine: the suite was reading real button presses, so "does
+/// holding dodge spend stamina" answered whatever Dark Souls was being told at
+/// that moment. Every timing-sensitive script in the gate was affected and the
+/// failures looked like a physics regression.
+///
+/// Keyboard and mouse need none of this - winit only delivers them to the
+/// focused window - which is exactly why the hole was pad-shaped.
+pub fn poll_pads() {
+    let hardware = IMM.with(|s| {
+        s.borrow()
+            .as_ref()
+            .map(|(_, app)| !app.headless && app.focused)
+            .unwrap_or(false)
+    });
+    if hardware {
+        crate::pad::poll();
+    } else {
+        crate::pad::release_hardware();
+    }
 }
 
 /// Per-present bookkeeping shared by both present paths: run the input tape

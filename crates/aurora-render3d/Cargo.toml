@@ -25,3 +25,8 @@ bytemuck = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 aurora-fixtures.workspace = true
+# Tests only: writing a real PNG for the shared-texture test. Naming a FILE is
+# the whole mechanism now, so a test that handed pixels over could not exercise
+# it - and the assertion that an uploaded file is never READ again needs a file
+# that exists and can then be deleted.
+image = { version = "0.25", default-features = false, features = ["png"] }

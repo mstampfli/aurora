@@ -376,6 +376,36 @@ fn with_backend<R>(f: impl FnOnce(&mut Backend) -> R) -> Option<R> {
 /// Called from the frame boundary - the same one that advances the keyboard
 /// edge snapshot - so a pad button gets `input_pressed` for free and cannot
 /// change state halfway through a frame's logic.
+/// Forget every PHYSICAL pad, keeping injected ones.
+///
+/// Called when this process should not be receiving hardware input - it is
+/// headless, or its window does not have focus. Clearing rather than freezing,
+/// because a button held at the moment focus was lost would otherwise stay held
+/// forever: alt-tab out mid-roll and come back to a character still rolling.
+///
+/// Injected pads are deliberately untouched. They are not hardware, nothing
+/// outside the process can be pressing them, and they are the only pads a
+/// headless test has.
+pub fn release_hardware() {
+    let slots = with_backend(|b| {
+        let mut had = [false; PAD_MAX];
+        for (i, s) in b.slots.iter_mut().enumerate() {
+            had[i] = s.is_some();
+            *s = None;
+        }
+        had
+    });
+    let Some(slots) = slots else { return };
+    PADS.with(|p| {
+        let mut pads = p.borrow_mut();
+        for (i, had) in slots.iter().enumerate() {
+            if *had {
+                pads[i] = Pad::new();
+            }
+        }
+    });
+}
+
 pub fn poll() {
     let seen = with_backend(|b| {
         // gilrs caches state only as its event queue is drained, so this is not
@@ -576,5 +606,46 @@ mod tests {
         for i in 0..PAD_MAX {
             inject_disconnect(i);
         }
+    }
+}
+
+#[cfg(test)]
+mod focus_tests {
+    use super::*;
+
+    // A pad this process should not be reading is RELEASED, not frozen.
+    //
+    // The bug: gilrs reads the device, not the window, so a headless test - or a
+    // game sitting behind another one - sees whatever the player is doing on the
+    // pad in whatever they are ACTUALLY playing. It was found with a DualSense
+    // being used for a different game on the same machine while the suite ran,
+    // and it made six scripts fail intermittently with messages that all looked
+    // like gameplay regressions.
+    //
+    // Released rather than frozen, because a button held at the moment focus was
+    // lost would otherwise stay held forever: alt-tab out mid-roll and come back
+    // to a character still rolling.
+    #[test]
+    fn releasing_the_hardware_keeps_injected_pads() {
+        // An injected pad is not hardware. Nothing outside this process can be
+        // pressing it, and in a headless run it is the only pad there is - so it
+        // has to survive, or every scripted controller test goes dark.
+        inject_button(0, BTN_SOUTH, true);
+        inject_axis(0, AXIS_LEFT_X, 0.75);
+        assert!(connected(0), "an injected pad reports connected");
+        assert!(button(0, BTN_SOUTH));
+
+        release_hardware();
+
+        assert!(
+            connected(0),
+            "an injected pad is not hardware and must survive losing focus"
+        );
+        assert!(button(0, BTN_SOUTH), "and keeps the state it was given");
+        assert!((axis(0, AXIS_LEFT_X) - 0.75).abs() < 1e-9);
+
+        inject_disconnect(0);
+        assert!(!connected(0));
+        assert!(!button(0, BTN_SOUTH), "unplugging clears the state too");
     }
 }

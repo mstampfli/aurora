@@ -328,6 +328,7 @@ dependencies = [
  "aurora-slot",
  "bytemuck",
  "glam",
+ "image",
  "pollster",
  "wgpu",
 ]
