@@ -22,8 +22,87 @@ pub type MaterialId = aurora_slot::Key<Material>;
 
 /// Maximum joints per skinned mesh (fits a 16 KiB uniform: 128 * 64 B = 8 KiB).
 pub const MAX_JOINTS: usize = 128;
-/// Maximum simultaneous point lights.
-pub const MAX_LIGHTS: usize = 16;
+/// The frame uniform, declared ONCE for both the CPU and the GPU.
+///
+/// It was three statements of one layout: this struct, and `struct Globals` in
+/// each of the two shader sources - which were byte-identical, and had to stay
+/// that way with nothing checking. A uniform whose Rust layout disagrees with
+/// its WGSL declaration is the worst kind of bug this renderer can have: wgpu
+/// validates the BINDING, not the field offsets, so the GPU reads whatever
+/// happens to be at the wrong offset and the picture is subtly wrong with no
+/// error anywhere.
+///
+/// The macro emits the Rust struct and the WGSL text from one field list, so
+/// they cannot disagree - the same shape as `for_each_builtin!` in aurora-abi,
+/// for the same reason. The light count is one literal feeding both.
+macro_rules! frame_uniform {
+    (
+        lights: $n:literal;
+        $($field:ident : $rty:ty => $wty:literal),* $(,)?
+    ) => {
+        /// Maximum simultaneous point lights.
+        pub const MAX_LIGHTS: usize = $n;
+
+        #[repr(C)]
+        #[derive(Clone, Copy, Pod, Zeroable)]
+        struct GlobalsU {
+            $($field: $rty,)*
+            lights: [PointLightU; $n],
+        }
+
+        /// The WGSL for everything above, generated from the same list.
+        const GLOBALS_WGSL: &str = concat!(
+            "struct PointLight { pos_range: vec4<f32>, color_int: vec4<f32> };
+",
+            "struct Globals {
+",
+            $("    ", stringify!($field), ": ", $wty, ",
+",)*
+            "    lights: array<PointLight, ", stringify!($n), ">,
+",
+            "};
+",
+        );
+
+        /// Each field's WGSL type beside the size Rust gives its counterpart.
+        ///
+        /// The macro guarantees the two declarations have the same FIELDS in the
+        /// same ORDER; it cannot guarantee that `[[f32; 4]; 4]` was paired with
+        /// `"mat4x4<f32>"` rather than with `"vec4<f32>"`. A mismatch there
+        /// shifts every field after it and wgpu says nothing, because it
+        /// validates the binding and not the offsets - so the check is here.
+        #[cfg(test)]
+        const GLOBALS_FIELDS: &[(&str, &str, usize)] = &[
+            $((stringify!($field), $wty, core::mem::size_of::<$rty>()),)*
+        ];
+    };
+}
+
+frame_uniform! {
+    lights: 16;
+    view_proj: [[f32; 4]; 4] => "mat4x4<f32>",
+    // per-cascade light view-projection (3 used)
+    csm_vp: [[[f32; 4]; 4]; 4] => "array<mat4x4<f32>, 4>",
+    // for reconstructing skybox view rays
+    inv_view_proj: [[f32; 4]; 4] => "mat4x4<f32>",
+    // cascade radii (x,y,z); selection by distance
+    csm_splits: [f32; 4] => "vec4<f32>",
+    cam_pos: [f32; 4] => "vec4<f32>",
+    // xyz direction toward the light, w intensity
+    dir_dir: [f32; 4] => "vec4<f32>",
+    // rgb color, w ambient
+    dir_color: [f32; 4] => "vec4<f32>",
+    // rgb, w density (0 = no fog)
+    fog_color: [f32; 4] => "vec4<f32>",
+    // zenith color
+    sky_top: [f32; 4] => "vec4<f32>",
+    // horizon color
+    sky_horizon: [f32; 4] => "vec4<f32>",
+    // x = point light count, y = shadows on, z = sky on
+    counts: [f32; 4] => "vec4<f32>",
+    // x = width, y = height, z = ssao on
+    screen: [f32; 4] => "vec4<f32>",
+}
 const OBJ_ALIGN: u64 = 256;
 const JOINT_BYTES: u64 = (MAX_JOINTS * 64) as u64;
 const SHADOW_SIZE: u32 = 1024;
@@ -39,23 +118,6 @@ struct PointLightU {
     color_int: [f32; 4], // rgb color, w intensity
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct GlobalsU {
-    view_proj: [[f32; 4]; 4],
-    csm_vp: [[[f32; 4]; 4]; 4], // per-cascade light view-projection (3 used)
-    inv_view_proj: [[f32; 4]; 4], // for reconstructing skybox view rays
-    csm_splits: [f32; 4],       // cascade radii (x,y,z); selection by distance
-    cam_pos: [f32; 4],
-    dir_dir: [f32; 4],     // xyz direction toward the light, w intensity
-    dir_color: [f32; 4],   // rgb color, w ambient
-    fog_color: [f32; 4],   // rgb, w density (0 = no fog)
-    sky_top: [f32; 4],     // zenith color
-    sky_horizon: [f32; 4], // horizon color
-    counts: [f32; 4],      // x = point light count, y = shadows on, z = sky on
-    screen: [f32; 4],      // x = width, y = height, z = ssao on
-    lights: [PointLightU; MAX_LIGHTS],
-}
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -391,11 +453,11 @@ impl Renderer3D {
 
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("render3d"),
-            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+            source: wgpu::ShaderSource::Wgsl(shader().into()),
         });
         let ssao_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("ssao"),
-            source: wgpu::ShaderSource::Wgsl(SSAO_WGSL.into()),
+            source: wgpu::ShaderSource::Wgsl(ssao_wgsl().into()),
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("render3d"),
@@ -2386,24 +2448,20 @@ fn uniform_entry(
     }
 }
 
-const SHADER: &str = r#"
-struct PointLight { pos_range: vec4<f32>, color_int: vec4<f32> };
-struct Globals {
-    view_proj: mat4x4<f32>,
-    csm_vp: array<mat4x4<f32>, 4>,
-    inv_view_proj: mat4x4<f32>,
-    csm_splits: vec4<f32>,
-    cam_pos: vec4<f32>,
-    dir_dir: vec4<f32>,
-    dir_color: vec4<f32>,
-    fog_color: vec4<f32>,
-    sky_top: vec4<f32>,
-    sky_horizon: vec4<f32>,
-    counts: vec4<f32>,
-    screen: vec4<f32>,
-    lights: array<PointLight, 16>,
-};
-@group(0) @binding(0) var<uniform> g: Globals;
+/// shader(), with the frame uniform spliced in from its single declaration.
+///
+/// Composed at runtime rather than with `concat!`, which only takes literals -
+/// and the whole point is that this text comes from `frame_uniform!` rather
+/// than being written out again here. Built once; shader creation happens at
+/// device init, so the allocation is not on any frame path.
+fn shader() -> &'static str {
+    static SRC: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SRC.get_or_init(|| {
+        let mut s = String::new();
+        s.push_str(r#"
+"#);
+        s.push_str(GLOBALS_WGSL);
+        s.push_str(r#"@group(0) @binding(0) var<uniform> g: Globals;
 @group(0) @binding(1) var shadow_map: texture_depth_2d_array;
 @group(0) @binding(2) var shadow_samp: sampler_comparison;
 // The current cascade's light matrix during the shadow pass (binding 3 so it
@@ -2758,28 +2816,27 @@ fn vs_shadow_inst(in: InstIn) -> @builtin(position) vec4<f32> {
     let model = mat4x4<f32>(in.m0, in.m1, in.m2, in.m3);
     return csm.vp * (model * vec4<f32>(in.pos, 1.0));
 }
-"#;
+"#);
+        s
+    })
+}
 
 // Screen-space ambient occlusion: hemisphere-kernel SSAO from the normal+depth
 // prepass, then a box blur. Separate module (fullscreen passes).
-const SSAO_WGSL: &str = r#"
-struct PointLight { pos_range: vec4<f32>, color_int: vec4<f32> };
-struct Globals {
-    view_proj: mat4x4<f32>,
-    csm_vp: array<mat4x4<f32>, 4>,
-    inv_view_proj: mat4x4<f32>,
-    csm_splits: vec4<f32>,
-    cam_pos: vec4<f32>,
-    dir_dir: vec4<f32>,
-    dir_color: vec4<f32>,
-    fog_color: vec4<f32>,
-    sky_top: vec4<f32>,
-    sky_horizon: vec4<f32>,
-    counts: vec4<f32>,
-    screen: vec4<f32>,
-    lights: array<PointLight, 16>,
-};
-@group(0) @binding(0) var<uniform> g: Globals;
+/// ssao_wgsl(), with the frame uniform spliced in from its single declaration.
+///
+/// Composed at runtime rather than with `concat!`, which only takes literals -
+/// and the whole point is that this text comes from `frame_uniform!` rather
+/// than being written out again here. Built once; shader creation happens at
+/// device init, so the allocation is not on any frame path.
+fn ssao_wgsl() -> &'static str {
+    static SRC: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SRC.get_or_init(|| {
+        let mut s = String::new();
+        s.push_str(r#"
+"#);
+        s.push_str(GLOBALS_WGSL);
+        s.push_str(r#"@group(0) @binding(0) var<uniform> g: Globals;
 @group(0) @binding(1) var src: texture_2d<f32>;
 @group(0) @binding(2) var samp: sampler;
 
@@ -2851,4 +2908,78 @@ fn fs_blur(in: FsOut) -> @location(0) vec4<f32> {
     let v = sum / 16.0;
     return vec4<f32>(v, v, v, 1.0);
 }
-"#;
+"#);
+        s
+    })
+}
+
+
+#[cfg(test)]
+mod frame_uniform_layout {
+    use super::*;
+
+    /// What each WGSL type occupies, from the spec's alignment rules.
+    ///
+    /// Written out rather than derived, deliberately: this is the SPEC side of
+    /// the comparison, and deriving it from the Rust types it is checking would
+    /// be the two halves of an assertion coming from the same place - the shape
+    /// this project keeps finding. These numbers come from the WGSL memory
+    /// layout rules, not from this file.
+    fn wgsl_size(ty: &str) -> usize {
+        match ty {
+            "f32" => 4,
+            "vec2<f32>" => 8,
+            "vec3<f32>" => 12,
+            "vec4<f32>" => 16,
+            "mat4x4<f32>" => 64,
+            "array<mat4x4<f32>, 4>" => 256,
+            other => panic!(
+                "no WGSL size recorded for `{other}` - add it here, from the                  layout rules, before using it in frame_uniform!"
+            ),
+        }
+    }
+
+    #[test]
+    fn every_field_pairs_a_wgsl_type_with_a_rust_type_of_the_same_size() {
+        for (name, wty, rust_size) in GLOBALS_FIELDS {
+            assert_eq!(
+                wgsl_size(wty),
+                *rust_size,
+                "field `{name}` is declared `{wty}` to the GPU ({} bytes) and                  {rust_size} bytes to the CPU. Every field after it reads from                  the wrong offset, and wgpu validates the binding rather than                  the offsets, so nothing else would report it.",
+                wgsl_size(wty)
+            );
+        }
+    }
+
+    #[test]
+    fn the_whole_uniform_is_the_size_both_sides_think_it_is() {
+        let fields: usize = GLOBALS_FIELDS.iter().map(|(_, w, _)| wgsl_size(w)).sum();
+        // Plus the light array: two vec4 per light.
+        let want = fields + MAX_LIGHTS * 32;
+        assert_eq!(
+            core::mem::size_of::<GlobalsU>(),
+            want,
+            "the Rust uniform is {} bytes and the WGSL declaration describes              {want}. Something is padded on one side and not the other.",
+            core::mem::size_of::<GlobalsU>()
+        );
+    }
+
+    /// The generated WGSL says what the field list says, in order.
+    #[test]
+    fn the_generated_wgsl_declares_every_field_in_order() {
+        let mut at = 0usize;
+        for (name, wty, _) in GLOBALS_FIELDS {
+            let decl = format!("{name}: {wty},");
+            let found = GLOBALS_WGSL[at..]
+                .find(&decl)
+                .unwrap_or_else(|| panic!("`{decl}` missing from the generated WGSL, or out of order:
+{GLOBALS_WGSL}"));
+            at += found + decl.len();
+        }
+        assert!(
+            GLOBALS_WGSL.contains(&format!("array<PointLight, {MAX_LIGHTS}>")),
+            "the light array length in the WGSL is not MAX_LIGHTS:
+{GLOBALS_WGSL}"
+        );
+    }
+}
