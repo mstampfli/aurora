@@ -841,3 +841,41 @@ fn a_unit_socket_is_unchanged() {
         "a unit socket was changed"
     );
 }
+
+// --- the material table's generation is a CACHE KEY ---------------------------
+//
+// `material_generation` is part of the asset cache key, so bumping it throws
+// away every uploaded mesh: the next load of a file already in memory re-reads
+// it from disk and uploads it again. `set_material_texture` bumped it
+// unconditionally, and binding an atlas before loading art - the same atlas for
+// every mesh in a pack - is the COMMON case, not a strange one.
+//
+// Poly Souls stages a room by binding the pack atlas and loading its walls,
+// props and buildings. Every staging re-uploaded the lot, so a doorway that
+// re-stages on each trip between two rooms leaked a room's textures per trip,
+// and `melee` - which stages four times - died in `Device::create_texture` with
+// "Not enough memory left" while twenty gigabytes of system RAM sat free.
+//
+// The decision is tested rather than the Scene, because a Scene needs a real GPU
+// device to build and the only symptom of getting this wrong is memory.
+
+#[test]
+fn rebinding_a_material_to_the_texture_it_already_has_changes_nothing() {
+    let mut table = std::collections::HashMap::new();
+    table.insert("lambert1".to_string(), "atlas_01.png".to_string());
+    assert!(
+        !super::binding_changes(&table, "lambert1", "atlas_01.png"),
+        "an identical rebind was treated as a change, which throws away every \
+         uploaded mesh"
+    );
+}
+
+#[test]
+fn a_real_binding_change_is_a_change() {
+    let mut table = std::collections::HashMap::new();
+    table.insert("lambert1".to_string(), "atlas_01.png".to_string());
+    // A different texture on the same material.
+    assert!(super::binding_changes(&table, "lambert1", "atlas_02.png"));
+    // And a material nothing has bound yet.
+    assert!(super::binding_changes(&table, "Wall71", "atlas_01.png"));
+}

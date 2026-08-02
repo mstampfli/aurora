@@ -122,6 +122,19 @@ pub struct Scene {
     material_generation: u64,
 }
 
+/// Would binding `material` to `texture` change the table?
+///
+/// Split out from `set_material_texture` so the rule can be tested: a `Scene`
+/// needs a real GPU device to construct, and the only symptom of getting this
+/// wrong is memory, which no assertion about a picture can see.
+fn binding_changes(
+    table: &std::collections::HashMap<String, String>,
+    material: &str,
+    texture: &str,
+) -> bool {
+    table.get(material).map(String::as_str) != Some(texture)
+}
+
 impl Scene {
     pub fn new(
         device: &wgpu::Device,
@@ -319,9 +332,37 @@ impl Scene {
     /// were built with, because the texture is baked into the GPU material at
     /// upload; call this before loading the cast.
     pub fn set_material_texture(&mut self, material: &str, texture: &str) {
+        // Rebinding a material to the texture it ALREADY has changes nothing,
+        // and must not bump the generation.
+        //
+        // That number is part of the asset cache key (see `load_model_inner`),
+        // so bumping it throws away every uploaded mesh: the next load of a file
+        // already in memory re-reads it from disk and uploads it again. The
+        // caller is not doing anything odd - a game binds its atlas before
+        // loading art, and the same atlas for every mesh in a pack, so an
+        // unchanged rebind is the COMMON case rather than a strange one.
+        //
+        // Poly Souls stages a room by binding the pack atlas and loading its
+        // walls, props and buildings. Every staging bumped the generation and
+        // re-uploaded the lot, so a doorway that re-stages on each trip between
+        // two rooms leaked a whole room's textures per trip and `melee`, which
+        // stages four times, died in `Device::create_texture` with "Not enough
+        // memory left" while twenty gigabytes of system RAM sat free.
+        if !binding_changes(&self.material_textures, material, texture) {
+            return;
+        }
         self.material_textures
             .insert(material.to_string(), texture.to_string());
         self.material_generation += 1;
+    }
+
+    /// How many times the material table has actually CHANGED.
+    ///
+    /// Exposed so a test can assert that a redundant rebind does not move it -
+    /// the whole point of the guard above, and invisible from the outside
+    /// otherwise, because the only symptom is memory.
+    pub fn material_generation(&self) -> u64 {
+        self.material_generation
     }
 
     fn load_model_inner(

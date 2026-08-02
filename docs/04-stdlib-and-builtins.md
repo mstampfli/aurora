@@ -52,6 +52,16 @@ demonstrably IS a module, because something else in the program is already
 qualified with it. An enum variant, an associated function or const on a type,
 and a trait path are never at risk.
 
+An uploaded mesh is SHARED between every handle that loaded the same file, and
+the cache key includes how many times the material table has changed. So
+`r3d_material_texture` only counts as a change when it actually changes
+something: rebinding a material to the texture it already has is a no-op.
+Without that guard, binding an atlas before loading art - the same atlas for
+every mesh in a pack, which is the ordinary way to do it - threw away every
+uploaded mesh, and a game that re-staged a room re-read and re-uploaded all of it
+each time. The symptom is `Device::create_texture` failing with "Not enough
+memory left" while system RAM is untouched, because what ran out is the GPU.
+
 Physics handles fail loudly too, in the two ways they can be wrong. Building a
 body before `phys3d_init` used to answer `-1` and carry on - and `-1` is also the
 runtime's "no body" sentinel, so every accessor read it as nothing to do and the
