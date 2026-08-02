@@ -74,6 +74,18 @@ struct Phys3 {
     query: QueryPipeline,
     /// Aurora-visible bodies, keyed by the handle the program holds.
     registry: SlotMap<Body3>,
+    /// Handles the program destroyed ON PURPOSE, since the last `init`.
+    ///
+    /// Holding a handle to something you removed is normal - you destroy a
+    /// pickup and the code that referred to it runs once more - so reading one
+    /// answers "nothing" and that is right. Holding a handle from BEFORE an
+    /// `init` is never right: it is a body built into a world that was thrown
+    /// away, and the slot generation makes it indistinguishable at the call
+    /// site from the first case.
+    ///
+    /// So the two are told apart by remembering which of them the program asked
+    /// for. See `body_of`.
+    removed: std::collections::HashSet<i64>,
     controller: KinematicCharacterController,
     // Last raycast/shapecast hit (for `phys3d_hit_*`).
     hit_point: [f64; 3],
@@ -195,6 +207,8 @@ pub extern "C" fn aurora_phys3d_init(gx: f64, gy: f64, gz: f64) {
             ccd: CCDSolver::new(),
             query: QueryPipeline::new(),
             registry,
+            // A new world: nothing in it has been removed from it.
+            removed: std::collections::HashSet::new(),
             controller,
             hit_point: [0.0; 3],
             hit_normal: [0.0; 3],
@@ -233,7 +247,48 @@ fn push_body(p: &mut Phys3, rb: RigidBody, col: Collider) -> i64 {
 /// what makes "a freed handle cannot read a live body" a property of the file
 /// rather than of each function remembering to check.
 fn body_of(p: &Phys3, h: i64) -> Option<&Body3> {
-    p.registry.get(Key::from_i64(h)?)
+    let key = Key::from_i64(h)?;
+    if let Some(b) = p.registry.get(key) {
+        return Some(b);
+    }
+    // A handle that PARSES but names nothing is one of two very different
+    // things, and answering `None` to both is how a whole feature disappeared
+    // without a word.
+    //
+    // `init` clears the registry, which bumps every live slot's generation, so
+    // every handle issued by the previous world goes stale at once. Nothing said
+    // so. In Poly Souls a boss's collider was built two lines before the arena
+    // called `init`, so `boss_body` named nothing for the rest of the process:
+    // the player walked through the boss, the body never followed it, and
+    // `shove_player` - a mechanic built on purpose so a creature pushes you out
+    // of the way - never ran once. Every call took a handle, resolved it to
+    // `None`, and returned successfully.
+    //
+    // Removing a body yourself is the other case and it is legitimate, so it
+    // stays quiet: you destroy something and the code that referred to it runs
+    // one more time.
+    if outlived_its_world(p, h) {
+        crate::fatal(format_args!(
+            "phys3d: body handle {h} names nothing. It was not removed by this program, so it was issued before the last `phys3d_init` - which destroys the world and every handle into it. Build bodies AFTER the world they live in, and use `phys3d_alive` to ask whether a handle is still good; it answers rather than stops."
+        ));
+    }
+    None
+}
+
+/// Is `h` a handle from a world that no longer exists?
+///
+/// Split out from the reporting so the DECISION can be tested. The report ends
+/// the process, which a unit test cannot survive, and a rule nothing exercises
+/// is the thing this whole change is about.
+///
+/// True only for a handle that parses, resolves to nothing, and was never handed
+/// to `phys3d_remove` in the current world. Removing a body yourself and then
+/// reading it back is ordinary and stays quiet.
+fn outlived_its_world(p: &Phys3, h: i64) -> bool {
+    let Some(key) = Key::from_i64(h) else {
+        return false;
+    };
+    p.registry.get(key).is_none() && !p.removed.contains(&h)
 }
 
 /// The Rapier rigid body `h` names. Copied out so the caller can then borrow
@@ -357,6 +412,34 @@ fn debug_rings(
 }
 
 /// Add a box (half-extents hx,hy,hz) at (x,y,z). `dynamic` 1=moving, 0=static.
+/// The world, or a clear death if there is not one.
+///
+/// Creating a body before `phys3d_init` used to answer -1 and carry on. -1 is
+/// also the runtime's "no body" sentinel, and every function that takes a handle
+/// treats it as nothing to do - so the body was never built, nothing referred to
+/// it, and no call anywhere returned an error.
+///
+/// It cost Poly Souls its boss collider. `frame::open` asked for the creature's
+/// body before the arena had stood the world up, so the handle was -1 for the
+/// life of the process: the player walked through the boss, the body never
+/// followed it, and `shove_player` - a mechanic built on purpose so a creature
+/// pushes you out of the way rather than being stopped by you - never ran once.
+/// Every fight script staged its own world first and so was unaffected, and a
+/// boss with no collider fights exactly as well as one with, so nothing in a
+/// large suite could see it.
+///
+/// Queries are left alone deliberately: asking an empty world what is at a point
+/// and being told "nothing" is a fair answer. Being handed a body that does not
+/// exist is not.
+fn world_for<'a>(p: &'a mut Option<Phys3>, what: &str) -> &'a mut Phys3 {
+    match p.as_mut() {
+        Some(p) => p,
+        None => crate::fatal(format_args!(
+            "phys3d: {what} before `phys3d_init`. There is no world to put it in, so there is no body, and the handle would be -1 - the same value every accessor reads as \"nothing to do\". Call `phys3d_init` first."
+        )),
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn aurora_phys3d_add_box(
     x: f64,
@@ -369,7 +452,7 @@ pub extern "C" fn aurora_phys3d_add_box(
 ) -> i64 {
     PHYS3.with(|p| {
         let mut p = p.borrow_mut();
-        let Some(p) = p.as_mut() else { return -1 };
+        let p = world_for(&mut p, "add_box");
         let rb = body_builder(x, y, z, dynamic).build();
         let col = ColliderBuilder::cuboid(hx as Real, hy as Real, hz as Real).build();
         push_body(p, rb, col)
@@ -393,7 +476,7 @@ pub extern "C" fn aurora_phys3d_add_box_rot(
 ) -> i64 {
     PHYS3.with(|p| {
         let mut p = p.borrow_mut();
-        let Some(p) = p.as_mut() else { return -1 };
+        let p = world_for(&mut p, "add_box_rot");
         let b = if dynamic != 0 {
             RigidBodyBuilder::dynamic()
         } else {
@@ -419,7 +502,7 @@ pub extern "C" fn aurora_phys3d_add_sphere(
 ) -> i64 {
     PHYS3.with(|p| {
         let mut p = p.borrow_mut();
-        let Some(p) = p.as_mut() else { return -1 };
+        let p = world_for(&mut p, "add_sphere");
         let rb = body_builder(x, y, z, dynamic).build();
         let col = ColliderBuilder::ball(radius as Real).build();
         push_body(p, rb, col)
@@ -438,7 +521,7 @@ pub extern "C" fn aurora_phys3d_add_capsule(
 ) -> i64 {
     PHYS3.with(|p| {
         let mut p = p.borrow_mut();
-        let Some(p) = p.as_mut() else { return -1 };
+        let p = world_for(&mut p, "add_capsule");
         let rb = body_builder(x, y, z, dynamic).build();
         let col = ColliderBuilder::capsule_y(hh as Real, r as Real).build();
         push_body(p, rb, col)
@@ -451,7 +534,7 @@ pub extern "C" fn aurora_phys3d_add_capsule(
 pub extern "C" fn aurora_phys3d_add_character(x: f64, y: f64, z: f64, hh: f64, r: f64) -> i64 {
     PHYS3.with(|p| {
         let mut p = p.borrow_mut();
-        let Some(p) = p.as_mut() else { return -1 };
+        let p = world_for(&mut p, "add_character");
         let rb = RigidBodyBuilder::kinematic_position_based()
             .translation(vector![x as Real, y as Real, z as Real])
             .build();
@@ -622,7 +705,7 @@ pub extern "C" fn aurora_phys3d_add_model_collider(
     }
     PHYS3.with(|p| {
         let mut p = p.borrow_mut();
-        let Some(p) = p.as_mut() else { return -1 };
+        let p = world_for(&mut p, "add_model_collider");
         let rb = RigidBodyBuilder::fixed().build();
         let col = ColliderBuilder::trimesh(points, tris)
             .collision_groups(InteractionGroups::new(Group::GROUP_1, Group::ALL))
@@ -851,6 +934,9 @@ pub extern "C" fn aurora_phys3d_remove(h: i64) -> i64 {
         let Some(body) = p.registry.remove(key) else {
             return 0;
         };
+        // Deliberate. Reading `h` after this answers "nothing", quietly, which
+        // is what a program that destroyed something should get back.
+        p.removed.insert(h);
         // `true` = take the attached colliders down with the body. Removing the
         // body alone leaves its collider in the set parented to a dead body -
         // an orphan that still answers raycasts and still costs broad-phase
@@ -881,9 +967,14 @@ pub extern "C" fn aurora_phys3d_remove(h: i64) -> i64 {
 #[no_mangle]
 pub extern "C" fn aurora_phys3d_alive(h: i64) -> i64 {
     PHYS3.with(|p| {
-        p.borrow()
-            .as_ref()
-            .map_or(0, |p| body_of(p, h).is_some() as i64)
+        p.borrow().as_ref().map_or(0, |p| {
+            // Deliberately NOT through `body_of`, which refuses a handle from a
+            // world that no longer exists by panicking. This is the function you
+            // call to find out whether that would happen, so it has to be able
+            // to answer - a predicate that explodes on the case it exists to
+            // report leaves no safe way to ask the question at all.
+            Key::from_i64(h).is_some_and(|k| p.registry.get(k).is_some()) as i64
+        })
     })
 }
 
@@ -1499,6 +1590,77 @@ pub(crate) fn census() -> (usize, usize, usize, usize) {
 mod tests {
     use super::*;
 
+    /// A handle from before `init` is LOUD; one you removed yourself is quiet.
+    ///
+    /// Both directions, because they are the same `None` at the bottom of
+    /// `body_of` and only one of them is a bug.
+    ///
+    /// The quiet one first: destroying something and then reading its handle is
+    /// ordinary - the pickup is gone and the code that referred to it runs once
+    /// more - so it must not panic.
+    #[test]
+    fn a_handle_you_removed_yourself_stays_quiet() {
+        aurora_phys3d_init(0.0, -9.81, 0.0);
+        let ball = aurora_phys3d_add_sphere(0.0, 5.0, 0.0, 0.5, 1);
+        assert_eq!(aurora_phys3d_remove(ball), 1);
+        // Reads answer "nothing" rather than exploding.
+        assert_eq!(aurora_phys3d_x(ball), 0.0);
+        assert_eq!(aurora_phys3d_grounded(ball), 0);
+        aurora_phys3d_move_character(ball, 1.0, 0.0, 0.0, 0.016);
+        assert_eq!(aurora_phys3d_remove(ball), 0, "removing twice is not an error");
+    }
+
+    /// And the loud one, which is the whole point.
+    ///
+    /// `init` clears the registry, bumping every live slot's generation, so a
+    /// handle issued by the previous world names nothing. That was silent, and
+    /// it cost Poly Souls a mechanic: the boss's collider was built two lines
+    /// before the arena called `init`, so for the life of the process the player
+    /// walked through the boss and the shove that pushes them out never ran.
+    /// Every call took the handle, resolved it to `None`, and returned happily.
+    #[test]
+    fn a_handle_from_before_init_is_refused_loudly() {
+        aurora_phys3d_init(0.0, -9.81, 0.0);
+        let doomed = aurora_phys3d_add_character(0.0, 1.0, 0.0, 0.5, 0.3);
+        let removed_properly = aurora_phys3d_add_sphere(0.0, 5.0, 0.0, 0.5, 1);
+        assert_eq!(aurora_phys3d_remove(removed_properly), 1);
+        // Both are stale in the same way from the registry's point of view.
+        // Only one of them is a bug.
+        PHYS3.with(|p| {
+            let p = p.borrow();
+            let p = p.as_ref().unwrap();
+            assert!(
+                !outlived_its_world(p, removed_properly),
+                "a body this program removed itself must stay quiet"
+            );
+            assert!(
+                !outlived_its_world(p, doomed),
+                "a live body must not be reported as stale"
+            );
+        });
+
+        // A new world. Everything above is gone, including `doomed`.
+        aurora_phys3d_init(0.0, -9.81, 0.0);
+        aurora_phys3d_add_box(0.0, -0.5, 0.0, 50.0, 0.5, 50.0, 0);
+        PHYS3.with(|p| {
+            let p = p.borrow();
+            let p = p.as_ref().unwrap();
+            assert!(
+                outlived_its_world(p, doomed),
+                "a handle issued before `init` must be reported, not answered                  with a quiet nothing - that silence cost Poly Souls its boss                  collider for the life of the process"
+            );
+            // The removal list is cleared with the world, so a handle removed in
+            // the OLD world is stale for the new reason now, and reported.
+            assert!(outlived_its_world(p, removed_properly));
+            // -1 is the runtime's "no body" sentinel and must never be reported.
+            assert!(!outlived_its_world(p, -1));
+        });
+
+        // And the supported way to ask never stops the program.
+        assert_eq!(aurora_phys3d_alive(doomed), 0);
+        assert_eq!(aurora_phys3d_alive(-1), 0);
+    }
+
     /// A character delivers the distance it was ASKED for, at ANY timestep.
     ///
     /// The same 1.12 m of forward travel across an empty floor, split into
@@ -1923,7 +2085,12 @@ mod tests {
         let new = aurora_phys3d_add_box(4.0, 5.0, 6.0, 0.5, 0.5, 0.5, 0);
         assert_ne!(old, new, "the new world reissued the old world's handle");
         assert_eq!(aurora_phys3d_alive(old), 0);
-        assert_eq!(aurora_phys3d_x(old), 0.0, "the old handle read a new body");
+        // `x(old)` used to be asserted here as a quiet 0.0. It now panics - see
+        // `a_handle_from_before_init_panics` - because reading a position off a
+        // body in a destroyed world is a program bug and answering 0.0 hid one
+        // for the life of a process. `alive` above is the supported way to ask,
+        // and this test's point is unchanged: the old handle must never resolve
+        // to the new body.
         assert_eq!(aurora_phys3d_x(new), 4.0);
         assert_eq!(aurora_phys3d_remove(old), 0);
         assert_eq!(

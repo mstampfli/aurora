@@ -215,15 +215,32 @@ pub unsafe extern "C" fn aurora_ffi_dotf(a: *const f32, b: *const f32, n: i64) -
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
+/// Stop the program with a clear message, the way every runtime failure does.
+///
+/// NOT `panic!`. Every builtin is `extern "C"`, which Rust treats as nounwind:
+/// a panic crossing that boundary aborts the process with
+/// STATUS_STACK_BUFFER_OVERRUN and no message at all. Found the hard way -
+/// making a stale physics handle "loud" with `panic!` turned a silent no-op
+/// into a silent crash, which is strictly worse, and `should_panic` could not
+/// catch it either.
+///
+/// So there is one way to die, and it is this: flush what the program already
+/// printed (stdout is buffered and stderr is not, so the message would
+/// otherwise arrive before the output it refers to), say what happened, and
+/// exit 101 - the code `assert` has always used.
+pub(crate) fn fatal(what: std::fmt::Arguments<'_>) -> ! {
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    eprintln!("panic: {what}");
+    std::process::exit(101);
+}
+
 /// Report an out-of-bounds array access with a clear message and abort. Called
 /// by bounds-check code in place of a raw trap, so the failure reads as a panic
 /// rather than a cryptic "illegal instruction".
 #[no_mangle]
 pub extern "C" fn aurora_oob(idx: i64, len: i64) {
-    use std::io::Write;
-    let _ = std::io::stdout().flush();
-    eprintln!("panic: array index {idx} out of bounds (length {len})");
-    std::process::exit(101);
+    fatal(format_args!("array index {idx} out of bounds (length {len})"));
 }
 
 /// `assert(cond)`: abort unless `cond` holds, matching the interpreter's
@@ -233,20 +250,14 @@ pub extern "C" fn aurora_assert(cond: i64) {
     if cond != 0 {
         return;
     }
-    use std::io::Write;
-    let _ = std::io::stdout().flush();
-    eprintln!("panic: assertion failed");
-    std::process::exit(101);
+    fatal(format_args!("assertion failed"));
 }
 
 /// Clean panic for integer division/remainder by zero, in place of a raw CPU
 /// trap (SIGFPE / "illegal instruction"), matching the interpreter's behavior.
 #[no_mangle]
 pub extern "C" fn aurora_divzero() {
-    use std::io::Write;
-    let _ = std::io::stdout().flush();
-    eprintln!("panic: integer division or remainder by zero");
-    std::process::exit(101);
+    fatal(format_args!("integer division or remainder by zero"));
 }
 
 /// IEEE float remainder (`%` on floats), via libm fmod.

@@ -52,6 +52,16 @@ demonstrably IS a module, because something else in the program is already
 qualified with it. An enum variant, an associated function or const on a type,
 and a trait path are never at risk.
 
+Physics handles fail loudly too, in the two ways they can be wrong. Building a
+body before `phys3d_init` used to answer `-1` and carry on - and `-1` is also the
+runtime's "no body" sentinel, so every accessor read it as nothing to do and the
+body simply never existed. `phys3d_add_box` / `_box_rot` / `_sphere` / `_capsule`
+/ `_character` / `_model_collider` now stop the program instead. Using a handle
+issued before an `init` stops it as well, because `init` destroys the world and
+every handle into it. Removing a body yourself and then reading it back stays
+quiet, which is ordinary; `phys3d_alive(h)` is the supported way to ask, and it
+answers rather than stops.
+
 If a function still fails to lower to native code, `run` and `build` both refuse
 and name every failing function and the reason. Neither falls back to running it:
 a function that failed to compile is otherwise replaced with a stub returning 0,
