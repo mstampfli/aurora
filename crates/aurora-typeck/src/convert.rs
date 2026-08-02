@@ -71,6 +71,32 @@ pub(crate) fn type_to_ty(t: &Type, cx: &mut InferCtx, user: &HashSet<String>) ->
                     return Ty::Rc(Box::new(type_to_ty(arg, cx, user)));
                 }
             }
+            // A QUALIFIED type names an item in ANOTHER module, and the flattener
+            // mangles that item's declaration to `module::Name` - one identifier
+            // with the `::` inside it. So resolve the JOINED path first, or the
+            // two spellings of one struct become two types.
+            //
+            // They did. A parameter written `arena::Meshes` read as bare `Meshes`
+            // here, because only the last segment was consulted, while the struct
+            // it names had been rewritten to `arena::Meshes`. Nothing noticed for
+            // as long as that existed, because argument TYPES were only checked
+            // for unqualified callees - where both sides come from one module and
+            // therefore agree. Switching argument checking on for `mod::f(..)`
+            // calls lit up fifty files at once, and every one of them was this.
+            //
+            // `array_len_of`, in this same file, already joins the segments. Two
+            // rules for reading one path, twenty lines apart.
+            if p.segments.len() > 1 {
+                let joined = p
+                    .segments
+                    .iter()
+                    .map(|s| s.ident.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                if user.contains(joined.as_str()) {
+                    return Ty::Named(joined);
+                }
+            }
             // A user-defined type shadows any builtin of the same name.
             if user.contains(name) {
                 return Ty::Named(name.to_string());

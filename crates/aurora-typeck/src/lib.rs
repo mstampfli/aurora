@@ -709,18 +709,50 @@ impl Typeck {
             .map(|a| (a.value.span, self.infer(&a.value)))
             .collect();
 
-        // Only known top-level function paths get argument checking; everything
-        // else (methods, builtins, imports) is treated as unknown for TYPING
-        // purposes, but a plain name still has to resolve to something.
+        // Resolve the callee to ONE name in `self.fns`, whatever shape its path
+        // has, and check the call against that signature. Everything else
+        // (methods, builtins, closures in locals) is unknown for TYPING purposes,
+        // but a plain name still has to resolve to something.
+        //
+        // The qualified half of this used to be missing, and it was not a small
+        // hole. A call INTO a submodule is collapsed by the flattener to a single
+        // segment (`prefix::sub::f`) and so was checked; a call OUT to a sibling
+        // top-level module keeps two segments and was only checked for EXISTENCE.
+        // In a program where every file is its own top-level module - which is
+        // how the game on this compiler is written - that is nearly every call in
+        // the codebase going unchecked for arity. `fightshot.aur` passed two
+        // arguments to a four-parameter function and `aurorac check` reported no
+        // errors; it failed at runtime, in a capture script nobody ran that week.
+        //
+        // The signature was always available: the existence check below already
+        // joins the segments and finds it in `self.fns`. It simply never used it.
         if let ExprKind::Path(p) = &callee.kind {
-            if !p.is_single() {
-                self.report_unknown_qualified_callee(p);
-            }
-            if p.is_single() {
-                let name = &p.segments[0].ident.name;
-                if !self.fns.contains_key(name) {
-                    self.report_unknown_callee(name, p.span);
+            let resolved: Option<String> = if p.is_single() {
+                let name = p.segments[0].ident.name.clone();
+                if !self.fns.contains_key(&name) {
+                    self.report_unknown_callee(&name, p.span);
                 }
+                Some(name)
+            } else {
+                self.report_unknown_qualified_callee(p);
+                // Only when it genuinely names a function. An enum variant
+                // (`Opt::Some`) or a trait path is not in `self.fns`, so it falls
+                // through untouched; an associated function IS, and checking its
+                // arity is right.
+                let joined = p
+                    .segments
+                    .iter()
+                    .map(|s| s.ident.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                if self.fns.contains_key(&joined) {
+                    Some(joined)
+                } else {
+                    None
+                }
+            };
+            if let Some(name) = resolved {
+                let name = &name;
                 if let Some(Ty::Fn(params, ret)) = self.fns.get(name).cloned() {
                     // Instantiate generic type parameters with fresh variables so
                     // each call is checked independently (e.g. `pair(1, true)`).
