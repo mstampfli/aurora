@@ -268,6 +268,7 @@ dependencies = [
 name = "aurora-interp"
 version = "0.1.0"
 dependencies = [
+ "aurora-abi",
  "aurora-ast",
  "aurora-gfx",
  "aurora-parser",

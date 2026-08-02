@@ -4420,15 +4420,29 @@ fn tr_call(
     // instruction, so these are host calls into libm. Args are coerced to f64;
     // the result is demoted back to f32 if the (first) argument was f32, so the
     // builtin is float-width-preserving like the native ones.
-    if matches!(
-        name.as_str(),
-        "sin" | "cos" | "tan" | "pow" | "log" | "exp" | "atan2" | "acos" | "asin" | "atan"
-    ) {
-        let want = if matches!(name.as_str(), "pow" | "atan2") {
-            2
-        } else {
-            1
-        };
+    // SELECTED FROM THE TABLE, not from a list of names beside it.
+    //
+    // This was `matches!(name, "sin" | "cos" | ...)` with a second `matches!`
+    // deciding one argument or two - a copy of the row set AND a copy of each
+    // row's arity, in the crate that already reads the table for everything
+    // else. It is the same shape that shipped `fill_rect_alpha` as a row the
+    // compiler refused to find, and it had already cost a step: adding acos,
+    // asin and atan meant editing this list, and forgetting to would have
+    // compiled them into a call with the wrong float width and no diagnostic.
+    //
+    // The predicate is exact: a `special` row whose parameters are all F64 and
+    // which returns F64 is a libm call and there is nothing else in the table
+    // shaped like that. `transcendental_rows_are_exactly_the_libm_calls` in
+    // aurora-abi states which names those are, in the manual's vocabulary, so
+    // this cannot quietly start matching something new.
+    let libm = aurora_abi::lookup(name.as_str()).filter(|b| {
+        b.kind == aurora_abi::Kind::Special
+            && b.ret == Some(aurora_abi::Ty::F64)
+            && !b.params.is_empty()
+            && b.params.iter().all(|t| *t == aurora_abi::Ty::F64)
+    });
+    if let Some(row) = libm {
+        let want = row.params.len();
         if typed.len() == want && typed.iter().all(|(_, t)| *t == Cty::F32 || *t == Cty::F64) {
             let was_f32 = typed[0].1 == Cty::F32;
             let mut argv = Vec::with_capacity(want);

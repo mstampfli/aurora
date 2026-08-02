@@ -512,3 +512,73 @@ fn bitwise_builtins_work_in_interpreter() {
     assert_eq!(out("fn main() { println(shl(1, 4)) }"), "16\n");
     assert_eq!(out("fn main() { println(shr(32, 2)) }"), "8\n");
 }
+
+// --- every raster row in the TABLE is handled here -----------------------
+//
+// The interpreter dispatches builtins from a hardcoded `match name`, which is a
+// second list of the same fact the ABI table already states. That is the exact
+// shape that shipped `fill_rect_alpha` as a table row the compiler refused to
+// find, and the standing audit recorded this crate as already drifted - it is
+// not, today, but nothing was making it agree.
+//
+// So the test is DERIVED from the table: adding a `raster` row extends this
+// automatically, and it fails until the row has an arm. The call itself is
+// generated from the row's own parameter types, so a signature change cannot
+// leave the test calling the old shape.
+//
+// Only the name has to resolve. Any other error - "no framebuffer", a bad index -
+// means dispatch found the arm, which is the whole question.
+#[test]
+fn every_raster_builtin_has_an_interpreter_arm() {
+    let mut missing: Vec<String> = Vec::new();
+    let mut checked = 0;
+    for name in aurora_abi::builtin_names() {
+        let Some(b) = aurora_abi::lookup(name) else { continue };
+        if b.kind != aurora_abi::Kind::Raster {
+            continue;
+        }
+        checked += 1;
+        let args: Vec<String> = b
+            .params
+            .iter()
+            .map(|t| match t {
+                aurora_abi::Ty::F64 => "1.0".to_string(),
+                _ => "1".to_string(),
+            })
+            .collect();
+        let src = format!("fn main() {{ {}({}) }}", name, args.join(", "));
+        let (module, diags) = aurora_parser::parse_str(&src);
+        assert!(
+            !diags.iter().any(|d| d.is_error()),
+            "generated program for `{name}` did not parse: {src}"
+        );
+        let (result, _out) = run(&module, "main");
+        if let Err(e) = result {
+            // `call_named` is what the catch-all falls through to, and it is the
+            // one failure that means "this interpreter has never heard of it".
+            if e.contains("unknown function") {
+                missing.push(format!("{name}  ({e})"));
+            }
+        }
+    }
+    assert!(checked > 0, "no raster rows found - the table lookup is broken");
+    // And the detector DETECTS. A test whose failure condition is a substring
+    // match is worthless if the substring never appears - "a grep that finds
+    // nothing is evidence about the pattern, not the world". So prove the shape
+    // of a genuine miss, here, against a name nothing could possibly handle.
+    let (m, _d) = aurora_parser::parse_str("fn main() { no_such_builtin_at_all(1) }");
+    let (miss, _o) = run(&m, "main");
+    let msg = miss.expect_err("an unknown builtin must be an error, not a value");
+    assert!(
+        msg.contains("unknown function"),
+        "the miss detector looks for `unknown function` and a real miss says: {msg}"
+    );
+    assert!(
+        missing.is_empty(),
+        "{} raster builtin(s) in the ABI table have no arm in the interpreter's \
+         dispatch, so a program using them dies at runtime rather than at build \
+         time:\n  {}",
+        missing.len(),
+        missing.join("\n  ")
+    );
+}

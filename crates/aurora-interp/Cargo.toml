@@ -10,3 +10,7 @@ aurora-gfx.workspace = true
 
 [dev-dependencies]
 aurora-parser.workspace = true
+# For the test that walks the builtin TABLE and proves this interpreter handles
+# every row it is supposed to. A dev-dependency on purpose: the interpreter does
+# not need the table to run, it needs it to be checked against.
+aurora-abi.workspace = true

@@ -450,3 +450,52 @@ fn documented_arity_matches_the_table() {
         "only {checked} builtins had a documented argument list"
     );
 }
+
+/// The libm calls are exactly these ten, and the SHAPE identifies them.
+///
+/// `aurora-codegen` used to carry this list by hand to decide which builtins are
+/// host calls into libm, plus a second list deciding which take two arguments.
+/// It selects on the row now - `special`, every parameter `F64`, returns `F64` -
+/// so adding a transcendental is one table row rather than a row and two edits
+/// in a backend, and forgetting the edits would have compiled the call at the
+/// wrong float width with no diagnostic.
+///
+/// This is where the membership is STATED, because a predicate that quietly
+/// starts matching a new row is the failure the name list at least made visible.
+/// The names here are the manual's, not the code's.
+#[test]
+fn transcendental_rows_are_exactly_the_libm_calls() {
+    let expected = [
+        "sin", "cos", "tan", "pow", "log", "exp", "atan2", "acos", "asin", "atan",
+    ];
+    let mut found: Vec<&str> = builtin_names()
+        .iter()
+        .copied()
+        .filter(|n| {
+            lookup(n).is_some_and(|b| {
+                b.kind == Kind::Special
+                    && b.ret == Some(Ty::F64)
+                    && !b.params.is_empty()
+                    && b.params.iter().all(|t| *t == Ty::F64)
+            })
+        })
+        .collect();
+    found.sort_unstable();
+    let mut want: Vec<&str> = expected.to_vec();
+    want.sort_unstable();
+    assert_eq!(
+        found, want,
+        "the `special` + all-F64 + returns-F64 shape no longer picks out exactly \
+         the libm calls. aurora-codegen lowers whatever this matches as a host \
+         call into libm, so a new row of this shape would be lowered as one - \
+         either give it a different signature or teach the backend about it."
+    );
+
+    // And each one's arity comes from the row, which is what the backend now
+    // reads instead of a second hand-written list.
+    for n in expected {
+        let b = lookup(n).expect("declared above");
+        let want_args = if n == "pow" || n == "atan2" { 2 } else { 1 };
+        assert_eq!(b.params.len(), want_args, "`{n}` takes {want_args} argument(s)");
+    }
+}
