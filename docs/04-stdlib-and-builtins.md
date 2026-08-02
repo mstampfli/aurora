@@ -458,6 +458,30 @@ window. Colors are 0..1 floats; angles are radians; handles are `i64`.
 | `r3d_anim_clip_upper(h) -> i64` | which clip the upper-body overlay is playing | -1 when no overlay is running |
 | `r3d_anim_blend_clip(h) -> i64` | the SECOND clip of a sustained base blend | -1 when the base is a single clip |
 
+### Baked models
+
+`aurorac asset import <model-or-dir>...` writes a `.aurm` beside each source
+file: Aurora's runtime format, laid out the way the engine wants it rather than
+the way an interchange format carries it. `r3d_load_model` and everything built
+on it prefer a bake whenever one exists and is no older than its source, so
+nothing has to ask for it.
+
+An FBX or glTF has to be WALKED - a node graph, references to resolve, index
+buffers to rebuild - and that cost is paid on every load in every run. A bake is
+read: vertices and indices are the exact bytes handed to the GPU, a clip's keys
+are a flat block of floats, a skeleton is an array. Measured on Poly Souls'
+bailey - 105 distinct files - standing the room up went from 2.0s to 1.65s.
+
+Directories are walked, so a whole pack is one command, and a file already up to
+date is skipped. Embedded textures are re-encoded rather than stored raw: a
+4096x4096 atlas is 64 MiB of RGBA and about a megabyte as PNG, and a pack embeds
+one into every module it ships.
+
+A bake that will not read is an ERROR, never a quiet fall back to the source. It
+is generated, so a corrupt or half-written one is a broken build step, and
+parsing the FBX instead would hide that behind nothing worse than a slow load -
+until the day the source is not shipped.
+
 ### What the loaded art costs
 
 Standing a level up is the largest allocation a game makes, and the only symptom

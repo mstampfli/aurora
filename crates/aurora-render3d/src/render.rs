@@ -162,6 +162,24 @@ pub enum TexSrc<'a> {
     /// An image FILE: uploaded once for the process, shared by every material
     /// that names it, and read from disk only when it is not already uploaded.
     File(&'a str),
+    /// Pixels that came out of a MODEL FILE, shared under a name of the
+    /// caller's making.
+    ///
+    /// An embedded texture belongs to one model, so it is not shared between
+    /// materials the way an atlas is - but it is uploaded more than once,
+    /// because the same model is uploaded again whenever the material bindings
+    /// around it change. Naming it means the second upload does not need the
+    /// pixels at all, which is what lets the loader drop them: a Synty castle
+    /// module carries a 4096 x 4096 embedded texture, 64 MiB decoded, and a
+    /// room is made of dozens of them.
+    ///
+    /// `px` is `None` for exactly that second upload. The cache never evicts, so
+    /// a name that was uploaded once is still there; a `None` that MISSES is a
+    /// caller that made up a name, and it says so rather than drawing white.
+    Keyed {
+        key: &'a str,
+        px: Option<(&'a [u8], u32, u32)>,
+    },
 }
 
 impl<'a> TexSrc<'a> {
@@ -338,6 +356,18 @@ pub struct Renderer3D {
     /// The bound is the number of distinct image FILES a game ships, which is
     /// small and fixed, rather than the number of materials, which is not.
     tex_cache: std::collections::HashMap<(String, bool), Arc<wgpu::TextureView>>,
+    /// The same textures again, keyed by what they CONTAIN.
+    ///
+    /// A file has a name to share by; pixels lifted out of a model file do not,
+    /// so they are named after the model - and a pack embeds one atlas in every
+    /// module, which under those names is one upload per module. Six castle
+    /// pieces carrying the same 4096 x 4096 image is 384 MiB of the same
+    /// picture.
+    ///
+    /// So the content decides, and the name is only how it is found again once
+    /// the pixels are gone. Hashing is paid once, on the upload that would
+    /// otherwise have happened anyway, and never for a name already known.
+    tex_by_content: std::collections::HashMap<(u64, bool), Arc<wgpu::TextureView>>,
     /// Bytes of GPU texture the cache above holds, counted once per shared
     /// image. Exposed for the same reason as [`Self::mesh_bytes`]: the only
     /// symptom of this going wrong is memory, so it has to be readable.
@@ -1248,6 +1278,7 @@ impl Renderer3D {
             meshes: SlotMap::new(),
             mesh_bytes: 0,
             tex_cache: std::collections::HashMap::new(),
+            tex_by_content: std::collections::HashMap::new(),
             tex_bytes: 0,
             materials: SlotMap::new(),
             // Replaced immediately below, once `build_material` can borrow the
@@ -1469,7 +1500,7 @@ impl Renderer3D {
         srgb: bool,
         fallback: [u8; 4],
     ) -> Arc<wgpu::TextureView> {
-        let file = match src {
+        let (name, given) = match src {
             None => return Arc::new(make_pixel_tex(device, queue, fallback, srgb)),
             Some(TexSrc::Own { px, w, h }) => {
                 if w == 0 || h == 0 {
@@ -1477,28 +1508,60 @@ impl Renderer3D {
                 }
                 return Arc::new(make_tex(device, queue, px, w, h, srgb));
             }
-            Some(TexSrc::File(f)) => f,
+            Some(TexSrc::File(f)) => (f, None),
+            Some(TexSrc::Keyed { key, px }) => (key, Some(px)),
         };
         // Already uploaded: no read, no decode, no upload.
-        let ck = (file.to_string(), srgb);
+        let ck = (name.to_string(), srgb);
         if let Some(v) = self.tex_cache.get(&ck) {
             return Arc::clone(v);
         }
-        // A file that will not load is LOUD and then flat, rather than silently
-        // flat: the whole pack draws untextured, and a grey room with no
-        // explanation is the kind of thing that gets called a lighting bug.
-        let (px, w, h) = match aurora_asset::load_texture_file(file) {
-            Ok(t) => t,
-            Err(e) => {
-                eprintln!("aurora: texture {file}: {e}");
+        // Pixels in hand, or a file to read. A file that will not load is LOUD
+        // and then flat rather than silently flat: the whole pack draws
+        // untextured, and a grey room with no explanation gets called a
+        // lighting bug.
+        let owned;
+        let (px, w, h) = match given {
+            Some(Some(t)) => t,
+            Some(None) => {
+                eprintln!(
+                    "aurora: texture {name} was named without pixels and is not                      already uploaded - this name was never baked into the cache"
+                );
                 return Arc::new(make_pixel_tex(device, queue, fallback, srgb));
             }
+            None => match aurora_asset::load_texture_file(name) {
+                Ok(t) => {
+                    owned = t;
+                    (owned.0.as_slice(), owned.1, owned.2)
+                }
+                Err(e) => {
+                    eprintln!("aurora: texture {name}: {e}");
+                    return Arc::new(make_pixel_tex(device, queue, fallback, srgb));
+                }
+            },
         };
         if w == 0 || h == 0 {
             return Arc::new(make_pixel_tex(device, queue, fallback, srgb));
         }
-        let v = Arc::new(make_tex(device, queue, &px, w, h, srgb));
+        // The same PICTURE under a different name is the same upload. A file
+        // already shares by path, so this is what catches the atlas that a pack
+        // embeds into every one of its modules.
+        let content = {
+            use std::hash::{Hash, Hasher};
+            let mut hh = std::collections::hash_map::DefaultHasher::new();
+            w.hash(&mut hh);
+            h.hash(&mut hh);
+            px.hash(&mut hh);
+            hh.finish()
+        };
+        if let Some(v) = self.tex_by_content.get(&(content, srgb)) {
+            let v = Arc::clone(v);
+            self.tex_cache.insert(ck, Arc::clone(&v));
+            return v;
+        }
+        let v = Arc::new(make_tex(device, queue, px, w, h, srgb));
         self.tex_cache.insert(ck, Arc::clone(&v));
+        self.tex_by_content.insert((content, srgb), Arc::clone(&v));
         self.tex_bytes += (w as u64) * (h as u64) * 4;
         v
     }

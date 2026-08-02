@@ -909,7 +909,13 @@ fn one_atlas_named_by_many_materials_uploads_once() {
     let other = dir.join("other.png");
     let img = image::RgbaImage::from_pixel(64, 64, image::Rgba([200, 180, 60, 255]));
     img.save(&atlas).expect("write the test atlas");
-    img.save(&other).expect("write the second test atlas");
+    // A DIFFERENT picture, because identical pixels are deliberately shared
+    // whatever they are called - see the twin assertion at the end.
+    let other_img = image::RgbaImage::from_pixel(64, 64, image::Rgba([10, 20, 30, 255]));
+    other_img.save(&other).expect("write the second test atlas");
+    let twin = dir.join("twin.png");
+    img.save(&twin).expect("write a copy of the atlas under another name");
+    let twin = twin.to_string_lossy().to_string();
     let atlas = atlas.to_string_lossy().to_string();
     let other = other.to_string_lossy().to_string();
     let one = 64u64 * 64 * 4;
@@ -945,10 +951,9 @@ fn one_atlas_named_by_many_materials_uploads_once() {
     );
     assert_eq!(s.renderer.tex_count(), 1, "one distinct image");
 
-    // A DIFFERENT file is a different image, even with identical pixels: the
-    // cache is keyed on where the image came from, not on what it contains.
+    // A different PICTURE is a second upload.
     named(&mut s, &device, &queue, &other, true);
-    assert_eq!(s.renderer.tex_bytes() - base, one * 2, "a second file");
+    assert_eq!(s.renderer.tex_bytes() - base, one * 2, "a second picture");
 
     // The SAME file in a different colour space is a different GPU texture and
     // must not be handed over. An sRGB atlas served as a linear normal map is a
@@ -996,5 +1001,21 @@ fn one_atlas_named_by_many_materials_uploads_once() {
         "unnamed pixels are not entered into the shared cache at all"
     );
 
+    // THE SAME PICTURE UNDER ANOTHER NAME IS THE SAME UPLOAD.
+    //
+    // A file shares by path, which is enough for an atlas a game names. It is
+    // not enough for one a PACK EMBEDS into every module it ships: those pixels
+    // arrive with no name of their own, get called after the model they came out
+    // of, and are then one upload per model. Six castle pieces carrying the same
+    // 4096 x 4096 image is 384 MiB of one picture - measured, before this.
+    let before_twin = s.renderer.tex_bytes();
+    named(&mut s, &device, &queue, &twin, true);
+    assert_eq!(
+        s.renderer.tex_bytes(),
+        before_twin,
+        "identical pixels under a second name must not upload again"
+    );
+
     let _ = std::fs::remove_file(&other);
+    let _ = std::fs::remove_file(&twin);
 }

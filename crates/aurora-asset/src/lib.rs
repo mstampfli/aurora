@@ -14,6 +14,7 @@
 //! [`model::Model`], so it is testable on a machine with no graphics device and
 //! the offline baker does not drag a renderer in behind it.
 
+pub mod bake;
 pub mod fbx;
 pub mod mesh;
 pub mod model;

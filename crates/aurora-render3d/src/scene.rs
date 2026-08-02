@@ -506,9 +506,53 @@ impl Scene {
         if !clips.is_empty() {
             self.gather_clips(&mut model, source_rest, clips, rename, translate);
         }
-        let model = Arc::new(model);
-        self.models.insert(model_key.clone(), Arc::clone(&model));
-        self.upload_model(device, queue, key, model_key, model)
+        let handle = self.upload_model(device, queue, key, model_key.clone(), Arc::new(model));
+        self.drop_uploaded_pixels(&model_key);
+        handle
+    }
+
+    /// Let go of decoded texture pixels once they are on the GPU.
+    ///
+    /// A model's embedded textures are needed exactly once, to build its
+    /// materials. After that they are megabytes of dead weight held for as long
+    /// as the asset is cached - and a Synty castle module carries a 4096 x 4096
+    /// one, 64 MiB decoded. A room made of dozens of them is where a bailey's
+    /// two gigabytes went, and the bake made it visible: a 1 MiB source file
+    /// wrote a 72 MiB baked one, which is the same pixels on disk.
+    ///
+    /// Safe because the upload NAMED them (see `TexSrc::Keyed`): the renderer
+    /// holds the GPU texture under that name for the life of the process, so the
+    /// same model uploaded again under different material bindings finds it
+    /// without needing the pixels back.
+    ///
+    /// The vertices are kept. Those are still read - a trimesh collider is built
+    /// from them long after the mesh is on the GPU.
+    fn drop_uploaded_pixels(&mut self, model_key: &str) {
+        let Some(m) = self.models.get_mut(model_key) else {
+            return;
+        };
+        // The only holders are this cache and the asset just built, and the
+        // asset never reads them again. Anything else means somebody is holding
+        // the model mid-load, and then leaving the pixels alone is the safe
+        // answer rather than the clever one.
+        let Some(m) = Arc::get_mut(m) else { return };
+        // EMPTIED, not removed. "There is a texture here" and "there is none"
+        // are different facts and the second upload needs the first one - a
+        // primitive that never had a texture takes the flat default, and one
+        // whose pixels are gone must still ask for the image that is on the GPU
+        // under its name.
+        fn empty(t: &mut Option<crate::model::Tex>) {
+            if let Some((px, _, _)) = t.as_mut() {
+                px.clear();
+                px.shrink_to_fit();
+            }
+        }
+        for p in m.primitives.iter_mut() {
+            empty(&mut p.texture);
+            empty(&mut p.normal_tex);
+            empty(&mut p.mr_tex);
+            empty(&mut p.emissive_tex);
+        }
     }
 
     /// Read a moveset onto `model`'s skeleton, reusing anything already read.
@@ -620,6 +664,10 @@ impl Scene {
         model_key: String,
         model: Arc<Model>,
     ) -> i64 {
+        // The parse is cached HERE, at the one place every load funnels through,
+        // so no caller can build an asset whose model is not in the cache - and
+        // `drop_uploaded_pixels` can then find it by the same key.
+        self.models.insert(model_key.clone(), Arc::clone(&model));
         // An atlas is NAMED here, not decoded here.
         //
         // This used to read and decode the file - once per material NAME, which
@@ -647,9 +695,43 @@ impl Scene {
             })
             .collect();
 
+        // A NAME for every embedded texture, made from the asset it belongs to
+        // and where in it the texture sits. Stable across uploads of the same
+        // model, which is the whole point: the second upload names it and needs
+        // no pixels.
+        let keys: Vec<(String, String, String, String)> = (0..model.primitives.len())
+            .map(|i| {
+                (
+                    format!("{model_key}#p{i}.base"),
+                    format!("{model_key}#p{i}.normal"),
+                    format!("{model_key}#p{i}.mr"),
+                    format!("{model_key}#p{i}.emissive"),
+                )
+            })
+            .collect();
+        // A primitive with NO texture and one whose pixels have been dropped are
+        // different things and must stay different: the first wants the flat
+        // default, the second wants the texture already on the GPU under its
+        // name. Dropping empties the pixels and KEEPS the entry, so `Some` still
+        // means "there is a texture here" - see `drop_uploaded_pixels`.
+        fn keyed<'a>(
+            key: &'a str,
+            t: &'a Option<crate::model::Tex>,
+        ) -> Option<TexSrc<'a>> {
+            let (px, w, h) = t.as_ref()?;
+            Some(TexSrc::Keyed {
+                key,
+                px: if px.is_empty() {
+                    None
+                } else {
+                    Some((px.as_slice(), *w, *h))
+                },
+            })
+        }
+
         let mut prims = Vec::new();
         let mut skinned = false;
-        for p in &model.primitives {
+        for (i, p) in model.primitives.iter().enumerate() {
             let mesh = self.renderer.add_mesh(device, &p.mesh);
             let atlas = atlas_file
                 .get(p.material.as_str())
@@ -669,25 +751,12 @@ impl Scene {
                 roughness: p.roughness,
                 emissive: p.emissive,
                 // The model's OWN texture wins over an engine-supplied atlas,
-                // and it is unshared: pixels embedded in one file belong to that
-                // file, so nothing else can be holding them.
-                base_tex: p
-                    .texture
-                    .as_ref()
-                    .map(|(px, w, h)| TexSrc::own(px.as_slice(), *w, *h))
-                    .or(atlas),
-                normal_tex: p
-                    .normal_tex
-                    .as_ref()
-                    .map(|(px, w, h)| TexSrc::own(px.as_slice(), *w, *h)),
-                mr_tex: p
-                    .mr_tex
-                    .as_ref()
-                    .map(|(px, w, h)| TexSrc::own(px.as_slice(), *w, *h)),
-                emissive_tex: p
-                    .emissive_tex
-                    .as_ref()
-                    .map(|(px, w, h)| TexSrc::own(px.as_slice(), *w, *h)),
+                // and it is NAMED so the pixels can be let go of afterwards -
+                // see `strip_pixels` below.
+                base_tex: keyed(&keys[i].0, &p.texture).or(atlas),
+                normal_tex: keyed(&keys[i].1, &p.normal_tex),
+                mr_tex: keyed(&keys[i].2, &p.mr_tex),
+                emissive_tex: keyed(&keys[i].3, &p.emissive_tex),
             };
             let mat = self.renderer.add_material(device, queue, &desc);
             prims.push((mesh, mat));
@@ -845,9 +914,9 @@ impl Scene {
             self.gather_clips(&mut model, source_rest, clips, rename, translate);
         }
 
-        let model = Arc::new(model);
-        self.models.insert(model_key.clone(), Arc::clone(&model));
-        self.upload_model(device, queue, key, model_key, model)
+        let handle = self.upload_model(device, queue, key, model_key.clone(), Arc::new(model));
+        self.drop_uploaded_pixels(&model_key);
+        handle
     }
 
     /// The cache key for a model path: the canonical filesystem path when it resolves, and

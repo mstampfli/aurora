@@ -1093,8 +1093,39 @@ impl Model {
             .ok_or_else(|| format!("{path} has no skeleton"))
     }
 
-    /// Load a model by file extension (`.gltf`/`.glb`, `.obj`, or `.fbx`).
+    /// Load a model by file extension (`.gltf`/`.glb`, `.obj`, or `.fbx`),
+    /// PREFERRING a baked one when there is a current one beside it.
+    ///
+    /// The bake is the whole point: an interchange file has to be walked, and a
+    /// baked one is read. See [`crate::bake`] for what that is worth.
+    ///
+    /// Here, at the one door every format comes through, so nothing can bypass
+    /// it and nothing has to remember to ask for it. `aurorac asset import`
+    /// writes the bakes; a source with none, or one older than itself, is
+    /// parsed exactly as before.
+    ///
+    /// A bake that exists and will not READ is a hard error rather than a quiet
+    /// fall back to the source. It is a generated file, so a corrupt or
+    /// half-written one is a broken build step, and silently parsing the FBX
+    /// instead would hide that behind nothing worse than a slow load - until the
+    /// day the source is not shipped.
     pub fn load(path: &str) -> Result<Model, String> {
+        let baked = crate::bake::baked_path(path);
+        if crate::bake::usable(path, &baked) {
+            let bytes = std::fs::read(&baked)
+                .map_err(|e| format!("read baked model {}: {e}", baked.display()))?;
+            return crate::bake::read(&bytes)
+                .map_err(|e| format!("{}: {e}", baked.display()));
+        }
+        Self::parse(path)
+    }
+
+    /// Read a SOURCE model, whatever bakes exist.
+    ///
+    /// What `aurorac asset import` calls to produce a bake, and the only caller
+    /// that should: everything else wants [`Model::load`], which is this plus
+    /// the bake it may already have.
+    pub fn parse(path: &str) -> Result<Model, String> {
         let lower = path.to_ascii_lowercase();
         let mut model = if lower.ends_with(".obj") {
             Self::load_obj(path)

@@ -70,9 +70,11 @@ fn run_cli() -> ExitCode {
         Some("asset") => match (args.get(1).map(String::as_str), args.get(2)) {
             (Some("info"), Some(path)) => cmd_asset_info(path),
             (Some("check"), Some(reference)) => cmd_asset_check(reference, &args[3..]),
+            (Some("import"), Some(_)) => cmd_asset_import(&args[2..]),
             _ => {
                 eprintln!("usage: aurorac asset info <model>");
                 eprintln!("       aurorac asset check <reference-rig> <dir>...");
+                eprintln!("       aurorac asset import <model-or-dir>...");
                 ExitCode::from(2)
             }
         },
@@ -544,6 +546,97 @@ fn read_program(path: &str) -> Option<String> {
 /// a rig whose bind pose is not where its node transforms say, a clip file with
 /// no geometry, a mesh whose vertices are in centimetres. Reading the numbers
 /// out of the importer answers those without writing a program or opening a DCC.
+/// Bake source art into Aurora's runtime format.
+///
+/// A source model is an INTERCHANGE file - FBX, glTF, OBJ - and reading one
+/// means walking a node graph and rebuilding buffers. That happens on every
+/// load, in every run. Poly Souls' bailey is 105 distinct files and parsing them
+/// is what standing the room up costs: 2.2 GB of peak memory against 69 MiB of
+/// mesh and 88 MiB of texture actually uploaded.
+///
+/// A bake is written once, beside the source, and after that a load is a read.
+///
+/// Directories are walked, so baking a whole pack is one command. A file that
+/// fails is reported and the rest still bake: one bad export in a library of
+/// hundreds should cost that file, not the pack.
+fn cmd_asset_import(paths: &[String]) -> ExitCode {
+    fn is_source(p: &std::path::Path) -> bool {
+        matches!(
+            p.extension()
+                .and_then(|e| e.to_str())
+                .map(str::to_ascii_lowercase)
+                .as_deref(),
+            Some("fbx") | Some("gltf") | Some("glb") | Some("obj")
+        )
+    }
+    fn gather(p: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        if p.is_dir() {
+            let Ok(rd) = std::fs::read_dir(p) else { return };
+            let mut entries: Vec<_> = rd.filter_map(|e| e.ok()).map(|e| e.path()).collect();
+            entries.sort();
+            for e in entries {
+                gather(&e, out);
+            }
+        } else if is_source(p) {
+            out.push(p.to_path_buf());
+        }
+    }
+
+    let mut sources = Vec::new();
+    for p in paths {
+        gather(std::path::Path::new(p), &mut sources);
+    }
+    if sources.is_empty() {
+        eprintln!("error: nothing to import - no .fbx, .gltf, .glb or .obj found");
+        return ExitCode::FAILURE;
+    }
+
+    let mut baked = 0usize;
+    let mut skipped = 0usize;
+    let mut failed = 0usize;
+    let mut src_bytes = 0u64;
+    let mut out_bytes = 0u64;
+    for src in &sources {
+        let s = src.to_string_lossy().to_string();
+        let dst = aurora_asset::bake::baked_path(&s);
+        // Up to date already: baking is cheap but not free, and a pack is
+        // thousands of files.
+        if aurora_asset::bake::usable(&s, &dst) {
+            skipped += 1;
+            continue;
+        }
+        // `parse`, not `load`: this is the thing that MAKES the bake, so it must
+        // read the source even when a stale bake is sitting beside it.
+        let model = match aurora_asset::model::Model::parse(&s) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("  FAILED {s}: {e}");
+                failed += 1;
+                continue;
+            }
+        };
+        let bytes = aurora_asset::bake::write(&model);
+        if let Err(e) = std::fs::write(&dst, &bytes) {
+            eprintln!("  FAILED {}: {e}", dst.display());
+            failed += 1;
+            continue;
+        }
+        src_bytes += std::fs::metadata(src).map(|m| m.len()).unwrap_or(0);
+        out_bytes += bytes.len() as u64;
+        baked += 1;
+    }
+
+    println!(
+        "baked {baked}, up to date {skipped}, failed {failed} ({:.1} MiB source -> {:.1} MiB baked)",
+        src_bytes as f64 / (1 << 20) as f64,
+        out_bytes as f64 / (1 << 20) as f64
+    );
+    if failed > 0 {
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
 fn cmd_asset_info(path: &str) -> ExitCode {
     let model = match aurora_asset::model::Model::load(path) {
         Ok(m) => m,
