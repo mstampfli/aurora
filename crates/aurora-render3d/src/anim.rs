@@ -22,6 +22,22 @@ pub struct AnimPlayer {
     prev_speed: f32,
     blend: f32,      // 0 = fully prev, 1 = fully current
     blend_rate: f32, // blend units per second (1/fade_seconds)
+    // Has this body EVER been posed? A crossfade needs something to fade FROM, and before the
+    // first state is declared there is nothing: the fields above still hold their defaults, which
+    // read as "clip 0 at time 0". Clip 0 is whatever the file happened to ship first - on an
+    // assembled character that is the model's own embedded clip, a rest pose - so a first
+    // `restart`/`blend` carrying a fade crossfaded every body IN FROM ITS BIND POSE.
+    //
+    // That is the T-pose flash. Measured on the player's own walk: the right hand starts at
+    // -0.784 with the rest pose at -0.800 and the walking pose at -0.294, and takes the whole
+    // fade to arrive. Every creature did it on spawn, every body did it on a room change, and
+    // the player did it at startup.
+    //
+    // The upper-body layer never had this bug because it already asks: `play_upper` skips the
+    // clip crossfade while `!self.upper` and lets the overlay's own weight fade in from the base.
+    // This is the base layer being told the same thing structurally, so that no caller has to
+    // prime a body with a throwaway `play` before declaring its real state.
+    posed: bool,
     // Sustained two-clip BASE blend (e.g. idle <-> run by movement speed): when `bblend_on`, the
     // full-body base pose is lerp(clip, bclip2, bblend). `btime2` advances bclip2 independently, so
     // both loops play at their own cadence. Call blend() every frame to track a continuous value.
@@ -83,6 +99,7 @@ impl Default for AnimPlayer {
             prev_speed: 1.0,
             blend: 1.0,
             blend_rate: 0.0,
+            posed: false,
             bclip2: 0,
             btime2: 0.0,
             bblend: 0.0,
@@ -141,6 +158,11 @@ impl AnimPlayer {
             // windup stretched to its frame data), so take that and leave the
             // clock alone.
             self.speed = speed;
+            // A fresh player's default IS clip 0 at time 0, so asking for clip 0
+            // first lands here rather than in `restart` - and the body is then
+            // genuinely showing what was asked for. Say so, or the NEXT
+            // transition would find `posed` false and snap when it should fade.
+            self.posed = true;
             return;
         }
         self.restart(clip, looping, speed, fade);
@@ -148,7 +170,9 @@ impl AnimPlayer {
 
     /// Start `clip` from the top, even if it is already the clip playing.
     pub fn restart(&mut self, clip: usize, looping: bool, speed: f32, fade: f32) {
-        if fade > 0.0001 {
+        // `posed`: there is nothing to fade out of before the first state is declared. See the
+        // field's comment - fading from the defaults means fading from clip 0's rest pose.
+        if fade > 0.0001 && self.posed {
             // Captured before `looping`/`speed` below are overwritten with the INCOMING clip's,
             // and in one group so the four cannot be captured apart.
             self.prev_clip = self.clip;
@@ -166,6 +190,7 @@ impl AnimPlayer {
         self.looping = looping;
         self.speed = speed;
         self.bblend_on = false; // a single base clip again, not a sustained blend
+        self.posed = true;
     }
 
     /// Drive the FULL-BODY base as a sustained weighted blend of two clips (`clip_a` at weight 0,
@@ -208,7 +233,7 @@ impl AnimPlayer {
             // already blending, is a composed pose rather than one clip. Its
             // dominant half is the source, exactly as `play_upper` takes the
             // dominant half of an aim blend.
-            if fade > 0.0001 {
+            if fade > 0.0001 && self.posed {
                 let (c, t, looping, spd) = self.base_dominant();
                 self.prev_clip = c;
                 self.prev_time = t;
@@ -238,6 +263,7 @@ impl AnimPlayer {
         self.bblend = weight.clamp(0.0, 1.0);
         self.looping = true;
         self.speed = speed;
+        self.posed = true;
     }
 
     /// The second clip of a sustained base blend, or -1 when the base is one clip.
@@ -1365,9 +1391,16 @@ mod root_motion {
     // `play` was made idempotent to kill.
     #[test]
     fn restating_the_same_pair_disturbs_nothing() {
-        let m = model(&[(4.0, None), (1.0, None)]);
+        let m = model(&[(4.0, None), (1.0, None), (1.0, None)]);
         let mut p = AnimPlayer::default();
+        // A real first state, so the pair change below has something to fade
+        // OUT of. A body's first state does not fade in - see
+        // `a_bodys_first_state_does_not_fade_in_from_its_bind_pose` - so
+        // entering straight into the pair under test would leave nothing
+        // running for the restatements to disturb.
+        p.play(2, true, 1.0, 0.0);
         p.blend(&m, 0, 1, 0.3, 1.0, 0.2);
+        assert_eq!(p.blend, 0.0, "the pair change starts a fade");
         // Restated every frame WHILE the entering fade is still running, which
         // is the case that would deadlock: a fade reset each frame never
         // finishes, and the character stays half way into the pose it left.
@@ -1432,5 +1465,50 @@ mod root_motion {
         p.play(7, false, 1.0, 0.0);
         p.advance(&m, 0.5);
         assert_eq!(p.root_delta(), Vec3::ZERO);
+    }
+
+    // THE T-POSE FLASH. A body's FIRST state has nothing to crossfade out of, and the fields a
+    // crossfade reads still hold their defaults - clip 0 at time 0. Clip 0 is whatever the file
+    // shipped first, which on an assembled character is its own embedded rest pose, so a first
+    // state carrying a fade faded the body in from its bind pose. Every creature on spawn, every
+    // body on a room change, the player at startup.
+    #[test]
+    fn a_bodys_first_state_does_not_fade_in_from_its_bind_pose() {
+        let m = model(&[(1.0, None), (1.0, None), (1.0, None)]);
+
+        // Through the sustained blend, which is how locomotion is driven.
+        let mut p = AnimPlayer::default();
+        p.blend(&m, 1, 2, 0.5, 1.0, 0.2);
+        assert_eq!(
+            p.blend, 1.0,
+            "a first state must be shown, not faded in from clip 0"
+        );
+        assert_eq!(p.blend_rate, 0.0, "and no fade may be left running");
+
+        // And through a single clip, which is how everything else is.
+        let mut q = AnimPlayer::default();
+        q.play(1, true, 1.0, 0.2);
+        assert_eq!(q.blend, 1.0, "same for a first single clip");
+
+        // The fade is not disabled, only the fabricated one. The SECOND state
+        // has a real pose behind it and must still crossfade.
+        q.advance(&m, 0.3);
+        q.play(2, true, 1.0, 0.2);
+        assert_eq!(q.blend, 0.0, "a later transition still fades");
+        assert_eq!(q.prev_clip, 1, "out of what was actually on screen");
+    }
+
+    // The early-out in `play` is the same question wearing a different hat: a fresh player's
+    // default IS clip 0, so asking for clip 0 first never reaches `restart` - and if that left the
+    // body marked unposed, the next transition would snap instead of fading.
+    #[test]
+    fn asking_a_fresh_body_for_clip_zero_still_counts_as_posed() {
+        let m = model(&[(1.0, None), (1.0, None)]);
+        let mut p = AnimPlayer::default();
+        p.play(0, true, 1.0, 0.2);
+        p.advance(&m, 0.1);
+        p.play(1, true, 1.0, 0.2);
+        assert_eq!(p.blend, 0.0, "the second state fades out of the first");
+        assert_eq!(p.prev_clip, 0);
     }
 }
