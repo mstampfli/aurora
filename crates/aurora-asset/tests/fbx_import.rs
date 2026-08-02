@@ -14,7 +14,7 @@
 use aurora_asset::model::{Model, Path};
 
 fn fixture(name: &str) -> Option<Model> {
-    let dir = std::env::var("AURORA_TEST_FBX_DIR").ok()?;
+    let dir = aurora_fixtures::dir()?;
     let path = std::path::Path::new(&dir).join(name);
     if !path.is_file() {
         return None;
@@ -325,7 +325,7 @@ fn synty_bone_map() -> Vec<(String, String)> {
 #[test]
 fn a_sword_clip_retargets_onto_a_character() {
     let mut character = model!("SK_Character_Male_King.fbx");
-    let dir = std::env::var("AURORA_TEST_FBX_DIR").unwrap();
+    let dir = aurora_fixtures::dir().expect("fixtures required here");
 
     let owned = synty_bone_map();
     let map: Vec<(&str, &str)> = owned.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
@@ -333,8 +333,8 @@ fn a_sword_clip_retargets_onto_a_character() {
     let before = character.clips.len();
     let added = character
         .add_clips_from(
-            &format!("{dir}/A_Attack_LightCombo01A_RootMotion_Sword.fbx"),
-            &Model::load_skeleton(&format!("{dir}/PolygonSyntyCharacter.fbx")).expect("reference rig"),
+            &format!("{}/A_Attack_LightCombo01A_RootMotion_Sword.fbx", dir.display()),
+            &Model::load_skeleton(&format!("{}/PolygonSyntyCharacter.fbx", dir.display())).expect("reference rig"),
             &map,
             &["Pelvis"],
         )

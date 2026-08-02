@@ -45,7 +45,7 @@ fn write_png(dir: &str, name: &str, rgba: &[u8], w: u32, h: u32) {
 
 #[test]
 fn eleven_modular_parts_render_as_one_body() {
-    let Ok(dir) = std::env::var("AURORA_TEST_FBX_DIR") else {
+    let Some(dir) = aurora_fixtures::dir() else {
         return;
     };
     let Some((device, queue)) = headless_device() else {
@@ -72,7 +72,7 @@ fn eleven_modular_parts_render_as_one_body() {
     let host = scene.load_model(
         &device,
         &queue,
-        &format!("{dir}/SK_Character_Male_King.fbx"),
+        &format!("{}/SK_Character_Male_King.fbx", dir.display()),
     );
     assert!(host >= 0, "host failed to load");
 
@@ -91,7 +91,7 @@ fn eleven_modular_parts_render_as_one_body() {
         let p = scene.load_part(
             &device,
             &queue,
-            &format!("{dir}/modular/SK_Chr_{slot}_Male_00.fbx"),
+            &format!("{}/modular/SK_Chr_{slot}_Male_00.fbx", dir.display()),
             host,
         );
         assert!(p >= 0, "{slot} failed to load as a part of the host");
@@ -172,7 +172,7 @@ const SYNTY_MAP: &[(&str, &str)] = &[
 /// still renders a perfectly good T-pose.
 #[test]
 fn a_character_plays_a_retargeted_sword_clip() {
-    let Ok(dir) = std::env::var("AURORA_TEST_FBX_DIR") else {
+    let Some(dir) = aurora_fixtures::dir() else {
         return;
     };
     let Some((device, queue)) = headless_device() else {
@@ -192,9 +192,9 @@ fn a_character_plays_a_retargeted_sword_clip() {
     let hero = scene.load_character(
         &device,
         &queue,
-        &format!("{dir}/SK_Character_Male_King.fbx"),
-        &[&format!("{dir}/A_Attack_LightCombo01A_RootMotion_Sword.fbx")],
-        &format!("{dir}/PolygonSyntyCharacter.fbx"),
+        &format!("{}/SK_Character_Male_King.fbx", dir.display()),
+        &[&format!("{}/A_Attack_LightCombo01A_RootMotion_Sword.fbx", dir.display())],
+        &format!("{}/PolygonSyntyCharacter.fbx", dir.display()),
         SYNTY_MAP,
         &["Pelvis"],
     );

@@ -170,6 +170,7 @@ version = "0.1.0"
 name = "aurora-asset"
 version = "0.1.0"
 dependencies = [
+ "aurora-fixtures",
  "bytemuck",
  "glam",
  "gltf",
@@ -251,6 +252,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "aurora-fixtures"
+version = "0.1.0"
+
+[[package]]
 name = "aurora-gfx"
 version = "0.1.0"
 
@@ -319,6 +324,7 @@ name = "aurora-render3d"
 version = "0.1.0"
 dependencies = [
  "aurora-asset",
+ "aurora-fixtures",
  "aurora-slot",
  "bytemuck",
  "glam",

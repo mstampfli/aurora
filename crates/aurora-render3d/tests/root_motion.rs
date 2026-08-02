@@ -16,11 +16,10 @@ const SWING: &str = "A_Attack_LightCombo01A_RootMotion_Sword.fbx";
 const AUTHORED: f32 = 1.12;
 
 fn fixture(name: &str) -> Option<Model> {
-    let dir = std::env::var("AURORA_TEST_FBX_DIR").ok()?;
-    let path = std::path::Path::new(&dir).join(name);
-    if !path.is_file() {
-        return None;
-    }
+    // Through `aurora_fixtures`, which PANICS when the pack directory is unset
+    // rather than handing back None. That None is why all six tests in this file
+    // had never run: each one did `else { return }` and reported ok.
+    let path = aurora_fixtures::file(name)?;
     Some(Model::load(path.to_str()?).expect("fixture must import"))
 }
 
@@ -59,19 +58,19 @@ fn a_real_attack_reports_the_ground_it_was_authored_to_cover() {
 /// played on the spot.
 #[test]
 fn the_distance_survives_the_retarget_onto_a_character() {
-    let Ok(dir) = std::env::var("AURORA_TEST_FBX_DIR") else {
+    let Some(dir) = aurora_fixtures::dir() else {
         return;
     };
     let Some(mut character) = fixture("SK_Character_Male_King.fbx") else {
         return;
     };
-    let rest = match Model::load_skeleton(&format!("{dir}/PolygonSyntyCharacter.fbx")) {
+    let rest = match Model::load_skeleton(&format!("{}/PolygonSyntyCharacter.fbx", dir.display())) {
         Ok(s) => s,
         Err(_) => return,
     };
     let before = character.clips.len();
     character
-        .add_clips_from(&format!("{dir}/{SWING}"), &rest, &[("Hips", "Pelvis")], &["Pelvis"])
+        .add_clips_from(&format!("{}/{SWING}", dir.display()), &rest, &[("Hips", "Pelvis")], &["Pelvis"])
         .expect("clip library loads");
 
     let total = walk_the_clip(&character, before, false, 120);
@@ -90,16 +89,16 @@ const DT: f32 = 1.0 / 60.0;
 /// A character carrying both clips the game switches between, through the retarget
 /// the game uses: `(model, roll clip, idle clip)`.
 fn roll_and_idle() -> Option<(Model, usize, usize)> {
-    let dir = std::env::var("AURORA_TEST_FBX_DIR").ok()?;
+    let dir = aurora_fixtures::dir()?;
     let mut character = fixture("SK_Character_Male_King.fbx")?;
-    let rest = Model::load_skeleton(&format!("{dir}/PolygonSyntyCharacter.fbx")).ok()?;
+    let rest = Model::load_skeleton(&format!("{}/PolygonSyntyCharacter.fbx", dir.display())).ok()?;
     let roll = character.clips.len();
     character
-        .add_clips_from(&format!("{dir}/{ROLL}"), &rest, &[("Hips", "Pelvis")], &["Pelvis"])
+        .add_clips_from(&format!("{}/{ROLL}", dir.display()), &rest, &[("Hips", "Pelvis")], &["Pelvis"])
         .expect("the roll loads");
     let idle = character.clips.len();
     character
-        .add_clips_from(&format!("{dir}/{IDLE}"), &rest, &[("Hips", "Pelvis")], &["Pelvis"])
+        .add_clips_from(&format!("{}/{IDLE}", dir.display()), &rest, &[("Hips", "Pelvis")], &["Pelvis"])
         .expect("the idle loads");
     assert!(character.clips.len() > idle, "both clips must arrive");
     Some((character, roll, idle))

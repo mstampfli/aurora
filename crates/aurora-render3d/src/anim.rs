@@ -471,12 +471,21 @@ impl AnimPlayer {
 
     /// The skinning matrices for the current (possibly blended) pose. Empty if
     /// the model has no skeleton.
-    pub fn matrices(&self, model: &Model, hidden: u64) -> Vec<Mat4> {
-        let Some(skel) = &model.skeleton else {
-            return Vec::new();
-        };
-        // Base (full-body) local pose, crossfaded if mid-transition.
-        let (mut t, mut r, mut s) = if self.bblend_on {
+    /// The character's final LOCAL pose: base layer, upper-body overlay, and any
+    /// per-bone overrides, in that order.
+    ///
+    /// One copy. This was written out twice - in `matrices`, which skins it, and
+    /// in `joint_global`, which walks one joint of it to place a weapon - and the
+    /// two were identical except that the second had lost the comments explaining
+    /// what it did.
+    ///
+    /// They agree today, and agreeing is not the point: `joint_global` is what
+    /// `r3d_joint_world` and `r3d_joint_basis` answer from, so a third animation
+    /// layer added to one and not the other would leave the SWORD following a
+    /// different pose from the ARM holding it - and nothing would report it,
+    /// because both would still be producing a perfectly valid transform.
+    fn posed_locals(&self, skel: &Skeleton, model: &Model) -> (Vec<Vec3>, Vec<Quat>, Vec<Vec3>) {
+let (mut t, mut r, mut s) = if self.bblend_on {
             self.sample_base_blend(skel, model)
         } else if self.blend >= 1.0 {
             sample_locals(skel, model.clips.get(self.clip), self.time)
@@ -534,6 +543,15 @@ impl AnimPlayer {
                 r[j] = q * r[j];
             }
         }
+        (t, r, s)
+    }
+
+    pub fn matrices(&self, model: &Model, hidden: u64) -> Vec<Mat4> {
+        let Some(skel) = &model.skeleton else {
+            return Vec::new();
+        };
+        // Base (full-body) local pose, crossfaded if mid-transition.
+        let (t, r, s) = self.posed_locals(skel, model);
         locals_to_skin(skel, &t, &r, &s, hidden)
     }
 
@@ -544,61 +562,7 @@ impl AnimPlayer {
         if joint >= skel.joints.len() {
             return None;
         }
-        let (mut t, mut r, mut s) = if self.bblend_on {
-            self.sample_base_blend(skel, model)
-        } else if self.blend >= 1.0 {
-            sample_locals(skel, model.clips.get(self.clip), self.time)
-        } else {
-            blended_locals(
-                skel,
-                model.clips.get(self.prev_clip),
-                self.prev_time,
-                model.clips.get(self.clip),
-                self.time,
-                self.blend,
-            )
-        };
-        if self.upper && self.uweight > 0.001 {
-            let (mut ut, mut ur, mut us) =
-                sample_locals(skel, model.clips.get(self.uclip), self.utime);
-            if self.ublend_on {
-                // Blend a SECOND upper clip in (aim look up/down) before masking onto the body.
-                let (ut2, ur2, us2) = sample_locals(skel, model.clips.get(self.uclip2), self.utime);
-                let b = self.ublend.clamp(0.0, 1.0);
-                for i in 0..ur.len() {
-                    ut[i] = ut[i].lerp(ut2[i], b);
-                    ur[i] = ur[i].slerp(ur2[i], b);
-                    us[i] = us[i].lerp(us2[i], b);
-                }
-            }
-            if self.ufade < 1.0 {
-                // Crossfade FROM the previous overlay clip into this one (smooth katana<->aim<->reload).
-                let (pt, pr, ps) =
-                    sample_locals(skel, model.clips.get(self.uprev_clip), self.uprev_time);
-                let f = self.ufade.clamp(0.0, 1.0);
-                for i in 0..ur.len() {
-                    ut[i] = pt[i].lerp(ut[i], f);
-                    ur[i] = pr[i].slerp(ur[i], f);
-                    us[i] = ps[i].lerp(us[i], f);
-                }
-            }
-            let mask = upper_mask(skel, self.umask_root);
-            let w = self.uweight.clamp(0.0, 1.0);
-            for i in 0..skel.joints.len() {
-                if mask[i] {
-                    t[i] = t[i].lerp(ut[i], w);
-                    r[i] = r[i].slerp(ur[i], w);
-                    s[i] = s[i].lerp(us[i], w);
-                }
-            }
-        }
-        for k in 0..self.pose_n {
-            let (j, q) = self.pose[k];
-            let j = j as usize;
-            if j < r.len() {
-                r[j] = q * r[j];
-            }
-        }
+        let (t, r, s) = self.posed_locals(skel, model);
         let n = skel.joints.len();
         let local: Vec<Mat4> = (0..n)
             .map(|i| Mat4::from_scale_rotation_translation(s[i], r[i], t[i]))

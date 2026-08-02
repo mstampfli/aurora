@@ -20,3 +20,6 @@ gltf = { version = "1.4", features = ["import", "utils", "names"] }
 tobj = "4"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 ufbx = "0.11"
+
+[dev-dependencies]
+aurora-fixtures.workspace = true

@@ -12,6 +12,33 @@ cargo test --workspace --profile release-test -j 4        # THE GATE. About two 
 cargo fmt --check                                         # part of the gate; run cargo fmt first
 ```
 
+### The suite needs the licensed pack art
+
+Some tests read real FBX files - root motion, the modular character assembly, the
+FBX importer - and they need `AURORA_TEST_FBX_DIR` pointing at a directory of
+them:
+
+```sh
+AURORA_TEST_FBX_DIR=/path/to/staged/fbx cargo test --workspace --profile release-test -j 4
+```
+
+**Unset, those tests now FAIL rather than skip.** That default is deliberate and
+it was expensive to learn: they used to do `let Some(m) = fixture(..) else
+{ return };`, which reports a test as `ok` having asserted nothing. The variable
+was unset on the machine this engine is developed on, so all six root-motion
+tests and both modular-character tests had never run - and the suite counted
+them as passing the whole time, so the test COUNT could never reveal it either.
+
+If you genuinely do not have the packs, say so explicitly:
+
+```sh
+AURORA_SKIP_FIXTURE_TESTS=1 cargo test --workspace --profile release-test -j 4
+```
+
+Having to type that is the point. A check that cannot run should be as loud as
+one that fails.
+
+
 **`release-test`, not `release`.** It inherits `release` and turns LTO off. The suite used to be
 run with `--release` and took ninety-plus minutes, almost all of it LINKING: every integration test
 is its own binary, each links the whole runtime (wgpu, rapier, symphonia, cranelift), and thin LTO
