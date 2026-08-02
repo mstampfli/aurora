@@ -72,6 +72,9 @@ the table for every builtin whose arguments are plain numbers.
 | `len` | `(str\|array) -> i64` | length |
 | `char_at` / `substr` / `starts_with` | string ops | |
 | `abs`/`min`/`max`/`clamp`/`sqrt`/`sin`/`cos`/`tan`/`floor`/`ceil`/`round`/`pow` | math | float-typed |
+| `acos`/`asin` | `(f64) -> f64` | inverse sine/cosine, radians. **The argument is clamped to `[-1, 1]` before the call**, so a dot product of two unit vectors that lands on `1.0000000001` through float error returns `0.0` rather than NaN. This is deliberate and is the only rounding any math builtin does; every other out-of-domain input is your problem |
+| `atan` | `(f64) -> f64` | inverse tangent of a ratio, radians, range `(-PI/2, PI/2)` |
+| `atan2` | `(y, x) -> f64` | inverse tangent of `y/x` keeping the quadrant, range `(-PI, PI]`. Prefer this over `atan` for a heading: `atan2(dz, dx)` is correct in all four quadrants and at `x == 0`, where `atan(dz/dx)` divides by zero |
 | `band`/`bor`/`bxor`/`shl`/`shr`/`bnot` | `(i64, i64) -> i64` | integer bitwise (`&`/`\|` are taken by refs/closures) |
 
 Arrays are fixed-size (`[T; N]`) and **bounds-checked** - an out-of-range or

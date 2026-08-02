@@ -122,7 +122,6 @@ const UNDOCUMENTED: &[&str] = &[
     "f32_blob",
     "log",
     "exp",
-    "atan2",
     "draw_int",
     "play_noise",
     "audio_volume",
