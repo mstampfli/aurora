@@ -1499,6 +1499,81 @@ pub(crate) fn census() -> (usize, usize, usize, usize) {
 mod tests {
     use super::*;
 
+    /// A character delivers the distance it was ASKED for, at ANY timestep.
+    ///
+    /// The same 1.12 m of forward travel across an empty floor, split into
+    /// finer and finer steps. The total request is identical every time; only
+    /// the number of calls changes. A controller that answers a different
+    /// distance at 2400 Hz than at 60 Hz is not simulating movement, it is
+    /// leaking a fixed cost per call.
+    ///
+    /// Found from the game end. Root motion feeds the frame the distance a clip
+    /// authored, and `A_Attack_LightCombo01A_RootMotion_Sword` authors exactly
+    /// 1.12 m. The frame was measured feeding the full 1.12 - vector sum
+    /// (0.0, 1.1200000047) - and the capsule measured arriving at 0.7303. So the
+    /// animation, the retarget, the root-delta accumulation and the game's own
+    /// arithmetic are all exonerated. Headless frames take about 0.4 ms, so the
+    /// game was calling this two thousand times for that 1.12 m where a 60 Hz
+    /// build calls it forty-eight times.
+    ///
+    /// It matters far beyond root motion: dividing a walk into smaller steps
+    /// must not slow the walk down. Every velocity in the game is spent through
+    /// this call, so a frame-rate-dependent loss means the character is slower
+    /// on a fast machine - the exact opposite of what a player expects, and
+    /// invisible until something measures travel against a target.
+    #[test]
+    fn a_character_arrives_at_any_timestep() {
+        // Total travel, and the timesteps to spend it in. 1/60 down to the
+        // ~2400 fps a headless capture actually runs at.
+        let want = 1.12_f64;
+        let rates = [60.0_f64, 120.0, 240.0, 600.0, 2400.0];
+        let mut worst = (0.0_f64, 0.0_f64);
+        let mut report = String::new();
+
+        for rate in rates {
+            let dt = 1.0 / rate;
+            // 0.8 s of clip, however many steps that is at this rate.
+            let steps = (0.8 * rate).round() as i64;
+            let per = want / (steps as f64);
+
+            aurora_phys3d_init(0.0, -22.0, 0.0);
+            // A wide flat floor with its top at y = 0, and nothing else at all.
+            aurora_phys3d_add_box(0.0, -1.0, 0.0, 100.0, 1.0, 100.0, 0);
+            let half = 0.55_f64;
+            let radius = 0.35_f64;
+            let actor = aurora_phys3d_add_character(0.0, half + radius, 0.0, half, radius);
+            // Settle onto the floor first, so the walk is not paying for a fall.
+            for _ in 0..(rate as i64 / 2) {
+                aurora_phys3d_move_character(actor, 0.0, -2.0 * dt, 0.0, dt);
+                aurora_phys3d_step(dt);
+            }
+            let z0 = aurora_phys3d_z(actor);
+            for _ in 0..steps {
+                // The game's own ground stick: held down, not zeroed.
+                aurora_phys3d_move_character(actor, 0.0, -2.0 * dt, per, dt);
+                aurora_phys3d_step(dt);
+            }
+            let got = aurora_phys3d_z(actor) - z0;
+
+            report.push_str(&format!(
+                "
+  {rate:>6.0} Hz, {steps:>4} steps of {per:.6} m -> travelled {got:.4} m ({:.0}%)",
+                got / want * 100.0
+            ));
+            if worst.1 == 0.0 || got < worst.1 {
+                worst = (rate, got);
+            }
+        }
+
+        assert!(
+            (worst.1 - want).abs() < 0.05,
+            "the same {want:.2} m of travel across an empty floor arrives short when              it is split into more steps. Worst at {:.0} Hz: {:.4} m.{report}
+             Nothing is in the way - no walls, no slope, one flat box - so the              loss is a per-call cost inside the character controller.",
+            worst.0,
+            worst.1
+        );
+    }
+
     /// 500 create/destroy cycles must leave the world exactly as they found it.
     ///
     /// Before removal existed, `handles`/`cols`/`grounded` and Rapier's own
