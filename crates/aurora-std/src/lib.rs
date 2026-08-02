@@ -509,6 +509,21 @@ fn dist2d(ax: f64, az: f64, bx: f64, bz: f64) -> f64 {
     len2d(ax - bx, az - bz)
 }
 
+// The same in three dimensions, which was missing and so got hand-rolled.
+//
+// `len2d` existed and `len3d` did not, so every caller that needed the third
+// axis wrote `sqrt(x*x + y*y + z*z)` out longhand - a camera's clearance ray, a
+// socket's offset, a grip check. Three copies of one formula, and the reason
+// they are copies is that the shelf they should have come off was one function
+// short.
+fn len3d(dx: f64, dy: f64, dz: f64) -> f64 {
+    sqrt(dx * dx + dy * dy + dz * dz)
+}
+
+fn dist3d(ax: f64, ay: f64, az: f64, bx: f64, by: f64, bz: f64) -> f64 {
+    len3d(ax - bx, ay - by, az - bz)
+}
+
 // The same, squared. For comparing distances without the square root, which is
 // the right thing in a loop over every creature - and a named function so the
 // optimisation cannot be mistaken for a bug by the next reader.
