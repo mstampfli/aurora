@@ -31,6 +31,22 @@ a rename produces - the dangling reference is in a file you were not editing -
 so it is the one most likely to be missed. `check`, `run`, and `build` all check
 the same program (your source, its dependencies, and the prelude), so they agree.
 
+A TYPE annotation that names nothing is `E0315`, in every position one can be
+written: a struct field, a function parameter or return, a `let` annotation, an
+array element, a tuple member, a reference, and a generic argument. It was
+accepted - an undefined name became an opaque nominal type that unified with
+itself and nothing else, so `struct S { a: Nonexistent }` passed and
+`fn takes(x: AlsoMissing)` produced no diagnostic at all. Worse, a mismatch
+against one printed `expected \`StillMissing\`, found \`{integer}\``, which asserts
+the missing type exists and sends the reader looking for a conversion.
+
+The names that are real without being declared - the primitives, the math types,
+`Transform`, `Time`, `Tick`, `Entity`, `Handle`, `Option`, `Result`, `rc`,
+`weak`, and `Self` - are one list, `aurora_ast::is_builtin_type`, read by both
+front-end passes. A type PARAMETER is in scope for the item that declares it,
+including an `impl`'s parameters inside its methods, so `impl<T> List<T>` is
+written with the `<T>`: the bare `impl List<T>` form does not declare one.
+
 Both qualified guards are deliberately narrow: they fire only when the prefix
 demonstrably IS a module, because something else in the program is already
 qualified with it. An enum variant, an associated function or const on a type,

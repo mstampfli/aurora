@@ -65,6 +65,15 @@ struct Typeck {
     fn_bounds: HashMap<String, Vec<(String, String)>>,
     /// User-defined type names (structs/components/enums) — shadow builtins.
     user_types: std::collections::HashSet<String>,
+    /// The type parameters legal in the item being checked right now.
+    ///
+    /// Generics are recorded per-fn and per-struct for call-site substitution,
+    /// but nothing knew which ones were in scope at a given type annotation -
+    /// which is exactly what "is this name a real type" needs to ask.
+    scope_generics: std::collections::HashSet<String>,
+    /// Unknown type names already reported, so one typo in a shared signature
+    /// is one error and not one per position it reaches.
+    reported_types: std::collections::HashSet<(String, u32)>,
     /// Top-level `const` names, so a bare use of one is not mistaken for an
     /// undefined value.
     consts: std::collections::HashSet<String>,
@@ -102,6 +111,8 @@ impl Typeck {
             trait_impls: std::collections::HashSet::new(),
             fn_bounds: HashMap::new(),
             user_types: std::collections::HashSet::new(),
+            scope_generics: std::collections::HashSet::new(),
+            reported_types: std::collections::HashSet::new(),
             consts: std::collections::HashSet::new(),
             imported: std::collections::HashSet::new(),
             in_shader: false,
@@ -130,15 +141,21 @@ impl Typeck {
             }
         }
         for item in &module.items {
+            // A shader stage's SIGNATURE is converted here, not in `run` - so
+            // setting `in_shader` only there left the guard covering the body
+            // and not the `fn vs(in: VertexIn) -> VertexOut` above it, and a
+            // vertex stage reported both of its own types as undefined.
+            self.in_shader = aurora_ast::is_shader_stage(&item.attrs);
             match &item.kind {
                 ItemKind::Struct(s) | ItemKind::Component(s) => {
+                    let prev = self.enter_generics(s.generics.iter().map(|g| g.name.name.clone()));
                     if let aurora_ast::StructBody::Named(fields) = &s.body {
                         let fs = fields
                             .iter()
                             .map(|f| {
                                 (
                                     f.name.name.clone(),
-                                    convert::type_to_ty(&f.ty, &mut self.cx, &self.user_types),
+                                    self.to_ty(&f.ty),
                                 )
                             })
                             .collect();
@@ -156,6 +173,7 @@ impl Typeck {
                             .collect();
                         self.struct_required.insert(s.name.name.clone(), required);
                     }
+                    self.scope_generics = prev;
                 }
                 ItemKind::Fn(f) => {
                     let ty = self.fn_type(f);
@@ -207,15 +225,64 @@ impl Typeck {
                 _ => {}
             }
         }
+        self.in_shader = false;
+    }
+
+    /// Convert a type annotation AND report it if it names nothing.
+    ///
+    /// The single door. Every one of the eleven positions that used to call
+    /// `convert::type_to_ty` directly goes through here, so an undefined type
+    /// cannot slip in via a position somebody forgot - and a new position added
+    /// later gets the check by construction rather than by remembering.
+    fn to_ty(&mut self, t: &aurora_ast::Type) -> Ty {
+        let mut unknown = Vec::new();
+        let ty = {
+            let mut scope = convert::TyScope {
+                user: &self.user_types,
+                generics: &self.scope_generics,
+                unknown: &mut unknown,
+            };
+            convert::type_to_ty(t, &mut self.cx, &mut scope)
+        };
+        for (name, span) in unknown {
+            self.report_unknown_type(&name, span);
+        }
+        ty
+    }
+
+    /// Report a type annotation that names nothing.
+    ///
+    /// Same escape hatches as the other `report_unknown_*`: shader bodies name
+    /// GPU types with no CPU declaration, `lenient_names` covers the places
+    /// where a name is deliberately not resolvable yet, and an `use`d import is
+    /// a name this module was given rather than one it declares.
+    fn report_unknown_type(&mut self, name: &str, span: Span) {
+        if self.lenient_names > 0
+            || self.in_shader
+            || self.imported.contains(name)
+            || self.user_types.contains(name)
+            || self.scope_generics.contains(name)
+        {
+            return;
+        }
+        if !self.reported_types.insert((name.to_string(), span.lo)) {
+            return;
+        }
+        self.diags.push(
+            Diagnostic::error(format!("unknown type `{name}`"))
+                .with_code("E0315")
+                .primary(span, "no struct, component, enum, or builtin with this name"),
+        );
     }
 
     fn fn_type(&mut self, f: &aurora_ast::FnDecl) -> Ty {
+        let prev = self.enter_generics(f.generics.iter().map(|g| g.name.name.clone()));
         let params = f
             .params
             .iter()
             .filter_map(|p| match p {
                 Param::Normal { ty, .. } => {
-                    Some(convert::type_to_ty(ty, &mut self.cx, &self.user_types))
+                    Some(self.to_ty(ty))
                 }
                 Param::SelfParam { .. } => None,
             })
@@ -223,9 +290,28 @@ impl Typeck {
         let ret = f
             .ret
             .as_ref()
-            .map(|t| convert::type_to_ty(t, &mut self.cx, &self.user_types))
+            .map(|t| self.to_ty(t))
             .unwrap_or(Ty::Unit);
+        self.scope_generics = prev;
         Ty::Fn(params, Box::new(ret))
+    }
+
+    /// Make `names` the type parameters in scope, and hand back what was there.
+    ///
+    /// Returned rather than pushed onto a stack because every caller is a single
+    /// function that restores it before returning, and a stack would be a second
+    /// thing to keep balanced.
+    /// ADDITIVE. `impl<T> List<T> { fn push(self, x: T) }` needs T from the impl
+    /// and any the method declares of its own, so entering extends rather than
+    /// replaces - a method that replaced the set reported the impl's own
+    /// parameter as an unknown type, which is the first thing this found.
+    fn enter_generics(
+        &mut self,
+        names: impl Iterator<Item = String>,
+    ) -> std::collections::HashSet<String> {
+        let prev = self.scope_generics.clone();
+        self.scope_generics.extend(names);
+        prev
     }
 
     // --- driver --------------------------------------------------------------
@@ -241,16 +327,19 @@ impl Typeck {
                 ItemKind::Const(c) => {
                     let value_ty = self.infer(&c.value);
                     if let Some(ann) = &c.ty {
-                        let ann_ty = convert::type_to_ty(ann, &mut self.cx, &self.user_types);
+                        let ann_ty = self.to_ty(ann);
                         self.expect(c.value.span, &ann_ty, &value_ty, "constant");
                     }
                 }
                 ItemKind::Impl(i) => {
+                    let prev =
+                        self.enter_generics(i.generics.iter().map(|g| g.name.name.clone()));
                     for it in &i.items {
                         if let AssocItem::Fn(f) = it {
                             self.check_fn(f);
                         }
                     }
+                    self.scope_generics = prev;
                 }
                 _ => {}
             }
@@ -260,12 +349,13 @@ impl Typeck {
 
     fn check_fn(&mut self, f: &aurora_ast::FnDecl) {
         let Some(body) = &f.body else { return };
+        let prev_generics = self.enter_generics(f.generics.iter().map(|g| g.name.name.clone()));
         self.push();
         self.cur_params.clear();
         for p in &f.params {
             match p {
                 Param::Normal { name, ty, .. } => {
-                    let t = convert::type_to_ty(ty, &mut self.cx, &self.user_types);
+                    let t = self.to_ty(ty);
                     self.cur_params.insert(name.name.clone(), t.clone());
                     self.bind(&name.name, t);
                 }
@@ -276,7 +366,7 @@ impl Typeck {
         let declared_ret = f
             .ret
             .as_ref()
-            .map(|ret| convert::type_to_ty(ret, &mut self.cx, &self.user_types));
+            .map(|ret| self.to_ty(ret));
         let prev_ret = self.cur_ret.take();
         self.cur_ret = declared_ret.clone();
         let body_ty = self.check_block_no_scope(body);
@@ -287,12 +377,13 @@ impl Typeck {
         }
         self.cur_ret = prev_ret;
         self.pop();
+        self.scope_generics = prev_generics;
     }
 
     fn check_system(&mut self, body: &Block, params: &[aurora_ast::SysParam]) {
         self.push();
         for p in params {
-            let t = convert::type_to_ty(&p.ty, &mut self.cx, &self.user_types);
+            let t = self.to_ty(&p.ty);
             self.bind(&p.name.name, t);
         }
         self.check_block_no_scope(body);
@@ -356,7 +447,7 @@ impl Typeck {
     fn check_let(&mut self, l: &aurora_ast::LetStmt) {
         let declared =
             l.ty.as_ref()
-                .map(|t| convert::type_to_ty(t, &mut self.cx, &self.user_types));
+                .map(|t| self.to_ty(t));
         let init_ty = l.init.as_ref().map(|e| (e.span, self.infer(e)));
 
         let bind_ty = match (&declared, &init_ty) {
@@ -445,7 +536,7 @@ impl Typeck {
             }
             ExprKind::Cast(inner, ty) => {
                 self.infer(inner);
-                convert::type_to_ty(ty, &mut self.cx, &self.user_types)
+                self.to_ty(ty)
             }
             ExprKind::Call { callee, args, .. } => self.infer_call(callee, args),
             ExprKind::Index { base, index } => {
@@ -554,7 +645,7 @@ impl Typeck {
                 let mut param_tys = Vec::new();
                 for p in params {
                     if let Param::Normal { name, ty, .. } = p {
-                        let t = convert::type_to_ty(ty, &mut self.cx, &self.user_types);
+                        let t = self.to_ty(ty);
                         self.bind(&name.name, t.clone());
                         param_tys.push(t);
                     }

@@ -5,7 +5,7 @@
 
 use std::collections::HashSet;
 
-use aurora_ast::{Type, TypeKind};
+use aurora_ast::{Span, Type, TypeKind};
 use aurora_lexer::{FloatTy, IntTy};
 use aurora_types::{InferCtx, Ty};
 
@@ -60,7 +60,31 @@ pub fn set_const_lens(module: &aurora_ast::Module) {
     CONST_LENS.with(|c| *c.borrow_mut() = out);
 }
 
-pub(crate) fn type_to_ty(t: &Type, cx: &mut InferCtx, user: &HashSet<String>) -> Ty {
+/// Everything a type annotation is resolved AGAINST, in one place.
+///
+/// This was three loose arguments and it was about to be four. More to the
+/// point, an unknown type name has to be REPORTED, and the only position that
+/// can see one is inside the conversion - so the sink travels with the scope
+/// rather than being something each of the eleven callers remembers to check.
+pub(crate) struct TyScope<'a> {
+    /// Every struct, component and enum declared in the (flattened) module.
+    pub user: &'a HashSet<String>,
+    /// The type parameters legal right here: a fn's or a struct's own generics.
+    /// `fn id<T>(x: T)` must not report `T` as undefined.
+    pub generics: &'a HashSet<String>,
+    /// Names that resolved to nothing, with where they were written.
+    pub unknown: &'a mut Vec<(String, Span)>,
+}
+
+/// Is this name a type that exists, one way or another?
+fn resolves(name: &str, scope: &TyScope) -> bool {
+    scope.user.contains(name)
+        || scope.generics.contains(name)
+        // The one list of names the language provides rather than the program.
+        || aurora_ast::is_builtin_type(name)
+}
+
+pub(crate) fn type_to_ty(t: &Type, cx: &mut InferCtx, scope: &mut TyScope) -> Ty {
     match &t.kind {
         TypeKind::Path(p) => {
             let last = p.segments.last();
@@ -68,7 +92,17 @@ pub(crate) fn type_to_ty(t: &Type, cx: &mut InferCtx, user: &HashSet<String>) ->
             // `rc<T>` is special: a refcounted box.
             if name == "rc" {
                 if let Some(arg) = last.and_then(|s| s.args.first()) {
-                    return Ty::Rc(Box::new(type_to_ty(arg, cx, user)));
+                    return Ty::Rc(Box::new(type_to_ty(arg, cx, scope)));
+                }
+            }
+            // Generic ARGUMENTS are types too, and nothing converted them, so
+            // the `Foo` in `Option<Foo>` was never resolved by anything. The
+            // results are discarded - the checker models `Option<T>` nominally -
+            // but converting them is what makes an undefined name inside one
+            // visible at all.
+            if let Some(seg) = last {
+                for arg in &seg.args {
+                    let _ = type_to_ty(arg, cx, scope);
                 }
             }
             // A QUALIFIED type names an item in ANOTHER module, and the flattener
@@ -93,32 +127,52 @@ pub(crate) fn type_to_ty(t: &Type, cx: &mut InferCtx, user: &HashSet<String>) ->
                     .map(|s| s.ident.name.as_str())
                     .collect::<Vec<_>>()
                     .join("::");
-                if user.contains(joined.as_str()) {
+                if scope.user.contains(joined.as_str()) {
                     return Ty::Named(joined);
                 }
+                // A qualified name that resolves to nothing is reported under
+                // the spelling it was WRITTEN with. `arena::Meshes` is not a
+                // missing `Meshes`.
+                if !scope.generics.contains(joined.as_str()) {
+                    scope.unknown.push((joined, t.span));
+                }
+                return builtin_or_named(name);
             }
             // A user-defined type shadows any builtin of the same name.
-            if user.contains(name) {
+            if scope.user.contains(name) {
                 return Ty::Named(name.to_string());
+            }
+            // NAMING NOTHING IS AN ERROR, and until this line it was not.
+            //
+            // `builtin_or_named` falls through to `Ty::Named(other)`, which is
+            // exactly right for the engine's nominal types and was silently
+            // right for typos too: a field declared `a: Nonexistent` became an
+            // opaque type that unified with itself and nothing else. A parameter
+            // written `fn takes(x: AlsoMissing)` produced no diagnostic at all,
+            // and the errors that DID appear read "expected `StillMissing`,
+            // found `{integer}`" - which asserts the missing type exists and
+            // sends the reader looking for a conversion.
+            if !resolves(name, scope) {
+                scope.unknown.push((name.to_string(), t.span));
             }
             builtin_or_named(name)
         }
-        TypeKind::Owned(inner) => Ty::Owned(Box::new(type_to_ty(inner, cx, user))),
-        TypeKind::Ref { mutable, inner } => Ty::reference(*mutable, type_to_ty(inner, cx, user)),
+        TypeKind::Owned(inner) => Ty::Owned(Box::new(type_to_ty(inner, cx, scope))),
+        TypeKind::Ref { mutable, inner } => Ty::reference(*mutable, type_to_ty(inner, cx, scope)),
         TypeKind::Array { elem, len } => {
             // A length may be a literal OR a const - `[i64; TOWN_COUNT]`.
             let n = len.as_ref().and_then(|e| array_len_of(&e.kind));
-            Ty::Array(Box::new(type_to_ty(elem, cx, user)), n)
+            Ty::Array(Box::new(type_to_ty(elem, cx, scope)), n)
         }
-        TypeKind::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| type_to_ty(t, cx, user)).collect()),
+        TypeKind::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| type_to_ty(t, cx, scope)).collect()),
         TypeKind::Fn { params, ret } => Ty::Fn(
-            params.iter().map(|t| type_to_ty(t, cx, user)).collect(),
-            Box::new(type_to_ty(ret, cx, user)),
+            params.iter().map(|t| type_to_ty(t, cx, scope)).collect(),
+            Box::new(type_to_ty(ret, cx, scope)),
         ),
         // Trait objects aren't modelled yet; treat as unknown.
         TypeKind::Dyn(_) => Ty::Error,
         // A region annotation (`#perm T`) is checking-only — the type is `T`.
-        TypeKind::Region(_, inner) => type_to_ty(inner, cx, user),
+        TypeKind::Region(_, inner) => type_to_ty(inner, cx, scope),
         TypeKind::Infer => cx.fresh(),
         TypeKind::Error => Ty::Error,
     }

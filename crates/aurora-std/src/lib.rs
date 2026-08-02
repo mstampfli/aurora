@@ -167,7 +167,7 @@ impl IntList {
 // type via monomorphization. Construct with `List { data: [0; 32], len: 0 }`
 // (or `[0.0; 32]` for floats).
 struct List<T> { data: [T; 32], len: i64 }
-impl List<T> {
+impl<T> List<T> {
     fn push(self, x: T) {
         self.data[self.len] = x
         self.len = self.len + 1

@@ -16,40 +16,6 @@ use aurora_diag::Diagnostic;
 
 use crate::walk::queries_in_block;
 
-/// Builtin type names from grammar spec §2.2 (primitives + math + ECS leaves).
-const BUILTIN_TYPES: &[&str] = &[
-    "f32",
-    "f64",
-    "i8",
-    "i16",
-    "i32",
-    "i64",
-    "u8",
-    "u16",
-    "u32",
-    "u64",
-    "bool",
-    "char",
-    "str",
-    "void",
-    "Vec2",
-    "Vec3",
-    "Vec4",
-    "Mat2",
-    "Mat3",
-    "Mat4",
-    "Quat",
-    "Color",
-    "Transform",
-    "Time",
-    "Entity",
-    "Handle",
-    "Option",
-    "Result",
-    "rc",
-    "weak",
-];
-
 struct Tables {
     components: HashSet<String>,
     /// Local `struct`/`enum` types (not components).
@@ -108,7 +74,7 @@ impl Tables {
     fn maybe_component(&self, name: &str) -> bool {
         self.components.contains(name)
             || self.imported.contains(name)
-            || BUILTIN_TYPES.contains(&name)
+            || aurora_ast::is_builtin_type(name)
     }
 }
 

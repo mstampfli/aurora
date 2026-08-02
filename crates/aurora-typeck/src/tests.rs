@@ -613,3 +613,87 @@ fn a_length_mismatch_folds_an_arithmetic_const_length() {
 fn a_correctly_sized_table_is_accepted() {
     assert!(errors("const N: i64 = 3\nconst T: [i64; N] = [1, 2, 3]").is_empty());
 }
+
+// --- naming a type that does not exist (E0315) --------------------------------
+//
+// The leniency contract above is about UNRESOLVED types - a name a module was
+// handed by `use` and cannot see the definition of. It was never meant to cover
+// a name that resolves to nothing anywhere, and it did: an undefined type became
+// an opaque nominal that unified with itself, so `a: Nonexistent` was accepted
+// and `fn takes(x: AlsoMissing)` produced no diagnostic at all. The errors that
+// did appear read "expected `StillMissing`, found `{integer}`", which asserts
+// the missing type exists.
+//
+// Both sides are pinned here, because a false error would fire on every generic
+// parameter and every engine resource.
+
+#[test]
+fn an_undefined_type_is_an_error_in_every_position() {
+    // One position per line, and each must be reported exactly once.
+    for (src, name) in [
+        ("struct S { a: Nope }", "Nope"),
+        ("fn f(x: Nope) {}", "Nope"),
+        ("fn f() -> Nope { 0 }", "Nope"),
+        ("fn f() { let x: Nope = 0 }", "Nope"),
+        ("struct S { a: [Nope; 4] }", "Nope"),
+        ("struct S { a: (Nope, i64) }", "Nope"),
+        ("fn f(x: &Nope) {}", "Nope"),
+        ("fn f(x: &mut Nope) {}", "Nope"),
+        ("struct W<T> { i: T }\nstruct S { a: W<Nope> }", "Nope"),
+    ] {
+        let errs = errors(src);
+        let hits = errs
+            .iter()
+            .filter(|e| e.contains("unknown type") && e.contains(name))
+            .count();
+        assert_eq!(hits, 1, "in `{src}` expected one unknown-type error, got {errs:?}");
+    }
+}
+
+#[test]
+fn a_type_parameter_is_not_an_undefined_type() {
+    // The first false positive this produced, and the reason `enter_generics`
+    // extends rather than replaces: an impl method has to see the impl's
+    // parameter as well as its own.
+    for src in [
+        "fn id<T>(x: T) -> T { x }",
+        "struct Pair<T> { a: T, b: T }",
+        "struct P<T> { a: T }\nimpl<T> P<T> { fn first(self) -> T { self.a } }",
+        "fn two<A, B>(a: A, b: B) -> A { a }",
+    ] {
+        let errs = errors(src);
+        assert!(
+            !errs.iter().any(|e| e.contains("unknown type")),
+            "`{src}` reported a declared type parameter as unknown: {errs:?}"
+        );
+    }
+}
+
+#[test]
+fn the_engine_s_own_types_are_not_undefined() {
+    // These are provided by the language rather than the program, and the list
+    // that says so lives in `aurora_ast::is_builtin_type` - one list, read by
+    // this pass and by `aurora-check`. It was two, and the second was missing
+    // Transform, Handle, Option, Result and Time.
+    for name in [
+        "i64", "f64", "str", "bool", "Vec3", "Quat", "Color", "Mat4", "Transform", "Time", "Tick",
+        "Entity", "Handle",
+    ] {
+        let src = format!("fn f(x: {name}) {{}}");
+        let errs = errors(&src);
+        assert!(
+            !errs.iter().any(|e| e.contains("unknown type")),
+            "`{name}` is a language-provided type and was reported unknown: {errs:?}"
+        );
+    }
+}
+
+#[test]
+fn one_typo_in_one_place_is_one_error() {
+    // A struct field's type is converted by the collection pass and again when
+    // the struct is used, so the naive version reported the same typo twice at
+    // the same span.
+    let errs = errors("struct S { a: Nope }\nfn f() { let s = S { a: 0 } }");
+    let hits = errs.iter().filter(|e| e.contains("unknown type")).count();
+    assert_eq!(hits, 1, "expected one error for one typo, got {errs:?}");
+}
