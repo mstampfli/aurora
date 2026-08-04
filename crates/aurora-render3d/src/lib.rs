@@ -27,6 +27,56 @@ pub use aurora_asset::model;
 
 pub use anim::{skin_matrices, skin_matrices_blended, AnimPlayer};
 pub use glam::{Mat4, Quat, Vec3};
+
+/// Turn a LOCAL offset by a yaw into world space, in this renderer's handedness.
+///
+/// The rotation `r3d_draw` applies, available on its own. A caller placing
+/// something relative to a turned object - a wall module against its own centre,
+/// a cover post's corner, a step in the direction a character faces - otherwise
+/// writes `x*cos + z*sin` / `-x*sin + z*cos` out by hand, and the sign of the
+/// second row is a coin flip that looks obviously right in both directions. This
+/// project shipped that mistake twice, in both signs, in the same week.
+///
+/// Built from `Mat4::from_rotation_y`, which is the same call the draw composes
+/// its model matrix with, so this is not a second derivation of the convention -
+/// it is the convention, exposed.
+pub fn yaw_rotate(yaw: f32, lx: f32, lz: f32) -> (f32, f32) {
+    let p = Mat4::from_rotation_y(yaw).transform_point3(Vec3::new(lx, 0.0, lz));
+    (p.x, p.z)
+}
+
+#[cfg(test)]
+mod yaw_rotate_tests {
+    use super::yaw_rotate;
+
+    /// The handedness, stated rather than re-derived: a quarter turn takes a
+    /// local +Z offset onto world +X. Asserting the formula against itself would
+    /// hold whichever sign the second row had, which is exactly how both signs
+    /// came to ship.
+    #[test]
+    fn a_quarter_turn_takes_local_forward_onto_world_right() {
+        let (x, z) = yaw_rotate(std::f32::consts::FRAC_PI_2, 0.0, 1.0);
+        assert!((x - 1.0).abs() < 1e-5, "local +Z should turn onto world +X, got x={x}");
+        assert!(z.abs() < 1e-5, "and leave nothing on Z, got z={z}");
+    }
+
+    #[test]
+    fn no_turn_moves_nothing() {
+        let (x, z) = yaw_rotate(0.0, 3.0, -7.0);
+        assert!((x - 3.0).abs() < 1e-6 && (z + 7.0).abs() < 1e-6);
+    }
+
+    /// And it is the rotation the DRAW applies, not one that merely resembles it.
+    #[test]
+    fn it_is_the_transform_a_draw_composes() {
+        for yaw in [0.3f32, 1.1, -2.4, 3.0] {
+            let (x, z) = yaw_rotate(yaw, 1.7, -0.6);
+            let m = super::Mat4::from_rotation_y(yaw);
+            let p = m.transform_point3(super::Vec3::new(1.7, 0.0, -0.6));
+            assert!((x - p.x).abs() < 1e-6 && (z - p.z).abs() < 1e-6);
+        }
+    }
+}
 pub use mesh::{GpuMesh, MeshData, Vertex, VERTEX_LAYOUT};
 pub use model::{Channel, Clip, Interp, Joint, Model, Path, Primitive, RootMotion, Skeleton};
 pub use render::{

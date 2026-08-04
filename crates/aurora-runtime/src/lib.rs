@@ -2853,6 +2853,17 @@ pub extern "C" fn aurora_r3d_joint_pos(host: i64, joint: i64, axis: i64) -> f64 
 pub extern "C" fn aurora_r3d_joint_world(h: i64, joint: i64, axis: i64, x: f64, y: f64, z: f64, yaw: f64, scale: f64) -> f64 {
     aurora_window::imm_r3d_joint_world(h, joint, axis, x as f32, y as f32, z as f32, yaw as f32, scale as f32) as f64
 }
+/// `r3d_yaw_rotate(yaw, lx, lz, axis) -> f64`: turn a LOCAL offset by a yaw into
+/// world space, in the renderer's own handedness. `axis` 0 = x, 2 = z.
+///
+/// The rotation `r3d_draw` applies, on its own. Without it a caller placing
+/// anything relative to a turned object writes `x*cos + z*sin` / `-x*sin + z*cos`
+/// by hand, and the sign of the second row looks obviously right in both
+/// directions - this project shipped it in both.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_yaw_rotate(yaw: f64, lx: f64, lz: f64, axis: i64) -> f64 {
+    aurora_window::imm_r3d_yaw_rotate(yaw as f32, lx as f32, lz as f32, axis) as f64
+}
 /// One column of a joint's world rotation basis: which way the joint faces.
 #[no_mangle]
 pub extern "C" fn aurora_r3d_joint_basis(h: i64, joint: i64, axis: i64, comp: i64, yaw: f64) -> f64 {

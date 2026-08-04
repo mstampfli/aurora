@@ -65,6 +65,7 @@ pub use imm::{
     r3d_joint_index as imm_r3d_joint_index, r3d_joint_name as imm_r3d_joint_name,
     r3d_joint_pos as imm_r3d_joint_pos,
     r3d_joint_basis as imm_r3d_joint_basis,
+    r3d_yaw_rotate as imm_r3d_yaw_rotate,
     r3d_joint_world as imm_r3d_joint_world, r3d_light as imm_r3d_light,
     r3d_bone_map as imm_r3d_bone_map, r3d_clip_add as imm_r3d_clip_add,
     r3d_clip_rig as imm_r3d_clip_rig, r3d_clip_root as imm_r3d_clip_root,

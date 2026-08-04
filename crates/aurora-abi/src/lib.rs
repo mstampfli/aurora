@@ -437,6 +437,7 @@ macro_rules! for_each_builtin {
         [scalar,   r3d_joint_dump,                aurora_r3d_joint_dump,                 [I64],                                           void, owner]
         [scalar,   r3d_joint_pos,                 aurora_r3d_joint_pos,                  [I64, I64, I64],                                 F64, owner]
         [scalar,   r3d_joint_world,               aurora_r3d_joint_world,                [I64, I64, I64, F64, F64, F64, F64, F64],        F64, owner]
+        [scalar,   r3d_yaw_rotate,                aurora_r3d_yaw_rotate,                 [F64, F64, F64, I64],                            F64, shared]
         [scalar,   r3d_joint_basis,               aurora_r3d_joint_basis,                [I64, I64, I64, I64, F64],                       F64, owner]
         [scalar,   r3d_anim_play,                 aurora_r3d_anim_play,                  [I64, I64, I64, F64, F64],                       void, owner]
         [scalar,   r3d_anim_restart,              aurora_r3d_anim_restart,               [I64, I64, I64, F64, F64],                       void, owner]

@@ -1149,6 +1149,16 @@ pub fn r3d_joint_world(host: i64, joint: i64, axis: i64, x: f32, y: f32, z: f32,
         p[(axis.max(0) as usize).min(2)]
     })
 }
+/// Turn a local offset by a yaw into world space. Pure math, so it needs no
+/// renderer state - but it lives here because the CONVENTION is the renderer's.
+pub fn r3d_yaw_rotate(yaw: f32, lx: f32, lz: f32, axis: i64) -> f32 {
+    let (x, z) = aurora_render3d::yaw_rotate(yaw, lx, lz);
+    if axis == 2 {
+        z
+    } else {
+        x
+    }
+}
 pub fn r3d_joint_basis(host: i64, joint: i64, axis: i64, comp: i64, yaw: f32) -> f32 {
     with_gfx(0.0f32, |gf| {
         let (_, _, s) = gf.scene_mut();
