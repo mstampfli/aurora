@@ -213,6 +213,8 @@ machine only because ticks are a fixed length.
 |---|---|
 | `set_tick_rate(hz)` | ticks per second, default 60. Values outside `1..=1000` are ignored rather than allowed to produce a zero or negative step |
 | `tick_count() -> i64` | fixed ticks simulated so far; advances at the configured rate however long frames take |
+| `tick_rate() -> f64` | the rate the fixed clock is stepping at, in ticks per second. The reader for `set_tick_rate`: without it a program that needs the rate keeps the number it passed in, which is a copy of a fact the engine already holds, and the copy is what drifts |
+| `pin_frame_to_tick()` | pin `frame_dt()` to exactly one fixed step, so the frame clock and the simulation clock cannot disagree. `set_tick_rate(hz)` followed by `set_fixed_dt(1.0 / hz)` is one intention written as two calls that must agree, and every caller spelling the second half is a place they can drift apart - this states the relation once, where both clocks live |
 | `tick_delta() -> f64` | the fixed step in seconds - what a fixed-rate system integrates with, never `frame_dt()` |
 | `tick_alpha() -> f64` | position between the last tick and the next, `0..1`. Interpolating render positions by it removes the judder you get when frame rate and tick rate disagree |
 

@@ -1838,6 +1838,34 @@ const FIXED: FixedSlot = FixedSlot;
 /// recoverable, instead of never returning.
 const MAX_CATCHUP_STEPS: i64 = 8;
 
+/// `tick_rate() -> f64`: the fixed simulation rate, in ticks per second.
+///
+/// The reader for `set_tick_rate`. Without it a program that needs to know the
+/// rate has to remember the number it passed in, which is a copy of a fact the
+/// engine already holds - and the copy is what drifts.
+#[no_mangle]
+pub extern "C" fn aurora_tick_rate() -> f64 {
+    let step = FIXED.with(|f| f.borrow().step);
+    if step > 0.0 {
+        1.0 / step
+    } else {
+        0.0
+    }
+}
+
+/// `pin_frame_to_tick()`: pin `frame_dt` to exactly one fixed step, so the frame
+/// clock and the simulation clock cannot disagree.
+///
+/// The pair `set_tick_rate(hz)` + `set_fixed_dt(1.0 / hz)` is one intention
+/// written as two calls that must agree, and every caller spelling the second
+/// half is a place the two can drift. This states the relation once, here, where
+/// both clocks live - a caller says WHAT it wants rather than recomputing HOW.
+#[no_mangle]
+pub extern "C" fn aurora_pin_frame_to_tick() {
+    let step = FIXED.with(|f| f.borrow().step);
+    crate::data::aurora_set_fixed_dt(step);
+}
+
 /// Set the fixed simulation rate in ticks per second. Values outside a sane
 /// range are ignored rather than allowed to produce a zero or negative step.
 #[no_mangle]

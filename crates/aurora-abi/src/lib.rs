@@ -318,6 +318,8 @@ macro_rules! for_each_builtin {
         [internal, run_fixed,                     aurora_run_fixed,                      [Ptr, Ptr, I64, F64],                            I64, shared]
         [scalar,   set_tick_rate,                 aurora_set_tick_rate,                  [F64],                                           void, shared]
         [scalar,   tick_count,                    aurora_tick_count,                     [],                                              I64, shared]
+        [scalar,   tick_rate,                     aurora_tick_rate,                      [],                                              F64, shared]
+        [scalar,   pin_frame_to_tick,             aurora_pin_frame_to_tick,              [],                                              void, shared]
         [scalar,   tick_delta,                    aurora_tick_delta,                     [],                                              F64, shared]
         [scalar,   tick_alpha,                    aurora_tick_alpha,                     [],                                              F64, shared]
         [scalar,   sleep_ms,                      aurora_sleep_ms,                       [I64],                                           void, shared]
