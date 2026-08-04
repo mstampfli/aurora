@@ -149,3 +149,43 @@ fn an_enum_variant_is_not_mistaken_for_a_call() {
     );
     assert!(errs.is_empty(), "enum variant construction was rejected: {errs:?}");
 }
+
+/// A value derived from a BUILTIN call carries the builtin's return type.
+///
+/// It did not, and that was not a cosmetic gap. Every such value was a fresh
+/// type variable that unified with anything, so a struct shadowed by a float
+/// could be passed where the struct was required: `check` reported no errors and
+/// codegen died with "invalid field access in JIT". That breaks the invariant
+/// ARCHITECTURE.md states - `check` compiles the same program `run` and `build`
+/// do - and it cost a real debugging session in the game.
+///
+/// The literal case was ALREADY caught, which is what made the hole confusing:
+/// `let p = 1.0` was rejected and `let p = cos(p.a)` was not.
+#[test]
+fn a_builtin_result_is_typed_not_unknown() {
+    let src = "struct P { a: f64 }\n\
+               fn takes(p: P) -> f64 { p.a }\n\
+               fn main() {\n\
+                   let p = P { a: 1.0 }\n\
+                   let p = cos(p.a)\n\
+                   let x = takes(p)\n\
+               }";
+    let errs = errors(src);
+    assert!(
+        errs.iter().any(|e| e.contains("expected `P`, found `f64`")),
+        "a float from a builtin was accepted where a struct was required: {errs:?}"
+    );
+}
+
+/// And the same program without the shadowing still type-checks, so the rule
+/// above is not simply rejecting builtin results everywhere.
+#[test]
+fn a_builtin_result_still_unifies_where_it_should() {
+    let src = "fn main() {\n\
+                   let a = cos(1.0)\n\
+                   let b: f64 = a + sin(2.0)\n\
+                   let n = abs(0 - 3)\n\
+               }";
+    let errs = errors(src);
+    assert!(errs.is_empty(), "unexpected errors: {errs:?}");
+}

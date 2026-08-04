@@ -825,6 +825,35 @@ impl Typeck {
             .map(|a| (a.value.span, self.infer(&a.value)))
             .collect();
 
+        // A BUILTIN's return type comes from the ABI table.
+        //
+        // Without this, every value derived from a builtin call was a fresh type
+        // variable that unified with anything, so an entire class of type error
+        // passed `check` and died in codegen with "invalid field access in JIT".
+        // Measured: `let p = 1.0` followed by `takes(p)` where `takes` wants a
+        // struct is correctly rejected, while `let p = cos(p.a)` followed by the
+        // same call reports no errors and then fails the verifier. That breaks
+        // the invariant ARCHITECTURE.md states - `check` compiles the same
+        // program `run` and `build` do.
+        //
+        // RETURN TYPES ONLY, deliberately. Checking builtin ARGUMENTS is a
+        // separate feature: `special` and `raster` rows do not model their call
+        // shape (`arity()` answers `None` for them), and widening the checker
+        // without that is how it starts rejecting correct programs - which is
+        // the failure the method-call comment above already records.
+        if let ExprKind::Path(p) = &callee.kind {
+            if p.is_single() {
+                let name = &p.segments[0].ident.name;
+                if !self.fns.contains_key(name.as_str()) {
+                    if let Some(b) = aurora_abi::lookup(name) {
+                        if let Some(ret) = abi_ret_ty(b) {
+                            return ret;
+                        }
+                    }
+                }
+            }
+        }
+
         // Resolve the callee to ONE name in `self.fns`, whatever shape its path
         // has, and check the call against that signature. Everything else
         // (methods, builtins, closures in locals) is unknown for TYPING purposes,
@@ -1370,3 +1399,19 @@ fn is_vectorish(t: &Ty) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+/// An ABI return type as a checker type, or `None` when the row returns nothing
+/// or something the checker does not model.
+///
+/// `Str` is the two-slot string RESULT convention on a `text` row, which is an
+/// Aurora `str` at the source level.
+fn abi_ret_ty(b: &aurora_abi::Builtin) -> Option<Ty> {
+    match b.ret {
+        Some(aurora_abi::Ty::I64) => Some(Ty::Int(aurora_lexer::IntTy::I64)),
+        Some(aurora_abi::Ty::F64) => Some(Ty::Float(aurora_lexer::FloatTy::F64)),
+        Some(aurora_abi::Ty::Str) => Some(Ty::Str),
+        // A raw pointer result is a handle the checker has no name for.
+        Some(aurora_abi::Ty::Ptr) => None,
+        None => None,
+    }
+}

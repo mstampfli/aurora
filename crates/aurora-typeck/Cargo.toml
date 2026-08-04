@@ -10,6 +10,7 @@ aurora-diag.workspace = true
 aurora-lexer.workspace = true
 aurora-ast.workspace = true
 aurora-types.workspace = true
+aurora-abi.workspace = true
 
 [dev-dependencies]
 aurora-parser.workspace = true
