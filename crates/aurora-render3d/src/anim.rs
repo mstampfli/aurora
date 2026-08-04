@@ -491,7 +491,12 @@ impl AnimPlayer {
     /// single-clip playback uses `speed` directly. One function because [`AnimPlayer::advance`]
     /// and the crossfade snapshot must mean the same thing by it: the snapshot records the rate
     /// the outgoing clip WAS running at, and a second copy of this rule is how that would drift.
-    fn base_speed(&self) -> f32 {
+    ///
+    /// Public because [`Scene::anim_speed`] hands it to game code, which needs to be able to ask
+    /// what rate a body is ACTUALLY animating at rather than recomputing the rate it asked for.
+    /// It answers about the same clip [`AnimPlayer::clip`] and the animation clock do, so the
+    /// three readers describe one layer.
+    pub fn base_speed(&self) -> f32 {
         if self.bblend_on {
             1.0
         } else {
@@ -1089,6 +1094,61 @@ mod root_motion {
         p.advance(&m, 1.0);
         p.advance(&m, 1.0);
         assert_eq!(p.root_delta(), Vec3::ZERO, "a finished one-shot travels no further");
+    }
+
+    // The reader `Scene::anim_speed` hands to game code, pinned against what the
+    // playback actually DOES rather than against the number that was passed in.
+    //
+    // A game that retimes an attack clip to meet a tick budget can only check the
+    // result honestly if it can ask the renderer; if `base_speed` reported a
+    // constant, or reported the rate asked for while the clock ran at another,
+    // every such check would hold anyway. So this asserts the three agree: the
+    // rate reported, the clock advanced, and the ground covered.
+    #[test]
+    fn the_reported_rate_is_the_rate_the_clip_is_actually_played_at() {
+        let m = model(&[(1.0, Some(Vec3::new(0.0, 0.0, 4.0)))]);
+        let mut slow = AnimPlayer::default();
+        let mut fast = AnimPlayer::default();
+        slow.play(0, true, 1.0, 0.0);
+        fast.play(0, true, 1.25, 0.0);
+
+        assert_eq!(slow.base_speed(), 1.0, "a clip played as authored reports 1.0");
+        assert_eq!(fast.base_speed(), 1.25, "a retimed clip reports the rate it was retimed to");
+
+        slow.advance(&m, 0.4);
+        fast.advance(&m, 0.4);
+        assert!(
+            (fast.time - slow.time * 1.25).abs() < 1e-5,
+            "the clock has to run at the rate that was reported: {} vs {}",
+            fast.time,
+            slow.time
+        );
+        assert!(
+            close(fast.root_delta(), slow.root_delta() * 1.25),
+            "and the ground covered with it: {:?} vs {:?}",
+            fast.root_delta(),
+            slow.root_delta()
+        );
+    }
+
+    // The documented exception, and the reason this is `base_speed` rather than
+    // the `speed` field: in a sustained blend the base clip keeps its authored
+    // cadence and `speed` warps the SECOND half only. A reader returning the raw
+    // field would tell a walking character's base layer it was running at the
+    // run clip's rate.
+    #[test]
+    fn a_sustained_blend_reports_the_base_clips_own_cadence() {
+        let m = model(&[(1.0, None), (1.0, None)]);
+        let mut p = AnimPlayer::default();
+        p.blend(&m, 0, 1, 0.5, 1.7, 0.0);
+        assert_eq!(p.speed, 1.7, "the field still holds the warp applied to the second half");
+        assert_eq!(p.base_speed(), 1.0, "but the base clip runs at the cadence it was authored at");
+        let before = p.time;
+        p.advance(&m, 0.25);
+        assert!(
+            (p.time - (before + 0.25)).abs() < 1e-5,
+            "so its clock advances in real time, not warped"
+        );
     }
 
     #[test]

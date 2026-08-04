@@ -1317,6 +1317,31 @@ impl Scene {
         self.item(handle).map(|r| r.player.time).unwrap_or(0.0)
     }
 
+    /// The rate the model's BASE clip is actually being played at - 1.0 is the
+    /// speed the animator authored, 2.0 is twice that. `-1.0` for a handle that
+    /// is not a model.
+    ///
+    /// Completes `anim_clip` / `anim_time`: those say WHICH clip and HOW FAR in,
+    /// and this says how fast, so the three together describe the base layer
+    /// without anything outside the renderer keeping a mirror of it.
+    ///
+    /// It exists because a caller that computes a playback rate and then checks
+    /// its own arithmetic has written a check that cannot fail. A game asking
+    /// "did the swing come out at the rate I asked for" has to be able to ask
+    /// the thing that is DOING the playing; without this reader its only
+    /// available answer is the number it just calculated, and both halves of the
+    /// comparison come from the copy that might be wrong.
+    ///
+    /// `-1.0` rather than `0.0` for a missing model, because 0.0 is a legitimate
+    /// rate (a body held on one frame) and a sentinel that collides with a real
+    /// answer is one a caller cannot act on.
+    pub fn anim_speed(&self, handle: i64) -> f32 {
+        match self.item(handle) {
+            Some(r) => r.player.base_speed(),
+            None => -1.0,
+        }
+    }
+
     /// ROOT MOTION: the ground the last [`Scene::anim_update`] covered, as
     /// `[dx, dy, dz]` metres in the MODEL'S OWN space (rotate it by the yaw you
     /// draw the model with, and scale it by the scale you draw it at).

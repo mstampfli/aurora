@@ -455,6 +455,7 @@ macro_rules! for_each_builtin {
         [scalar,   r3d_anim_done,                 aurora_r3d_anim_done,                  [I64],                                           I64, owner]
         [scalar,   r3d_anim_done_upper,           aurora_r3d_anim_done_upper,            [I64],                                           I64, owner]
         [scalar,   r3d_anim_time,                 aurora_r3d_anim_time,                  [I64],                                           F64, owner]
+        [scalar,   r3d_anim_speed,                aurora_r3d_anim_speed,                 [I64],                                           F64, owner]
         [scalar,   r3d_root_dx,                   aurora_r3d_root_dx,                    [I64],                                           F64, owner]
         [scalar,   r3d_root_dy,                   aurora_r3d_root_dy,                    [I64],                                           F64, owner]
         [scalar,   r3d_root_dz,                   aurora_r3d_root_dz,                    [I64],                                           F64, owner]

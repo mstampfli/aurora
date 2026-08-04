@@ -2981,6 +2981,18 @@ pub extern "C" fn aurora_r3d_anim_done_upper(h: i64) -> i64 {
 pub extern "C" fn aurora_r3d_anim_time(h: i64) -> f64 {
     aurora_window::imm_r3d_anim_time(h)
 }
+/// `r3d_anim_speed(h) -> f64`: the rate the base clip is actually being played
+/// at (1.0 = as authored), or -1.0 for a handle that is not a model.
+///
+/// The third of the base-layer readers, beside `r3d_anim_clip` (which clip) and
+/// `r3d_anim_time` (how far in). A game that retimes a clip to meet a tick
+/// budget has to be able to check the result against the renderer rather than
+/// against its own arithmetic: an assertion whose expected value comes from the
+/// same function it is testing holds whatever that function does.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_anim_speed(h: i64) -> f64 {
+    aurora_window::imm_r3d_anim_speed(h)
+}
 /// `r3d_root_dx/dy/dz(h) -> f64`: ROOT MOTION - how far the last
 /// `r3d_anim_update` moved this character, in metres in the model's own space.
 ///

@@ -1332,6 +1332,15 @@ pub fn r3d_anim_time(handle: i64) -> f64 {
     })
 }
 
+/// The rate the model's base clip is actually playing at, or -1.0 for a handle
+/// that is not a model. See [`aurora_render3d::Scene::anim_speed`].
+pub fn r3d_anim_speed(handle: i64) -> f64 {
+    with_gfx(-1.0, |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.anim_speed(handle) as f64
+    })
+}
+
 /// Root motion: how far the last `r3d_anim_update` moved the character, in the
 /// model's own space. One axis each, so game code reads the component it needs.
 pub fn r3d_root_dx(handle: i64) -> f64 {
