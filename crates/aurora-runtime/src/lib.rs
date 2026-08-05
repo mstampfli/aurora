@@ -3225,8 +3225,17 @@ pub extern "C" fn aurora_r3d_anim_blend(
     weight: f64,
     speed: f64,
     fade: f64,
+    looping: i64,
 ) {
-    aurora_window::imm_r3d_anim_blend(h, clip_a, clip_b, weight as f32, speed as f32, fade as f32);
+    aurora_window::imm_r3d_anim_blend(
+        h,
+        clip_a,
+        clip_b,
+        weight as f32,
+        speed as f32,
+        fade as f32,
+        looping != 0,
+    );
 }
 #[no_mangle]
 pub extern "C" fn aurora_r3d_anim_seek(h: i64, t: f64) {

@@ -1504,6 +1504,7 @@ impl Scene {
         weight: f32,
         speed: f32,
         fade: f32,
+        looping: bool,
     ) {
         // Split borrow, as `anim_update` does: swapping the pair re-times the
         // incoming clips against the outgoing ones, and a clip's duration is a
@@ -1517,6 +1518,7 @@ impl Scene {
                     weight,
                     speed,
                     fade,
+                    looping,
                 );
             }
         }

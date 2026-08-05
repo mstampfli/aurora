@@ -1236,10 +1236,18 @@ pub fn r3d_anim_aim_upper(
         s.anim_aim_upper(handle, clip_a, clip_b, weight, speed, fade, mask_root);
     });
 }
-pub fn r3d_anim_blend(handle: i64, clip_a: i64, clip_b: i64, weight: f32, speed: f32, fade: f32) {
+pub fn r3d_anim_blend(
+    handle: i64,
+    clip_a: i64,
+    clip_b: i64,
+    weight: f32,
+    speed: f32,
+    fade: f32,
+    looping: bool,
+) {
     with_gfx((), |gf| {
         let (_, _, s) = gf.scene_mut();
-        s.anim_blend(handle, clip_a, clip_b, weight, speed, fade);
+        s.anim_blend(handle, clip_a, clip_b, weight, speed, fade, looping);
     });
 }
 pub fn r3d_anim_seek(handle: i64, t: f32) {

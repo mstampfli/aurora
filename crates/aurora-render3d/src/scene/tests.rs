@@ -393,7 +393,7 @@ fn every_handle_accessor_refuses_a_stale_handle() {
     s.anim_play(a, 0, true, 1.0, 0.0);
     s.anim_update(a, 0.016);
     s.anim_play_upper(a, 0, true, 1.0, 0.0, 0);
-    s.anim_blend(a, 0, 1, 0.5, 1.0, 0.0);
+    s.anim_blend(a, 0, 1, 0.5, 1.0, 0.0, true);
     s.anim_aim_upper(a, 0, 1, 0.5, 1.0, 0.0, 0);
     s.anim_stop_upper(a, 0.0);
     s.anim_seek_upper(a, 0.5);

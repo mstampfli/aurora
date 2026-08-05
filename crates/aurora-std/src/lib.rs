@@ -217,6 +217,39 @@ fn approach(cur: f64, target: f64, step: f64) -> f64 {
 fn minf(a: f64, b: f64) -> f64 { if a < b { a } else { b } }
 fn maxf(a: f64, b: f64) -> f64 { if a > b { a } else { b } }
 
+// --- angles -----------------------------------------------------------------
+//
+// A game writes these out. One counted thirteen copies of pi and two hand-rolled
+// shortest-way-round loops before this existed - one in a check and one in the
+// camera, agreeing by luck, which is how every duplicate starts.
+fn pi() -> f64 { 3.141592653589793 }
+fn tau() -> f64 { 6.283185307179586 }
+
+// The shortest way from `from` to `to`, in (-pi, pi].
+//
+// Subtracting two angles gives an answer that can be most of a full turn the
+// wrong way round, and every consumer that forgets to fold it reads a small
+// turn as an enormous one. Turning right through north is the case that bites.
+fn angle_delta(from: f64, to: f64) -> f64 {
+    let mut d = to - from
+    while d > pi() { d = d - tau() }
+    while d <= 0.0 - pi() { d = d + tau() }
+    d
+}
+
+// `approach`, for angles: move `cur` toward `target` by at most `step`, the
+// short way round.
+//
+// The linear one is wrong for a heading in exactly the way that matters - it
+// walks the long way round whenever the pair straddles pi, so a camera easing
+// onto a target behind the player sweeps the whole room to get there.
+fn approach_angle(cur: f64, target: f64, step: f64) -> f64 {
+    let d = angle_delta(cur, target)
+    if abs(d) <= step { return target }
+    if d > 0.0 { return cur + step }
+    cur - step
+}
+
 // --- easing curves (t in 0..1) ----------------------------------------------
 fn ease_in_quad(t: f64) -> f64 { t * t }
 fn ease_out_quad(t: f64) -> f64 { t * (2.0 - t) }

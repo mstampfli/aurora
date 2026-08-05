@@ -227,6 +227,11 @@ impl AnimPlayer {
     /// being replaced hands over its normalised PHASE (so the feet of a forward
     /// stride land where the feet of a strafe would), and the composed outgoing
     /// pose is crossfaded out over `fade` like any other transition.
+    /// `looping` is whether the PAIR loops. Locomotion does; a pair of one-shots -
+    /// two directional rolls blended to point a dodge between them - does not, and
+    /// forcing it wrapped the roll back to its first frame and rolled again forever.
+    /// It is a property of the clips, so it is stated by the caller rather than
+    /// assumed here.
     pub fn blend(
         &mut self,
         model: &Model,
@@ -235,6 +240,7 @@ impl AnimPlayer {
         weight: f32,
         speed: f32,
         fade: f32,
+        looping: bool,
     ) {
         let entering = !self.bblend_on;
         let swapped = !entering && (self.clip != clip_a || self.bclip2 != clip_b);
@@ -271,7 +277,7 @@ impl AnimPlayer {
         self.clip = clip_a;
         self.bclip2 = clip_b;
         self.bblend = weight.clamp(0.0, 1.0);
-        self.looping = true;
+        self.looping = looping;
         self.speed = speed;
         self.posed = true;
     }
@@ -534,7 +540,7 @@ impl AnimPlayer {
                 &mut self.btime2,
                 model.clips.get(self.bclip2),
                 dt * self.speed,
-                true,
+                self.looping,
             );
             let b = travel(model, self.bclip2, step, self.btime2);
             moved = moved.lerp(b, self.bblend.clamp(0.0, 1.0));
@@ -1005,6 +1011,50 @@ mod play_is_idempotent {
         assert_eq!(p.time, 0.0);
     }
 
+    // A blended PAIR of one-shots ends, rather than looping forever.
+    //
+    // `blend` was built for locomotion and forced both halves to loop, which is
+    // right for idle/walk/run and wrong for the thing that wanted it next: a
+    // dodge roll pointed between two of its four directional clips. Forced to
+    // loop, the roll wrapped back to its first frame and rolled again for as
+    // long as the state was held.
+    //
+    // Whether a pair loops is a property of the clips, so the caller states it.
+    #[test]
+    fn a_blended_pair_of_one_shots_does_not_loop() {
+        let m = two_clip_model();
+        let mut p = AnimPlayer::default();
+        p.blend(&m, 0, 1, 0.5, 1.0, 0.0, false);
+        assert!(!p.looping, "a pair asked for as one-shots must not loop");
+
+        // Past the end of both - the clips are a second each.
+        for _ in 0..90 {
+            p.advance(&m, 1.0 / 60.0);
+        }
+        assert!(
+            p.time >= 1.0 - 1e-3,
+            "a one-shot pair clamps at its end; it wrapped to {}",
+            p.time
+        );
+        assert!(
+            p.btime2 >= 1.0 - 1e-3,
+            "the SECOND half wrapped to {} - it was advanced with a hard-coded loop flag rather than the pair's own",
+            p.btime2
+        );
+
+        // And locomotion still loops, which is the case that made it hard-coded.
+        let mut q = AnimPlayer::default();
+        q.blend(&m, 0, 1, 0.5, 1.0, 0.0, true);
+        for _ in 0..90 {
+            q.advance(&m, 1.0 / 60.0);
+        }
+        assert!(
+            q.time < 1.0,
+            "a looping pair wraps; it clamped at {}",
+            q.time
+        );
+    }
+
     // Leaving a sustained blend fades out of the half that is actually SHOWING.
     //
     // A sprint is `blend(walk, run, weight ~1)`, where `clip` is the walk and
@@ -1018,7 +1068,7 @@ mod play_is_idempotent {
         let mut p = AnimPlayer::default();
 
         // Sprinting: the run half dominates.
-        p.blend(&m, 0, 1, 1.0, 1.0, 0.0);
+        p.blend(&m, 0, 1, 1.0, 1.0, 0.0, true);
         p.btime2 = 0.3;
         p.time = 0.7;
         p.restart(2, false, 1.0, 0.1);
@@ -1030,7 +1080,7 @@ mod play_is_idempotent {
 
         // Walking: the first half dominates, and that one was always right.
         let mut q = AnimPlayer::default();
-        q.blend(&m, 0, 1, 0.0, 1.0, 0.0);
+        q.blend(&m, 0, 1, 0.0, 1.0, 0.0, true);
         q.time = 0.5;
         q.btime2 = 0.2;
         q.restart(2, false, 1.0, 0.1);
@@ -1236,7 +1286,7 @@ mod root_motion {
     fn a_sustained_blend_reports_the_base_clips_own_cadence() {
         let m = model(&[(1.0, None), (1.0, None)]);
         let mut p = AnimPlayer::default();
-        p.blend(&m, 0, 1, 0.5, 1.7, 0.0);
+        p.blend(&m, 0, 1, 0.5, 1.7, 0.0, true);
         assert_eq!(
             p.speed, 1.7,
             "the field still holds the warp applied to the second half"
@@ -1472,7 +1522,7 @@ mod root_motion {
         let step = 0.25;
         for (weight, want) in [(0.0, 0.0), (0.5, 0.5), (1.0, 1.0)] {
             let mut p = AnimPlayer::default();
-            p.blend(&m, 0, 1, weight, 1.0, 0.0);
+            p.blend(&m, 0, 1, weight, 1.0, 0.0, true);
             p.advance(&m, step);
             assert!(
                 close(p.root_delta(), Vec3::new(0.0, 0.0, 4.0 * step * want)),
@@ -1501,11 +1551,11 @@ mod root_motion {
         // clips are.
         let m = model(&[(4.0, None), (1.0, None), (0.8, None)]);
         let mut p = AnimPlayer::default();
-        p.blend(&m, 0, 1, 1.0, 1.0, 0.0);
+        p.blend(&m, 0, 1, 1.0, 1.0, 0.0, true);
         p.advance(&m, 0.3);
         let walk_was = p.btime2;
         assert!(walk_was > 0.0, "the walk clock has to have moved at all");
-        p.blend(&m, 1, 2, 0.0, 1.0, 0.15);
+        p.blend(&m, 1, 2, 0.0, 1.0, 0.15, true);
         assert_eq!(
             p.time, walk_was,
             "the walk moved slots, not phase - it must not restart or wrap"
@@ -1521,9 +1571,9 @@ mod root_motion {
     fn a_pair_change_to_a_shorter_clip_does_not_rewind_the_clock() {
         let m = model(&[(4.0, None), (1.0, None), (0.8, None)]);
         let mut p = AnimPlayer::default();
-        p.blend(&m, 0, 1, 0.0, 1.0, 0.0);
+        p.blend(&m, 0, 1, 0.0, 1.0, 0.0, true);
         p.advance(&m, 3.0); // 3 s into a 4 s idle: 75% through
-        p.blend(&m, 2, 1, 0.0, 1.0, 0.15);
+        p.blend(&m, 2, 1, 0.0, 1.0, 0.15, true);
         // 75% of the 0.8 s clip, not 3.0 wrapped into it.
         assert!(
             (p.time - 0.6).abs() < 1e-5,
@@ -1544,10 +1594,10 @@ mod root_motion {
     fn a_pair_change_crossfades_out_of_the_composed_pose() {
         let m = model(&[(1.0, None), (1.0, None), (1.0, None)]);
         let mut p = AnimPlayer::default();
-        p.blend(&m, 0, 1, 0.8, 1.0, 0.0);
+        p.blend(&m, 0, 1, 0.8, 1.0, 0.0, true);
         p.advance(&m, 0.2);
         assert_eq!(p.blend, 1.0, "settled before the change");
-        p.blend(&m, 2, 1, 0.8, 1.0, 0.2);
+        p.blend(&m, 2, 1, 0.8, 1.0, 0.2, true);
         assert_eq!(p.blend, 0.0, "the change starts a fade");
         // From the DOMINANT half of the outgoing blend. At weight 0.8 that is
         // the second clip, and taking the first would fade out of a pose the
@@ -1575,7 +1625,7 @@ mod root_motion {
         // entering straight into the pair under test would leave nothing
         // running for the restatements to disturb.
         p.play(2, true, 1.0, 0.0);
-        p.blend(&m, 0, 1, 0.3, 1.0, 0.2);
+        p.blend(&m, 0, 1, 0.3, 1.0, 0.2, true);
         assert_eq!(p.blend, 0.0, "the pair change starts a fade");
         // Restated every frame WHILE the entering fade is still running, which
         // is the case that would deadlock: a fade reset each frame never
@@ -1583,7 +1633,7 @@ mod root_motion {
         let mut fade_was = p.blend;
         for _ in 0..10 {
             p.advance(&m, 1.0 / 60.0);
-            p.blend(&m, 0, 1, 0.3, 1.0, 0.2);
+            p.blend(&m, 0, 1, 0.3, 1.0, 0.2, true);
             assert!(
                 p.blend > fade_was,
                 "restating the pair must not reset the fade in progress: {} then {}",
@@ -1594,11 +1644,11 @@ mod root_motion {
         }
         for _ in 0..20 {
             p.advance(&m, 1.0 / 60.0);
-            p.blend(&m, 0, 1, 0.3, 1.0, 0.2);
+            p.blend(&m, 0, 1, 0.3, 1.0, 0.2, true);
         }
         assert_eq!(p.blend, 1.0, "and it does finish");
         let (t, t2) = (p.time, p.btime2);
-        p.blend(&m, 0, 1, 0.9, 1.0, 0.2); // weight moves, pair does not
+        p.blend(&m, 0, 1, 0.9, 1.0, 0.2, true); // weight moves, pair does not
         assert_eq!((p.time, p.btime2), (t, t2), "the clocks are untouched");
         assert_eq!(p.blend, 1.0, "and no new fade was started");
         assert!(t > 0.45, "the clock really did run: {t}");
@@ -1654,7 +1704,7 @@ mod root_motion {
 
         // Through the sustained blend, which is how locomotion is driven.
         let mut p = AnimPlayer::default();
-        p.blend(&m, 1, 2, 0.5, 1.0, 0.2);
+        p.blend(&m, 1, 2, 0.5, 1.0, 0.2, true);
         assert_eq!(
             p.blend, 1.0,
             "a first state must be shown, not faded in from clip 0"
