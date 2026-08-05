@@ -131,12 +131,7 @@ fn main() {
             for &time in &[0.0f32, clip.duration * 0.5] {
                 let (t, r, s) = sk.sample(Some(clip), time);
                 let g = sk.globals(&t, &r, &s);
-                let named = |want: &str| {
-                    sk.joints
-                        .iter()
-                        .position(|j| j.name.eq_ignore_ascii_case(want))
-                        .map(|i| g[i].w_axis)
-                };
+                let named = |want: &str| sk.index_of(want).map(|i| g[i].w_axis);
                 let show = |want: &str| {
                     named(want)
                         .map(|p| format!("{want}=({:.2},{:.2},{:.2})", p.x, p.y, p.z))

@@ -46,9 +46,7 @@ fn main() {
     let reference_rest = reference_skel.rest_globals();
     let reference_pos = |name: &str| {
         reference_skel
-            .joints
-            .iter()
-            .position(|j| j.name.eq_ignore_ascii_case(name))
+            .index_of(name)
             .map(|i| reference_rest[i].w_axis.truncate())
     };
     println!("reference: {reference} ({} joints)", reference_skel.joints.len());

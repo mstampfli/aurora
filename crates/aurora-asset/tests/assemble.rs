@@ -206,3 +206,38 @@ fn merging_an_empty_part_changes_nothing() {
     assert_eq!(added, 0);
     assert_eq!(rig.joint_count(), 3);
 }
+
+/// A part that spells the shared trunk differently is still the SAME trunk.
+///
+/// `index_of` compared with `==`, which made it the third rule for one name:
+/// the renderer resolves a joint case-insensitively and tolerating an armature
+/// prefix, the retarget does too, and the door `merge` builds the union through
+/// insisted on exact bytes. The packs genuinely disagree - the character parts
+/// spell it `spine_01` and the clip rig `Spine_01` - so a rig assembled from
+/// parts that disagreed would have carried the bone twice, while `joint_index`
+/// reported only the first and the second never animated.
+///
+/// Exporters differ on both axes, so both are covered: case, and the
+/// `Armature|bone` decoration an FBX exporter adds.
+#[test]
+fn a_trunk_spelled_differently_is_the_same_trunk() {
+    let mut rig = skel(vec![]);
+    rig.merge(&trunk(), 1e-3).unwrap();
+
+    let mut shouty = skel(vec![
+        joint("ROOT", None, Vec3::ZERO),
+        joint("Spine", Some(0), Vec3::Y),
+        joint("Armature|arm", Some(1), Vec3::Y),
+        joint("finger", Some(2), Vec3::Y),
+    ]);
+    shouty.joints[3].parent = Some(2);
+
+    let added = rig.merge(&shouty, 1e-3).expect("same rig, spelled differently");
+    assert_eq!(added, 1, "only `finger` is new - the trunk is the trunk");
+    assert_eq!(rig.joint_count(), 4);
+
+    // And the new bone hangs off the EXISTING arm, not off a second copy of it.
+    let arm = rig.index_of("arm").expect("arm present");
+    let finger = rig.index_of("finger").expect("finger merged");
+    assert_eq!(rig.joints[finger].parent, Some(arm));
+}

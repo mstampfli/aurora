@@ -780,10 +780,7 @@ fn cmd_asset_check(reference: &str, dirs: &[String]) -> ExitCode {
         let rest = skel.rest_globals();
         let mut conforms = true;
         for (i, joint) in skel.joints.iter().enumerate() {
-            let found = reference_skel
-                .joints
-                .iter()
-                .position(|j| j.name.eq_ignore_ascii_case(&joint.name));
+            let found = reference_skel.index_of(&joint.name);
             match found {
                 None => {
                     println!("  EXTRA   {name}: {} is not on the reference rig", joint.name);

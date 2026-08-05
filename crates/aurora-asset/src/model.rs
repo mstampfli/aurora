@@ -75,9 +75,25 @@ impl Skeleton {
         self.joints.len()
     }
 
-    /// Index of the joint with this name.
+    /// Index of the joint with this name, under the ONE name rule.
+    ///
+    /// This compared with `==`, which made it the third rule for one fact: the
+    /// renderer resolves a joint through [`find_name`] (trimmed, case-insensitive,
+    /// then tail-after-separator), the retarget does too, and this - the door
+    /// `merge` builds a modular character's skeleton through - insisted on exact
+    /// bytes. Two parts spelling a bone `Spine_01` and `spine_01` would have
+    /// become two joints in the union, while `joint_index` reported one, so the
+    /// second would be shadowed and never animate.
+    ///
+    /// Measured on the shipping assets before changing it: the assembled hero is
+    /// 49 joints, unique under both exact and case-folded comparison, so this was
+    /// latent rather than live. It is still one fact with two answers, and the
+    /// audit recorded that unification as done while this said otherwise.
+    ///
+    /// Exact-first is what keeps it safe: identical names still win outright, and
+    /// only a name that matches nothing exactly falls through to the tail rule.
     pub fn index_of(&self, name: &str) -> Option<usize> {
-        self.joints.iter().position(|j| j.name == name)
+        find_name(self.joints.iter().map(|j| j.name.as_str()), name)
     }
 
     /// Merge `other` into this skeleton by bone name, appending anything new.
