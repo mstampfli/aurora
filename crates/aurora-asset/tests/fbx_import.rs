@@ -31,7 +31,7 @@ macro_rules! model {
     };
 }
 
-fn joint_named<'a>(m: &'a Model, name: &str) -> Option<glam::Vec3> {
+fn joint_named(m: &Model, name: &str) -> Option<glam::Vec3> {
     let skel = m.skeleton.as_ref()?;
     let i = skel.joints.iter().position(|j| j.name == name)?;
     Some(skel.rest_globals()[i].w_axis.truncate())

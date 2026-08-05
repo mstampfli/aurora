@@ -790,8 +790,8 @@ impl<'a> Interp<'a> {
                 Ok(Value::Unit)
             }
             "fill_rect_alpha" => {
-                let (x, y) = (int_arg(&argv, 0) as i64, int_arg(&argv, 1) as i64);
-                let (w, h) = (int_arg(&argv, 2) as i64, int_arg(&argv, 3) as i64);
+                let (x, y) = (int_arg(&argv, 0), int_arg(&argv, 1));
+                let (w, h) = (int_arg(&argv, 2), int_arg(&argv, 3));
                 let c = color_arg(&argv, 4);
                 let a = int_arg(&argv, 7).clamp(0, 255) as u8;
                 if let Some(fb) = &mut self.gfx {

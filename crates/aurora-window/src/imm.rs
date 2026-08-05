@@ -1823,7 +1823,7 @@ pub fn r3d_capture(
                 hud_w,
                 hud_h,
             );
-            let ok = overlay.upload(device, queue, &hud_rgba, hud_w, hud_h);
+            let ok = overlay.upload(device, queue, hud_rgba, hud_w, hud_h);
             aurora_render3d::render_offscreen_with_hud(
                 &mut scene.renderer,
                 device,

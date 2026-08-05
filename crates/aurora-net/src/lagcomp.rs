@@ -204,13 +204,10 @@ impl LagComp {
             // enough to be overlapping the swing's origin has no meaningful
             // direction, and refusing it there would make the swing miss the one
             // thing it is definitely touching.
-            match normalize_xz(snap.pos[0] - origin[0], snap.pos[2] - origin[2]) {
-                Some((dx, dz)) => {
-                    if dx * fx + dz * fz < min_cos {
-                        continue;
-                    }
+            if let Some((dx, dz)) = normalize_xz(snap.pos[0] - origin[0], snap.pos[2] - origin[2]) {
+                if dx * fx + dz * fz < min_cos {
+                    continue;
                 }
-                None => {}
             }
 
             hits.push(Hit { entity, distance });

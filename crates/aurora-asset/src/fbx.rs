@@ -117,12 +117,12 @@ fn build_skeleton(scene: &ufbx::Scene) -> (Option<Skeleton>, JointIndex) {
         let Some(node) = scene.nodes.iter().find(|n| n.element.element_id == id) else {
             continue;
         };
-        let mut up: Option<&ufbx::Node> = node.parent.as_ref().map(|p| &**p);
+        let mut up: Option<&ufbx::Node> = node.parent.as_deref();
         while let Some(p) = up {
             if p.is_root || !wanted.insert(p.element.element_id) {
                 break;
             }
-            up = p.parent.as_ref().map(|p| &**p);
+            up = p.parent.as_deref();
         }
     }
 
@@ -533,7 +533,7 @@ fn material_of(material: Option<&ufbx::Material>, dir: &FsPath) -> ([f32; 4], Op
         .unwrap_or([0.8, 0.8, 0.8, 1.0]);
 
     let tex = map
-        .and_then(|c| c.texture.as_ref().map(|t| &**t))
+        .and_then(|c| c.texture.as_deref())
         .or_else(|| {
             m.textures
                 .iter()

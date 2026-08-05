@@ -428,7 +428,7 @@ pub fn poll() {
             }
         }
         for id in &live {
-            if b.slots.iter().any(|s| *s == Some(*id)) {
+            if b.slots.contains(&Some(*id)) {
                 continue;
             }
             if let Some(free) = b.slots.iter_mut().find(|s| s.is_none()) {

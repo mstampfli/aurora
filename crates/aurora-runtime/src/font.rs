@@ -129,7 +129,7 @@ pub const GLYPHS: [[u8; 5]; 95] = [
 /// string is a bug in the string, and a row of boxes is harder to read than a
 /// gap when you are trying to find it.
 pub fn glyph(c: u8) -> Option<&'static [u8; 5]> {
-    if c < FIRST || c > 126 {
+    if !(FIRST..=126).contains(&c) {
         return None;
     }
     GLYPHS.get((c - FIRST) as usize)

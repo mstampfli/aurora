@@ -3558,7 +3558,7 @@ mod tests {
         0
     }
     fn install(s: &mut Session) {
-        s.set_sim(test_sim as usize, 0, 7, 3);
+        s.set_sim(test_sim as *const () as usize, 0, 7, 3);
     }
 
     #[test]
@@ -3677,7 +3677,7 @@ mod meta_replication_test {
             0
         }
         for s in [&mut host, &mut a, &mut b] {
-            s.set_sim(clobber as usize, 0, 4, 3);
+            s.set_sim(clobber as *const () as usize, 0, 4, 3);
             // Every peer declares the same model, which is the contract.
             s.set_owned_movement(true);
         }
@@ -3750,8 +3750,8 @@ mod meta_replication_test {
             }
             0
         }
-        host.set_sim(park as usize, 0, 4, 3);
-        a.set_sim(park as usize, 0, 4, 3);
+        host.set_sim(park as *const () as usize, 0, 4, 3);
+        a.set_sim(park as *const () as usize, 0, 4, 3);
         let input = [0.0f32; 3];
         for _ in 0..60 {
             a.set_local_state(0, 77.0); // a claim the host must ignore
@@ -4048,8 +4048,8 @@ mod meta_replication_test {
         let mut host = Session::host(0).unwrap();
         let host_addr = host.local_addr();
         let mut client = Session::join(host_addr).unwrap();
-        host.set_sim(fall_sim as usize, 0, 21, 17);
-        client.set_sim(fall_sim as usize, 0, 21, 17);
+        host.set_sim(fall_sim as *const () as usize, 0, 21, 17);
+        client.set_sim(fall_sim as *const () as usize, 0, 21, 17);
         let input = [0.0f32; INPUT_MAX];
         let mut sends = 0;
         for f in 0..25 {
@@ -4137,8 +4137,8 @@ mod meta_replication_test {
         let mut host = Session::host(0).unwrap();
         let host_addr = host.local_addr();
         let mut client = Session::join(host_addr).unwrap();
-        host.set_sim(phys_fall_sim as usize, 0, 21, 17);
-        client.set_sim(phys_fall_sim as usize, 0, 21, 17);
+        host.set_sim(phys_fall_sim as *const () as usize, 0, 21, 17);
+        client.set_sim(phys_fall_sim as *const () as usize, 0, 21, 17);
         host.set_spawn(0.0, 8.0, 0.0); // host grounds quickly
         client.set_spawn(20.0, 8.0, 0.0); // client falls from y=8
         let no_jump = [0.0f32; INPUT_MAX];
@@ -4618,7 +4618,7 @@ mod growth_bounds_tests {
         // Port 9 is discard; nothing on the far end will ever ack, which is the point.
         let dead = SocketAddr::from(([127, 0, 0, 1], 9));
         let mut client = Session::join(dead).expect("client bind");
-        client.set_sim(counting_sim as usize, 0, 4, 3);
+        client.set_sim(counting_sim as *const () as usize, 0, 4, 3);
 
         const FRAMES: usize = 3000;
         let mut depth = Vec::with_capacity(FRAMES);
@@ -4900,12 +4900,12 @@ mod growth_bounds_tests {
         // sums back to a trivial zero - a fingerprint of 0.0 would prove nothing.
         const FRAMES: usize = 303;
         let mut host = Session::host(0).expect("host bind");
-        host.set_sim(exact_sim as usize, 0, 4, 3);
+        host.set_sim(exact_sim as *const () as usize, 0, 4, 3);
         let addr = host.local_addr();
         let mut cs: Vec<Session> = (0..CLIENTS)
             .map(|_| {
                 let mut c = Session::join(addr).expect("client bind");
-                c.set_sim(exact_sim as usize, 0, 4, 3);
+                c.set_sim(exact_sim as *const () as usize, 0, 4, 3);
                 c
             })
             .collect();

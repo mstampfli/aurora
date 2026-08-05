@@ -256,8 +256,8 @@ fn layers_matching(module: &Module, keep: impl Fn(&SystemDecl) -> bool) -> Vec<V
     // a layer safe to run concurrently: no pair inside one can race.
     let mut by_rank: std::collections::BTreeMap<usize, Vec<usize>> =
         std::collections::BTreeMap::new();
-    for pos in 0..n {
-        by_rank.entry(rank[pos]).or_default().push(pos);
+    for (pos, r) in rank.iter().enumerate().take(n) {
+        by_rank.entry(*r).or_default().push(pos);
     }
 
     let mut layers: Vec<Vec<usize>> = Vec::new();

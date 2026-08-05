@@ -355,7 +355,7 @@ impl Skeleton {
 ///
 /// Iterative for the same reason as [`resolve_rest`]: a self-parented joint in a
 /// malformed file must not take the stack down with it.
-fn resolve_pose(skel: &Skeleton, local: &[Mat4], joint: usize, out: &mut Vec<Option<Mat4>>) {
+fn resolve_pose(skel: &Skeleton, local: &[Mat4], joint: usize, out: &mut [Option<Mat4>]) {
     let mut chain = Vec::new();
     let mut cur = Some(joint);
     while let Some(i) = cur {
@@ -448,7 +448,7 @@ fn sample_quat(ch: &Channel, time: f32) -> Option<Quat> {
 /// Iterative rather than recursive: a corrupt file can name a joint its own
 /// ancestor, and a recursive walk would blow the stack instead of reporting a
 /// bad asset. The visited set makes a cycle terminate at identity.
-fn resolve_rest(skel: &Skeleton, joint: usize, out: &mut Vec<Option<Mat4>>) {
+fn resolve_rest(skel: &Skeleton, joint: usize, out: &mut [Option<Mat4>]) {
     let mut chain = Vec::new();
     let mut cur = Some(joint);
     while let Some(i) = cur {
@@ -626,7 +626,7 @@ impl Retarget<'_> {
 /// rather than an error.
 fn parents_first(skel: &Skeleton) -> Vec<usize> {
     let mut depth = vec![0u32; skel.joints.len()];
-    for i in 0..skel.joints.len() {
+    for (i, slot) in depth.iter_mut().enumerate() {
         let mut d = 0;
         let mut p = skel.joints[i].parent;
         // Bounded by the joint count so a parent cycle cannot spin here.
@@ -637,7 +637,7 @@ fn parents_first(skel: &Skeleton) -> Vec<usize> {
             d += 1;
             p = skel.joints[j].parent;
         }
-        depth[i] = d;
+        *slot = d;
     }
     let mut order: Vec<usize> = (0..skel.joints.len()).collect();
     order.sort_by_key(|&i| depth[i]);

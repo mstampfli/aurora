@@ -157,7 +157,10 @@ fn the_schedule_runs_once_per_step_in_layer_order() {
         aurora_set_tick_rate(60.0);
 
         // Two layers of one system each.
-        let fns = [count_one as usize, count_one as usize];
+        let fns = [
+            count_one as *const () as usize,
+            count_one as *const () as usize,
+        ];
         let lens = [1i64, 1];
         // SAFETY: both arrays are live locals of the stated lengths.
         let steps = unsafe { aurora_run_fixed(fns.as_ptr(), lens.as_ptr(), 2, 3.0 / 60.0) };
