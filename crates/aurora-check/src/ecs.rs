@@ -1,11 +1,10 @@
-﻿//! ECS query and scheduler analysis (grammar spec Â§5.4, Â§6.2).
+//! ECS query and scheduler analysis (grammar spec Â§5.4, Â§6.2).
 
 use std::collections::BTreeSet;
 
 use aurora_ast::{ItemKind, Module, QTerm, QueryExpr, SysSched, SystemDecl};
 use aurora_diag::Diagnostic;
 use aurora_span::Span;
-
 
 /// Read/write component access derived from a system's queries.
 #[derive(Default)]
@@ -222,9 +221,7 @@ fn check_query_aliasing(q: &QueryExpr, diags: &mut Vec<Diagnostic>) {
 fn precedes(systems: &[SysInfo], stage: &Option<String>) -> Vec<Vec<bool>> {
     let n = systems.len();
     let mut reach = vec![vec![false; n]; n];
-    let at = |name: &str| {
-        (0..n).find(|&k| systems[k].name == name && &systems[k].stage == stage)
-    };
+    let at = |name: &str| (0..n).find(|&k| systems[k].name == name && &systems[k].stage == stage);
     for (i, sys) in systems.iter().enumerate() {
         if &sys.stage != stage {
             continue;

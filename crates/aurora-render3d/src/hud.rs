@@ -95,7 +95,13 @@ impl HudOverlay {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        let (texture, bind_group) = Self::make(device, &pipeline, &sampler, crate::tex_dim(w), crate::tex_dim(h));
+        let (texture, bind_group) = Self::make(
+            device,
+            &pipeline,
+            &sampler,
+            crate::tex_dim(w),
+            crate::tex_dim(h),
+        );
         HudOverlay {
             pipeline,
             sampler,

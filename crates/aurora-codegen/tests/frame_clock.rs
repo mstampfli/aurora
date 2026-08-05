@@ -97,7 +97,10 @@ fn frozen(frames: i64, ms: i64) -> i64 {
 fn call(f: &'static str, args: Vec<i64>) -> i64 {
     std::thread::spawn(move || {
         let (module, diags) = parse_str(LOOP_SRC);
-        assert!(!diags.iter().any(|d| d.is_error()), "parse failed: {diags:?}");
+        assert!(
+            !diags.iter().any(|d| d.is_error()),
+            "parse failed: {diags:?}"
+        );
         let jit = aurora_codegen::build(&module).expect("must compile natively");
         jit.call_i64(f, &args).expect("run")
     })
@@ -132,7 +135,10 @@ fn reading_dt_before_run_systems_does_not_starve_the_fixed_stage() {
     );
     // And it must not be running away either: a step per millisecond would mean
     // the delta is being counted more than once.
-    assert!(sim <= 30, "the fixed stage over-ran: {sim} steps for ~200ms");
+    assert!(
+        sim <= 30,
+        "the fixed stage over-ran: {sim} steps for ~200ms"
+    );
 }
 
 /// Both readers in a frame get the same answer. This is the property itself,

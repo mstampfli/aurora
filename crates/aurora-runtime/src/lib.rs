@@ -251,7 +251,9 @@ pub(crate) fn fatal(what: std::fmt::Arguments<'_>) -> ! {
 /// rather than a cryptic "illegal instruction".
 #[no_mangle]
 pub extern "C" fn aurora_oob(idx: i64, len: i64) {
-    fatal(format_args!("array index {idx} out of bounds (length {len})"));
+    fatal(format_args!(
+        "array index {idx} out of bounds (length {len})"
+    ));
 }
 
 /// `assert(cond)`: abort unless `cond` holds, matching the interpreter's
@@ -1598,8 +1600,11 @@ pub(crate) fn par_batch() -> *const ParWorld {
 /// cast back to the type that module put in. Both were taken from the owner's
 /// own `thread_local!`, and `thread::scope` cannot return until every worker is
 /// joined, so the owner - blocked in that join - keeps them alive and untouched.
-pub(crate) unsafe fn with_par_cell<T, R>(p: *const ParWorld, cell: *const T,
-    f: impl FnOnce(&T) -> R) -> R {
+pub(crate) unsafe fn with_par_cell<T, R>(
+    p: *const ParWorld,
+    cell: *const T,
+    f: impl FnOnce(&T) -> R,
+) -> R {
     let par = unsafe { &*p };
     let _guard = par.lock.lock().unwrap();
     f(unsafe { &*cell })
@@ -2850,8 +2855,26 @@ pub extern "C" fn aurora_r3d_joint_pos(host: i64, joint: i64, axis: i64) -> f64 
 /// A joint's position IN THE WORLD, for a host at a given placement.
 #[allow(clippy::too_many_arguments)]
 #[no_mangle]
-pub extern "C" fn aurora_r3d_joint_world(h: i64, joint: i64, axis: i64, x: f64, y: f64, z: f64, yaw: f64, scale: f64) -> f64 {
-    aurora_window::imm_r3d_joint_world(h, joint, axis, x as f32, y as f32, z as f32, yaw as f32, scale as f32) as f64
+pub extern "C" fn aurora_r3d_joint_world(
+    h: i64,
+    joint: i64,
+    axis: i64,
+    x: f64,
+    y: f64,
+    z: f64,
+    yaw: f64,
+    scale: f64,
+) -> f64 {
+    aurora_window::imm_r3d_joint_world(
+        h,
+        joint,
+        axis,
+        x as f32,
+        y as f32,
+        z as f32,
+        yaw as f32,
+        scale as f32,
+    ) as f64
 }
 /// `r3d_yaw_rotate(yaw, lx, lz, axis) -> f64`: turn a LOCAL offset by a yaw into
 /// world space, in the renderer's own handedness. `axis` 0 = x, 2 = z.
@@ -2866,7 +2889,13 @@ pub extern "C" fn aurora_r3d_yaw_rotate(yaw: f64, lx: f64, lz: f64, axis: i64) -
 }
 /// One column of a joint's world rotation basis: which way the joint faces.
 #[no_mangle]
-pub extern "C" fn aurora_r3d_joint_basis(h: i64, joint: i64, axis: i64, comp: i64, yaw: f64) -> f64 {
+pub extern "C" fn aurora_r3d_joint_basis(
+    h: i64,
+    joint: i64,
+    axis: i64,
+    comp: i64,
+    yaw: f64,
+) -> f64 {
     aurora_window::imm_r3d_joint_basis(h, joint, axis, comp, yaw as f32) as f64
 }
 #[no_mangle]
@@ -3559,26 +3588,77 @@ const PAD_INPUTS: [(&str, PadSource); 24] = [
     ("PadB", PadSource::Button(aurora_window::pad::BTN_EAST)),
     ("PadX", PadSource::Button(aurora_window::pad::BTN_WEST)),
     ("PadY", PadSource::Button(aurora_window::pad::BTN_NORTH)),
-    ("PadLB", PadSource::Button(aurora_window::pad::BTN_LEFT_BUMPER)),
-    ("PadRB", PadSource::Button(aurora_window::pad::BTN_RIGHT_BUMPER)),
+    (
+        "PadLB",
+        PadSource::Button(aurora_window::pad::BTN_LEFT_BUMPER),
+    ),
+    (
+        "PadRB",
+        PadSource::Button(aurora_window::pad::BTN_RIGHT_BUMPER),
+    ),
     ("PadBack", PadSource::Button(aurora_window::pad::BTN_SELECT)),
     ("PadStart", PadSource::Button(aurora_window::pad::BTN_START)),
-    ("PadLS", PadSource::Button(aurora_window::pad::BTN_LEFT_STICK)),
-    ("PadRS", PadSource::Button(aurora_window::pad::BTN_RIGHT_STICK)),
+    (
+        "PadLS",
+        PadSource::Button(aurora_window::pad::BTN_LEFT_STICK),
+    ),
+    (
+        "PadRS",
+        PadSource::Button(aurora_window::pad::BTN_RIGHT_STICK),
+    ),
     ("PadUp", PadSource::Button(aurora_window::pad::BTN_DPAD_UP)),
-    ("PadDown", PadSource::Button(aurora_window::pad::BTN_DPAD_DOWN)),
-    ("PadLeft", PadSource::Button(aurora_window::pad::BTN_DPAD_LEFT)),
-    ("PadRight", PadSource::Button(aurora_window::pad::BTN_DPAD_RIGHT)),
-    ("PadLT", PadSource::Half(aurora_window::pad::AXIS_LEFT_TRIGGER, 1.0)),
-    ("PadRT", PadSource::Half(aurora_window::pad::AXIS_RIGHT_TRIGGER, 1.0)),
-    ("PadLeftStickUp", PadSource::Half(aurora_window::pad::AXIS_LEFT_Y, 1.0)),
-    ("PadLeftStickDown", PadSource::Half(aurora_window::pad::AXIS_LEFT_Y, -1.0)),
-    ("PadLeftStickRight", PadSource::Half(aurora_window::pad::AXIS_LEFT_X, 1.0)),
-    ("PadLeftStickLeft", PadSource::Half(aurora_window::pad::AXIS_LEFT_X, -1.0)),
-    ("PadRightStickUp", PadSource::Half(aurora_window::pad::AXIS_RIGHT_Y, 1.0)),
-    ("PadRightStickDown", PadSource::Half(aurora_window::pad::AXIS_RIGHT_Y, -1.0)),
-    ("PadRightStickRight", PadSource::Half(aurora_window::pad::AXIS_RIGHT_X, 1.0)),
-    ("PadRightStickLeft", PadSource::Half(aurora_window::pad::AXIS_RIGHT_X, -1.0)),
+    (
+        "PadDown",
+        PadSource::Button(aurora_window::pad::BTN_DPAD_DOWN),
+    ),
+    (
+        "PadLeft",
+        PadSource::Button(aurora_window::pad::BTN_DPAD_LEFT),
+    ),
+    (
+        "PadRight",
+        PadSource::Button(aurora_window::pad::BTN_DPAD_RIGHT),
+    ),
+    (
+        "PadLT",
+        PadSource::Half(aurora_window::pad::AXIS_LEFT_TRIGGER, 1.0),
+    ),
+    (
+        "PadRT",
+        PadSource::Half(aurora_window::pad::AXIS_RIGHT_TRIGGER, 1.0),
+    ),
+    (
+        "PadLeftStickUp",
+        PadSource::Half(aurora_window::pad::AXIS_LEFT_Y, 1.0),
+    ),
+    (
+        "PadLeftStickDown",
+        PadSource::Half(aurora_window::pad::AXIS_LEFT_Y, -1.0),
+    ),
+    (
+        "PadLeftStickRight",
+        PadSource::Half(aurora_window::pad::AXIS_LEFT_X, 1.0),
+    ),
+    (
+        "PadLeftStickLeft",
+        PadSource::Half(aurora_window::pad::AXIS_LEFT_X, -1.0),
+    ),
+    (
+        "PadRightStickUp",
+        PadSource::Half(aurora_window::pad::AXIS_RIGHT_Y, 1.0),
+    ),
+    (
+        "PadRightStickDown",
+        PadSource::Half(aurora_window::pad::AXIS_RIGHT_Y, -1.0),
+    ),
+    (
+        "PadRightStickRight",
+        PadSource::Half(aurora_window::pad::AXIS_RIGHT_X, 1.0),
+    ),
+    (
+        "PadRightStickLeft",
+        PadSource::Half(aurora_window::pad::AXIS_RIGHT_X, -1.0),
+    ),
 ];
 
 /// One past the highest input code. 0..65 are keyboard, then the mouse buttons,
@@ -4942,7 +5022,11 @@ mod input_edge_tests {
         // below passes by reading "nothing is held" forever.
         aurora_input_bind(0, KEY_A);
         aurora_inject_key(KEY_A, 1);
-        assert_eq!(aurora_input_down(0), 1, "injected input never reached a key");
+        assert_eq!(
+            aurora_input_down(0),
+            1,
+            "injected input never reached a key"
+        );
         aurora_inject_key(KEY_A, 0);
         BINDINGS.with(|b| b.borrow_mut().clear());
         aurora_input_step();
@@ -4960,11 +5044,19 @@ mod input_edge_tests {
         assert_eq!(aurora_input_pressed(ACT), 1, "the press was missed");
         // Asked twice in the same frame, it must answer the same. A read that
         // consumed the edge would make the order of two callers matter.
-        assert_eq!(aurora_input_pressed(ACT), 1, "the edge was consumed by a read");
+        assert_eq!(
+            aurora_input_pressed(ACT),
+            1,
+            "the edge was consumed by a read"
+        );
 
         aurora_input_step();
         assert_eq!(aurora_input_down(ACT), 1, "the key is still held");
-        assert_eq!(aurora_input_pressed(ACT), 0, "a hold reported a second press");
+        assert_eq!(
+            aurora_input_pressed(ACT),
+            0,
+            "a hold reported a second press"
+        );
 
         aurora_inject_key(KEY_A, 0);
         assert_eq!(aurora_input_released(ACT), 1);
@@ -5007,7 +5099,11 @@ mod input_edge_tests {
         aurora_input_step();
 
         aurora_input_suppress(1);
-        assert_eq!(aurora_input_pressed(ACT), 0, "suppressed input reported a press");
+        assert_eq!(
+            aurora_input_pressed(ACT),
+            0,
+            "suppressed input reported a press"
+        );
         assert_eq!(aurora_input_down(ACT), 0);
         // Frames pass while paused.
         aurora_input_step();
@@ -5116,7 +5212,11 @@ mod pad_input_tests {
 
         assert_eq!(aurora_input_down(DODGE), 0);
         aurora_inject_pad_button(0, pad::BTN_SOUTH as i64, 1);
-        assert_eq!(aurora_input_down(DODGE), 1, "the pad did not fire the action");
+        assert_eq!(
+            aurora_input_down(DODGE),
+            1,
+            "the pad did not fire the action"
+        );
         aurora_inject_pad_button(0, pad::BTN_SOUTH as i64, 0);
         assert_eq!(aurora_input_down(DODGE), 0);
         aurora_inject_key(key, 1);
@@ -5260,7 +5360,11 @@ mod pad_input_tests {
         // a pad code from a key - injecting the number as a key is a silent
         // no-op and the test would pass by never pressing anything.
         aurora_inject_action(DODGE, 1);
-        assert_eq!(aurora_input_down(DODGE), 1, "inject_action missed a pad code");
+        assert_eq!(
+            aurora_input_down(DODGE),
+            1,
+            "inject_action missed a pad code"
+        );
         assert_eq!(aurora_input_pressed(DODGE), 1);
         aurora_input_step();
         assert_eq!(aurora_input_pressed(DODGE), 0);

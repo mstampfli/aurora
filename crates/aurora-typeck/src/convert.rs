@@ -45,9 +45,9 @@ pub(crate) fn array_len_of(k: &aurora_ast::ExprKind) -> Option<u64> {
                 .join("::");
             const_len(&joined)
         }
-        other => CONST_LENS.with(|c| {
-            eval_const(other, &c.borrow()).and_then(|v| u64::try_from(v).ok())
-        }),
+        other => {
+            CONST_LENS.with(|c| eval_const(other, &c.borrow()).and_then(|v| u64::try_from(v).ok()))
+        }
     }
 }
 

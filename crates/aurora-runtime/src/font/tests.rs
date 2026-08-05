@@ -31,17 +31,13 @@ fn art(c: u8) -> Vec<String> {
 fn a_glyph_matches_its_spec() {
     assert_eq!(
         art(b'A'),
-        vec![
-            "  #  ", " # # ", "#   #", "#   #", "#####", "#   #", "#   #",
-        ]
+        vec!["  #  ", " # # ", "#   #", "#   #", "#####", "#   #", "#   #",]
     );
     // Asymmetric top to bottom AND left to right, so a flip in either axis
     // fails here even though 'A' would survive a horizontal one.
     assert_eq!(
         art(b'F'),
-        vec![
-            "#####", "#    ", "#    ", "#### ", "#    ", "#    ", "#    ",
-        ]
+        vec!["#####", "#    ", "#    ", "#### ", "#    ", "#    ", "#    ",]
     );
 }
 
@@ -87,10 +83,18 @@ fn blit_lights_the_pixels_the_glyph_says() {
     assert_eq!(end, 6, "advance is the glyph plus its gap");
 
     // The apex of 'A' is the only pixel in its top row, at column 2.
-    let top: Vec<i64> = lit.iter().filter(|(_, y)| *y == 0).map(|(x, _)| *x).collect();
+    let top: Vec<i64> = lit
+        .iter()
+        .filter(|(_, y)| *y == 0)
+        .map(|(x, _)| *x)
+        .collect();
     assert_eq!(top, vec![2]);
     // The crossbar is the full five.
-    let mut bar: Vec<i64> = lit.iter().filter(|(_, y)| *y == 4).map(|(x, _)| *x).collect();
+    let mut bar: Vec<i64> = lit
+        .iter()
+        .filter(|(_, y)| *y == 4)
+        .map(|(x, _)| *x)
+        .collect();
     bar.sort();
     assert_eq!(bar, vec![0, 1, 2, 3, 4]);
 }
@@ -103,7 +107,10 @@ fn blit_scales_by_whole_pixels() {
     let top: Vec<(i64, i64)> = lit.iter().filter(|(_, y)| *y < 2).copied().collect();
     assert_eq!(top.len(), 4);
     for (x, y) in top {
-        assert!((4..6).contains(&x) && (0..2).contains(&y), "stray pixel at {x},{y}");
+        assert!(
+            (4..6).contains(&x) && (0..2).contains(&y),
+            "stray pixel at {x},{y}"
+        );
     }
 }
 
@@ -113,5 +120,8 @@ fn a_non_ascii_character_draws_a_question_mark_rather_than_nothing() {
     blit(0, 0, "\u{00e9}", 1, |_, _| lit += 1);
     let mut want = 0;
     blit(0, 0, "?", 1, |_, _| want += 1);
-    assert_eq!(lit, want, "an unrepresentable character is visible, not silent");
+    assert_eq!(
+        lit, want,
+        "an unrepresentable character is visible, not silent"
+    );
 }

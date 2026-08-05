@@ -86,7 +86,10 @@ fn third_name_len() -> i64 { m::third_name_len() }
 fn call_in(src: &'static str, f: &'static str) -> i64 {
     std::thread::spawn(move || {
         let (module, diags) = parse_str(src);
-        assert!(!diags.iter().any(|d| d.is_error()), "parse failed: {diags:?}");
+        assert!(
+            !diags.iter().any(|d| d.is_error()),
+            "parse failed: {diags:?}"
+        );
         let jit = aurora_codegen::build(&module).expect("must compile natively");
         jit.call_i64(f, &[]).expect("run")
     })
@@ -113,7 +116,11 @@ fn a_const_length_survives_module_flattening() {
     // The whole point: identical tables, one `mod` deep.
     assert_eq!(call_in(MOD_SRC, "table_len"), 4);
     assert_eq!(call_in(MOD_SRC, "table_sum"), 100);
-    assert_eq!(call_in(MOD_SRC, "name_len"), 4, "a [str; N] table in a module");
+    assert_eq!(
+        call_in(MOD_SRC, "name_len"),
+        4,
+        "a [str; N] table in a module"
+    );
     assert_eq!(call_in(MOD_SRC, "third_name_len"), 1, "and its contents");
 }
 
@@ -172,14 +179,30 @@ fn nested_len() -> i64 { nested() }
 
 #[test]
 fn a_const_length_survives_a_return_type() {
-    assert_eq!(call_in(POSITIONS, "return_len"), 3, "a returned [i64; N] lost its length");
-    assert_eq!(call_in(POSITIONS, "return_sum"), 24, "its contents were dropped");
+    assert_eq!(
+        call_in(POSITIONS, "return_len"),
+        3,
+        "a returned [i64; N] lost its length"
+    );
+    assert_eq!(
+        call_in(POSITIONS, "return_sum"),
+        24,
+        "its contents were dropped"
+    );
 }
 
 #[test]
 fn a_const_length_survives_a_struct_field() {
-    assert_eq!(call_in(POSITIONS, "field_len"), 3, "a [i64; N] field lost its length");
-    assert_eq!(call_in(POSITIONS, "field_sum"), 15, "its contents were dropped");
+    assert_eq!(
+        call_in(POSITIONS, "field_len"),
+        3,
+        "a [i64; N] field lost its length"
+    );
+    assert_eq!(
+        call_in(POSITIONS, "field_sum"),
+        15,
+        "its contents were dropped"
+    );
 }
 
 #[test]

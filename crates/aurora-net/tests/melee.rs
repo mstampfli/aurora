@@ -42,7 +42,9 @@ fn reach_is_measured_to_the_capsule_surface() {
 #[test]
 fn a_target_out_of_reach_is_missed() {
     let lc = one_target_at([0.0, 1.0, 9.0]);
-    assert!(lc.melee_at_tick(ORIGIN, FORWARD, 2.5, 120.0, 0, 0).is_empty());
+    assert!(lc
+        .melee_at_tick(ORIGIN, FORWARD, 2.5, 120.0, 0, 0)
+        .is_empty());
 }
 
 /// The arc is the point of using a swing rather than a ray.
@@ -72,7 +74,11 @@ fn a_swing_reports_every_target_it_covers_nearest_first() {
     lc.record(0, 2, [0.0, 1.0, 1.5], 0.5, 0.9);
     lc.record(0, 3, [0.0, 1.0, -3.0], 0.5, 0.9);
     let hits = lc.melee_at_tick(ORIGIN, FORWARD, 4.0, 120.0, 0, 0);
-    assert_eq!(hits.len(), 2, "both targets in front; the one behind excluded");
+    assert_eq!(
+        hits.len(),
+        2,
+        "both targets in front; the one behind excluded"
+    );
     assert_eq!(hits[0].entity, 2, "nearest first");
     assert_eq!(hits[1].entity, 1);
 }
@@ -100,7 +106,10 @@ fn the_swing_is_judged_against_the_rewound_position() {
     assert_eq!(then.len(), 1, "rewound to tick 0 the target was in reach");
 
     let now = lc.melee_at_tick(ORIGIN, FORWARD, 2.5, 120.0, 19, 0);
-    assert!(now.is_empty(), "by the latest tick it has long since walked off");
+    assert!(
+        now.is_empty(),
+        "by the latest tick it has long since walked off"
+    );
 }
 
 /// A view older than anything recorded clamps to where the target first
@@ -110,7 +119,11 @@ fn a_view_older_than_the_history_clamps_rather_than_missing() {
     let mut lc = LagComp::new(64);
     lc.record(100, 1, [0.0, 1.0, 1.5], 0.5, 0.9);
     let hits = lc.melee_at_tick(ORIGIN, FORWARD, 2.5, 120.0, 5, 0);
-    assert_eq!(hits.len(), 1, "a target that just spawned must still be hittable");
+    assert_eq!(
+        hits.len(),
+        1,
+        "a target that just spawned must still be hittable"
+    );
 }
 
 /// A target overlapping the swinger has no meaningful direction, and is the one
@@ -120,7 +133,10 @@ fn a_target_on_top_of_the_swinger_is_hit_whatever_the_arc() {
     let lc = one_target_at([0.0, 1.0, 0.0]);
     let hits = lc.melee_at_tick(ORIGIN, FORWARD, 1.0, 30.0, 0, 0);
     assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].distance, 0.0, "inside the body is zero, not negative");
+    assert_eq!(
+        hits[0].distance, 0.0,
+        "inside the body is zero, not negative"
+    );
 }
 
 /// Height is the capsule's job: a swing must not miss because the target stood
@@ -136,7 +152,9 @@ fn height_is_decided_by_the_capsule_not_the_arc() {
 
     let above = one_target_at([0.0, 9.0, 1.5]);
     assert!(
-        above.melee_at_tick(ORIGIN, FORWARD, 2.0, 120.0, 0, 0).is_empty(),
+        above
+            .melee_at_tick(ORIGIN, FORWARD, 2.0, 120.0, 0, 0)
+            .is_empty(),
         "reach is three-dimensional"
     );
 }
@@ -144,8 +162,12 @@ fn height_is_decided_by_the_capsule_not_the_arc() {
 #[test]
 fn a_swing_with_no_reach_hits_nothing() {
     let lc = one_target_at([0.0, 1.0, 0.5]);
-    assert!(lc.melee_at_tick(ORIGIN, FORWARD, 0.0, 120.0, 0, 0).is_empty());
-    assert!(lc.melee_at_tick(ORIGIN, FORWARD, -3.0, 120.0, 0, 0).is_empty());
+    assert!(lc
+        .melee_at_tick(ORIGIN, FORWARD, 0.0, 120.0, 0, 0)
+        .is_empty());
+    assert!(lc
+        .melee_at_tick(ORIGIN, FORWARD, -3.0, 120.0, 0, 0)
+        .is_empty());
 }
 
 /// A caller with no horizontal facing has not described a swing. Answering
@@ -153,7 +175,9 @@ fn a_swing_with_no_reach_hits_nothing() {
 #[test]
 fn a_swing_with_no_horizontal_facing_hits_nothing() {
     let lc = one_target_at([0.0, 1.0, 1.5]);
-    assert!(lc.melee_at_tick(ORIGIN, [0.0, 1.0, 0.0], 2.5, 120.0, 0, 0).is_empty());
+    assert!(lc
+        .melee_at_tick(ORIGIN, [0.0, 1.0, 0.0], 2.5, 120.0, 0, 0)
+        .is_empty());
 }
 
 #[test]
@@ -191,5 +215,7 @@ fn a_removed_entity_is_no_longer_a_target() {
     lc.record(0, 1, [0.0, 1.0, 1.5], 0.5, 0.9);
     assert_eq!(lc.melee_at_tick(ORIGIN, FORWARD, 2.5, 120.0, 0, 0).len(), 1);
     lc.remove(1);
-    assert!(lc.melee_at_tick(ORIGIN, FORWARD, 2.5, 120.0, 0, 0).is_empty());
+    assert!(lc
+        .melee_at_tick(ORIGIN, FORWARD, 2.5, 120.0, 0, 0)
+        .is_empty());
 }

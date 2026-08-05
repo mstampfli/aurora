@@ -1,4 +1,4 @@
-﻿//! A high-level scene: a registry of drawable models (file-loaded or primitive),
+//! A high-level scene: a registry of drawable models (file-loaded or primitive),
 //! per-model animation players, and a camera, on top of [`Renderer3D`]. This is
 //! the surface the engine/runtime drives; it owns no device and borrows one per
 //! call so the same scene renders offscreen or to the window.
@@ -321,7 +321,16 @@ impl Scene {
         rename: &[(&str, &str)],
         translate: &[&str],
     ) -> i64 {
-        self.load_model_inner(device, queue, path, None, clips, source_rest, rename, translate)
+        self.load_model_inner(
+            device,
+            queue,
+            path,
+            None,
+            clips,
+            source_rest,
+            rename,
+            translate,
+        )
     }
 
     /// Load `path` as a part of `host`'s body: its skinning is rebound onto the
@@ -606,7 +615,9 @@ impl Scene {
                     // has several rigs - a body of fewer parts carries fewer
                     // bones - so the retarget cache above genuinely misses
                     // across characters while the parse behind it never should.
-                    let Some(library) = self.parsed(clip) else { continue };
+                    let Some(library) = self.parsed(clip) else {
+                        continue;
+                    };
                     match crate::model::retarget_clips_from(
                         &library, clip, rest, &target, rename, translate,
                     ) {
@@ -714,10 +725,7 @@ impl Scene {
         // default, the second wants the texture already on the GPU under its
         // name. Dropping empties the pixels and KEEPS the entry, so `Some` still
         // means "there is a texture here" - see `drop_uploaded_pixels`.
-        fn keyed<'a>(
-            key: &'a str,
-            t: &'a Option<crate::model::Tex>,
-        ) -> Option<TexSrc<'a>> {
+        fn keyed<'a>(key: &'a str, t: &'a Option<crate::model::Tex>) -> Option<TexSrc<'a>> {
             let (px, w, h) = t.as_ref()?;
             Some(TexSrc::Keyed {
                 key,
@@ -1303,12 +1311,18 @@ impl Scene {
     /// `anim_stop_upper` and `anim_seek_upper` already treat the overlay as a
     /// first-class layer. This is the question that was missing from that set.
     pub fn anim_done_upper(&self, handle: i64) -> bool {
-        let Some(r) = self.item(handle) else { return false };
+        let Some(r) = self.item(handle) else {
+            return false;
+        };
         if !r.player.upper || r.player.ulooping {
             return false;
         }
-        let Some(m) = r.asset.model.as_ref() else { return false };
-        let Some(c) = m.clips.get(r.player.uclip) else { return false };
+        let Some(m) = r.asset.model.as_ref() else {
+            return false;
+        };
+        let Some(c) = m.clips.get(r.player.uclip) else {
+            return false;
+        };
         c.duration > 0.0 && r.player.utime >= c.duration
     }
 

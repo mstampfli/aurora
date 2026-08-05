@@ -627,7 +627,11 @@ pub fn r3d_part_add(path: &str) {
 /// Map a bone name on the clips' rig to its name on the character. Only bones
 /// whose names differ need an entry; the rest match as they stand.
 pub fn r3d_bone_map(from: &str, to: &str) {
-    RECIPE.with(|r| r.borrow_mut().rename.push((from.to_string(), to.to_string())));
+    RECIPE.with(|r| {
+        r.borrow_mut()
+            .rename
+            .push((from.to_string(), to.to_string()))
+    });
 }
 
 /// Allow one character bone to take its translation from a clip - the root, so
@@ -1142,10 +1146,21 @@ pub fn r3d_joint_dump(host: i64) {
 }
 /// Model-space position of `joint` in the host's current pose, component `axis` (0=x,1=y,2=z).
 #[allow(clippy::too_many_arguments)]
-pub fn r3d_joint_world(host: i64, joint: i64, axis: i64, x: f32, y: f32, z: f32, yaw: f32, scale: f32) -> f32 {
+pub fn r3d_joint_world(
+    host: i64,
+    joint: i64,
+    axis: i64,
+    x: f32,
+    y: f32,
+    z: f32,
+    yaw: f32,
+    scale: f32,
+) -> f32 {
     with_gfx(0.0f32, |gf| {
         let (_, _, s) = gf.scene_mut();
-        let p = s.joint_world(host, joint, x, y, z, yaw, scale).unwrap_or([0.0, 0.0, 0.0]);
+        let p = s
+            .joint_world(host, joint, x, y, z, yaw, scale)
+            .unwrap_or([0.0, 0.0, 0.0]);
         p[(axis.max(0) as usize).min(2)]
     })
 }
@@ -1162,7 +1177,9 @@ pub fn r3d_yaw_rotate(yaw: f32, lx: f32, lz: f32, axis: i64) -> f32 {
 pub fn r3d_joint_basis(host: i64, joint: i64, axis: i64, comp: i64, yaw: f32) -> f32 {
     with_gfx(0.0f32, |gf| {
         let (_, _, s) = gf.scene_mut();
-        let v = s.joint_basis(host, joint, axis, yaw).unwrap_or([0.0, 0.0, 0.0]);
+        let v = s
+            .joint_basis(host, joint, axis, yaw)
+            .unwrap_or([0.0, 0.0, 0.0]);
         v[(comp.max(0) as usize).min(2)]
     })
 }
@@ -1322,7 +1339,11 @@ pub fn r3d_clip_name(handle: i64, i: i64) -> String {
 pub fn r3d_anim_done(handle: i64) -> i64 {
     with_gfx(0, |gf| {
         let (_, _, s) = gf.scene_mut();
-        if s.anim_done(handle) { 1 } else { 0 }
+        if s.anim_done(handle) {
+            1
+        } else {
+            0
+        }
     })
 }
 
@@ -1330,7 +1351,11 @@ pub fn r3d_anim_done(handle: i64) -> i64 {
 pub fn r3d_anim_done_upper(handle: i64) -> i64 {
     with_gfx(0, |gf| {
         let (_, _, s) = gf.scene_mut();
-        if s.anim_done_upper(handle) { 1 } else { 0 }
+        if s.anim_done_upper(handle) {
+            1
+        } else {
+            0
+        }
     })
 }
 

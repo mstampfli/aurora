@@ -37,7 +37,10 @@ fn info_on_a_missing_file_fails_rather_than_reporting_nothing() {
         Some(1),
         "a file that cannot be read must fail, not print an empty report"
     );
-    assert!(!out.stderr.is_empty(), "the failure must say what went wrong");
+    assert!(
+        !out.stderr.is_empty(),
+        "the failure must say what went wrong"
+    );
 }
 
 #[test]

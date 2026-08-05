@@ -1,4 +1,4 @@
-﻿//! The single source of truth for Aurora's runtime builtins.
+//! The single source of truth for Aurora's runtime builtins.
 //!
 //! A builtin used to be registered in up to eight hand-maintained places (name
 //! list, signature match arms, JIT symbol table, host import table, the AOT

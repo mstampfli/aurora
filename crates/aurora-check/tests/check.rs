@@ -608,7 +608,10 @@ fn a_chain_composes_from_either_direction() {
          system c() stage(Update) after(b) { for p in query<&mut P> { p.x = 3.0 } }",
     ] {
         let errs = check_src(&format!("component P {{ x: f32 }}\n{chain}"));
-        assert!(errs.is_empty(), "chain should order a and c: {errs:?}\n{chain}");
+        assert!(
+            errs.is_empty(),
+            "chain should order a and c: {errs:?}\n{chain}"
+        );
     }
 }
 
@@ -638,7 +641,10 @@ fn siblings_of_a_common_predecessor_are_not_ordered() {
          system c() stage(Update) after(a) { for p in query<&mut P> { p.x = 3.0 } }",
     );
     assert_eq!(errs.len(), 1, "b and c are siblings, not ordered: {errs:?}");
-    assert!(errs[0].contains("`b`") && errs[0].contains("`c`"), "{errs:?}");
+    assert!(
+        errs[0].contains("`b`") && errs[0].contains("`c`"),
+        "{errs:?}"
+    );
 }
 
 /// A chain does not leak across a stage boundary. Stages already run in sequence,
@@ -718,7 +724,11 @@ fn access_is_followed_through_a_chain_of_calls() {
          system a() stage(Update) { outer() }
          system b() stage(Update) { for p in query<&mut P> { p.x = 2.0 } }",
     );
-    assert_eq!(errs.len(), 1, "access must follow the whole call chain: {errs:?}");
+    assert_eq!(
+        errs.len(),
+        1,
+        "access must follow the whole call chain: {errs:?}"
+    );
 }
 
 #[test]
@@ -730,7 +740,11 @@ fn both_systems_reaching_a_component_only_through_helpers_conflict() {
          system a() stage(Update) { write_it() }
          system b() stage(Update) { let v = read_it() }",
     );
-    assert_eq!(errs.len(), 1, "neither body names a query, but both reach P: {errs:?}");
+    assert_eq!(
+        errs.len(),
+        1,
+        "neither body names a query, but both reach P: {errs:?}"
+    );
 }
 
 /// Ordering the pair resolves it, exactly as it would for inline queries -

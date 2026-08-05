@@ -42,14 +42,19 @@ fn main() {
     };
 
     let reference_model = Model::load(reference).expect("reference rig must load");
-    let reference_skel = reference_model.skeleton.expect("reference rig has no skeleton");
+    let reference_skel = reference_model
+        .skeleton
+        .expect("reference rig has no skeleton");
     let reference_rest = reference_skel.rest_globals();
     let reference_pos = |name: &str| {
         reference_skel
             .index_of(name)
             .map(|i| reference_rest[i].w_axis.truncate())
     };
-    println!("reference: {reference} ({} joints)", reference_skel.joints.len());
+    println!(
+        "reference: {reference} ({} joints)",
+        reference_skel.joints.len()
+    );
 
     let mut files = Vec::new();
     for d in dirs {

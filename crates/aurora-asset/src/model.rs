@@ -284,7 +284,9 @@ impl Skeleton {
         for i in 0..self.joints.len() {
             resolve_rest(self, i, &mut out);
         }
-        out.into_iter().map(|m| m.unwrap_or(Mat4::IDENTITY)).collect()
+        out.into_iter()
+            .map(|m| m.unwrap_or(Mat4::IDENTITY))
+            .collect()
     }
 
     /// Per-joint matrices that take bind-space geometry to model space in the
@@ -343,7 +345,9 @@ impl Skeleton {
         for i in 0..self.joints.len() {
             resolve_pose(self, &local, i, &mut out);
         }
-        out.into_iter().map(|m| m.unwrap_or(Mat4::IDENTITY)).collect()
+        out.into_iter()
+            .map(|m| m.unwrap_or(Mat4::IDENTITY))
+            .collect()
     }
 }
 
@@ -770,8 +774,7 @@ impl Clip {
 
         let mut src_rest_of = vec![None; opts.source.joints.len()];
         for (si, from) in opts.source.joints.iter().enumerate() {
-            src_rest_of[si] =
-                Retarget::joint_by_name(opts.source_rest, &from.name).map(|(i, _)| i);
+            src_rest_of[si] = Retarget::joint_by_name(opts.source_rest, &from.name).map(|(i, _)| i);
         }
 
         // Resample: world-space delta from rest, re-expressed on the target.
@@ -1130,8 +1133,7 @@ impl Model {
         if crate::bake::usable(path, &baked) {
             let bytes = std::fs::read(&baked)
                 .map_err(|e| format!("read baked model {}: {e}", baked.display()))?;
-            return crate::bake::read(&bytes)
-                .map_err(|e| format!("{}: {e}", baked.display()));
+            return crate::bake::read(&bytes).map_err(|e| format!("{}: {e}", baked.display()));
         }
         Self::parse(path)
     }

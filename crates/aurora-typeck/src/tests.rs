@@ -646,7 +646,10 @@ fn an_undefined_type_is_an_error_in_every_position() {
             .iter()
             .filter(|e| e.contains("unknown type") && e.contains(name))
             .count();
-        assert_eq!(hits, 1, "in `{src}` expected one unknown-type error, got {errs:?}");
+        assert_eq!(
+            hits, 1,
+            "in `{src}` expected one unknown-type error, got {errs:?}"
+        );
     }
 }
 
@@ -676,8 +679,19 @@ fn the_engine_s_own_types_are_not_undefined() {
     // this pass and by `aurora-check`. It was two, and the second was missing
     // Transform, Handle, Option, Result and Time.
     for name in [
-        "i64", "f64", "str", "bool", "Vec3", "Quat", "Color", "Mat4", "Transform", "Time", "Tick",
-        "Entity", "Handle",
+        "i64",
+        "f64",
+        "str",
+        "bool",
+        "Vec3",
+        "Quat",
+        "Color",
+        "Mat4",
+        "Transform",
+        "Time",
+        "Tick",
+        "Entity",
+        "Handle",
     ] {
         let src = format!("fn f(x: {name}) {{}}");
         let errs = errors(&src);

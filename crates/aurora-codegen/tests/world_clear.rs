@@ -90,7 +90,10 @@ fn ids_are_not_reused_after_a_clear() {
              if fresh == old {{ 1 }} else {{ 0 }}
          }}"
     ));
-    assert_eq!(n, 0, "a fresh entity reused the cleared id, so a stale handle now aliases it");
+    assert_eq!(
+        n, 0,
+        "a fresh entity reused the cleared id, so a stale handle now aliases it"
+    );
 }
 
 /// Despawning a stale id after a clear must be a no-op, not damage to whatever
@@ -131,8 +134,7 @@ fn clearing_is_idempotent_and_safe_when_empty() {
 /// schedule still runs against what it just spawned.
 #[test]
 fn systems_run_against_the_world_left_after_a_clear() {
-    let n = run(
-        "component A { v: i64 }
+    let n = run("component A { v: i64 }
          system bump() stage(Update) { for a in query<&mut A> { a.v = a.v + 1 } }
          fn run() -> i64 {
              spawn(A { v: 100 })
@@ -144,7 +146,6 @@ fn systems_run_against_the_world_left_after_a_clear() {
              let mut total = 0
              for a in query<&A> { total = total + a.v }
              total
-         }",
-    );
+         }");
     assert_eq!(n, 6, "only the post-clear entity should exist, bumped once");
 }

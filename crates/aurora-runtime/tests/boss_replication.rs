@@ -1,4 +1,4 @@
-﻿//! A server-owned non-player entity, over a real socket.
+//! A server-owned non-player entity, over a real socket.
 //!
 //! Replication used to cover players only, so a boss - which nobody predicts and
 //! everybody must agree about - had no channel. These drive a host and a client
@@ -79,7 +79,9 @@ fn a_boss_the_host_owns_is_seen_by_a_client() {
         }
     });
 
-    ready_rx.recv_timeout(Duration::from_secs(5)).expect("host started");
+    ready_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("host started");
 
     let host_name = "127.0.0.1";
     unsafe {
@@ -94,8 +96,11 @@ fn a_boss_the_host_owns_is_seen_by_a_client() {
         aurora_runtime::aurora_net_update(1.0 / 60.0);
     };
 
-    pump_until(&mut step, || aurora_runtime::aurora_net_object_count() == 1,
-               "the client to learn the boss exists");
+    pump_until(
+        &mut step,
+        || aurora_runtime::aurora_net_object_count() == 1,
+        "the client to learn the boss exists",
+    );
 
     // Its position crossed intact.
     assert!(
@@ -105,8 +110,11 @@ fn a_boss_the_host_owns_is_seen_by_a_client() {
     );
 
     // And so did the state that is NOT its pose - the telegraph.
-    pump_until(&mut step, || aurora_runtime::aurora_net_object_state(0, 1) > 2.0,
-               "the boss's windup phase to reach the client");
+    pump_until(
+        &mut step,
+        || aurora_runtime::aurora_net_object_state(0, 1) > 2.0,
+        "the boss's windup phase to reach the client",
+    );
     assert_eq!(
         aurora_runtime::aurora_net_object_state(0, 0),
         0.0,
@@ -163,7 +171,9 @@ fn a_stationary_objects_state_streams_rather_than_waiting_for_keyframes() {
         }
     });
 
-    ready_rx.recv_timeout(Duration::from_secs(5)).expect("host started");
+    ready_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("host started");
     let host_name = "127.0.0.1";
     unsafe {
         aurora_runtime::aurora_net_join(host_name.as_ptr(), host_name.len() as i64, port as i64);
@@ -177,8 +187,11 @@ fn a_stationary_objects_state_streams_rather_than_waiting_for_keyframes() {
         aurora_runtime::aurora_net_update(1.0 / 60.0);
     };
 
-    pump_until(&mut step, || aurora_runtime::aurora_net_object_count() == 1,
-               "the client to learn the object exists");
+    pump_until(
+        &mut step,
+        || aurora_runtime::aurora_net_object_count() == 1,
+        "the client to learn the object exists",
+    );
 
     // Watch for a while and count how many different values actually landed.
     //

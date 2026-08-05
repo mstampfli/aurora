@@ -95,11 +95,8 @@ impl W {
         }
         let mut png = Vec::new();
         let ok = image::RgbaImage::from_raw(*w, *h, px.clone()).is_some_and(|img| {
-            img.write_to(
-                &mut std::io::Cursor::new(&mut png),
-                image::ImageFormat::Png,
-            )
-            .is_ok()
+            img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+                .is_ok()
         });
         if !ok {
             // Loud, and then absent. A texture that will not re-encode is a
@@ -218,7 +215,10 @@ struct R<'a> {
 /// or half-written one, and both look like plausible bytes.
 impl<'a> R<'a> {
     fn take(&mut self, n: usize) -> Result<&'a [u8], String> {
-        let end = self.at.checked_add(n).ok_or("baked model: length overflow")?;
+        let end = self
+            .at
+            .checked_add(n)
+            .ok_or("baked model: length overflow")?;
         if end > self.b.len() {
             return Err(format!(
                 "baked model: truncated at byte {} (wanted {n} more, {} left)",

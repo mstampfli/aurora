@@ -1,4 +1,4 @@
-﻿//! Module flattening: lower `mod NAME { items }` into top-level items with
+//! Module flattening: lower `mod NAME { items }` into top-level items with
 //! `NAME::`-mangled names, rewriting intra-module references so that modules
 //! provide real namespacing (two modules may define same-named items without
 //! colliding). Runs automatically after parsing.
@@ -730,7 +730,9 @@ mod tests {
         for it in &flat {
             if let ItemKind::Const(c) = &it.kind {
                 if c.name.name == "m::T" {
-                    if let aurora_ast::TypeKind::Array { len: Some(n), .. } = &c.ty.as_ref().unwrap().kind {
+                    if let aurora_ast::TypeKind::Array { len: Some(n), .. } =
+                        &c.ty.as_ref().unwrap().kind
+                    {
                         if let ExprKind::Path(p) = &n.kind {
                             seen = Some(p.segments[0].ident.name.clone());
                         }

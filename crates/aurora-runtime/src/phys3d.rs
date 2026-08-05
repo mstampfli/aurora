@@ -1,4 +1,4 @@
-﻿//! 3D physics for Aurora, backed by Rapier 3D: rigid bodies (box/sphere/capsule
+//! 3D physics for Aurora, backed by Rapier 3D: rigid bodies (box/sphere/capsule
 //! and arbitrary static trimeshes), impulses (jumps/knockback), raycasts, and a
 //! kinematic capsule character controller that slides along walls - the core of
 //! a fluid 3D movement shooter.
@@ -603,7 +603,9 @@ pub extern "C" fn aurora_phys3d_separate_characters() -> i64 {
         let mut chars: Vec<(Key<Body3>, Vector<Real>, Real, Real, bool, bool)> = Vec::new();
         for (k, b) in p.registry.iter() {
             let Some((hh, r)) = b.capsule else { continue };
-            let Some(rb) = p.bodies.get(b.body) else { continue };
+            let Some(rb) = p.bodies.get(b.body) else {
+                continue;
+            };
             let blocking = p
                 .colliders
                 .get(b.collider)
@@ -694,7 +696,9 @@ pub extern "C" fn aurora_phys3d_separate_characters() -> i64 {
             let Some(rb) = p.bodies.get(h) else { continue };
             let from = *rb.translation();
             let desired = t - from;
-            let Some(collider) = p.colliders.get(col_h) else { continue };
+            let Some(collider) = p.colliders.get(col_h) else {
+                continue;
+            };
             let shape = collider.shape();
             let mut pos = *collider.position();
             pos.translation.vector = from;
@@ -1650,8 +1654,8 @@ pub extern "C" fn aurora_phys3d_overlap_world(x: f64, y: f64, z: f64, radius: f6
         p.sync_queries();
         let shape = Ball::new(radius as Real);
         let pos = Isometry::translation(x as Real, y as Real, z as Real);
-        let filter = QueryFilter::default()
-            .groups(InteractionGroups::new(Group::ALL, Group::GROUP_1));
+        let filter =
+            QueryFilter::default().groups(InteractionGroups::new(Group::ALL, Group::GROUP_1));
         match p
             .query
             .intersection_with_shape(&p.bodies, &p.colliders, &pos, &shape, filter)
@@ -1813,7 +1817,11 @@ mod tests {
         assert_eq!(aurora_phys3d_x(ball), 0.0);
         assert_eq!(aurora_phys3d_grounded(ball), 0);
         aurora_phys3d_move_character(ball, 1.0, 0.0, 0.0, 0.016);
-        assert_eq!(aurora_phys3d_remove(ball), 0, "removing twice is not an error");
+        assert_eq!(
+            aurora_phys3d_remove(ball),
+            0,
+            "removing twice is not an error"
+        );
     }
 
     /// And the loud one, which is the whole point.
@@ -2465,7 +2473,10 @@ mod tests {
 
         let want = 0.35 + 0.6;
         let gap0 = gap(player, creature);
-        assert!(gap0 < 0.01, "the two did not start on top of each other: {gap0}");
+        assert!(
+            gap0 < 0.01,
+            "the two did not start on top of each other: {gap0}"
+        );
 
         aurora_phys3d_step(1.0 / 60.0);
         let gap1 = gap(player, creature);

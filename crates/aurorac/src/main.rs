@@ -653,7 +653,11 @@ fn cmd_asset_info(path: &str) -> ExitCode {
         .map(|p| p.mesh.indices.len() / 3)
         .sum();
     let skinned = model.primitives.iter().filter(|p| p.skinned).count();
-    let textured = model.primitives.iter().filter(|p| p.texture.is_some()).count();
+    let textured = model
+        .primitives
+        .iter()
+        .filter(|p| p.texture.is_some())
+        .count();
     println!("{path}");
     println!(
         "  primitives {}  verts {verts}  tris {tris}  skinned {skinned}  textured {textured}",
@@ -667,7 +671,10 @@ fn cmd_asset_info(path: &str) -> ExitCode {
         .filter(|m| !m.is_empty())
         .collect();
     if !materials.is_empty() {
-        println!("  materials  {}", materials.into_iter().collect::<Vec<_>>().join(", "));
+        println!(
+            "  materials  {}",
+            materials.into_iter().collect::<Vec<_>>().join(", ")
+        );
     }
 
     match &model.skeleton {
@@ -745,9 +752,11 @@ fn cmd_asset_check(reference: &str, dirs: &[String]) -> ExitCode {
             let p = e.path();
             if p.is_dir() {
                 models_under(&p, out);
-            } else if p.extension().and_then(|s| s.to_str()).is_some_and(|s| {
-                matches!(s.to_ascii_lowercase().as_str(), "fbx" | "gltf" | "glb")
-            }) {
+            } else if p
+                .extension()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| matches!(s.to_ascii_lowercase().as_str(), "fbx" | "gltf" | "glb"))
+            {
                 out.push(p);
             }
         }
@@ -775,7 +784,9 @@ fn cmd_asset_check(reference: &str, dirs: &[String]) -> ExitCode {
                 continue;
             }
         };
-        let Some(skel) = &model.skeleton else { continue };
+        let Some(skel) = &model.skeleton else {
+            continue;
+        };
 
         let rest = skel.rest_globals();
         let mut conforms = true;
@@ -783,12 +794,15 @@ fn cmd_asset_check(reference: &str, dirs: &[String]) -> ExitCode {
             let found = reference_skel.index_of(&joint.name);
             match found {
                 None => {
-                    println!("  EXTRA   {name}: {} is not on the reference rig", joint.name);
+                    println!(
+                        "  EXTRA   {name}: {} is not on the reference rig",
+                        joint.name
+                    );
                     conforms = false;
                 }
                 Some(r) => {
-                    let d = (rest[i].w_axis.truncate() - reference_rest[r].w_axis.truncate())
-                        .length();
+                    let d =
+                        (rest[i].w_axis.truncate() - reference_rest[r].w_axis.truncate()).length();
                     if d > TOLERANCE {
                         println!("  MOVED   {name}: {} sits {d:.4} away", joint.name);
                         conforms = false;

@@ -573,14 +573,22 @@ fn names_resolve_by_prefix_and_case() {
     let namespaced = ["mixamorig:Hips", "mixamorig:Spine_01"];
     let ns =
         |want: &str| super::index_or_missing(super::find_name(namespaced.iter().copied(), want));
-    assert_eq!(ns("Spine_01"), 1, "a namespaced rig must answer to the bare name");
+    assert_eq!(
+        ns("Spine_01"),
+        1,
+        "a namespaced rig must answer to the bare name"
+    );
     assert_eq!(ns("mixamorig:Hips"), 0, "and to its own full name");
     assert_eq!(
         at("mixamorig:Walk"),
         1,
         "a decorated request must find an undecorated name too"
     );
-    assert_eq!(ns("Neck"), -1, "and a bone that is not there is still not there");
+    assert_eq!(
+        ns("Neck"),
+        -1,
+        "and a bone that is not there is still not there"
+    );
 }
 
 /// A skinned model whose joints hang off an ARMATURE node must be posed through
@@ -792,7 +800,10 @@ fn orientation_and_position_survive() {
 #[test]
 fn a_mirrored_bone_keeps_its_reflection() {
     let m = Mat4::from_scale(Vec3::new(-0.01, 0.01, 0.01));
-    assert!(m.determinant() < 0.0, "the fixture is not actually mirrored");
+    assert!(
+        m.determinant() < 0.0,
+        "the fixture is not actually mirrored"
+    );
 
     let out = super::without_scale(m);
     assert!(
@@ -820,10 +831,7 @@ fn a_degenerate_bone_does_not_divide_by_zero() {
     let m = Mat4::from_scale(Vec3::new(0.0, 1.0, 1.0));
     let out = super::without_scale(m);
     for c in [out.x_axis, out.y_axis, out.z_axis, out.w_axis] {
-        assert!(
-            c.is_finite(),
-            "a zero-length basis column produced {c:?}"
-        );
+        assert!(c.is_finite(), "a zero-length basis column produced {c:?}");
     }
 }
 
@@ -914,7 +922,8 @@ fn one_atlas_named_by_many_materials_uploads_once() {
     let other_img = image::RgbaImage::from_pixel(64, 64, image::Rgba([10, 20, 30, 255]));
     other_img.save(&other).expect("write the second test atlas");
     let twin = dir.join("twin.png");
-    img.save(&twin).expect("write a copy of the atlas under another name");
+    img.save(&twin)
+        .expect("write a copy of the atlas under another name");
     let twin = twin.to_string_lossy().to_string();
     let atlas = atlas.to_string_lossy().to_string();
     let other = other.to_string_lossy().to_string();

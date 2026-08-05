@@ -623,7 +623,7 @@ impl AnimPlayer {
     /// different pose from the ARM holding it - and nothing would report it,
     /// because both would still be producing a perfectly valid transform.
     fn posed_locals(&self, skel: &Skeleton, model: &Model) -> (Vec<Vec3>, Vec<Quat>, Vec<Vec3>) {
-let (mut t, mut r, mut s) = if self.bblend_on {
+        let (mut t, mut r, mut s) = if self.bblend_on {
             self.sample_base_blend(skel, model)
         } else if self.blend >= 1.0 {
             sample_locals(skel, model.clips.get(self.clip), self.time)
@@ -927,7 +927,10 @@ mod play_is_idempotent {
         p.play(3, true, 1.0, 0.0);
         p.time = 0.4;
         p.play(3, true, 1.0, 0.0);
-        assert_eq!(p.time, 0.4, "a frame loop restating its state must not rewind");
+        assert_eq!(
+            p.time, 0.4,
+            "a frame loop restating its state must not rewind"
+        );
     }
 
     #[test]
@@ -936,7 +939,10 @@ mod play_is_idempotent {
         p.play(3, true, 1.0, 0.0);
         p.time = 0.4;
         p.play(3, true, 2.0, 0.0);
-        assert_eq!(p.speed, 2.0, "a windup stretched to its frame data must retune");
+        assert_eq!(
+            p.speed, 2.0,
+            "a windup stretched to its frame data must retune"
+        );
         assert_eq!(p.time, 0.4);
     }
 
@@ -968,7 +974,10 @@ mod play_is_idempotent {
         p.play(3, false, 1.0, 0.0);
         p.time = 0.4;
         p.restart(3, false, 1.0, 0.0);
-        assert_eq!(p.time, 0.0, "the second swing of a combo must actually replay");
+        assert_eq!(
+            p.time, 0.0,
+            "the second swing of a combo must actually replay"
+        );
     }
 }
 
@@ -1022,7 +1031,11 @@ mod root_motion {
         // Nor does asking for a travelling clip move anything on its own: the
         // delta is what an UPDATE covered, so it stays zero until one happens.
         p.play(0, false, 1.0, 0.0);
-        assert_eq!(p.root_delta(), Vec3::ZERO, "playing a clip is not advancing it");
+        assert_eq!(
+            p.root_delta(),
+            Vec3::ZERO,
+            "playing a clip is not advancing it"
+        );
     }
 
     // The number the game acts on: over a known slice of the clip, the delta is
@@ -1093,7 +1106,11 @@ mod root_motion {
         p.play(0, false, 1.0, 0.0);
         p.advance(&m, 1.0);
         p.advance(&m, 1.0);
-        assert_eq!(p.root_delta(), Vec3::ZERO, "a finished one-shot travels no further");
+        assert_eq!(
+            p.root_delta(),
+            Vec3::ZERO,
+            "a finished one-shot travels no further"
+        );
     }
 
     // The reader `Scene::anim_speed` hands to game code, pinned against what the
@@ -1112,8 +1129,16 @@ mod root_motion {
         slow.play(0, true, 1.0, 0.0);
         fast.play(0, true, 1.25, 0.0);
 
-        assert_eq!(slow.base_speed(), 1.0, "a clip played as authored reports 1.0");
-        assert_eq!(fast.base_speed(), 1.25, "a retimed clip reports the rate it was retimed to");
+        assert_eq!(
+            slow.base_speed(),
+            1.0,
+            "a clip played as authored reports 1.0"
+        );
+        assert_eq!(
+            fast.base_speed(),
+            1.25,
+            "a retimed clip reports the rate it was retimed to"
+        );
 
         slow.advance(&m, 0.4);
         fast.advance(&m, 0.4);
@@ -1141,8 +1166,15 @@ mod root_motion {
         let m = model(&[(1.0, None), (1.0, None)]);
         let mut p = AnimPlayer::default();
         p.blend(&m, 0, 1, 0.5, 1.7, 0.0);
-        assert_eq!(p.speed, 1.7, "the field still holds the warp applied to the second half");
-        assert_eq!(p.base_speed(), 1.0, "but the base clip runs at the cadence it was authored at");
+        assert_eq!(
+            p.speed, 1.7,
+            "the field still holds the warp applied to the second half"
+        );
+        assert_eq!(
+            p.base_speed(),
+            1.0,
+            "but the base clip runs at the cadence it was authored at"
+        );
         let before = p.time;
         p.advance(&m, 0.25);
         assert!(
@@ -1158,7 +1190,11 @@ mod root_motion {
         p.play(0, true, 1.0, 0.0);
         for _ in 0..120 {
             p.advance(&m, 1.0 / 60.0);
-            assert_eq!(p.root_delta(), Vec3::ZERO, "a walk cycle's ground speed is the game's");
+            assert_eq!(
+                p.root_delta(),
+                Vec3::ZERO,
+                "a walk cycle's ground speed is the game's"
+            );
         }
     }
 
@@ -1245,7 +1281,10 @@ mod root_motion {
             p.advance(&m, 1.0 / 60.0);
             total += p.root_delta();
         }
-        assert!(close(total, Vec3::new(0.0, 0.0, 3.0)), "the roll arrives: {total:?}");
+        assert!(
+            close(total, Vec3::new(0.0, 0.0, 3.0)),
+            "the roll arrives: {total:?}"
+        );
 
         // Now fade it into a clip authored in place. Every frame of that fade must be zero -
         // exactly zero, because the idle covers no ground and the roll has none left to give.
@@ -1330,7 +1369,10 @@ mod root_motion {
         p.play(0, true, 1.0, 0.0);
         p.advance(&m, 100.0); // a hundred laps of a 2 m loop
         assert!(
-            close(p.root_delta(), Vec3::new(0.0, 0.0, 2.0 * MAX_PASSES_PER_UPDATE)),
+            close(
+                p.root_delta(),
+                Vec3::new(0.0, 0.0, 2.0 * MAX_PASSES_PER_UPDATE)
+            ),
             "a hitch pays at most {MAX_PASSES_PER_UPDATE} passes, got {:?}",
             p.root_delta()
         );
@@ -1342,7 +1384,10 @@ mod root_motion {
         q.play(0, true, -1.0, 0.0);
         q.advance(&m, 100.0);
         assert!(
-            close(q.root_delta(), Vec3::new(0.0, 0.0, -2.0 * MAX_PASSES_PER_UPDATE)),
+            close(
+                q.root_delta(),
+                Vec3::new(0.0, 0.0, -2.0 * MAX_PASSES_PER_UPDATE)
+            ),
             "backwards too, got {:?}",
             q.root_delta()
         );

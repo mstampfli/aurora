@@ -36,7 +36,9 @@ fn trunk() -> Skeleton {
 #[test]
 fn merging_into_an_empty_rig_takes_the_whole_part() {
     let mut rig = skel(vec![]);
-    let added = rig.merge(&trunk(), 1e-3).expect("first part defines the rig");
+    let added = rig
+        .merge(&trunk(), 1e-3)
+        .expect("first part defines the rig");
     assert_eq!(added, 3);
     assert_eq!(rig.joint_count(), 3);
 }
@@ -81,7 +83,10 @@ fn two_partial_parts_compose_into_the_full_rig() {
 
     assert_eq!(rig.joint_count(), 6, "root, spine, arm, finger, neck, head");
     for bone in ["root", "spine", "arm", "finger", "neck", "head"] {
-        assert!(rig.index_of(bone).is_some(), "{bone} missing from the union");
+        assert!(
+            rig.index_of(bone).is_some(),
+            "{bone} missing from the union"
+        );
     }
 }
 
@@ -140,7 +145,10 @@ fn a_part_from_another_body_is_refused() {
     let err = rig
         .merge(&stretched, 1e-3)
         .expect_err("a bone two units out of place must be refused");
-    assert!(err.contains("spine"), "the error should name the bone: {err}");
+    assert!(
+        err.contains("spine"),
+        "the error should name the bone: {err}"
+    );
 }
 
 /// Tolerance absorbs an exporter's rounding rather than rejecting on it.
@@ -170,7 +178,10 @@ fn a_measured_bind_matrix_beats_a_placeholder_either_way() {
     let mut real = trunk();
     real.joints[1].inverse_bind = measured;
     rig.merge(&real, 1e-3).unwrap();
-    assert_eq!(rig.joints[1].inverse_bind, measured, "placeholder must yield");
+    assert_eq!(
+        rig.joints[1].inverse_bind, measured,
+        "placeholder must yield"
+    );
 
     // Measurement first, placeholder second.
     let mut rig = skel(vec![]);
@@ -232,7 +243,9 @@ fn a_trunk_spelled_differently_is_the_same_trunk() {
     ]);
     shouty.joints[3].parent = Some(2);
 
-    let added = rig.merge(&shouty, 1e-3).expect("same rig, spelled differently");
+    let added = rig
+        .merge(&shouty, 1e-3)
+        .expect("same rig, spelled differently");
     assert_eq!(added, 1, "only `finger` is new - the trunk is the trunk");
     assert_eq!(rig.joint_count(), 4);
 

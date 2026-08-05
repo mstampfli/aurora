@@ -12,10 +12,10 @@
 //! **Never.** Never opens a window, owns an event loop, or reads input - it borrows a device and draws.
 
 mod anim;
+pub mod hud;
 mod mesh;
 mod render;
 mod scene;
-pub mod hud;
 pub use hud::HudOverlay;
 pub mod terrain;
 
@@ -56,7 +56,10 @@ mod yaw_rotate_tests {
     #[test]
     fn a_quarter_turn_takes_local_forward_onto_world_right() {
         let (x, z) = yaw_rotate(std::f32::consts::FRAC_PI_2, 0.0, 1.0);
-        assert!((x - 1.0).abs() < 1e-5, "local +Z should turn onto world +X, got x={x}");
+        assert!(
+            (x - 1.0).abs() < 1e-5,
+            "local +Z should turn onto world +X, got x={x}"
+        );
         assert!(z.abs() < 1e-5, "and leave nothing on Z, got z={z}");
     }
 

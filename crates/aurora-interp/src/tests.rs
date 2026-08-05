@@ -533,7 +533,9 @@ fn every_raster_builtin_has_an_interpreter_arm() {
     let mut missing: Vec<String> = Vec::new();
     let mut checked = 0;
     for name in aurora_abi::builtin_names() {
-        let Some(b) = aurora_abi::lookup(name) else { continue };
+        let Some(b) = aurora_abi::lookup(name) else {
+            continue;
+        };
         if b.kind != aurora_abi::Kind::Raster {
             continue;
         }
@@ -561,7 +563,10 @@ fn every_raster_builtin_has_an_interpreter_arm() {
             }
         }
     }
-    assert!(checked > 0, "no raster rows found - the table lookup is broken");
+    assert!(
+        checked > 0,
+        "no raster rows found - the table lookup is broken"
+    );
     // And the detector DETECTS. A test whose failure condition is a substring
     // match is worthless if the substring never appears - "a grep that finds
     // nothing is evidence about the pattern, not the world". So prove the shape

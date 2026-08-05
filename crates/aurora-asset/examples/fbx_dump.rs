@@ -36,7 +36,11 @@ fn main() {
             .map(|p| p.mesh.indices.len() / 3)
             .sum();
         let skinned = model.primitives.iter().filter(|p| p.skinned).count();
-        let textured = model.primitives.iter().filter(|p| p.texture.is_some()).count();
+        let textured = model
+            .primitives
+            .iter()
+            .filter(|p| p.texture.is_some())
+            .count();
         println!(
             "  primitives={}  verts={verts}  tris={tris}  skinned={skinned}  textured={textured}",
             model.primitives.len()
@@ -66,7 +70,11 @@ fn main() {
                 // The inverse-bind maps mesh space into bone space. Its scale
                 // therefore reveals whether the geometry shares the skeleton's
                 // units or is being rescaled implicitly during skinning.
-                for j in sk.joints.iter().filter(|j| j.inverse_bind != glam::Mat4::IDENTITY).take(3)
+                for j in sk
+                    .joints
+                    .iter()
+                    .filter(|j| j.inverse_bind != glam::Mat4::IDENTITY)
+                    .take(3)
                 {
                     let (s, _, t) = j.inverse_bind.to_scale_rotation_translation();
                     println!(

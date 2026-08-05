@@ -118,7 +118,6 @@ struct PointLightU {
     color_int: [f32; 4], // rgb color, w intensity
 }
 
-
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct ObjU {
@@ -1587,13 +1586,7 @@ impl Renderer3D {
         let base_v = self.slot_tex(device, queue, desc.base_tex, true, [255, 255, 255, 255]);
         let normal_v = self.slot_tex(device, queue, desc.normal_tex, false, [128, 128, 255, 255]);
         let mr_v = self.slot_tex(device, queue, desc.mr_tex, false, [255, 255, 255, 255]);
-        let em_v = self.slot_tex(
-            device,
-            queue,
-            desc.emissive_tex,
-            true,
-            [255, 255, 255, 255],
-        );
+        let em_v = self.slot_tex(device, queue, desc.emissive_tex, true, [255, 255, 255, 255]);
 
         let u = MatU {
             base_color: desc.base_color,
@@ -3015,10 +3008,13 @@ fn ssao_wgsl() -> &'static str {
     static SRC: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     SRC.get_or_init(|| {
         let mut s = String::new();
-        s.push_str(r#"
-"#);
+        s.push_str(
+            r#"
+"#,
+        );
         s.push_str(GLOBALS_WGSL);
-        s.push_str(r#"@group(0) @binding(0) var<uniform> g: Globals;
+        s.push_str(
+            r#"@group(0) @binding(0) var<uniform> g: Globals;
 @group(0) @binding(1) var src: texture_2d<f32>;
 @group(0) @binding(2) var samp: sampler;
 
@@ -3090,11 +3086,11 @@ fn fs_blur(in: FsOut) -> @location(0) vec4<f32> {
     let v = sum / 16.0;
     return vec4<f32>(v, v, v, 1.0);
 }
-"#);
+"#,
+        );
         s
     })
 }
-
 
 #[cfg(test)]
 mod frame_uniform_layout {
@@ -3152,10 +3148,12 @@ mod frame_uniform_layout {
         let mut at = 0usize;
         for (name, wty, _) in GLOBALS_FIELDS {
             let decl = format!("{name}: {wty},");
-            let found = GLOBALS_WGSL[at..]
-                .find(&decl)
-                .unwrap_or_else(|| panic!("`{decl}` missing from the generated WGSL, or out of order:
-{GLOBALS_WGSL}"));
+            let found = GLOBALS_WGSL[at..].find(&decl).unwrap_or_else(|| {
+                panic!(
+                    "`{decl}` missing from the generated WGSL, or out of order:
+{GLOBALS_WGSL}"
+                )
+            });
             at += found + decl.len();
         }
         assert!(

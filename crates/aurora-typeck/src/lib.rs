@@ -152,12 +152,7 @@ impl Typeck {
                     if let aurora_ast::StructBody::Named(fields) = &s.body {
                         let fs = fields
                             .iter()
-                            .map(|f| {
-                                (
-                                    f.name.name.clone(),
-                                    self.to_ty(&f.ty),
-                                )
-                            })
+                            .map(|f| (f.name.name.clone(), self.to_ty(&f.ty)))
                             .collect();
                         self.structs.insert(s.name.name.clone(), fs);
                         if !s.generics.is_empty() {
@@ -271,7 +266,10 @@ impl Typeck {
         self.diags.push(
             Diagnostic::error(format!("unknown type `{name}`"))
                 .with_code("E0315")
-                .primary(span, "no struct, component, enum, or builtin with this name"),
+                .primary(
+                    span,
+                    "no struct, component, enum, or builtin with this name",
+                ),
         );
     }
 
@@ -281,17 +279,11 @@ impl Typeck {
             .params
             .iter()
             .filter_map(|p| match p {
-                Param::Normal { ty, .. } => {
-                    Some(self.to_ty(ty))
-                }
+                Param::Normal { ty, .. } => Some(self.to_ty(ty)),
                 Param::SelfParam { .. } => None,
             })
             .collect();
-        let ret = f
-            .ret
-            .as_ref()
-            .map(|t| self.to_ty(t))
-            .unwrap_or(Ty::Unit);
+        let ret = f.ret.as_ref().map(|t| self.to_ty(t)).unwrap_or(Ty::Unit);
         self.scope_generics = prev;
         Ty::Fn(params, Box::new(ret))
     }
@@ -332,8 +324,7 @@ impl Typeck {
                     }
                 }
                 ItemKind::Impl(i) => {
-                    let prev =
-                        self.enter_generics(i.generics.iter().map(|g| g.name.name.clone()));
+                    let prev = self.enter_generics(i.generics.iter().map(|g| g.name.name.clone()));
                     for it in &i.items {
                         if let AssocItem::Fn(f) = it {
                             self.check_fn(f);
@@ -363,10 +354,7 @@ impl Typeck {
             }
         }
         // Make the declared return type available to `return expr` checks.
-        let declared_ret = f
-            .ret
-            .as_ref()
-            .map(|ret| self.to_ty(ret));
+        let declared_ret = f.ret.as_ref().map(|ret| self.to_ty(ret));
         let prev_ret = self.cur_ret.take();
         self.cur_ret = declared_ret.clone();
         let body_ty = self.check_block_no_scope(body);
@@ -445,9 +433,7 @@ impl Typeck {
     }
 
     fn check_let(&mut self, l: &aurora_ast::LetStmt) {
-        let declared =
-            l.ty.as_ref()
-                .map(|t| self.to_ty(t));
+        let declared = l.ty.as_ref().map(|t| self.to_ty(t));
         let init_ty = l.init.as_ref().map(|e| (e.span, self.infer(e)));
 
         let bind_ty = match (&declared, &init_ty) {

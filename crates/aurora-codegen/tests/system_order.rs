@@ -95,7 +95,11 @@ fn a_chain_orders_transitively_against_declaration_order() {
         sys("b", "after(c)", 2),
         sys("c", "", 3)
     ));
-    assert_eq!(order(src), 321, "the chain c -> b -> a must run in that order");
+    assert_eq!(
+        order(src),
+        321,
+        "the chain c -> b -> a must run in that order"
+    );
 }
 
 #[test]

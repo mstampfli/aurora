@@ -88,7 +88,10 @@ fn the_tick_rate_sets_the_step_and_rejects_nonsense() {
         // good rate in place.
         for bad in [0.0, -60.0, f64::NAN, 1e9] {
             aurora_set_tick_rate(bad);
-            assert!((aurora_tick_delta() - 1.0 / 120.0).abs() < 1e-12, "rate {bad} took effect");
+            assert!(
+                (aurora_tick_delta() - 1.0 / 120.0).abs() < 1e-12,
+                "rate {bad} took effect"
+            );
         }
     });
 }
@@ -97,7 +100,10 @@ fn the_tick_rate_sets_the_step_and_rejects_nonsense() {
 fn alpha_reports_the_position_between_ticks() {
     on_fresh_clock(|| {
         aurora_set_tick_rate(60.0);
-        assert!(aurora_tick_alpha().abs() < 1e-9, "a fresh clock is on a tick");
+        assert!(
+            aurora_tick_alpha().abs() < 1e-9,
+            "a fresh clock is on a tick"
+        );
 
         // Half a step of debt sits halfway to the next tick.
         tick(0.5 / 60.0);
@@ -109,7 +115,11 @@ fn alpha_reports_the_position_between_ticks() {
 
         // Paying the rest lands back on a tick.
         tick(0.5 / 60.0);
-        assert!(aurora_tick_alpha().abs() < 1e-6, "alpha {}", aurora_tick_alpha());
+        assert!(
+            aurora_tick_alpha().abs() < 1e-6,
+            "alpha {}",
+            aurora_tick_alpha()
+        );
     });
 }
 
@@ -127,7 +137,11 @@ fn two_threads_keep_separate_clocks() {
         aurora_tick_count()
     });
     assert!(a.join().unwrap() > 0);
-    assert_eq!(b.join().unwrap(), 0, "one thread's clock advanced another's");
+    assert_eq!(
+        b.join().unwrap(),
+        0,
+        "one thread's clock advanced another's"
+    );
 }
 
 static RAN: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);

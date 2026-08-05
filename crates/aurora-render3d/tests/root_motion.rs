@@ -70,7 +70,12 @@ fn the_distance_survives_the_retarget_onto_a_character() {
     };
     let before = character.clips.len();
     character
-        .add_clips_from(&format!("{}/{SWING}", dir.display()), &rest, &[("Hips", "Pelvis")], &["Pelvis"])
+        .add_clips_from(
+            &format!("{}/{SWING}", dir.display()),
+            &rest,
+            &[("Hips", "Pelvis")],
+            &["Pelvis"],
+        )
         .expect("clip library loads");
 
     let total = walk_the_clip(&character, before, false, 120);
@@ -91,14 +96,25 @@ const DT: f32 = 1.0 / 60.0;
 fn roll_and_idle() -> Option<(Model, usize, usize)> {
     let dir = aurora_fixtures::dir()?;
     let mut character = fixture("SK_Character_Male_King.fbx")?;
-    let rest = Model::load_skeleton(&format!("{}/PolygonSyntyCharacter.fbx", dir.display())).ok()?;
+    let rest =
+        Model::load_skeleton(&format!("{}/PolygonSyntyCharacter.fbx", dir.display())).ok()?;
     let roll = character.clips.len();
     character
-        .add_clips_from(&format!("{}/{ROLL}", dir.display()), &rest, &[("Hips", "Pelvis")], &["Pelvis"])
+        .add_clips_from(
+            &format!("{}/{ROLL}", dir.display()),
+            &rest,
+            &[("Hips", "Pelvis")],
+            &["Pelvis"],
+        )
         .expect("the roll loads");
     let idle = character.clips.len();
     character
-        .add_clips_from(&format!("{}/{IDLE}", dir.display()), &rest, &[("Hips", "Pelvis")], &["Pelvis"])
+        .add_clips_from(
+            &format!("{}/{IDLE}", dir.display()),
+            &rest,
+            &[("Hips", "Pelvis")],
+            &["Pelvis"],
+        )
         .expect("the idle loads");
     assert!(character.clips.len() > idle, "both clips must arrive");
     Some((character, roll, idle))
@@ -125,7 +141,10 @@ fn a_finished_roll_fabricates_no_distance_while_it_fades() {
     };
     let mut p = AnimPlayer::default();
     let travelled = play_out(&mut p, &m, roll, 0.0);
-    assert!(travelled.z > 0.5, "the roll must actually travel: {travelled:?}");
+    assert!(
+        travelled.z > 0.5,
+        "the roll must actually travel: {travelled:?}"
+    );
 
     // The idle covers no ground, and the roll has none left, so every frame of the
     // fade is worth exactly nothing. Before the fix this paid out 0.1734 m.
@@ -231,5 +250,8 @@ fn a_real_locomotion_loop_moves_the_character_nowhere() {
         return;
     };
     let total = walk_the_clip(&m, 0, true, 300);
-    assert!(total.length() < 0.01, "a walk cycle travels nowhere, got {total:?}");
+    assert!(
+        total.length() < 0.01,
+        "a walk cycle travels nowhere, got {total:?}"
+    );
 }

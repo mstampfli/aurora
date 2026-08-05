@@ -394,7 +394,11 @@ mod alpha_tests {
     #[test]
     fn a_fresh_framebuffer_is_transparent_not_opaque_black() {
         let fb = Framebuffer::new(4, 4);
-        assert_eq!(fb.get(0, 0).a, 0, "an untouched HUD pixel must not cover the scene");
+        assert_eq!(
+            fb.get(0, 0).a,
+            0,
+            "an untouched HUD pixel must not cover the scene"
+        );
     }
 
     #[test]
@@ -422,7 +426,10 @@ mod alpha_tests {
         fb.set(0, 1, Color::rgb(0, 0, 0));
         let px = fb.get(0, 1);
         assert_eq!((px.r, px.g, px.b), (0, 0, 0));
-        assert_eq!(px.a, 255, "black text must reach the screen, not be keyed out");
+        assert_eq!(
+            px.a, 255,
+            "black text must reach the screen, not be keyed out"
+        );
     }
 
     // The alpha has to SURVIVE to the GPU or none of the above matters; this is
@@ -472,7 +479,10 @@ mod shared_raster_semantics {
         fb.erase(Color::rgb(20, 30, 60));
         let px = fb.get(0, 0);
         assert_eq!((px.r, px.g, px.b), (20, 30, 60));
-        assert_eq!(px.a, 0, "clear must erase the HUD, not paint over the scene");
+        assert_eq!(
+            px.a, 0,
+            "clear must erase the HUD, not paint over the scene"
+        );
     }
 
     #[test]

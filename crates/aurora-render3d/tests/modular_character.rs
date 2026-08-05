@@ -1,4 +1,4 @@
-﻿//! A modular character, rendered.
+//! A modular character, rendered.
 //!
 //! The asset-side tests prove the numbers line up. This proves the pixels do:
 //! eleven separately authored parts, rebound onto one skeleton, drawn from a
@@ -193,7 +193,10 @@ fn a_character_plays_a_retargeted_sword_clip() {
         &device,
         &queue,
         &format!("{}/SK_Character_Male_King.fbx", dir.display()),
-        &[&format!("{}/A_Attack_LightCombo01A_RootMotion_Sword.fbx", dir.display())],
+        &[&format!(
+            "{}/A_Attack_LightCombo01A_RootMotion_Sword.fbx",
+            dir.display()
+        )],
         &format!("{}/PolygonSyntyCharacter.fbx", dir.display()),
         SYNTY_MAP,
         &["Pelvis"],
@@ -232,7 +235,10 @@ fn a_character_plays_a_retargeted_sword_clip() {
                 .joint_global_mat(hero, j)
                 .map(|m| m.w_axis.truncate())
                 .unwrap_or(Vec3::ZERO);
-            println!("step {step} {bone}: idx={j} pos=({:.3},{:.3},{:.3})", p.x, p.y, p.z);
+            println!(
+                "step {step} {bone}: idx={j} pos=({:.3},{:.3},{:.3})",
+                p.x, p.y, p.z
+            );
         }
         scene.begin();
         scene.draw(hero, glam::Mat4::IDENTITY);
@@ -243,7 +249,10 @@ fn a_character_plays_a_retargeted_sword_clip() {
         }
         let mask: Vec<bool> = img.chunks_exact(4).map(|p| !is_background(p)).collect();
         let drawn = mask.iter().filter(|b| **b).count();
-        assert!(drawn > 2000, "frame {step} drew only {drawn} character pixels");
+        assert!(
+            drawn > 2000,
+            "frame {step} drew only {drawn} character pixels"
+        );
 
         // The character stays on its feet.
         //

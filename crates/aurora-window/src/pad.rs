@@ -480,10 +480,13 @@ pub fn poll() {
             // is exactly what they are - `LeftTrigger2` is the pull, and the
             // bumper above is `LeftTrigger`. Reading the wrong one of that pair
             // gives a trigger that is only ever 0 or 1.
-            pad.axes[AXIS_LEFT_TRIGGER] =
-                trigger_deadzone(g.button_data(Button::LeftTrigger2).map_or(0.0, |d| d.value()) as f64);
+            pad.axes[AXIS_LEFT_TRIGGER] = trigger_deadzone(
+                g.button_data(Button::LeftTrigger2)
+                    .map_or(0.0, |d| d.value()) as f64,
+            );
             pad.axes[AXIS_RIGHT_TRIGGER] = trigger_deadzone(
-                g.button_data(Button::RightTrigger2).map_or(0.0, |d| d.value()) as f64,
+                g.button_data(Button::RightTrigger2)
+                    .map_or(0.0, |d| d.value()) as f64,
             );
             out[i] = Some(pad);
         }
@@ -524,7 +527,10 @@ mod tests {
     #[test]
     fn a_slow_diagonal_survives_the_deadzone() {
         let (x, y) = stick_deadzone(0.22, 0.22);
-        assert!(x > 0.0 && y > 0.0, "a diagonal push at 0.31 magnitude was eaten");
+        assert!(
+            x > 0.0 && y > 0.0,
+            "a diagonal push at 0.31 magnitude was eaten"
+        );
         assert!((x - y).abs() < 1e-9, "the diagonal was bent off 45 degrees");
     }
 
@@ -569,7 +575,10 @@ mod tests {
         assert!(!button(0, BTN_SOUTH));
         inject_disconnect(0);
         assert!(!connected(0));
-        assert!(!button(0, BTN_SOUTH), "a disconnected pad still holds a button");
+        assert!(
+            !button(0, BTN_SOUTH),
+            "a disconnected pad still holds a button"
+        );
     }
 
     // Out-of-range indexes answer "nothing" rather than panicking: an input

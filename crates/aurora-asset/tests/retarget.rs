@@ -127,7 +127,11 @@ fn every_mapped_bone_gets_a_track_addressed_to_the_target() {
         assert!(driven.contains(&i), "{name} has no track");
     }
     for c in &out.channels {
-        assert!(c.joint < t.joints.len(), "track addresses joint {}", c.joint);
+        assert!(
+            c.joint < t.joints.len(),
+            "track addresses joint {}",
+            c.joint
+        );
     }
 }
 
@@ -227,7 +231,11 @@ fn a_decorated_source_rig_still_lands_every_channel() {
     // decoration must make no difference at all, not merely fail to error.
     let plain = run(&clip, &[]).expect("retargets");
     let driven: std::collections::HashSet<usize> = out.channels.iter().map(|c| c.joint).collect();
-    assert_eq!(driven.len(), 2, "both decorated bones must map onto the target");
+    assert_eq!(
+        driven.len(),
+        2,
+        "both decorated bones must map onto the target"
+    );
     for time in [0.0, 0.5, 1.0] {
         let (_, want, _) = t.sample(Some(&plain), time);
         let (_, got, _) = t.sample(Some(&out), time);
@@ -318,13 +326,19 @@ fn root_motion_survives_the_move_between_rigs() {
         (travel.z - 3.0).abs() < 1e-4,
         "expected the authored 3.0, got {travel:?}"
     );
-    assert!(travel.x.abs() < 1e-6 && travel.y.abs() < 1e-6, "only forward: {travel:?}");
+    assert!(
+        travel.x.abs() < 1e-6 && travel.y.abs() < 1e-6,
+        "only forward: {travel:?}"
+    );
 }
 
 #[test]
 fn a_clip_authored_in_place_gains_no_travel() {
     let out = run(&rotate_clip(0, 0.5), &[]).expect("retargets");
-    assert!(out.root.is_none(), "a clip that does not travel must not start");
+    assert!(
+        out.root.is_none(),
+        "a clip that does not travel must not start"
+    );
     assert_eq!(out.root_pass(), Vec3::ZERO);
     assert_eq!(out.root_pos(0.5), Vec3::ZERO);
 }
@@ -335,7 +349,10 @@ fn a_clip_authored_in_place_gains_no_travel() {
 fn travel_is_independent_of_the_translate_whitelist() {
     for names in [&[][..], &["Pelvis"][..]] {
         let out = run(&travelling_clip(), names).expect("retargets");
-        assert!((out.root_pass().z - 3.0).abs() < 1e-4, "travel lost with {names:?}");
+        assert!(
+            (out.root_pass().z - 3.0).abs() < 1e-4,
+            "travel lost with {names:?}"
+        );
     }
 }
 

@@ -1,4 +1,4 @@
-﻿//! Generic multiplayer framework for games built in Aurora. The engine owns the
+//! Generic multiplayer framework for games built in Aurora. The engine owns the
 //! reusable machinery - UDP transport, an authoritative server, client-side
 //! prediction + reconciliation, snapshot interpolation, lag compensation,
 //! interest management, and delta compression - but it does NOT contain any
@@ -763,7 +763,9 @@ impl Session {
             // The host's own swing resolves against the live world: it IS the
             // authority, and its game applies that damage locally, so nothing is
             // enqueued for it.
-            let hits = self.lag.melee_at_tick(o, f, reach, arc, self.server_tick, 0);
+            let hits = self
+                .lag
+                .melee_at_tick(o, f, reach, arc, self.server_tick, 0);
             self.last_hit = match hits.first() {
                 Some(h) => (h.entity as i64, contact_point(o, f, h.distance)),
                 None => (-1, [0.0; 3]),

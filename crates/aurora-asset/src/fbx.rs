@@ -59,8 +59,8 @@ pub fn load(path: &str) -> Result<Model, String> {
         generate_missing_normals: true,
         ..Default::default()
     };
-    let root = ufbx::load_file(path, opts)
-        .map_err(|e| format!("load fbx {path}: {}", &*e.description))?;
+    let root =
+        ufbx::load_file(path, opts).map_err(|e| format!("load fbx {path}: {}", &*e.description))?;
     let scene: &ufbx::Scene = &root;
     let dir = FsPath::new(path).parent().unwrap_or(FsPath::new("."));
 
@@ -189,7 +189,8 @@ fn build_skeleton(scene: &ufbx::Scene) -> (Option<Skeleton>, JointIndex) {
             // chain has already been converted to.
             if let (Some(bind), Some(parent)) = (bind_of[i], parent_of[i]) {
                 if let Some(parent_bind) = bind_of[parent] {
-                    let (ls, lr, lt) = (parent_bind * bind.inverse()).to_scale_rotation_translation();
+                    let (ls, lr, lt) =
+                        (parent_bind * bind.inverse()).to_scale_rotation_translation();
                     t = lt;
                     r = lr;
                     s = ls;
@@ -250,7 +251,8 @@ fn build_primitives(scene: &ufbx::Scene, joint_of: &JointIndex, dir: &FsPath) ->
         // file places it. Skinned geometry must stay in its own space, because
         // the bind matrices above are expressed relative to exactly that space.
         let to_world = matrix(&node.geometry_to_world);
-        let normal_to_world = Mat4::from_mat3(glam::Mat3::from_mat4(to_world).inverse().transpose());
+        let normal_to_world =
+            Mat4::from_mat3(glam::Mat3::from_mat4(to_world).inverse().transpose());
 
         let bucket_count = mesh.materials.count.max(1);
         let mut buckets = vec![MeshData::default(); bucket_count];
@@ -283,7 +285,15 @@ fn build_primitives(scene: &ufbx::Scene, joint_of: &JointIndex, dir: &FsPath) ->
                 let index = match dedup[bucket].get(&key) {
                     Some(&i) => i,
                     None => {
-                        let v = make_vertex(mesh, ci, skin, joint_of, skinned, to_world, normal_to_world);
+                        let v = make_vertex(
+                            mesh,
+                            ci,
+                            skin,
+                            joint_of,
+                            skinned,
+                            to_world,
+                            normal_to_world,
+                        );
                         buckets[bucket].vertices.push(v);
                         dedup[bucket].insert(key, next);
                         next
@@ -305,7 +315,9 @@ fn build_primitives(scene: &ufbx::Scene, joint_of: &JointIndex, dir: &FsPath) ->
             let (base_color, texture) = material_of(material, dir);
             out.push(Primitive {
                 mesh: data,
-                material: material.map(|m| m.element.name.to_string()).unwrap_or_default(),
+                material: material
+                    .map(|m| m.element.name.to_string())
+                    .unwrap_or_default(),
                 base_color,
                 metallic: 0.0,
                 roughness: 0.9,
@@ -351,7 +363,10 @@ fn make_vertex(
     } else {
         (
             to_world.transform_point3(p).into(),
-            normal_to_world.transform_vector3(n).normalize_or_zero().into(),
+            normal_to_world
+                .transform_vector3(n)
+                .normalize_or_zero()
+                .into(),
         )
     };
 
@@ -442,7 +457,10 @@ fn build_clips(scene: &ufbx::Scene, joint_of: &JointIndex) -> Vec<Clip> {
 
             push(
                 Path::Translation,
-                node.translation_keys.iter().map(|k| k.time as f32).collect(),
+                node.translation_keys
+                    .iter()
+                    .map(|k| k.time as f32)
+                    .collect(),
                 node.translation_keys
                     .iter()
                     .flat_map(|k| [k.value.x as f32, k.value.y as f32, k.value.z as f32])

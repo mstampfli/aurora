@@ -496,6 +496,10 @@ fn transcendental_rows_are_exactly_the_libm_calls() {
     for n in expected {
         let b = lookup(n).expect("declared above");
         let want_args = if n == "pow" || n == "atan2" { 2 } else { 1 };
-        assert_eq!(b.params.len(), want_args, "`{n}` takes {want_args} argument(s)");
+        assert_eq!(
+            b.params.len(),
+            want_args,
+            "`{n}` takes {want_args} argument(s)"
+        );
     }
 }

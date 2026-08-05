@@ -97,7 +97,8 @@ fn a_cross_module_call_checks_its_arity() {
 fn a_cross_module_call_checks_its_argument_types() {
     let errs = errors(SIBLINGS);
     assert!(
-        errs.iter().any(|e| e.contains("type mismatch in function argument")),
+        errs.iter()
+            .any(|e| e.contains("type mismatch in function argument")),
         "an i64 passed where another module wanted a struct went unreported; \
          got: {errs:?}"
     );
@@ -131,7 +132,10 @@ fn correct_cross_module_calls_are_accepted() {
     // Exactly one arity error and one type error, both deliberate. More than
     // that means the new check is firing on something correct.
     let errs = errors(SIBLINGS);
-    let arity = errs.iter().filter(|e| e.contains("argument(s), found")).count();
+    let arity = errs
+        .iter()
+        .filter(|e| e.contains("argument(s), found"))
+        .count();
     let types = errs
         .iter()
         .filter(|e| e.contains("type mismatch in function argument"))
@@ -144,10 +148,11 @@ fn correct_cross_module_calls_are_accepted() {
 fn an_enum_variant_is_not_mistaken_for_a_call() {
     // `Opt::Some(1)` is a two-segment callee that is not a function. It must not
     // be arity-checked against nothing and reported.
-    let errs = errors(
-        "enum Opt { Some(i64), None }\nfn main() { let x = Opt::Some(1) }",
+    let errs = errors("enum Opt { Some(i64), None }\nfn main() { let x = Opt::Some(1) }");
+    assert!(
+        errs.is_empty(),
+        "enum variant construction was rejected: {errs:?}"
     );
-    assert!(errs.is_empty(), "enum variant construction was rejected: {errs:?}");
 }
 
 /// A value derived from a BUILTIN call carries the builtin's return type.

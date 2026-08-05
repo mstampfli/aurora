@@ -75,10 +75,7 @@ fn self_parented_joint_terminates_instead_of_recursing() {
 #[test]
 fn mutual_parent_cycle_terminates() {
     let skel = Skeleton {
-        joints: vec![
-            joint("a", Some(1), Vec3::Y),
-            joint("b", Some(0), Vec3::Y),
-        ],
+        joints: vec![joint("a", Some(1), Vec3::Y), joint("b", Some(0), Vec3::Y)],
     };
     let g = skel.rest_globals();
     assert_eq!(g.len(), 2);
@@ -187,12 +184,25 @@ fn a_channel_with_no_keys_leaves_the_joint_at_its_rest_transform() {
         // of a key, are both "no complete key" - a truncated track is a hole too.
         let need = if path == Path::Rotation { 4 } else { 3 };
         for values in [Vec::new(), vec![0.0f32; need - 1]] {
-            let times = if values.is_empty() { Vec::new() } else { vec![0.0] };
+            let times = if values.is_empty() {
+                Vec::new()
+            } else {
+                vec![0.0]
+            };
             let clip = keyless(path, times, values);
             let (t, r, s) = skel.sample(Some(&clip), 0.5);
-            assert_eq!(s[1], skel.joints[1].s, "{path:?} collapsed the joint's scale");
-            assert_eq!(t[1], skel.joints[1].t, "{path:?} moved the joint off its rest");
-            assert_eq!(r[1], skel.joints[1].r, "{path:?} lost the joint's rest orientation");
+            assert_eq!(
+                s[1], skel.joints[1].s,
+                "{path:?} collapsed the joint's scale"
+            );
+            assert_eq!(
+                t[1], skel.joints[1].t,
+                "{path:?} moved the joint off its rest"
+            );
+            assert_eq!(
+                r[1], skel.joints[1].r,
+                "{path:?} lost the joint's rest orientation"
+            );
         }
     }
 }
@@ -316,7 +326,10 @@ fn a_skinned_vertex_naming_a_missing_joint_does_not_panic() {
 
 #[test]
 fn a_skinned_model_with_no_skeleton_falls_back_to_raw_positions() {
-    let m = model_with(vec![primitive(vec![vertex_at([0.0, 9.0, 0.0])], true)], None);
+    let m = model_with(
+        vec![primitive(vec![vertex_at([0.0, 9.0, 0.0])], true)],
+        None,
+    );
     assert_eq!(m.bind_pose_bounds()[4], 9.0);
 }
 
@@ -352,7 +365,11 @@ fn rooted_rig() -> Skeleton {
 #[test]
 fn the_motion_root_is_the_bone_the_body_hangs_off() {
     let skel = rooted_rig();
-    assert_eq!(skel.motion_root(), Some(0), "Root carries the body; ik_foot_root does not");
+    assert_eq!(
+        skel.motion_root(),
+        Some(0),
+        "Root carries the body; ik_foot_root does not"
+    );
 }
 
 /// A hips-rooted rig (Mixamo, most glTF characters) has no bone whose motion is

@@ -1,4 +1,4 @@
-﻿//! FBX import against real source art.
+//! FBX import against real source art.
 //!
 //! These need licensed pack files that cannot live in the repository, so they
 //! read a directory from `AURORA_TEST_FBX_DIR` and skip when it is absent. They
@@ -56,7 +56,11 @@ fn a_skinned_character_bind_poses_to_human_scale() {
     // two measurements must stay far apart. If they ever converge, someone has
     // started baking skinned geometry and bind_pose_bounds is now a no-op.
     let raw = m.primitives[0].mesh.bounds();
-    assert!(raw[4] > 100.0, "raw bounds should be bind space, got {}", raw[4]);
+    assert!(
+        raw[4] > 100.0,
+        "raw bounds should be bind space, got {}",
+        raw[4]
+    );
 }
 
 /// A part skinned to a subset of the shared skeleton lands where that part
@@ -65,8 +69,16 @@ fn a_skinned_character_bind_poses_to_human_scale() {
 fn a_modular_part_sits_where_it_belongs_on_the_body() {
     let m = model!("SK_Chr_Head_Male_00.fbx");
     let b = m.bind_pose_bounds();
-    assert!(b[1] > 1.3, "a head should not reach below y 1.3, got {}", b[1]);
-    assert!(b[4] < 1.9, "a head should not reach above y 1.9, got {}", b[4]);
+    assert!(
+        b[1] > 1.3,
+        "a head should not reach below y 1.3, got {}",
+        b[1]
+    );
+    assert!(
+        b[4] < 1.9,
+        "a head should not reach above y 1.9, got {}",
+        b[4]
+    );
 
     let skel = m.skeleton.expect("modular part carries a skeleton");
     assert!(skel.joints.len() < 20, "a part carries only its own chain");
@@ -102,8 +114,16 @@ fn a_clip_with_no_geometry_imports_as_animation() {
 
     let clip = m.clips.first().expect("clip file carries a clip");
     // 24 frames at 30fps, matching the source.
-    assert!((clip.duration - 0.8).abs() < 0.02, "duration {}", clip.duration);
-    assert!(clip.channels.len() > 100, "channels {}", clip.channels.len());
+    assert!(
+        (clip.duration - 0.8).abs() < 0.02,
+        "duration {}",
+        clip.duration
+    );
+    assert!(
+        clip.channels.len() > 100,
+        "channels {}",
+        clip.channels.len()
+    );
 }
 
 /// The distance a `_RootMotion_` clip is authored to cover arrives as root
@@ -128,7 +148,11 @@ fn a_root_motion_clip_carries_its_travel_off_the_pose() {
     // Halfway through is partway along, not all of it: this is a track over
     // time, not one number.
     let half = clip.root_pos(clip.duration * 0.5).z;
-    assert!(half > 0.05 && half < travel.z, "halfway is {half} of {}", travel.z);
+    assert!(
+        half > 0.05 && half < travel.z,
+        "halfway is {half} of {}",
+        travel.z
+    );
 
     // And the body itself stays where it stands: the hip bobs and leans, it does
     // not cover the ground.
@@ -142,7 +166,10 @@ fn a_root_motion_clip_carries_its_travel_off_the_pose() {
         let p = at(clip.duration * step as f32 / 8.0) - at(0.0);
         drift = drift.max(p.length());
     }
-    assert!(drift < 0.3, "the pose should animate in place, but the hip moved {drift} m");
+    assert!(
+        drift < 0.3,
+        "the pose should animate in place, but the hip moved {drift} m"
+    );
     assert!(
         !clip
             .channels
@@ -328,13 +355,20 @@ fn a_sword_clip_retargets_onto_a_character() {
     let dir = aurora_fixtures::dir().expect("fixtures required here");
 
     let owned = synty_bone_map();
-    let map: Vec<(&str, &str)> = owned.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+    let map: Vec<(&str, &str)> = owned
+        .iter()
+        .map(|(a, b)| (a.as_str(), b.as_str()))
+        .collect();
 
     let before = character.clips.len();
     let added = character
         .add_clips_from(
-            &format!("{}/A_Attack_LightCombo01A_RootMotion_Sword.fbx", dir.display()),
-            &Model::load_skeleton(&format!("{}/PolygonSyntyCharacter.fbx", dir.display())).expect("reference rig"),
+            &format!(
+                "{}/A_Attack_LightCombo01A_RootMotion_Sword.fbx",
+                dir.display()
+            ),
+            &Model::load_skeleton(&format!("{}/PolygonSyntyCharacter.fbx", dir.display()))
+                .expect("reference rig"),
             &map,
             &["Pelvis"],
         )
@@ -360,8 +394,16 @@ fn a_sword_clip_retargets_onto_a_character() {
     {
         use aurora_asset::model::Path as P;
         let n = |p: P| clip.channels.iter().filter(|c| c.path == p).count();
-        assert!(n(P::Rotation) >= 40, "only {} rotation tracks", n(P::Rotation));
-        assert_eq!(n(P::Translation), 1, "the hips' bob should be the only translation");
+        assert!(
+            n(P::Rotation) >= 40,
+            "only {} rotation tracks",
+            n(P::Rotation)
+        );
+        assert_eq!(
+            n(P::Translation),
+            1,
+            "the hips' bob should be the only translation"
+        );
         assert_eq!(n(P::Scale), 0, "scale must never transfer");
     }
 

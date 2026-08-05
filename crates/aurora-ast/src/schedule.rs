@@ -1,4 +1,4 @@
-﻿//! Parallel system scheduling (grammar spec Â§6.2).
+//! Parallel system scheduling (grammar spec Â§6.2).
 //!
 //! Groups a module's `system`s into ordered *layers* of mutually-independent
 //! systems that may execute concurrently. Everything else commutes, so fusing it

@@ -50,10 +50,17 @@ fn main() {
         scene.set_material_texture("ModularFantasyHeroCharacters", atlas);
     }
 
-    let host = scene.load_model(&device, &queue, &format!("{dir}/SK_Character_Male_King.fbx"));
+    let host = scene.load_model(
+        &device,
+        &queue,
+        &format!("{dir}/SK_Character_Male_King.fbx"),
+    );
     assert!(host >= 0, "host failed to load");
 
-    println!("{:<16} {:>7} {:>7} {:>8}  brightest pixel", "slot", "pixels", "bright", "bright%");
+    println!(
+        "{:<16} {:>7} {:>7} {:>8}  brightest pixel",
+        "slot", "pixels", "bright", "bright%"
+    );
     for slot in SLOTS {
         let part = scene.load_part(
             &device,
@@ -116,7 +123,10 @@ fn main() {
     let body: Vec<&[u8]> = img.chunks_exact(4).filter(|p| !is_background(p)).collect();
     let mean: u32 = body.iter().map(|p| lum(p)).sum::<u32>() / body.len().max(1) as u32;
     let cut = mean + 90;
-    println!("\nassembled: {} pixels, mean luminance {mean}, flagging above {cut}", body.len());
+    println!(
+        "\nassembled: {} pixels, mean luminance {mean}, flagging above {cut}",
+        body.len()
+    );
 
     let mut flagged = Vec::new();
     for y in 0..h {

@@ -25,9 +25,21 @@ fn target() -> Skeleton {
     Skeleton {
         joints: vec![
             joint("Pelvis", None, Mat4::IDENTITY),
-            joint("spine_01", Some(0), Mat4::from_translation(Vec3::new(0.0, -1.0, 0.0))),
-            joint("head", Some(1), Mat4::from_translation(Vec3::new(0.0, -2.0, 0.0))),
-            joint("Hand_L", Some(1), Mat4::from_translation(Vec3::new(-1.0, -1.5, 0.0))),
+            joint(
+                "spine_01",
+                Some(0),
+                Mat4::from_translation(Vec3::new(0.0, -1.0, 0.0)),
+            ),
+            joint(
+                "head",
+                Some(1),
+                Mat4::from_translation(Vec3::new(0.0, -2.0, 0.0)),
+            ),
+            joint(
+                "Hand_L",
+                Some(1),
+                Mat4::from_translation(Vec3::new(-1.0, -1.5, 0.0)),
+            ),
         ],
     }
 }
@@ -37,8 +49,16 @@ fn target() -> Skeleton {
 fn part() -> Model {
     let skeleton = Skeleton {
         joints: vec![
-            joint("head", Some(1), Mat4::from_translation(Vec3::new(0.0, -2.0, 0.0))),
-            joint("spine_01", None, Mat4::from_translation(Vec3::new(0.0, -1.0, 0.0))),
+            joint(
+                "head",
+                Some(1),
+                Mat4::from_translation(Vec3::new(0.0, -2.0, 0.0)),
+            ),
+            joint(
+                "spine_01",
+                None,
+                Mat4::from_translation(Vec3::new(0.0, -1.0, 0.0)),
+            ),
         ],
     };
     let mut a = Vertex::new([0.0, 2.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0]);
@@ -133,11 +153,21 @@ fn a_rejected_rebind_leaves_the_model_untouched() {
     // cannot leave a half-renumbered mesh behind.
     let mut m = part();
     m.skeleton.as_mut().unwrap().joints[0].name = "tail_01".into();
-    let before: Vec<[u32; 4]> = m.primitives[0].mesh.vertices.iter().map(|v| v.joints).collect();
+    let before: Vec<[u32; 4]> = m.primitives[0]
+        .mesh
+        .vertices
+        .iter()
+        .map(|v| v.joints)
+        .collect();
 
     assert!(m.rebind_skin(&target(), 1e-5).is_err());
 
-    let after: Vec<[u32; 4]> = m.primitives[0].mesh.vertices.iter().map(|v| v.joints).collect();
+    let after: Vec<[u32; 4]> = m.primitives[0]
+        .mesh
+        .vertices
+        .iter()
+        .map(|v| v.joints)
+        .collect();
     assert_eq!(before, after);
     assert_eq!(m.skeleton.as_ref().unwrap().joints.len(), 2);
 }
@@ -202,12 +232,24 @@ fn a_model_with_no_skeleton_cannot_be_rebound() {
 fn static_geometry_in_a_part_is_left_alone() {
     let mut m = part();
     m.primitives[0].skinned = false;
-    let before: Vec<[u32; 4]> = m.primitives[0].mesh.vertices.iter().map(|v| v.joints).collect();
+    let before: Vec<[u32; 4]> = m.primitives[0]
+        .mesh
+        .vertices
+        .iter()
+        .map(|v| v.joints)
+        .collect();
 
-    let rewritten = m.rebind_skin(&target(), 1e-5).expect("still adopts the skeleton");
+    let rewritten = m
+        .rebind_skin(&target(), 1e-5)
+        .expect("still adopts the skeleton");
     assert_eq!(rewritten, 0);
 
-    let after: Vec<[u32; 4]> = m.primitives[0].mesh.vertices.iter().map(|v| v.joints).collect();
+    let after: Vec<[u32; 4]> = m.primitives[0]
+        .mesh
+        .vertices
+        .iter()
+        .map(|v| v.joints)
+        .collect();
     assert_eq!(before, after);
 }
 

@@ -2554,8 +2554,8 @@ fn tr_expr(
                 continue_to: header,
                 break_to: exit,
                 cont_used: std::rc::Rc::new(std::cell::Cell::new(false)),
-        query_depth: l.query_depth,
-        is_query: false,
+                query_depth: l.query_depth,
+                is_query: false,
             });
             let term = tr_block(m, b, l, env, body)?;
             l.loops.pop();
@@ -2578,8 +2578,8 @@ fn tr_expr(
                 continue_to: header,
                 break_to: exit,
                 cont_used: std::rc::Rc::new(std::cell::Cell::new(false)),
-        query_depth: l.query_depth,
-        is_query: false,
+                query_depth: l.query_depth,
+                is_query: false,
             });
             let term = tr_block(m, b, l, env, body)?;
             l.loops.pop();

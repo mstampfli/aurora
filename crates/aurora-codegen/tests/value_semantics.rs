@@ -237,7 +237,10 @@ fn self_is_a_reference() -> i64 {
 fn call(f: &'static str) -> i64 {
     std::thread::spawn(move || {
         let (module, diags) = parse_str(SRC);
-        assert!(!diags.iter().any(|d| d.is_error()), "parse failed: {diags:?}");
+        assert!(
+            !diags.iter().any(|d| d.is_error()),
+            "parse failed: {diags:?}"
+        );
         let jit = aurora_codegen::build(&module).expect("must compile natively");
         jit.call_i64(f, &[]).expect("run")
     })
