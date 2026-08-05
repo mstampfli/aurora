@@ -173,12 +173,22 @@ impl AnimPlayer {
         // `posed`: there is nothing to fade out of before the first state is declared. See the
         // field's comment - fading from the defaults means fading from clip 0's rest pose.
         if fade > 0.0001 && self.posed {
+            // Crossfade out of what the base layer is SHOWING.
+            //
             // Captured before `looping`/`speed` below are overwritten with the INCOMING clip's,
             // and in one group so the four cannot be captured apart.
-            self.prev_clip = self.clip;
-            self.prev_time = self.time;
-            self.prev_looping = self.looping;
-            self.prev_speed = self.base_speed();
+            //
+            // Through `base_dominant`, because when the base is a sustained blend the pose on
+            // screen is a composed one and `self.clip` is only its FIRST half. Leaving a sprint
+            // for a swing faded out of the WALK clip - the other half of the pair, at a different
+            // phase - so the transition started by snapping to a pose the body was not in.
+            // `blend` and `play_upper` both already took the dominant half; this was the third
+            // site and it answered the question its own way.
+            let (c, t, looping, spd) = self.base_dominant();
+            self.prev_clip = c;
+            self.prev_time = t;
+            self.prev_looping = looping;
+            self.prev_speed = spd;
             self.blend = 0.0;
             self.blend_rate = 1.0 / fade;
         } else {
@@ -916,6 +926,34 @@ fn resolve_global(
 #[cfg(test)]
 mod play_is_idempotent {
     use super::*;
+    use crate::model::{Joint, Model};
+
+    /// Two looping clips of a second each, which is all a fade-source test needs:
+    /// `blend` only reads durations through `reclocked`, and nothing here swaps
+    /// a pair.
+    fn two_clip_model() -> Model {
+        Model {
+            primitives: Vec::new(),
+            skeleton: Some(Skeleton {
+                joints: vec![Joint {
+                    parent: None,
+                    inverse_bind: Mat4::IDENTITY,
+                    t: Vec3::ZERO,
+                    r: Quat::IDENTITY,
+                    s: Vec3::ONE,
+                    name: "Root".into(),
+                }],
+            }),
+            clips: (0..3)
+                .map(|i| crate::model::Clip {
+                    name: format!("clip{i}"),
+                    duration: 1.0,
+                    channels: Vec::new(),
+                    root: None,
+                })
+                .collect(),
+        }
+    }
 
     // The bug this pins: `play` restarted unconditionally, so a frame loop that
     // said "the character is idle" every frame re-seeded the clock every frame.
@@ -965,6 +1003,39 @@ mod play_is_idempotent {
         p.time = 0.4;
         p.play(3, false, 1.0, 0.0);
         assert_eq!(p.time, 0.0);
+    }
+
+    // Leaving a sustained blend fades out of the half that is actually SHOWING.
+    //
+    // A sprint is `blend(walk, run, weight ~1)`, where `clip` is the walk and
+    // `bclip2` is the run. Swinging out of a sprint used to capture `clip` as
+    // the fade source, so the transition crossfaded from a walk pose the body
+    // had not been in for as long as the player had been sprinting - it snapped
+    // to the walk, then faded from there.
+    #[test]
+    fn leaving_a_blend_fades_from_the_half_on_screen() {
+        let m = two_clip_model();
+        let mut p = AnimPlayer::default();
+
+        // Sprinting: the run half dominates.
+        p.blend(&m, 0, 1, 1.0, 1.0, 0.0);
+        p.btime2 = 0.3;
+        p.time = 0.7;
+        p.restart(2, false, 1.0, 0.1);
+        assert_eq!(
+            p.prev_clip, 1,
+            "the fade source must be the RUN - the half at weight 1 - not the walk"
+        );
+        assert_eq!(p.prev_time, 0.3, "and at the run's own phase");
+
+        // Walking: the first half dominates, and that one was always right.
+        let mut q = AnimPlayer::default();
+        q.blend(&m, 0, 1, 0.0, 1.0, 0.0);
+        q.time = 0.5;
+        q.btime2 = 0.2;
+        q.restart(2, false, 1.0, 0.1);
+        assert_eq!(q.prev_clip, 0);
+        assert_eq!(q.prev_time, 0.5);
     }
 
     // And the deliberate replay still works - the combo case.
