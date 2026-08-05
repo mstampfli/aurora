@@ -692,6 +692,12 @@ pub unsafe extern "C" fn aurora_load_ppm(ptr: *const u8, len: i64) -> i64 {
 /// image), decoded to RGBA via the `image` crate. Returns 1 on success, 0 on
 /// failure. Backs the `load_image` builtin - the asset pipeline beyond PPM.
 ///
+/// REPLACES THE FRAMEBUFFER, and the framebuffer is also the HUD layer that
+/// `r3d_capture` composites over the 3D frame. Loading a full-screen image and
+/// then capturing therefore photographs the loaded image, not the scene. To read
+/// an image back in order to MEASURE it, use `image_open` and friends below,
+/// which hold their pixels off to one side and touch no drawing state.
+///
 /// # Safety
 /// `ptr` must point to `len` initialized bytes.
 #[no_mangle]
@@ -711,6 +717,193 @@ pub unsafe extern "C" fn aurora_load_image(ptr: *const u8, len: i64) -> i64 {
         }
         Err(_) => 0,
     }
+}
+
+// --- images as values, for MEASURING what was rendered ----------------------
+//
+// The framebuffer is a place you draw. These are images you ask questions about.
+// Keeping them apart is the whole point: `load_image` is the only way to read a
+// PNG back today, and it does so by REPLACING the framebuffer - which is also
+// the HUD layer `r3d_capture` composites. So a program that photographed a frame
+// and then measured it destroyed the layer the next frame drew through, and the
+// next capture came out as the image that had been loaded to measure. Silently,
+// with `r3d_capture` still answering success.
+//
+// A renderer that cannot be asked what it drew can only be checked by a human
+// looking at a file, which is why capture scripts tend to assert nothing. These
+// are the primitives that let a check make a claim about pixels.
+//
+// Handles are indices into a push-only table, like sounds. Every accessor
+// answers a NEGATIVE number for a bad handle or an out-of-range region rather
+// than a plausible one - a black pixel and "no such image" must not be the same
+// answer, or a check reads zero and calls it a dark frame.
+
+thread_local! {
+    static IMAGES: RefCell<Vec<image::RgbaImage>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Read the pixels of `img` for `f`, or `None` if the handle is not live.
+fn with_image<T>(img: i64, f: impl FnOnce(&image::RgbaImage) -> T) -> Option<T> {
+    IMAGES.with(|s| {
+        let v = s.borrow();
+        let i = usize::try_from(img).ok()?;
+        v.get(i).filter(|im| im.width() > 0).map(f)
+    })
+}
+
+/// The region `(x, y, w, h)` as `u32`s if it lies wholly inside `im`, else
+/// `None`. Rejects rather than clamps: a check that asked for the wrong
+/// rectangle should fail, not quietly measure a different one.
+fn image_region(
+    im: &image::RgbaImage,
+    x: i64,
+    y: i64,
+    w: i64,
+    h: i64,
+) -> Option<(u32, u32, u32, u32)> {
+    if w <= 0 || h <= 0 || x < 0 || y < 0 {
+        return None;
+    }
+    let (x1, y1) = (x.checked_add(w)?, y.checked_add(h)?);
+    if x1 > im.width() as i64 || y1 > im.height() as i64 {
+        return None;
+    }
+    Some((x as u32, y as u32, w as u32, h as u32))
+}
+
+/// Rec.709 luminance of one RGBA sample, 0..255. The one place this project
+/// converts colour to brightness, so two checks cannot disagree about what
+/// "darker" means.
+fn luma(p: &image::Rgba<u8>) -> f64 {
+    0.2126 * p.0[0] as f64 + 0.7152 * p.0[1] as f64 + 0.0722 * p.0[2] as f64
+}
+
+/// Open a PNG/JPEG at `path` for measurement. Returns a handle, or -1.
+///
+/// Touches no drawing state, unlike `load_image`.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
+#[no_mangle]
+pub unsafe extern "C" fn aurora_image_open(ptr: *const u8, len: i64) -> i64 {
+    let path = {
+        let s = unsafe { std::slice::from_raw_parts(ptr, len.max(0) as usize) };
+        String::from_utf8_lossy(s).into_owned()
+    };
+    match image::open(&path) {
+        Ok(img) => IMAGES.with(|s| {
+            let mut v = s.borrow_mut();
+            v.push(img.to_rgba8());
+            (v.len() - 1) as i64
+        }),
+        Err(_) => -1,
+    }
+}
+
+/// Width of `img` in pixels, or -1 for a handle that is not live.
+#[no_mangle]
+pub extern "C" fn aurora_image_width(img: i64) -> i64 {
+    with_image(img, |im| im.width() as i64).unwrap_or(-1)
+}
+
+/// Height of `img` in pixels, or -1 for a handle that is not live.
+#[no_mangle]
+pub extern "C" fn aurora_image_height(img: i64) -> i64 {
+    with_image(img, |im| im.height() as i64).unwrap_or(-1)
+}
+
+/// The pixel at `(x, y)` packed `0xRRGGBB`, or -1 if the handle is not live or
+/// the point is outside the image.
+///
+/// Packed the same way `fb_get` packs, because two conventions for a colour is
+/// one more than a program can keep straight.
+#[no_mangle]
+pub extern "C" fn aurora_image_pixel(img: i64, x: i64, y: i64) -> i64 {
+    with_image(img, |im| {
+        if x < 0 || y < 0 || x >= im.width() as i64 || y >= im.height() as i64 {
+            return -1;
+        }
+        let p = im.get_pixel(x as u32, y as u32);
+        ((p.0[0] as i64) << 16) | ((p.0[1] as i64) << 8) | p.0[2] as i64
+    })
+    .unwrap_or(-1)
+}
+
+/// Mean Rec.709 luminance over a region of `img`, 0..255, or -1 if the handle is
+/// not live or the region is not wholly inside the image.
+///
+/// One call rather than a loop of `image_pixel` over hundreds of thousands of
+/// pixels: the question "how bright is this part of the frame" is asked by every
+/// visual check there is, and answering it a pixel at a time across the FFI
+/// boundary would make the checks too slow to keep.
+#[no_mangle]
+pub extern "C" fn aurora_image_mean_luma(img: i64, x: i64, y: i64, w: i64, h: i64) -> f64 {
+    with_image(img, |im| {
+        let Some((x, y, w, h)) = image_region(im, x, y, w, h) else {
+            return -1.0;
+        };
+        let mut total = 0.0;
+        for py in y..y + h {
+            for px in x..x + w {
+                total += luma(im.get_pixel(px, py));
+            }
+        }
+        total / (w as f64 * h as f64)
+    })
+    .unwrap_or(-1.0)
+}
+
+/// Mean absolute per-channel difference between the same region of two images,
+/// 0..255, or -1 if either handle is not live or the region does not fit BOTH.
+///
+/// The direct answer to "are these two frames the same picture", which is the
+/// question a capture script has to be able to ask before it can claim anything
+/// about what changed between them.
+#[no_mangle]
+pub extern "C" fn aurora_image_diff(a: i64, b: i64, x: i64, y: i64, w: i64, h: i64) -> f64 {
+    let Some(pixels) = with_image(a, |ia| {
+        with_image(b, |ib| {
+            let ra = image_region(ia, x, y, w, h);
+            let rb = image_region(ib, x, y, w, h);
+            match (ra, rb) {
+                (Some((x, y, w, h)), Some(_)) => {
+                    let mut total = 0.0;
+                    for py in y..y + h {
+                        for px in x..x + w {
+                            let pa = ia.get_pixel(px, py).0;
+                            let pb = ib.get_pixel(px, py).0;
+                            for c in 0..3 {
+                                total += (pa[c] as f64 - pb[c] as f64).abs();
+                            }
+                        }
+                    }
+                    total / (w as f64 * h as f64 * 3.0)
+                }
+                _ => -1.0,
+            }
+        })
+    }) else {
+        return -1.0;
+    };
+    pixels.unwrap_or(-1.0)
+}
+
+/// Release `img`. Answers 1 if it was live, 0 if it was not.
+///
+/// The handle is not reused, so a stale one keeps reading as dead rather than
+/// silently naming somebody else's image.
+#[no_mangle]
+pub extern "C" fn aurora_image_free(img: i64) -> i64 {
+    IMAGES.with(|s| {
+        let mut v = s.borrow_mut();
+        match usize::try_from(img).ok().and_then(|i| v.get_mut(i)) {
+            Some(slot) if slot.width() > 0 => {
+                *slot = image::RgbaImage::new(0, 0);
+                1
+            }
+            _ => 0,
+        }
+    })
 }
 
 // --- text rendering (TrueType via fontdue) ----------------------------------
@@ -5018,10 +5211,30 @@ macro_rules! rust_ty {
     (F64) => {
         f64
     };
-    // A `str` argument is its two slots: this is the data pointer, and the
-    // `I64` that follows it in the row is the length.
+    (Bool) => {
+        i64
+    };
     (Ptr) => {
         *const u8
+    };
+}
+
+/// The Rust function-pointer type a row describes, built one parameter at a
+/// time so a `Str` can contribute TWO of them - the data pointer and the length
+/// its value carries. The accumulator leads because a `Str` RESULT is written
+/// through a caller-allocated out-pointer passed first.
+macro_rules! rust_fn_ptr {
+    ([$($out:ty),*], [], void) => {
+        unsafe extern "C" fn($($out),*)
+    };
+    ([$($out:ty),*], [], $ret:ident) => {
+        unsafe extern "C" fn($($out),*) -> rust_ty!($ret)
+    };
+    ([$($out:ty),*], [Str $(, $rest:ident)*], $ret:ident) => {
+        rust_fn_ptr!([$($out,)* *const u8, i64], [$($rest),*], $ret)
+    };
+    ([$($out:ty),*], [$p:ident $(, $rest:ident)*], $ret:ident) => {
+        rust_fn_ptr!([$($out,)* rust_ty!($p)], [$($rest),*], $ret)
     };
 }
 
@@ -5036,16 +5249,14 @@ macro_rules! rust_ty {
 /// (and is therefore `unsafe`) matches it directly. The parameter and return
 /// types are still checked either way, which is what this macro exists for.
 macro_rules! checked_addr {
-    ($sym:ident, [$($p:ident),*], void) => {{
-        let f: unsafe extern "C" fn($(rust_ty!($p)),*) = $sym;
-        f as usize
-    }};
+    // A `Str` result returns nothing: it is written through the out-pointer the
+    // accumulator starts with.
     ($sym:ident, [$($p:ident),*], Str) => {{
-        let f: unsafe extern "C" fn(*mut i64, $(rust_ty!($p)),*) = $sym;
+        let f: rust_fn_ptr!([*mut i64], [$($p),*], void) = $sym;
         f as usize
     }};
     ($sym:ident, [$($p:ident),*], $ret:ident) => {{
-        let f: unsafe extern "C" fn($(rust_ty!($p)),*) -> rust_ty!($ret) = $sym;
+        let f: rust_fn_ptr!([], [$($p),*], $ret) = $sym;
         f as usize
     }};
 }

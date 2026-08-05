@@ -658,13 +658,35 @@ macro_rules! cl_ret {
     };
 }
 
+// A `Str` or `Arr` PARAMETER is one Aurora argument in two machine slots - the
+// address and the length - so it pushes two. This must expand to exactly what
+// `Builtin::abi_params` says; `abi_tests` compiles a real module and compares
+// every declared signature against it, so the two cannot drift apart in silence.
+macro_rules! cl_param_slots {
+    ($v:ident, $ptr:ident, Str) => {{
+        $v.push($ptr);
+        $v.push(types::I64);
+    }};
+    ($v:ident, $ptr:ident, Arr) => {{
+        $v.push($ptr);
+        $v.push(types::I64);
+    }};
+    ($v:ident, $ptr:ident, $p:ident) => {{
+        $v.push(cl_ty!($ptr, $p));
+    }};
+}
+
 macro_rules! cl_params {
-    ($ptr:ident, [$($p:ident),*], Str) => {
-        &[$ptr, $(cl_ty!($ptr, $p)),*]
-    };
-    ($ptr:ident, [$($p:ident),*], $r:ident) => {
-        &[$(cl_ty!($ptr, $p)),*]
-    };
+    ($ptr:ident, [$($p:ident),*], $r:ident) => {{
+        let mut v: Vec<Type> = Vec::new();
+        // A `Str` RESULT is written through a caller-allocated out-pointer that
+        // leads the declared parameters, which the row does not spell.
+        if matches!(stringify!($r), "Str") {
+            v.push($ptr);
+        }
+        $( cl_param_slots!(v, $ptr, $p); )*
+        v
+    }};
 }
 
 // An `inline` builtin is expanded by the backend and has no runtime function to
@@ -696,7 +718,7 @@ macro_rules! host_import {
     ($h:ident, $m:ident, $ptr:ident, $k:ident, $n:ident, $s:ident, [$($p:ident),*], $r:ident) => {
         $h.insert(
             stringify!($n),
-            import($m, stringify!($s), cl_params!($ptr, [$($p),*], $r), cl_ret!($ptr, $r)),
+            import($m, stringify!($s), &cl_params!($ptr, [$($p),*], $r), cl_ret!($ptr, $r)),
         );
     };
 }
@@ -3739,16 +3761,27 @@ fn tr_call(
         let call = b.ins().call(f, &[pp, pl, dp, dl]);
         return Ok(Term::Val(b.inst_results(call)[0], Cty::I64));
     }
-    // `file_exists(path)` / `json_parse(text)` / `json_load(path)` /
-    // `r3d_capture(path)` -> i64.
-    if matches!(
-        name.as_str(),
-        "file_exists" | "json_parse" | "json_load" | "r3d_capture" | "audio_capture_save"
-    ) {
-        let (pp, pl) = str_arg(m, b, l, env, &args[0].value)?;
-        let f = m.declare_func_in_func(env.hosts[name.as_str()], b.func);
-        let call = b.ins().call(f, &[pp, pl]);
-        return Ok(Term::Val(b.inst_results(call)[0], Cty::I64));
+    // EVERY builtin that takes one string and answers an i64, from the table.
+    //
+    // `file_exists`, `json_parse`, `load_sound`, `r3d_capture`, `image_open` -
+    // there is nothing to say about them one at a time, and saying it one at a
+    // time is what went wrong: this was two hand-written lists of names, in two
+    // places, and a builtin absent from both was a row in the table that the
+    // compiler answered "cannot find function" for. The table now spells a
+    // string argument `Str`, so the lowering follows from the row and a new one
+    // needs no edit here at all.
+    if let Some(row) = aurora_abi::lookup(name.as_str()) {
+        if row.params == [aurora_abi::Ty::Str] && row.ret == Some(aurora_abi::Ty::I64) {
+            let result = if let Some(a) = args.first() {
+                let (pp, pl) = str_arg(m, b, l, env, &a.value)?;
+                let f = m.declare_func_in_func(env.hosts[name.as_str()], b.func);
+                let call = b.ins().call(f, &[pp, pl]);
+                b.inst_results(call)[0]
+            } else {
+                b.ins().iconst(types::I64, 0)
+            };
+            return Ok(Term::Val(result, Cty::I64));
+        }
     }
     // `r3d_capture_size(path, w, h) -> 1|0`.
     if name == "r3d_capture_size" {
@@ -3865,29 +3898,6 @@ fn tr_call(
         }
         return Ok(Term::Val(b.ins().iconst(types::I64, 0), Cty::I64));
     }
-    if matches!(
-        name.as_str(),
-        "load_ppm"
-            | "load_image"
-            | "load_font"
-            | "play_wav"
-            | "load_sound"
-            | "scene_save"
-            | "scene_load"
-            | "r3d_load_model"
-            | "r3d_load_character"
-    ) {
-        let result = if let Some(a) = args.first() {
-            let (ptr, len) = str_arg(m, b, l, env, &a.value)?;
-            let f = m.declare_func_in_func(env.hosts[name.as_str()], b.func);
-            let call = b.ins().call(f, &[ptr, len]);
-            b.inst_results(call)[0]
-        } else {
-            b.ins().iconst(types::I64, 0)
-        };
-        return Ok(Term::Val(result, Cty::I64));
-    }
-
     // Builtins taking one string and returning nothing: gather a clip, name the
     // rig it was authored on, name the bone allowed to carry root travel.
     if matches!(
@@ -4192,22 +4202,21 @@ fn tr_call(
         }
     }
 
-    // Text builtins: same table-driven dispatch, extended to `str`. A `Ptr`
-    // parameter is one Aurora `str` argument passed as its two slots, and a
-    // `Str` result is a caller-allocated 2-slot out-pointer passed first.
+    // Text builtins: same table-driven dispatch, extended to `str`. A `Str`
+    // parameter is one Aurora argument passed as its two slots, and a `Str`
+    // result is a caller-allocated 2-slot out-pointer passed first.
     if let Some(row) = aurora_abi::text_row(name.as_str()) {
         if Some(args.len()) == row.arity() {
             let mut argv = Vec::new();
             if row.ret == Some(aurora_abi::Ty::Str) {
                 argv.push(alloc(b, env, 2));
             }
-            let mut arg = args.iter();
-            let mut p = row.params.iter();
-            while let Some(pc) = p.next() {
-                let a = arg.next().expect("arity checked above");
-                if *pc == aurora_abi::Ty::Ptr {
-                    // Its `I64` length slot belongs to the same argument.
-                    p.next();
+            // One row parameter, one argument. This used to walk a `Ptr` and
+            // then step over the `I64` after it, because a string was spelled as
+            // the two slots it occupies and the loop had to re-derive which
+            // pairs of slots were one argument. The row says `Str` now.
+            for (pc, a) in row.params.iter().zip(args.iter()) {
+                if *pc == aurora_abi::Ty::Str {
                     let (ptr, len) = str_arg(m, b, l, env, &a.value)?;
                     argv.push(ptr);
                     argv.push(len);
@@ -5221,7 +5230,10 @@ fn abi_cty(t: aurora_abi::Ty) -> Cty {
     match t {
         aurora_abi::Ty::F64 => Cty::F64,
         aurora_abi::Ty::Str => Cty::Str,
-        aurora_abi::Ty::I64 | aurora_abi::Ty::Ptr | aurora_abi::Ty::Bool => Cty::I64,
+        // An `Arr` argument is an address at the call site, like `Ptr`.
+        aurora_abi::Ty::I64 | aurora_abi::Ty::Ptr | aurora_abi::Ty::Bool | aurora_abi::Ty::Arr => {
+            Cty::I64
+        }
     }
 }
 

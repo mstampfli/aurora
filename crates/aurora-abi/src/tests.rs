@@ -191,23 +191,76 @@ fn inline_rows_declare_no_call() {
 fn scalar_rows_take_only_scalars() {
     for b in TABLE.iter().filter(|b| b.kind == Kind::Scalar) {
         assert!(
-            !b.params.contains(&Ty::Ptr) && !matches!(b.ret, Some(Ty::Ptr) | Some(Ty::Str)),
-            "`{}` takes or returns a pointer, so it cannot use the scalar dispatch",
+            !b.params.contains(&Ty::Ptr)
+                && !b.params.contains(&Ty::Str)
+                && !b.params.contains(&Ty::Arr)
+                && !matches!(b.ret, Some(Ty::Ptr) | Some(Ty::Str) | Some(Ty::Arr)),
+            "`{}` takes or returns something that is not a scalar, so it cannot use the scalar dispatch",
             b.name
         );
     }
 }
 
-/// `Str` is a RESULT convention (a caller-allocated out-pointer), never a slot.
-/// Only the text dispatch allocates that slot, so only a `text` row may use it.
+/// A string or an array argument is SPELLED, never encoded as a raw pointer.
+///
+/// This is the invariant that stops the bug it replaced. `Str` used to be a
+/// result convention only, so a string ARGUMENT was written `[Ptr, I64]` - and
+/// so was an array, and so was an out-pointer next to a length. The table could
+/// not tell them apart, which meant no backend could either: lowering a call
+/// that takes a string needs to know it takes a string, so each backend carried
+/// a HAND-WRITTEN LIST of which builtins those were. A row added without also
+/// being added to the list compiled to "cannot find function `image_open`",
+/// which is how this was found.
+///
+/// With `Str` and `Arr` in the table the lowering follows from the row and the
+/// lists are gone. This keeps them gone: a bare `Ptr` parameter on a row Aurora
+/// can call is allowed only for the handful of rows where a pointer is really
+/// what the call site passes - an out-pointer it allocates, or a closure - and
+/// that list may only ever SHRINK.
 #[test]
-fn str_is_only_a_text_rows_return() {
-    for b in TABLE {
+fn a_string_or_array_argument_is_spelled_rather_than_encoded() {
+    // Each of these takes a genuine machine pointer, not an Aurora value:
+    //   net_recv, json_str, json_key, json_to_str - write their result through a
+    //     caller-allocated out-pointer, so the pointer IS the argument.
+    //   net_sim, net_serve, par_for - take a closure as a code pointer and an
+    //     environment pointer.
+    const RAW_POINTER_IS_THE_ARGUMENT: &[&str] = &[
+        "net_recv",
+        "json_str",
+        "json_key",
+        "json_to_str",
+        "net_sim",
+        "net_serve",
+        "par_for",
+        "read_file",
+    ];
+    for b in TABLE.iter().filter(|b| b.kind.is_aurora_visible()) {
+        if b.params.contains(&Ty::Ptr) {
+            assert!(
+                RAW_POINTER_IS_THE_ARGUMENT.contains(&b.name),
+                "`{}` declares a bare `Ptr` parameter. If that is a string say \
+                 `Str`, if it is an array say `Arr` - spelling it out is what \
+                 lets every backend lower the call without a list of names",
+                b.name
+            );
+        }
+    }
+    // And the allowlist may only shrink: a name on it that no longer needs to be
+    // is the reason a list like this rots into a permanent exemption.
+    for name in RAW_POINTER_IS_THE_ARGUMENT {
+        let b = lookup(name).expect("an allowlisted row must exist");
         assert!(
-            !b.params.contains(&Ty::Str),
-            "`{}` has a Str parameter slot",
-            b.name
+            b.params.contains(&Ty::Ptr),
+            "`{name}` no longer takes a raw pointer - take it off the list"
         );
+    }
+}
+
+/// `Str` as a RESULT is a caller-allocated out-pointer, and only the text
+/// dispatch allocates that slot, so only a `text` row may return one.
+#[test]
+fn only_a_text_row_returns_str() {
+    for b in TABLE {
         if b.ret == Some(Ty::Str) {
             // An INLINE row may also say `Str`, because it declares no call: no
             // host function is imported for it, so `abi_params` never turns the
@@ -220,32 +273,49 @@ fn str_is_only_a_text_rows_return() {
                 b.name
             );
         }
+        assert_ne!(b.ret, Some(Ty::Arr), "`{}` cannot return an array", b.name);
     }
 }
 
-/// The text dispatch reads a `Ptr` slot as the first half of one Aurora `str`
-/// argument and consumes the `I64` after it as its length. A `Ptr` that is last,
-/// or followed by anything else, would silently eat the next argument.
+/// A `Str` or `Arr` argument occupies two ABI slots - the address and the
+/// length - and `abi_params` is the one place that expansion happens. This pins
+/// it, and pins `arity` counting such an argument ONCE.
 #[test]
-fn text_rows_pair_each_pointer_with_a_length() {
-    for b in TABLE.iter().filter(|b| b.kind == Kind::Text) {
-        let mut i = 0;
-        while i < b.params.len() {
-            if b.params[i] == Ty::Ptr {
-                assert_eq!(
-                    b.params.get(i + 1),
-                    Some(&Ty::I64),
-                    "`{}`: a str argument must be `Ptr, I64` (data, length)",
-                    b.name
-                );
-                i += 1;
-            }
-            i += 1;
-        }
+fn a_two_slot_argument_expands_to_exactly_its_slots() {
+    for b in TABLE {
+        let want: Vec<Ty> = b
+            .params
+            .iter()
+            .flat_map(|t| match t {
+                Ty::Str | Ty::Arr => vec![Ty::Ptr, Ty::I64],
+                other => vec![*other],
+            })
+            .collect();
+        let got = b.abi_params();
+        let got = if b.ret == Some(Ty::Str) {
+            assert_eq!(
+                got.first(),
+                Some(&Ty::Ptr),
+                "`{}` returns Str, so its slots must lead with the out-pointer",
+                b.name
+            );
+            got[1..].to_vec()
+        } else {
+            got
+        };
         assert_eq!(
-            b.arity(),
-            Some(b.params.len() - b.params.iter().filter(|t| **t == Ty::Ptr).count())
+            got, want,
+            "`{}` does not expand to its declared slots",
+            b.name
         );
+        if let Some(n) = b.arity() {
+            assert_eq!(
+                n,
+                b.params.iter().filter(|t| **t != Ty::Ptr).count(),
+                "`{}` counts a two-slot argument more than once",
+                b.name
+            );
+        }
     }
 }
 

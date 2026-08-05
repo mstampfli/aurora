@@ -154,13 +154,54 @@ with `after`/`before` is transitive and independent of declaration order (Â§6.
 | Builtin | Signature | Backed by |
 |---|---|---|
 | `load_ppm(path) -> i64` | PPM â†’ framebuffer | built-in |
-| `load_image(path) -> i64` | **PNG/JPEG** â†’ framebuffer | `image` crate |
+| `load_image(path) -> i64` | **PNG/JPEG** â†’ framebuffer (REPLACES it - see below) | `image` crate |
+| `image_open(path) -> i64` | **PNG/JPEG** â†’ a handle to measure, -1 on failure | `image` crate |
+| `image_width(img)` / `image_height(img) -> i64` | its size, -1 for a dead handle | built-in |
+| `image_pixel(img, x, y) -> i64` | one pixel packed `0xRRGGBB`, -1 outside | built-in |
+| `image_mean_luma(img, x,y,w,h) -> f64` | mean Rec.709 brightness 0..255 of a region, -1 if it does not fit | built-in |
+| `image_diff(a, b, x,y,w,h) -> f64` | mean absolute channel difference 0..255, -1 if it does not fit both | built-in |
+| `image_free(img) -> i64` | release it (1 if it was live) | built-in |
 | `load_font(path) -> i64` | load a TrueType/OpenType font | `fontdue`. OPTIONAL: a 5x7 ASCII font ships in the binary and is used when none is loaded, so text works with no asset. Load one to override it |
 | `draw_text(x, y, str, px, color)` | draw text into the 2D framebuffer | alpha-blended through a loaded TTF; opaque whole-pixel glyphs from the built-in 5x7 font otherwise, scaled by `px / 7` and never below 1. Needs a `framebuffer()` - every 2D call is a no-op without one |
 | `text_width(str, px) -> i64` | pixel width of `str`, for centring | answers for the built-in font too. It used to return 0 with no TTF loaded, so a centred label was centred at zero width |
 | `play_note(semitone, ms)` / `play_sound(...)` | synth audio | `aurora-audio` |
 | `play_wav(path) -> i64` | decode + play an audio file once (1 = played) | `hound` / `symphonia` |
 | `scene_save(path)` / `scene_load(path)` | persist the ECS world | built-in |
+
+### Measuring an image, versus loading one to draw
+
+Two different jobs, and they were one builtin for a while, which was a trap.
+
+`load_ppm` and `load_image` **replace the framebuffer**. That is right for what
+they are for - putting a picture where you can draw on it. But the framebuffer is
+also the HUD layer, and `r3d_capture` composites it over the 3D frame. So:
+
+```
+r3d_capture("a.png")     // fine
+load_image("a.png")      // the framebuffer is now that picture, full screen
+r3d_capture("b.png")     // b.png IS a.png - the scene is underneath it
+```
+
+`r3d_capture` still answers success, so nothing says a word. This is exactly how a
+game's own check ended up comparing two frames that were the same file and
+concluding that its renderer was drawing nothing.
+
+`image_open` is the one to reach for when the point is to ASK something about
+pixels. It holds the image off to one side, touches no drawing state, and the
+frame it was decoded from goes on rendering. Regions are rejected rather than
+clamped, and every accessor answers a negative number for a dead handle, so a
+check cannot read "black" where it meant "no such image":
+
+```
+let shot = image_open("shots/frame.png")
+if shot < 0 { /* it is not there - say so, do not measure zero */ }
+let mid = image_mean_luma(shot, 480, 120, 320, 480)
+image_free(shot)
+```
+
+`image_diff` answers "are these the same picture" in one call, which is worth
+having as a primitive: it is the check that catches a capture that silently did
+not happen.
 
 ### Real audio assets
 

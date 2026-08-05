@@ -69,10 +69,30 @@ pub enum Ty {
     F64,
     /// The target's pointer type (`i64` on every backend Aurora supports today).
     Ptr,
-    /// An Aurora `str` RESULT: the caller allocates its two slots and passes
-    /// their address as a leading [`Ty::Ptr`] parameter, so the host function
-    /// itself returns nothing. Only ever a return type, only on a `text` row.
+    /// An Aurora `str`.
+    ///
+    /// As a RESULT: the caller allocates its two slots and passes their address
+    /// as a leading [`Ty::Ptr`] parameter, so the host function itself returns
+    /// nothing.
+    ///
+    /// As a PARAMETER: one Aurora argument occupying the two ABI slots its value
+    /// holds, `Ptr, I64`. Spelling those slots out as `[Ptr, I64]` is what the
+    /// table used to do, and it could not then tell a string from an array or an
+    /// out-pointer - so every backend needed a HAND-WRITTEN LIST of which
+    /// builtins take a string, and a builtin missing from that list compiled to
+    /// "cannot find function" despite being a row here. Say `Str` and the
+    /// lowering follows from the type.
     Str,
+    /// An Aurora array argument, passed as its address and its length: two ABI
+    /// slots, `Ptr, I64`, exactly like [`Ty::Str`], and one argument at the call
+    /// site because the length comes from the array's TYPE rather than from a
+    /// second argument.
+    ///
+    /// Distinct from `Str` because they are lowered differently - a string
+    /// argument is read out of a string value, an array's length is a constant
+    /// the compiler knows - and telling them apart is the whole point: they were
+    /// both `[Ptr, I64]`, so nothing could.
+    Arr,
     /// A PREDICATE result. The host function returns an `i64` 0 or 1 exactly as
     /// [`Ty::I64`] does - the difference is what the CHECKER is told, so
     /// `if starts_with(a, b)` type-checks as a condition instead of being an
@@ -195,11 +215,15 @@ impl Builtin {
     /// [`Ty::Str`] result is a caller-allocated 2-slot out-pointer passed FIRST,
     /// so it is not a Cranelift return value at all.
     pub fn abi_params(&self) -> Vec<Ty> {
+        // A `Str` or `Arr` argument is one Aurora value in two machine slots.
+        let declared = self.params.iter().flat_map(|t| match t {
+            Ty::Str | Ty::Arr => [Some(Ty::Ptr), Some(Ty::I64)],
+            other => [Some(*other), None],
+        });
+        let declared = declared.flatten();
         match self.ret {
-            Some(Ty::Str) => std::iter::once(Ty::Ptr)
-                .chain(self.params.iter().copied())
-                .collect(),
-            _ => self.params.to_vec(),
+            Some(Ty::Str) => std::iter::once(Ty::Ptr).chain(declared).collect(),
+            _ => declared.collect(),
         }
     }
 
@@ -214,13 +238,18 @@ impl Builtin {
 
     /// How many arguments an Aurora call site passes, for the kinds whose call
     /// the table fully describes ([`Kind::Scalar`] and [`Kind::Text`]): a `str`
-    /// argument takes two ABI slots (`Ptr, I64`) but is one argument in the
-    /// source. `None` for the kinds it does not model - `special` (arrays,
-    /// closures), `raster`, `inline`, and the rows Aurora cannot call at all.
+    /// or array argument takes two ABI slots but is ONE argument in the source,
+    /// and a bare [`Ty::Ptr`] is plumbing the call site does not spell at all -
+    /// an out-pointer or a closure. `None` for the kinds it does not model.
+    ///
+    /// This used to subtract every `Ptr`, which was a guess that happened to be
+    /// right: it counted the pointer half of a string pair and left the length
+    /// half standing in for it. With `Str` and `Arr` spelled the count is what
+    /// it says it is.
     pub fn arity(&self) -> Option<usize> {
         match self.kind {
             Kind::Scalar | Kind::Text => {
-                Some(self.params.len() - self.params.iter().filter(|t| **t == Ty::Ptr).count())
+                Some(self.params.iter().filter(|t| **t != Ty::Ptr).count())
             }
             _ => None,
         }
@@ -247,7 +276,7 @@ macro_rules! for_each_builtin {
         [internal, vstack_alloc,                  aurora_vstack_alloc,                   [I64],                                           Ptr, shared]
         [internal, print_i64,                     aurora_print_i64,                      [I64],                                           void, shared]
         [internal, print_f64,                     aurora_print_f64,                      [F64],                                           void, shared]
-        [internal, print_str,                     aurora_print_str,                      [Ptr, I64],                                      void, shared]
+        [internal, print_str,                     aurora_print_str,                      [Str],                                           void, shared]
         [internal, print_nl,                      aurora_print_nl,                       [],                                              void, shared]
         [raster,  framebuffer,                   aurora_framebuffer,                    [I64, I64],                                      void, owner]
         [raster,  clear,                         aurora_clear,                          [I64, I64, I64],                                 void, owner]
@@ -256,27 +285,27 @@ macro_rules! for_each_builtin {
         [raster,  fill_rect_alpha,               aurora_fill_rect_alpha,                [I64, I64, I64, I64, I64, I64, I64, I64],        void, owner]
         [raster,  triangle,                      aurora_triangle,                       [I64, I64, I64, I64, I64, I64, I64, I64, I64],   void, owner]
         [raster,  fb_get,                        aurora_fb_get,                         [I64, I64],                                      I64, owner]
-        [special,  save_ppm,                      aurora_save_ppm,                       [Ptr, I64],                                      void, owner]
+        [special, save_ppm,                      aurora_save_ppm,                       [Str],                                           void, owner]
         [internal, spawn_entity,                  aurora_spawn_entity,                   [],                                              I64, shared]
         [special,  despawn,                       aurora_despawn,                        [I64],                                           void, shared]
         [internal, store_component,               aurora_store_component,                [I64, I64, Ptr, I64],                            void, shared]
         [internal, get_component,                 aurora_get_component,                  [I64, I64],                                      Ptr, shared]
-        [internal, query_begin,                   aurora_query_begin,                    [Ptr, I64],                                      I64, shared]
+        [internal, query_begin,                   aurora_query_begin,                    [Arr],                                           I64, shared]
         [internal, query_entity,                  aurora_query_entity,                   [I64],                                           I64, shared]
         [internal, query_end,                     aurora_query_end,                      [],                                              void, shared]
         [special,  entity_count,                  aurora_entity_count,                   [],                                              I64, shared]
         [special,  world_clear,                   aurora_world_clear,                    [],                                              void, shared]
 
         // Audio + windowing builtins.
-        [special,  gpu_compute,                   aurora_gpu_compute,                    [Ptr, I64, Ptr, I64],                            void, owner]
-        [special,  par_for,                       aurora_par_for,                        [Ptr, I64, Ptr, Ptr],                            void, shared]
-        [internal, run_parallel,                  aurora_run_parallel,                   [Ptr, I64],                                      void, shared]
+        [special, gpu_compute,                   aurora_gpu_compute,                    [Str, Arr],                                      void, owner]
+        [special, par_for,                       aurora_par_for,                        [Arr, Ptr, Ptr],                                 void, shared]
+        [internal, run_parallel,                  aurora_run_parallel,                   [Arr],                                           void, shared]
         [special,  net_bind,                      aurora_net_bind,                       [I64],                                           I64, shared]
-        [special,  net_connect,                   aurora_net_connect,                    [Ptr, I64, I64],                                 I64, shared]
-        [special,  net_send,                      aurora_net_send,                       [Ptr, I64],                                      I64, shared]
+        [special, net_connect,                   aurora_net_connect,                    [Str, I64],                                      I64, shared]
+        [special, net_send,                      aurora_net_send,                       [Str],                                           I64, shared]
         [special,  net_recv,                      aurora_net_recv,                       [Ptr],                                           void, shared]
         [special,  frame_reset,                   aurora_frame_reset,                    [],                                              void, shared]
-        [special,  load_ppm,                      aurora_load_ppm,                       [Ptr, I64],                                      I64, owner]
+        [special, load_ppm,                      aurora_load_ppm,                       [Str],                                           I64, owner]
 
         // Determinism + data builtins.
         [scalar,   srand,                         aurora_srand,                          [I64],                                           void, shared]
@@ -284,19 +313,19 @@ macro_rules! for_each_builtin {
         [scalar,   rand_range,                    aurora_rand_range,                     [F64, F64],                                      F64, shared]
         [scalar,   rand_int,                      aurora_rand_int,                       [I64, I64],                                      I64, shared]
         [scalar,   set_fixed_dt,                  aurora_set_fixed_dt,                   [F64],                                           void, shared]
-        [special,  save_png,                      aurora_save_png,                       [Ptr, I64],                                      void, shared]
+        [special, save_png,                      aurora_save_png,                       [Str],                                           void, shared]
         [scalar,   fb_width,                      aurora_fb_width,                       [],                                              I64, owner]
         [scalar,   fb_height,                     aurora_fb_height,                      [],                                              I64, owner]
-        [special,  read_file,                     aurora_read_file,                      [Ptr, Ptr, I64],                                 void, shared]
-        [special,  write_file,                    aurora_write_file,                     [Ptr, I64, Ptr, I64],                            I64, shared]
-        [special,  file_exists,                   aurora_file_exists,                    [Ptr, I64],                                      I64, shared]
-        [text,     is_i64,                        aurora_is_i64,                         [Ptr, I64],                                      I64, shared]
-        [text,     parse_i64,                     aurora_parse_i64,                      [Ptr, I64, I64],                                 I64, shared]
-        [text,     is_f64,                        aurora_is_f64,                         [Ptr, I64],                                      I64, shared]
-        [text,     parse_f64,                     aurora_parse_f64,                      [Ptr, I64, F64],                                 F64, shared]
-        [special,  json_parse,                    aurora_json_parse,                     [Ptr, I64],                                      I64, shared]
-        [special,  json_load,                     aurora_json_load,                      [Ptr, I64],                                      I64, shared]
-        [special,  json_get,                      aurora_json_get,                       [I64, Ptr, I64],                                 I64, shared]
+        [special, read_file,                     aurora_read_file,                      [Ptr, Str],                                      void, shared]
+        [special, write_file,                    aurora_write_file,                     [Str, Str],                                      I64, shared]
+        [special, file_exists,                   aurora_file_exists,                    [Str],                                           I64, shared]
+        [text, is_i64,                        aurora_is_i64,                         [Str],                                           I64, shared]
+        [text, parse_i64,                     aurora_parse_i64,                      [Str, I64],                                      I64, shared]
+        [text, is_f64,                        aurora_is_f64,                         [Str],                                           I64, shared]
+        [text, parse_f64,                     aurora_parse_f64,                      [Str, F64],                                      F64, shared]
+        [special, json_parse,                    aurora_json_parse,                     [Str],                                           I64, shared]
+        [special, json_load,                     aurora_json_load,                      [Str],                                           I64, shared]
+        [special, json_get,                      aurora_json_get,                       [I64, Str],                                      I64, shared]
         [scalar,   json_at,                       aurora_json_at,                        [I64, I64],                                      I64, shared]
         [scalar,   json_len,                      aurora_json_len,                       [I64],                                           I64, shared]
         [scalar,   json_num,                      aurora_json_num,                       [I64],                                           F64, shared]
@@ -304,23 +333,23 @@ macro_rules! for_each_builtin {
         [scalar,   json_bool,                     aurora_json_bool,                      [I64],                                           I64, shared]
         [special,  json_str,                      aurora_json_str,                       [Ptr, I64],                                      void, shared]
         [scalar,   json_kind,                     aurora_json_kind,                      [I64],                                           I64, shared]
-        [special,  json_has,                      aurora_json_has,                       [I64, Ptr, I64],                                 I64, shared]
+        [special, json_has,                      aurora_json_has,                       [I64, Str],                                      I64, shared]
         [special,  json_key,                      aurora_json_key,                       [Ptr, I64, I64],                                 void, shared]
         [scalar,   json_free,                     aurora_json_free,                      [I64],                                           void, shared]
         [scalar,   json_new_obj,                  aurora_json_new_obj,                   [],                                              I64, shared]
         [scalar,   json_new_arr,                  aurora_json_new_arr,                   [],                                              I64, shared]
-        [special,  json_set,                      aurora_json_set,                       [I64, Ptr, I64, I64],                            void, shared]
-        [special,  json_set_num,                  aurora_json_set_num,                   [I64, Ptr, I64, F64],                            void, shared]
-        [special,  json_set_str,                  aurora_json_set_str,                   [I64, Ptr, I64, Ptr, I64],                       void, shared]
-        [special,  json_set_bool,                 aurora_json_set_bool,                  [I64, Ptr, I64, I64],                            void, shared]
+        [special, json_set,                      aurora_json_set,                       [I64, Str, I64],                                 void, shared]
+        [special, json_set_num,                  aurora_json_set_num,                   [I64, Str, F64],                                 void, shared]
+        [special, json_set_str,                  aurora_json_set_str,                   [I64, Str, Str],                                 void, shared]
+        [special, json_set_bool,                 aurora_json_set_bool,                  [I64, Str, I64],                                 void, shared]
         [scalar,   json_push,                     aurora_json_push,                      [I64, I64],                                      void, shared]
         [scalar,   json_push_num,                 aurora_json_push_num,                  [I64, F64],                                      void, shared]
-        [special,  json_push_str,                 aurora_json_push_str,                  [I64, Ptr, I64],                                 void, shared]
+        [special, json_push_str,                 aurora_json_push_str,                  [I64, Str],                                      void, shared]
         [special,  json_to_str,                   aurora_json_to_str,                    [Ptr, I64],                                      void, shared]
-        [special,  json_write,                    aurora_json_write,                     [I64, Ptr, I64],                                 I64, shared]
-        [special,  audio_capture_save,            aurora_audio_capture_save,             [Ptr, I64],                                      I64, owner]
-        [special,  r3d_capture,                   aurora_r3d_capture,                    [Ptr, I64],                                      I64, owner]
-        [special,  r3d_capture_size,              aurora_r3d_capture_size,               [Ptr, I64, I64, I64],                            I64, owner]
+        [special, json_write,                    aurora_json_write,                     [I64, Str],                                      I64, shared]
+        [special, audio_capture_save,            aurora_audio_capture_save,             [Str],                                           I64, owner]
+        [special, r3d_capture,                   aurora_r3d_capture,                    [Str],                                           I64, owner]
+        [special, r3d_capture_size,              aurora_r3d_capture_size,               [Str, I64, I64],                                 I64, owner]
         [scalar,   inject_key,                    aurora_inject_key,                     [I64, I64],                                      void, owner]
         [scalar,   inject_mouse_move,             aurora_inject_mouse_move,              [F64, F64],                                      void, owner]
         [scalar,   inject_mouse_pos,              aurora_inject_mouse_pos,               [I64, I64],                                      void, owner]
@@ -339,10 +368,17 @@ macro_rules! for_each_builtin {
         [scalar,   sleep_ms,                      aurora_sleep_ms,                       [I64],                                           void, shared]
         [internal, divzero,                       aurora_divzero,                        [],                                              void, shared]
         [internal, fmod,                          aurora_fmod,                           [F64, F64],                                      F64, shared]
-        [special,  load_image,                    aurora_load_image,                     [Ptr, I64],                                      I64, owner]
-        [special,  load_font,                     aurora_load_font,                      [Ptr, I64],                                      I64, owner]
-        [special,  play_wav,                      aurora_play_wav,                       [Ptr, I64],                                      I64, owner]
-        [special,  load_sound,                    aurora_load_sound,                     [Ptr, I64],                                      I64, shared]
+        [special, load_image,                    aurora_load_image,                     [Str],                                           I64, owner]
+        [special, image_open,                    aurora_image_open,                     [Str],                                           I64, owner]
+        [scalar,   image_width,                   aurora_image_width,                    [I64],                                           I64, owner]
+        [scalar,   image_height,                  aurora_image_height,                   [I64],                                           I64, owner]
+        [scalar,   image_pixel,                   aurora_image_pixel,                    [I64, I64, I64],                                 I64, owner]
+        [scalar,   image_mean_luma,               aurora_image_mean_luma,                [I64, I64, I64, I64, I64],                       F64, owner]
+        [scalar,   image_diff,                    aurora_image_diff,                     [I64, I64, I64, I64, I64, I64],                  F64, owner]
+        [scalar,   image_free,                    aurora_image_free,                     [I64],                                           I64, owner]
+        [special, load_font,                     aurora_load_font,                      [Str],                                           I64, owner]
+        [special, play_wav,                      aurora_play_wav,                       [Str],                                           I64, owner]
+        [special, load_sound,                    aurora_load_sound,                     [Str],                                           I64, shared]
         [scalar,   phys_init,                     aurora_phys_init,                      [F64, F64],                                      void, shared]
         [scalar,   phys_add,                      aurora_phys_add,                       [F64, F64, F64, F64, I64],                       I64, shared]
         [scalar,   phys_remove,                   aurora_phys_remove,                    [I64],                                           I64, shared]
@@ -370,7 +406,7 @@ macro_rules! for_each_builtin {
         [scalar,   phys3d_add_sphere,             aurora_phys3d_add_sphere,              [F64, F64, F64, F64, I64],                       I64, shared]
         [scalar,   phys3d_add_capsule,            aurora_phys3d_add_capsule,             [F64, F64, F64, F64, F64, I64],                  I64, shared]
         [scalar,   phys3d_add_character,          aurora_phys3d_add_character,           [F64, F64, F64, F64, F64],                       I64, shared]
-        [special,  phys3d_add_trimesh,            aurora_phys3d_add_trimesh,             [Ptr, I64, Ptr, I64],                            I64, shared]
+        [special, phys3d_add_trimesh,            aurora_phys3d_add_trimesh,             [Arr, Arr],                                      I64, shared]
         [scalar,   phys3d_add_model_collider,     aurora_phys3d_add_model_collider,      [I64, F64, F64, F64, F64, F64, F64, F64],        I64, shared]
         [scalar,   phys3d_remove,                 aurora_phys3d_remove,                  [I64],                                           I64, shared]
         [scalar,   phys3d_character_blocking,     aurora_phys3d_character_blocking,      [I64, I64],                                      void, shared]
@@ -393,8 +429,8 @@ macro_rules! for_each_builtin {
         // Heightmap terrain: one heightfield behind the renderer, the physics
         // collider, and the height query.
         [scalar,   terrain_generate,              aurora_terrain_generate,               [I64, I64, F64, F64],                            I64, shared]
-        [text,     terrain_load,                  aurora_terrain_load,                   [Ptr, I64],                                      I64, shared]
-        [text,     terrain_save,                  aurora_terrain_save,                   [Ptr, I64],                                      I64, shared]
+        [text, terrain_load,                  aurora_terrain_load,                   [Str],                                           I64, shared]
+        [text, terrain_save,                  aurora_terrain_save,                   [Str],                                           I64, shared]
         [scalar,   terrain_color,                 aurora_terrain_color,                  [F64, F64, F64],                                 void, shared]
         [scalar,   terrain_draw,                  aurora_terrain_draw,                   [],                                              void, shared]
         [scalar,   terrain_height,                aurora_terrain_height,                 [F64, F64],                                      F64, shared]
@@ -411,23 +447,23 @@ macro_rules! for_each_builtin {
         [scalar,   nav3d_x,                       aurora_nav3d_x,                        [I64],                                           I64, shared]
         [scalar,   nav3d_y,                       aurora_nav3d_y,                        [I64],                                           I64, shared]
         [scalar,   nav3d_z,                       aurora_nav3d_z,                        [I64],                                           I64, shared]
-        [special,  navmesh_build,                 aurora_navmesh_build,                  [Ptr, I64, Ptr, I64],                            I64, shared]
+        [special, navmesh_build,                 aurora_navmesh_build,                  [Arr, Arr],                                      I64, shared]
         [scalar,   navmesh_find,                  aurora_navmesh_find,                   [F64, F64, F64, F64, F64, F64],                  I64, shared]
         [scalar,   navmesh_x,                     aurora_navmesh_x,                      [I64],                                           F64, shared]
         [scalar,   navmesh_y,                     aurora_navmesh_y,                      [I64],                                           F64, shared]
         [scalar,   navmesh_z,                     aurora_navmesh_z,                      [I64],                                           F64, shared]
 
         // 3D rendering.
-        [special,  r3d_load_model,                aurora_r3d_load_model,                 [Ptr, I64],                                      I64, owner]
-        [special,  r3d_load_character,            aurora_r3d_load_character,             [Ptr, I64],                                      I64, owner]
-        [special,  r3d_load_part,                 aurora_r3d_load_part,                  [Ptr, I64, I64],                                 I64, owner]
-        [special,  r3d_clip_rig,                  aurora_r3d_clip_rig,                   [Ptr, I64],                                      void, owner]
-        [special,  r3d_clip_add,                  aurora_r3d_clip_add,                   [Ptr, I64],                                      void, owner]
-        [text,     r3d_part_add,                  aurora_r3d_part_add,                   [Ptr, I64],                                      void, owner]
+        [special, r3d_load_model,                aurora_r3d_load_model,                 [Str],                                           I64, owner]
+        [special, r3d_load_character,            aurora_r3d_load_character,             [Str],                                           I64, owner]
+        [special, r3d_load_part,                 aurora_r3d_load_part,                  [Str, I64],                                      I64, owner]
+        [special, r3d_clip_rig,                  aurora_r3d_clip_rig,                   [Str],                                           void, owner]
+        [special, r3d_clip_add,                  aurora_r3d_clip_add,                   [Str],                                           void, owner]
+        [text, r3d_part_add,                  aurora_r3d_part_add,                   [Str],                                           void, owner]
         [scalar,   r3d_load_assembly,             aurora_r3d_load_assembly,              [],                                              I64, owner]
-        [special,  r3d_clip_root,                 aurora_r3d_clip_root,                  [Ptr, I64],                                      void, owner]
-        [special,  r3d_bone_map,                  aurora_r3d_bone_map,                   [Ptr, I64, Ptr, I64],                            void, owner]
-        [special,  r3d_material_texture,          aurora_r3d_material_texture,           [Ptr, I64, Ptr, I64],                            void, owner]
+        [special, r3d_clip_root,                 aurora_r3d_clip_root,                  [Str],                                           void, owner]
+        [special, r3d_bone_map,                  aurora_r3d_bone_map,                   [Str, Str],                                      void, owner]
+        [special, r3d_material_texture,          aurora_r3d_material_texture,           [Str, Str],                                      void, owner]
         [scalar,   r3d_free_model,                aurora_r3d_free_model,                 [I64],                                           I64, owner]
         [scalar,   r3d_model_extent,              aurora_r3d_model_extent,               [I64, I64],                                      F64, owner]
         [scalar,   r3d_model_centre,              aurora_r3d_model_centre,               [I64, I64],                                      F64, owner]
@@ -486,8 +522,8 @@ macro_rules! for_each_builtin {
         [scalar,   r3d_texture_count,             aurora_r3d_texture_count,              [],                                              I64, owner]
         [scalar,   r3d_anim_blend_weight,         aurora_r3d_anim_blend_weight,          [I64],                                           F64, owner]
         [text,     r3d_clip_name,                 aurora_r3d_clip_name,                  [I64, I64],                                      Str, owner]
-        [text,     r3d_clip_index,                aurora_r3d_clip_index,                 [I64, Ptr, I64],                                 I64, owner]
-        [text,     r3d_joint_index,               aurora_r3d_joint_index,                [I64, Ptr, I64],                                 I64, owner]
+        [text, r3d_clip_index,                aurora_r3d_clip_index,                 [I64, Str],                                      I64, owner]
+        [text, r3d_joint_index,               aurora_r3d_joint_index,                [I64, Str],                                      I64, owner]
         [text,     r3d_joint_name,                aurora_r3d_joint_name,                 [I64, I64],                                      Str, owner]
         [scalar,   r3d_show_joints,               aurora_r3d_show_joints,                [I64],                                           void, owner]
         [scalar,   r3d_present,                   aurora_r3d_present,                    [],                                              I64, owner]
@@ -551,12 +587,12 @@ macro_rules! for_each_builtin {
         [scalar,   phys3d_rot_qz,                 aurora_phys3d_rot_qz,                  [I64],                                           F64, shared]
         [scalar,   phys3d_rot_qw,                 aurora_phys3d_rot_qw,                  [I64],                                           F64, shared]
         [scalar,   net_host,                      aurora_net_host,                       [I64],                                           I64, shared]
-        [special,  net_join,                      aurora_net_join,                       [Ptr, I64, I64],                                 I64, shared]
+        [special, net_join,                      aurora_net_join,                       [Str, I64],                                      I64, shared]
         [special,  net_sim,                       aurora_net_sim,                        [Ptr, Ptr, I64, I64],                            void, shared]
         [special,  net_serve,                     aurora_net_serve,                      [Ptr, Ptr],                                      void, shared]
-        [special,  net_send_input,                aurora_net_send_input,                 [Ptr, I64],                                      I64, shared]
-        [special,  save_settings,                 aurora_save_settings,                  [Ptr, I64],                                      I64, shared]
-        [special,  load_settings,                 aurora_load_settings,                  [Ptr, I64],                                      I64, shared]
+        [special, net_send_input,                aurora_net_send_input,                 [Arr],                                           I64, shared]
+        [special, save_settings,                 aurora_save_settings,                  [Arr],                                           I64, shared]
+        [special, load_settings,                 aurora_load_settings,                  [Arr],                                           I64, shared]
         [scalar,   net_update,                    aurora_net_update,                     [F64],                                           void, shared]
         [scalar,   net_leave,                     aurora_net_leave,                      [],                                              void, shared]
         [scalar,   net_my_id,                     aurora_net_my_id,                      [],                                              I64, shared]
@@ -580,7 +616,7 @@ macro_rules! for_each_builtin {
         [scalar,   net_world_gen,                 aurora_net_world_gen,                  [I64],                                           I64, shared]
         [scalar,   net_set_tag,                   aurora_net_set_tag,                    [I64],                                           void, shared]
         [scalar,   net_player_tag,                aurora_net_player_tag,                 [I64],                                           I64, shared]
-        [special,  net_set_name,                  aurora_net_set_name,                   [Ptr, I64],                                      void, shared]
+        [special, net_set_name,                  aurora_net_set_name,                   [Str],                                           void, shared]
         [scalar,   net_player_name_len,           aurora_net_player_name_len,            [I64],                                           I64, shared]
         [scalar,   net_player_name_char,          aurora_net_player_name_char,           [I64, I64],                                      I64, shared]
         [scalar,   net_local_x,                   aurora_net_local_x,                    [],                                              F64, shared]
@@ -602,7 +638,7 @@ macro_rules! for_each_builtin {
         [scalar,   net_set_bot_state,             aurora_net_set_bot_state,              [I64, I64],                                      void, shared]
         [scalar,   net_set_bot_alive,             aurora_net_set_bot_alive,              [I64, I64],                                      void, shared]
         [scalar,   net_set_bot_meta,              aurora_net_set_bot_meta,               [I64, I64, F64],                                 void, shared]
-        [special,  net_set_bot_name,              aurora_net_set_bot_name,               [I64, Ptr, I64],                                 void, shared]
+        [special, net_set_bot_name,              aurora_net_set_bot_name,               [I64, Str],                                      void, shared]
         [scalar,   net_bot_count,                 aurora_net_bot_count,                  [],                                              I64, shared]
         [scalar,   net_set_object_count,          aurora_net_set_object_count,           [I64],                                           void, shared]
         [scalar,   net_set_object,                aurora_net_set_object,                 [I64, F64, F64, F64],                            void, shared]
@@ -688,7 +724,7 @@ macro_rules! for_each_builtin {
         [scalar,   input_pressed,                 aurora_input_pressed,                  [I64],                                           I64, shared]
         [scalar,   input_released,                aurora_input_released,                 [I64],                                           I64, shared]
         [scalar,   input_step,                    aurora_input_step,                     [],                                              void, owner]
-        [text,     input_code,                    aurora_input_code,                     [Ptr, I64],                                      I64, shared]
+        [text, input_code,                    aurora_input_code,                     [Str],                                           I64, shared]
         [text,     input_name,                    aurora_input_name,                     [I64],                                           Str, shared]
         [scalar,   inject_action,                 aurora_inject_action,                  [I64, I64],                                      void, owner]
         [scalar,   input_bind_also,               aurora_input_bind_also,                [I64, I64],                                      void, shared]
@@ -719,18 +755,18 @@ macro_rules! for_each_builtin {
         [special,  acos,                          aurora_acos,                           [F64],                                           F64, shared]
         [special,  asin,                          aurora_asin,                           [F64],                                           F64, shared]
         [special,  atan,                          aurora_atan,                           [F64],                                           F64, shared]
-        [special,  draw_text,                     aurora_draw_text,                      [I64, I64, Ptr, I64, I64, I64],                  void, owner]
+        [special, draw_text,                     aurora_draw_text,                      [I64, I64, Str, I64, I64],                       void, owner]
         [special,  draw_int,                      aurora_draw_int,                       [I64, I64, I64, I64, I64],                       void, shared]
-        [special,  text_width,                    aurora_text_width,                     [Ptr, I64, I64],                                 I64, shared]
-        [special,  scene_save,                    aurora_scene_save,                     [Ptr, I64],                                      I64, shared]
-        [special,  scene_load,                    aurora_scene_load,                     [Ptr, I64],                                      I64, shared]
-        [internal, prof_enter,                    aurora_prof_enter,                     [Ptr, I64],                                      void, shared]
+        [special, text_width,                    aurora_text_width,                     [Str, I64],                                      I64, shared]
+        [special, scene_save,                    aurora_scene_save,                     [Str],                                           I64, shared]
+        [special, scene_load,                    aurora_scene_load,                     [Str],                                           I64, shared]
+        [internal, prof_enter,                    aurora_prof_enter,                     [Str],                                           void, shared]
         [internal, prof_exit,                     aurora_prof_exit,                      [],                                              void, shared]
-        [internal, str_concat,                    aurora_str_concat,                     [Ptr, Ptr, I64, Ptr, I64],                       void, shared]
-        [internal, str_eq,                        aurora_str_eq,                         [Ptr, I64, Ptr, I64],                            I64, shared]
-        [internal, str_char_at,                   aurora_str_char_at,                    [Ptr, I64, I64],                                 I64, shared]
-        [internal, str_substr,                    aurora_str_substr,                     [Ptr, Ptr, I64, I64, I64],                       void, shared]
-        [internal, str_starts_with,               aurora_str_starts_with,                [Ptr, I64, Ptr, I64],                            I64, shared]
+        [internal, str_concat,                    aurora_str_concat,                     [Ptr, Str, Str],                                 void, shared]
+        [internal, str_eq,                        aurora_str_eq,                         [Str, Str],                                      I64, shared]
+        [internal, str_char_at,                   aurora_str_char_at,                    [Str, I64],                                      I64, shared]
+        [internal, str_substr,                    aurora_str_substr,                     [Ptr, Str, I64, I64],                            void, shared]
+        [internal, str_starts_with,               aurora_str_starts_with,                [Str, Str],                                      I64, shared]
         [internal, int_to_str,                    aurora_int_to_str,                     [Ptr, I64],                                      void, shared]
         [internal, float_to_str,                  aurora_float_to_str,                   [Ptr, F64],                                      void, shared]
         [special,  play_note,                     aurora_play_note,                      [I64, I64],                                      void, owner]
@@ -739,7 +775,7 @@ macro_rules! for_each_builtin {
         [special,  audio_volume,                  aurora_audio_volume,                   [I64],                                           void, owner]
         [special,  window_fullscreen,             aurora_window_fullscreen,              [I64],                                           void, owner]
         [special,  audio_stop,                    aurora_audio_stop,                     [],                                              void, owner]
-        [special,  gpu_render,                    aurora_gpu_render,                     [Ptr, I64, I64],                                 void, owner]
+        [special, gpu_render,                    aurora_gpu_render,                     [Str, I64],                                      void, owner]
         [special,  window_open,                   aurora_window_open,                    [I64, I64],                                      void, owner]
         [special,  window_present,                aurora_window_present,                 [],                                              I64, owner]
         [special,  surface_w,                     aurora_surface_w,                      [],                                              I64, shared]
@@ -753,17 +789,17 @@ macro_rules! for_each_builtin {
         // Process environment: the program's own argument vector and env vars.
         [scalar,   sys_argc,                      aurora_sys_argc,                       [],                                              I64, shared]
         [text,     sys_arg,                       aurora_sys_arg,                        [I64],                                           Str, shared]
-        [text,     sys_env,                       aurora_sys_env,                        [Ptr, I64],                                      Str, shared]
+        [text, sys_env,                       aurora_sys_env,                        [Str],                                           Str, shared]
 
         // Assertions.
         [scalar,   assert,                        aurora_assert,                         [I64],                                           void, shared]
 
         // Native debugger hooks (only *called* when `debug`, but always importable).
-        [internal, dbg_enter,                     aurora_dbg_enter,                      [Ptr, I64],                                      void, shared]
+        [internal, dbg_enter,                     aurora_dbg_enter,                      [Str],                                           void, shared]
         [internal, dbg_leave,                     aurora_dbg_leave,                      [],                                              void, shared]
         [internal, dbg_stmt,                      aurora_dbg_stmt,                       [I64],                                           void, shared]
-        [internal, dbg_var,                       aurora_dbg_var,                        [Ptr, I64, I64],                                 void, shared]
-        [internal, dbg_var_f64,                   aurora_dbg_var_f64,                    [Ptr, I64, F64],                                 void, shared]
+        [internal, dbg_var,                       aurora_dbg_var,                        [Str, I64],                                      void, shared]
+        [internal, dbg_var_f64,                   aurora_dbg_var_f64,                    [Str, F64],                                      void, shared]
 
         // Builtins the backend lowers inline (no runtime call): printing,
         // polymorphic math/bit ops, string ops, ECS spawn, and `run_systems`.
@@ -835,6 +871,9 @@ macro_rules! ty_of {
     };
     (Str) => {
         $crate::Ty::Str
+    };
+    (Arr) => {
+        $crate::Ty::Arr
     };
     (Bool) => {
         $crate::Ty::Bool

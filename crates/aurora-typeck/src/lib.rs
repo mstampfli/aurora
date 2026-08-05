@@ -1397,8 +1397,9 @@ fn abi_ret_ty(b: &aurora_abi::Builtin) -> Option<Ty> {
         Some(aurora_abi::Ty::F64) => Some(Ty::Float(aurora_lexer::FloatTy::F64)),
         Some(aurora_abi::Ty::Str) => Some(Ty::Str),
         Some(aurora_abi::Ty::Bool) => Some(Ty::Bool),
-        // A raw pointer result is a handle the checker has no name for.
-        Some(aurora_abi::Ty::Ptr) => None,
+        // A raw pointer result is a handle the checker has no name for, and no
+        // row returns an array - `Arr` says how an array ARGUMENT is passed.
+        Some(aurora_abi::Ty::Ptr) | Some(aurora_abi::Ty::Arr) => None,
         None => None,
     }
 }
