@@ -2068,7 +2068,7 @@ pub extern "C" fn aurora_pin_frame_to_tick() {
 /// range are ignored rather than allowed to produce a zero or negative step.
 #[no_mangle]
 pub extern "C" fn aurora_set_tick_rate(hz: f64) {
-    if hz.is_finite() && hz >= 1.0 && hz <= 1000.0 {
+    if hz.is_finite() && (1.0..=1000.0).contains(&hz) {
         FIXED.with(|f| f.borrow_mut().step = 1.0 / hz);
     }
 }
@@ -2619,12 +2619,16 @@ pub extern "C" fn aurora_window_open(w: i64, h: i64) {
 #[no_mangle]
 pub extern "C" fn aurora_window_present() -> i64 {
     let rgba = FB.with(|fb| fb.borrow().as_ref().map(|f| f.rgba()).unwrap_or_default());
-    let open = aurora_window::imm_present(&rgba);
     // A frame just ended: `input_step` is the boundary, and it advances the edge
     // snapshot and spends this frame's delta together. Done here rather than left
     // to the game - an edge snapshot that is only advanced when someone remembers
     // to is one that reports every held button as a fresh press forever.
+    //
+    // BEFORE the present, which is what pumps the event loop: snapshotting after
+    // it records this frame's new presses as already-seen and kills every
+    // `input_pressed` in a windowed game. See `input_step`.
     aurora_input_step();
+    let open = aurora_window::imm_present(&rgba);
     if open {
         1
     } else {
@@ -3478,10 +3482,16 @@ pub extern "C" fn aurora_r3d_present() -> i64 {
             .map(|f| (f.rgba(), f.width(), f.height()))
             .unwrap_or((Vec::new(), 0, 0))
     });
-    let open = aurora_window::imm_r3d_present(&rgba, w, h);
     // The frame is over: edge snapshot and this frame's delta both roll. See
     // `input_step`, which is the one place a frame ends.
+    //
+    // BEFORE the present, because presenting is what PUMPS the window's event
+    // loop. Snapshotting after it records this frame's fresh key presses as
+    // "already seen", and `input_pressed` never fires for a real keyboard - the
+    // bug that left a shipped game unable to attack or drink while walking and
+    // guarding worked fine.
     aurora_input_step();
+    let open = aurora_window::imm_r3d_present(&rgba, w, h);
     if open {
         1
     } else {
@@ -3786,7 +3796,7 @@ thread_local! {
 const INPUT_WORDS: usize = (INPUT_CODE_MAX as usize).div_ceil(64);
 
 fn bit_get(mask: &[u64; INPUT_WORDS], code: i64) -> bool {
-    if code < 0 || code >= INPUT_CODE_MAX {
+    if !(0..INPUT_CODE_MAX).contains(&code) {
         return false;
     }
     let c = code as usize;
@@ -3794,7 +3804,7 @@ fn bit_get(mask: &[u64; INPUT_WORDS], code: i64) -> bool {
 }
 
 fn bit_set(mask: &mut [u64; INPUT_WORDS], code: i64) {
-    if code < 0 || code >= INPUT_CODE_MAX {
+    if !(0..INPUT_CODE_MAX).contains(&code) {
         return;
     }
     let c = code as usize;
@@ -3949,16 +3959,21 @@ const INPUT_CODE_MAX: i64 = PAD_CODE_BASE + PAD_INPUTS.len() as i64;
 /// read "not held".
 #[no_mangle]
 pub extern "C" fn aurora_input_step() {
-    // The gamepads are read HERE, at the one frame boundary, and nowhere else.
+    // SNAPSHOT FIRST, then take new input. The order is the whole correctness of
+    // `input_pressed`, and having it backwards made every edge action in a
+    // windowed game dead.
     //
-    // Polling them lazily inside each read would let a pad change state halfway
-    // through a frame's logic - the button that was down when movement was
-    // resolved is up by the time the attack is - and would make the edge
-    // snapshot below compare against a state that no longer exists.
-    // Through `poll_pads`, which reads the hardware only when this process
-    // should be receiving it - see its comment. Calling `pad::poll` here read
-    // whatever the player was doing on a pad in ANOTHER game.
-    aurora_window::poll_pads();
+    // `prev` has to be the state THIS frame's logic actually saw. Polling the
+    // pads (and, in `r3d_present`, pumping the window's key events) before the
+    // snapshot writes the new press into `prev` in the same breath that first
+    // makes it visible - so `now && !was` is never true and the press is
+    // consumed before a single line of game code can read it.
+    //
+    // The symptom in a real game is exact and was reported from play: held
+    // actions work - moving, sprinting, guarding - and every EDGE action is
+    // dead. No attack, no flask, no jump, no lock-on. Scripted checks could not
+    // see it because they inject input and call this themselves, so their press
+    // lands between two snapshots rather than inside one.
     let mut held = [0u64; INPUT_WORDS];
     let mut c = 0;
     while c < INPUT_CODE_MAX {
@@ -3968,6 +3983,18 @@ pub extern "C" fn aurora_input_step() {
         c += 1;
     }
     INPUT_PREV.with(|p| p.set(held));
+
+    // The gamepads are read HERE, at the one frame boundary, and nowhere else -
+    // now AFTER the snapshot, so a button that goes down on this poll is an edge
+    // for the next frame rather than a press nobody was told about.
+    //
+    // Polling them lazily inside each read would let a pad change state halfway
+    // through a frame's logic - the button that was down when movement was
+    // resolved is up by the time the attack is.
+    // Through `poll_pads`, which reads the hardware only when this process
+    // should be receiving it - see its comment. Calling `pad::poll` here read
+    // whatever the player was doing on a pad in ANOTHER game.
+    aurora_window::poll_pads();
     end_frame_dt();
 }
 
@@ -5274,7 +5301,7 @@ macro_rules! force_link_one {
         $acc = $acc.wrapping_add(checked_addr!($sym, [$($p),*], $ret));
     };
     ($acc:ident, $kind:ident, $sym:ident, [$($p:ident),*], $ret:ident) => {
-        $acc = $acc.wrapping_add($sym as usize);
+        $acc = $acc.wrapping_add($sym as *const () as usize);
     };
 }
 
@@ -5334,6 +5361,65 @@ mod input_edge_tests {
     /// A held button is ONE press. This is the whole reason the builtin exists:
     /// without it a game reads `input_down` every frame, a flask belt empties in
     /// a second and a half, and a menu scrolls its whole list on one tap.
+    /// A press that arrives AFTER the frame boundary is still an edge.
+    ///
+    /// This is the ordering a real keyboard uses and the one that shipped
+    /// broken. `r3d_present` pumped the window's event loop and then called
+    /// `input_step`, so a key going down during the pump was written into the
+    /// "previously held" snapshot in the same call that first made it visible.
+    /// `now && !was` was never true, and every edge action in a windowed game
+    /// was dead - no attack, no flask, no jump, no lock-on - while held actions
+    /// like moving and guarding worked perfectly.
+    ///
+    /// Every existing test injects input and then calls `input_step`, so the
+    /// press lands BETWEEN two snapshots. That is the one order that worked and
+    /// the only one that was exercised. This drives the other.
+    #[test]
+    fn a_press_arriving_after_the_boundary_is_still_an_edge() {
+        reset();
+        aurora_input_bind(ACT, KEY_A);
+
+        // A frame in which nothing is held, ended properly.
+        assert_eq!(aurora_input_pressed(ACT), 0, "nothing is held yet");
+        aurora_input_step();
+
+        // The key goes down HERE - after the boundary, where a real key's event
+        // lands, because presenting is what pumps the event loop.
+        aurora_inject_key(KEY_A, 1);
+        assert_eq!(
+            aurora_input_pressed(ACT),
+            1,
+            "a key that went down after the last boundary must read as pressed"
+        );
+
+        // And it is one press, not sixty.
+        aurora_input_step();
+        assert_eq!(
+            aurora_input_pressed(ACT),
+            0,
+            "a held key must not read as pressed again"
+        );
+        assert_eq!(aurora_input_down(ACT), 1, "it is still down");
+    }
+
+    /// The release edge, the same way round.
+    #[test]
+    fn a_release_arriving_after_the_boundary_is_still_an_edge() {
+        reset();
+        aurora_input_bind(ACT, KEY_A);
+        aurora_inject_key(KEY_A, 1);
+        aurora_input_step();
+
+        aurora_inject_key(KEY_A, 0);
+        assert_eq!(
+            aurora_input_released(ACT),
+            1,
+            "a key that came up after the last boundary must read as released"
+        );
+        aurora_input_step();
+        assert_eq!(aurora_input_released(ACT), 0, "and only once");
+    }
+
     #[test]
     fn a_held_button_is_one_press() {
         reset();
@@ -5825,7 +5911,10 @@ mod par_world_tests {
             for _ in 0..5 {
                 aurora_spawn_entity();
             }
-            let fns = [hold_open as usize, hold_open as usize];
+            let fns = [
+                hold_open as *const () as usize,
+                hold_open as *const () as usize,
+            ];
             // SAFETY: `fns` points to a live local array of addresses of `extern "C" fn`s
             // that outlive the call.
             unsafe {
@@ -5877,7 +5966,10 @@ mod par_world_tests {
         // funnel all 8 spawns into a single world.
         let batch = || {
             std::thread::spawn(|| {
-                let fns = [spawn_two as usize, spawn_two as usize];
+                let fns = [
+                    spawn_two as *const () as usize,
+                    spawn_two as *const () as usize,
+                ];
                 // SAFETY: `fns` points to a live local array of addresses of `extern "C" fn`s
                 // that outlive the call.
                 unsafe {
@@ -5904,7 +5996,10 @@ mod par_world_tests {
 
     /// A system that itself opens a batch, so the workers below are nested.
     extern "C" fn nested_batch() {
-        let fns = [spawn_one as usize, spawn_one as usize];
+        let fns = [
+            spawn_one as *const () as usize,
+            spawn_one as *const () as usize,
+        ];
         // SAFETY: `fns` points to a live local array of addresses of `extern "C" fn`s
         // that outlive the call.
         unsafe {
@@ -5919,7 +6014,10 @@ mod par_world_tests {
         // world of the worker that happens to be running the outer system.
         // 2 outer systems * 2 inner systems = 4 entities, all in the owner.
         let owner = std::thread::spawn(|| {
-            let fns = [nested_batch as usize, nested_batch as usize];
+            let fns = [
+                nested_batch as *const () as usize,
+                nested_batch as *const () as usize,
+            ];
             // SAFETY: `fns` points to a live local array of addresses of `extern "C" fn`s
             // that outlive the call.
             unsafe {
