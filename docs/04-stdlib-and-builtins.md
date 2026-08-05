@@ -1119,3 +1119,24 @@ See [`examples/`](../examples/) - `gamedev.aur`, `physics.aur`, `ffi.aur`.
 - **Tooling**: there is a CLI debugger, profiler, and LSP (diagnostics + completion),
   but no editor-integrated debugger UI, no package registry, and the language is
   young - treat it as a capable foundation, not a battle-tested production engine.
+
+### Colour space: sRGB in, sRGB out
+
+Albedo and emissive textures are uploaded as `Rgba8UnormSrgb`, so the GPU decodes
+them to linear on sample. Normal and metallic-roughness maps are `Rgba8Unorm`,
+because they carry vectors and coefficients rather than colour. Lighting is done
+in linear.
+
+The final colour of every 3D pass is then encoded BACK to sRGB in the shader -
+`to_srgb` at the end of `shade`, `fs_sky` and `fs_line`. The window surface is
+deliberately a NON-sRGB format (`aurora-window` picks the first one that is not
+sRGB) because the HUD composites 2D pixels that are already sRGB bytes and must
+be written through untouched, so the encode cannot live in the target format.
+
+Without that encode the renderer wrote linear light into a target the display
+reads as sRGB, and everything came out far too dark - textured surfaces worst,
+because they are the ones that lost a decode on the way in. Measured in a game
+using it: a character atlas whose texels average 97 of 255 rendered a creature at
+12, against grass at 63. With the encode the same creature reads 60 and the grass
+136, and the prediction from the transfer function matched the measurement to
+within a tenth of a level.

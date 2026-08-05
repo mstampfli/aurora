@@ -2715,7 +2715,7 @@ fn vs_line(@location(0) pos: vec3<f32>, @location(1) color: vec3<f32>) -> LineOu
 }
 @fragment
 fn fs_line(in: LineOut) -> @location(0) vec4<f32> {
-    return vec4<f32>(in.color, 1.0);
+    return vec4<f32>(to_srgb(in.color), 1.0);
 }
 
 // Procedural skybox: gradient between horizon and zenith plus a sun disk.
@@ -2744,7 +2744,7 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     let far = g.inv_view_proj * vec4<f32>(in.ndc, 1.0, 1.0);
     let world = far.xyz / far.w;
     let dir = normalize(world - g.cam_pos.xyz);
-    return vec4<f32>(sky_color(dir), 1.0);
+    return vec4<f32>(to_srgb(sky_color(dir)), 1.0);
 }
 
 @vertex
@@ -2853,6 +2853,28 @@ fn fs_pshadow(in: VsOut) -> @location(0) vec4<f32> {
     return vec4<f32>(dist, dist, dist, dist);
 }
 
+// LINEAR -> sRGB, for the final colour of every 3D pass.
+//
+// The pipeline decodes sRGB albedo to linear on sample (`base_tex` is created
+// `Rgba8UnormSrgb`) and lights in linear, which is right - and then wrote the
+// linear result straight into an `Rgba8Unorm` target, which the display reads as
+// sRGB. Everything came out far too dark, and TEXTURED surfaces worst, because
+// they are the ones that lost a decode on the way in: measured in poly-souls, an
+// atlas whose texels average 97 of 255 rendered a creature at 12.
+//
+// The surface is deliberately NOT an sRGB format - `aurora-window` picks the
+// first non-sRGB format on purpose, because the HUD composites 2D pixels that
+// are ALREADY sRGB bytes and must be written through untouched. So the encode
+// belongs here, at the 3D passes' own outputs, rather than in the target format.
+//
+// The exact transfer, not an approximate pow(1/2.2): the toe matters for the
+// dark end, which is precisely where the complaint was.
+fn to_srgb(c: vec3<f32>) -> vec3<f32> {
+    let lo = c * 12.92;
+    let hi = 1.055 * pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.4)) - 0.055;
+    return select(hi, lo, c <= vec3<f32>(0.0031308));
+}
+
 // Shared lighting: PBR direct (directional + shadow + point lights) + ambient +
 // emissive + fog. Used by both the per-object and instanced fragment stages.
 fn shade(world_pos: vec3<f32>, n_in: vec3<f32>, albedo: vec3<f32>, alpha: f32, metallic: f32, rough: f32, emissive: vec3<f32>, ao: f32) -> vec4<f32> {
@@ -2887,7 +2909,7 @@ fn shade(world_pos: vec3<f32>, n_in: vec3<f32>, albedo: vec3<f32>, alpha: f32, m
         let f = clamp(exp(-length(g.cam_pos.xyz - world_pos) * g.fog_color.w), 0.0, 1.0);
         color = mix(g.fog_color.rgb, color, f);
     }
-    return vec4<f32>(color, alpha);
+    return vec4<f32>(to_srgb(color), alpha);
 }
 
 @fragment
