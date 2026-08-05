@@ -182,6 +182,8 @@ sustained fire re-plays the same buffer with no copy.
 | `play_sound_handle_at(h, vol, x, y, z)` | the same, positioned for the 3D listener |
 | `audio_plays() -> i64` | how many library sounds have been played, ever |
 | `audio_last_sound() -> i64` | the handle most recently played, or -1 |
+| `music_now() -> i64` | the handle of the bed currently playing, or -1 |
+| `music_starts() -> i64` | how many times a bed has been started (a bed relaunched every frame never advances) |
 | `play_music(h, vol)` | start a looping music bed (replaces any current bed) |
 | `music_volume(vol)` | change the bed's level WITHOUT restarting it |
 | `music_stop()` | stop the bed |

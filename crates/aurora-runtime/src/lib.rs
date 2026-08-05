@@ -2229,6 +2229,35 @@ thread_local! {
 thread_local! {
     static SOUND_PLAYS: std::cell::Cell<i64> = const { std::cell::Cell::new(0) };
     static SOUND_LAST: std::cell::Cell<i64> = const { std::cell::Cell::new(-1) };
+    static MUSIC_NOW: std::cell::Cell<i64> = const { std::cell::Cell::new(-1) };
+    static MUSIC_STARTS: std::cell::Cell<i64> = const { std::cell::Cell::new(0) };
+}
+
+/// `music_starts() -> i64`: how many times a bed has been STARTED.
+///
+/// `play_music` replaces whatever is playing, so calling it every frame restarts
+/// the track every frame and the bed never advances past its first fraction of a
+/// second - the audio twin of an animation re-seeded each frame, which this
+/// engine already made `r3d_anim_play` idempotent to prevent. `music_now` cannot
+/// see that: it reports the same handle whether the bed is playing or being
+/// relaunched sixty times a second. This is what makes "started once and left
+/// alone" an assertable property rather than a hope.
+#[no_mangle]
+pub extern "C" fn aurora_music_starts() -> i64 {
+    MUSIC_STARTS.with(|c| c.get())
+}
+
+/// `music_now() -> i64`: the handle of the bed currently playing, or -1.
+///
+/// Music is a STATE, not an event - one bed at a time, replaced rather than
+/// layered - so this answers which one rather than counting starts. It is the
+/// counterpart of `audio_plays` and exists for the same reason: `play_music`
+/// returned early under headless before touching anything, so a game could not
+/// be asked whether its boss theme actually started, and a check written against
+/// that could only assert the file LOADED.
+#[no_mangle]
+pub extern "C" fn aurora_music_now() -> i64 {
+    MUSIC_NOW.with(|c| c.get())
 }
 
 fn record_sound_play(handle: i64) {
@@ -4737,7 +4766,12 @@ pub extern "C" fn aurora_audio_stop() {
 /// loops it under the action.
 #[no_mangle]
 pub extern "C" fn aurora_play_music(handle: i64, gain_pct: i64) {
-    if handle < 0 || headless_audio() {
+    if handle < 0 {
+        return;
+    }
+    MUSIC_NOW.with(|c| c.set(handle));
+    MUSIC_STARTS.with(|c| c.set(c.get() + 1));
+    if headless_audio() {
         return;
     }
     let arc = SOUNDS.with(|s| s.borrow().get(handle as usize).cloned());
@@ -4757,6 +4791,7 @@ pub extern "C" fn aurora_music_volume(percent: i64) {
 /// Stop the background music, leaving SFX untouched. Backs `music_stop`.
 #[no_mangle]
 pub extern "C" fn aurora_music_stop() {
+    MUSIC_NOW.with(|c| c.set(-1));
     aurora_audio::stop_music();
 }
 
