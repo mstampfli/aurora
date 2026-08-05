@@ -17,7 +17,6 @@ const UNDOCUMENTED: &[&str] = &[
     "r3d_make_box_emissive",
     "r3d_camera_roll",
     "r3d_draw_quat",
-    "r3d_draw_tint",
     "r3d_draw_shield",
     "r3d_draw_on_joint",
     "r3d_anim_play_upper",
