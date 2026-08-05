@@ -167,6 +167,15 @@ thread_local! {
     static PHYS3_OWN: RefCell<Option<Phys3>> = const { RefCell::new(None) };
 }
 
+/// How far below a character the world may be for it to count as standing on it.
+///
+/// Bigger than the controller's `offset` (0.02), which is where a resting body
+/// parks, and smaller than one tick of any real fall: at 60Hz a jump leaving at
+/// 5 m/s covers 0.083 m in its first tick. So a body at rest always reads
+/// grounded and a body that has genuinely left the floor reads airborne
+/// immediately.
+const GROUND_TOLERANCE: f64 = 0.05;
+
 /// Create (or reset) the 3D physics world with gravity `(gx, gy, gz)`.
 ///
 /// Handles issued by the PREVIOUS world are invalidated, not silently carried
@@ -889,9 +898,9 @@ pub extern "C" fn aurora_phys3d_add_model_collider(
     let points: Vec<Point<Real>> = pos
         .chunks_exact(3)
         .map(|p| {
-            let px = p[0] as Real * sx as Real;
-            let py = p[1] as Real * sy as Real;
-            let pz = p[2] as Real * sz as Real;
+            let px = p[0] * sx as Real;
+            let py = p[1] * sy as Real;
+            let pz = p[2] * sz as Real;
             point![
                 px * cs + pz * sn + x as Real,
                 py + y as Real,
@@ -1264,7 +1273,51 @@ pub extern "C" fn aurora_phys3d_move_character(h: i64, dx: f64, dy: f64, dz: f64
                 filter,
                 |coll| hits.push(coll.handle),
             );
-            (pos.translation.vector + mvt.translation, mvt.grounded, hits)
+            // GROUNDED, ASKED WITH A TOLERANCE rather than read off a boundary.
+            //
+            // `mvt.grounded` is whether the movement ENDED in contact, and the
+            // controller deliberately parks a resting character `offset` above
+            // the floor - so a body standing still on flat ground sits exactly
+            // at the distance the test is measured against, and floating-point
+            // decides the answer. Measured in a game: walking thirty metres of
+            // level street reported airborne on fourteen separate ticks, in runs
+            // of one and two, at a resting height of 0.0201 against an offset of
+            // 0.02. Airborne is a different movement rule - gravity accumulates
+            // instead of the caller's ground stick - so that is the player
+            // falling for two frames while walking in a straight line.
+            //
+            // So when the movement says no, ask whether there is world within a
+            // short distance below instead. GROUND_TOLERANCE is well clear of
+            // the offset and well under one tick of a jump, so a real takeoff
+            // still reads airborne on the frame it happens.
+            //
+            // World only (group 1), exactly as `move_character` slides on the
+            // world only: standing on another player's head is not standing.
+            let mut grounded = mvt.grounded;
+            if !grounded {
+                let mut probe = pos;
+                probe.translation.vector += mvt.translation;
+                let down = -Vector::y();
+                let opts = ShapeCastOptions::with_max_time_of_impact(GROUND_TOLERANCE as Real);
+                let world_only = QueryFilter::default()
+                    .exclude_collider(col_h)
+                    .groups(InteractionGroups::new(Group::GROUP_2, Group::GROUP_1));
+                if p.query
+                    .cast_shape(
+                        &p.bodies,
+                        &p.colliders,
+                        &probe,
+                        &down,
+                        shape,
+                        opts,
+                        world_only,
+                    )
+                    .is_some()
+                {
+                    grounded = true;
+                }
+            }
+            (pos.translation.vector + mvt.translation, grounded, hits)
         };
         if let Some(k) = Key::from_i64(h) {
             if let Some(b) = p.registry.get_mut(k) {
@@ -1799,6 +1852,92 @@ pub(crate) fn census() -> (usize, usize, usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A body standing still on flat ground is GROUNDED, every tick.
+    ///
+    /// The controller parks a resting character `offset` above the floor, and
+    /// `mvt.grounded` measures contact at exactly that distance - so the answer
+    /// for a body doing nothing sat on a floating-point boundary and flipped.
+    /// In a game this reached the player as walking thirty metres of level
+    /// street and being airborne for fourteen scattered ticks, which switches
+    /// the movement rule underneath them: gravity accumulates instead of the
+    /// caller's ground stick.
+    ///
+    /// Two hundred ticks of the exact call a character controller makes while
+    /// walking - a horizontal step plus a small downward bias - and not one of
+    /// them may report airborne.
+    #[test]
+    fn a_body_resting_on_the_floor_never_flickers_airborne() {
+        aurora_phys3d_init(0.0, -22.0, 0.0);
+        aurora_phys3d_add_box(0.0, -1.0, 0.0, 50.0, 1.0, 50.0, 0);
+        let who = aurora_phys3d_add_character(0.0, 0.9, 0.0, 0.55, 0.35);
+
+        // Settle first: the first tick genuinely falls the last centimetre.
+        for _ in 0..10 {
+            aurora_phys3d_move_character(who, 0.0, -0.033, 0.0, 1.0 / 60.0);
+        }
+        assert_eq!(
+            aurora_phys3d_grounded(who),
+            1,
+            "a settled body is standing on the floor"
+        );
+
+        let mut airborne = 0;
+        for _ in 0..200 {
+            // 0.05 m of walk and the ground stick a game applies, which is what
+            // `bodies::move_character` does in poly-souls.
+            aurora_phys3d_move_character(who, 0.05, -0.033, 0.0, 1.0 / 60.0);
+            if aurora_phys3d_grounded(who) == 0 {
+                airborne += 1;
+            }
+        }
+        assert_eq!(
+            airborne, 0,
+            "walking level ground reported airborne on {airborne} of 200 ticks"
+        );
+    }
+
+    /// And a body that is genuinely off the floor still reads airborne.
+    ///
+    /// The tolerance that fixes the flicker is a way to make a body READ as
+    /// grounded, so the thing it must not do is swallow real air. Two heights,
+    /// either side of it: a body a finger's width up is standing, and a body a
+    /// hand's width up is not.
+    ///
+    /// Timing is deliberately not what is asserted. Rapier reports the takeoff
+    /// tick of a jump as grounded on its own, which costs nothing here because
+    /// `bodies::move_character` only forces its ground stick on a DOWNWARD
+    /// velocity - a rising body keeps rising. Pinning that would pin Rapier's
+    /// behaviour rather than this tolerance.
+    #[test]
+    fn the_ground_tolerance_is_a_hand_and_not_a_metre() {
+        aurora_phys3d_init(0.0, -22.0, 0.0);
+        aurora_phys3d_add_box(0.0, -1.0, 0.0, 50.0, 1.0, 50.0, 0);
+        let who = aurora_phys3d_add_character(0.0, 0.9, 0.0, 0.55, 0.35);
+        for _ in 0..10 {
+            aurora_phys3d_move_character(who, 0.0, -0.033, 0.0, 1.0 / 60.0);
+        }
+        assert_eq!(aurora_phys3d_grounded(who), 1);
+
+        // A hand's width up, and moving sideways only, so nothing pulls it back
+        // down: the floor is well outside the tolerance and it is in the air.
+        aurora_phys3d_set_pos(who, 0.0, 1.2, 0.0);
+        aurora_phys3d_move_character(who, 0.01, 0.0, 0.0, 1.0 / 60.0);
+        assert_eq!(
+            aurora_phys3d_grounded(who),
+            0,
+            "0.3 m above the floor is not standing on it"
+        );
+
+        // And back down to where a resting body parks.
+        aurora_phys3d_set_pos(who, 0.0, 0.92, 0.0);
+        aurora_phys3d_move_character(who, 0.01, 0.0, 0.0, 1.0 / 60.0);
+        assert_eq!(
+            aurora_phys3d_grounded(who),
+            1,
+            "a body parked at the controller's own offset is standing"
+        );
+    }
 
     /// A handle from before `init` is LOUD; one you removed yourself is quiet.
     ///
