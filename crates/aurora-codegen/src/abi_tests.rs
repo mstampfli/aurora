@@ -50,7 +50,9 @@ fn host_imports_match_the_builtin_table() {
     let clif = |t: aurora_abi::Ty| match t {
         aurora_abi::Ty::I64 => types::I64,
         aurora_abi::Ty::F64 => types::F64,
-        aurora_abi::Ty::Ptr => ptr,
+        // A predicate is an `i64` 0 or 1 on the wire - `Bool` is what the
+        // CHECKER is told, not a different machine type.
+        aurora_abi::Ty::Ptr | aurora_abi::Ty::Bool => ptr,
         // Never reached: `abi_params`/`abi_ret` turn a `Str` result into the
         // leading out-pointer, so no declared slot is ever `Str`.
         aurora_abi::Ty::Str => unreachable!("Str is not an ABI slot type"),
@@ -90,7 +92,7 @@ fn scalar_dispatch_agrees_with_the_declared_import() {
         };
         let clif = |t: aurora_abi::Ty| match t {
             aurora_abi::Ty::F64 => types::F64,
-            aurora_abi::Ty::I64 | aurora_abi::Ty::Ptr => types::I64,
+            aurora_abi::Ty::I64 | aurora_abi::Ty::Ptr | aurora_abi::Ty::Bool => types::I64,
             aurora_abi::Ty::Str => unreachable!("a scalar row cannot return Str"),
         };
         let want: Vec<Type> = sig_params.iter().map(|t| clif(*t)).collect();

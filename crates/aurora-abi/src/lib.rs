@@ -73,6 +73,16 @@ pub enum Ty {
     /// their address as a leading [`Ty::Ptr`] parameter, so the host function
     /// itself returns nothing. Only ever a return type, only on a `text` row.
     Str,
+    /// A PREDICATE result. The host function returns an `i64` 0 or 1 exactly as
+    /// [`Ty::I64`] does - the difference is what the CHECKER is told, so
+    /// `if starts_with(a, b)` type-checks as a condition instead of being an
+    /// `i64` where a `bool` belongs.
+    ///
+    /// Added because the table had no word for it: a predicate declared `I64`
+    /// rejects its own idiomatic use, and one declared `void` is unchecked
+    /// entirely - which is how `str + char_at(..)` reached codegen and
+    /// segfaulted rather than being a type error.
+    Bool,
 }
 
 /// How the backend treats a table row. See the crate docs for the full table.
@@ -280,6 +290,10 @@ macro_rules! for_each_builtin {
         [special,  read_file,                     aurora_read_file,                      [Ptr, Ptr, I64],                                 void, shared]
         [special,  write_file,                    aurora_write_file,                     [Ptr, I64, Ptr, I64],                            I64, shared]
         [special,  file_exists,                   aurora_file_exists,                    [Ptr, I64],                                      I64, shared]
+        [text,     is_i64,                        aurora_is_i64,                         [Ptr, I64],                                      I64, shared]
+        [text,     parse_i64,                     aurora_parse_i64,                      [Ptr, I64, I64],                                 I64, shared]
+        [text,     is_f64,                        aurora_is_f64,                         [Ptr, I64],                                      I64, shared]
+        [text,     parse_f64,                     aurora_parse_f64,                      [Ptr, I64, F64],                                 F64, shared]
         [special,  json_parse,                    aurora_json_parse,                     [Ptr, I64],                                      I64, shared]
         [special,  json_load,                     aurora_json_load,                      [Ptr, I64],                                      I64, shared]
         [special,  json_get,                      aurora_json_get,                       [I64, Ptr, I64],                                 I64, shared]
@@ -755,27 +769,27 @@ macro_rules! for_each_builtin {
         // polymorphic math/bit ops, string ops, ECS spawn, and `run_systems`.
         [inline,   print,                         none,                                  [],                                              void, shared]
         [inline,   println,                       none,                                  [],                                              void, shared]
-        [inline,   sqrt,                          none,                                  [],                                              void, shared]
-        [inline,   floor,                         none,                                  [],                                              void, shared]
-        [inline,   ceil,                          none,                                  [],                                              void, shared]
-        [inline,   round,                         none,                                  [],                                              void, shared]
+        [inline,   sqrt,                          none,                                  [],                                              F64, shared]
+        [inline,   floor,                         none,                                  [],                                              F64, shared]
+        [inline,   ceil,                          none,                                  [],                                              F64, shared]
+        [inline,   round,                         none,                                  [],                                              F64, shared]
         [inline,   abs,                           none,                                  [],                                              void, shared]
         [inline,   min,                           none,                                  [],                                              void, shared]
         [inline,   max,                           none,                                  [],                                              void, shared]
         [inline,   clamp,                         none,                                  [],                                              void, shared]
-        [inline,   len,                           none,                                  [],                                              void, shared]
-        [inline,   str,                           none,                                  [],                                              void, shared]
+        [inline,   len,                           none,                                  [],                                              I64, shared]
+        [inline,   str,                           none,                                  [],                                              Str, shared]
         [inline,   spawn,                         none,                                  [],                                              void, shared]
         [inline,   run_systems,                   none,                                  [],                                              void, shared]
-        [inline,   band,                          none,                                  [],                                              void, shared]
-        [inline,   bor,                           none,                                  [],                                              void, shared]
-        [inline,   bxor,                          none,                                  [],                                              void, shared]
-        [inline,   shl,                           none,                                  [],                                              void, shared]
-        [inline,   shr,                           none,                                  [],                                              void, shared]
-        [inline,   bnot,                          none,                                  [],                                              void, shared]
-        [inline,   char_at,                       none,                                  [],                                              void, shared]
-        [inline,   substr,                        none,                                  [],                                              void, shared]
-        [inline,   starts_with,                   none,                                  [],                                              void, shared]
+        [inline,   band,                          none,                                  [],                                              I64, shared]
+        [inline,   bor,                           none,                                  [],                                              I64, shared]
+        [inline,   bxor,                          none,                                  [],                                              I64, shared]
+        [inline,   shl,                           none,                                  [],                                              I64, shared]
+        [inline,   shr,                           none,                                  [],                                              I64, shared]
+        [inline,   bnot,                          none,                                  [],                                              I64, shared]
+        [inline,   char_at,                       none,                                  [],                                              I64, shared]
+        [inline,   substr,                        none,                                  [],                                              Str, shared]
+        [inline,   starts_with,                   none,                                  [],                                              Bool, shared]
 
         // Runtime functions that are not builtins: they only need a JIT symbol
         // and an AOT link edge, so `@extern` declarations can bind them.
@@ -821,6 +835,9 @@ macro_rules! ty_of {
     };
     (Str) => {
         $crate::Ty::Str
+    };
+    (Bool) => {
+        $crate::Ty::Bool
     };
 }
 

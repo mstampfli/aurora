@@ -162,17 +162,25 @@ fn symbols_follow_the_naming_convention() {
     }
 }
 
+/// An inline row declares no CALL - no parameters, and (asserted next to the
+/// symbol check above) no symbol, because codegen emits these rather than
+/// calling a host function.
+///
+/// Its `ret` is a different thing and IS allowed: the type of the expression the
+/// builtin produces, which is what the checker needs. That distinction used to
+/// be missing - every inline row said `void` - so `char_at`'s result typed as
+/// unknown, `str + char_at(..)` type-checked leniently, and codegen emitted a
+/// pointer dereference of an integer. A segfault from a program `check` passed.
+///
+/// The four that stay `None` are genuinely overloaded: `abs`, `min`, `max` and
+/// `clamp` each answer int OR float depending on their argument, and a single
+/// declared type would be a guess. Unknown is the honest answer for those.
 #[test]
-fn inline_rows_carry_no_signature() {
+fn inline_rows_declare_no_call() {
     for b in TABLE.iter().filter(|b| b.kind == Kind::Inline) {
         assert!(
             b.params.is_empty(),
             "inline builtin `{}` must have no parameters",
-            b.name
-        );
-        assert_eq!(
-            b.ret, None,
-            "inline builtin `{}` must have no return type",
             b.name
         );
     }
@@ -202,10 +210,14 @@ fn str_is_only_a_text_rows_return() {
             b.name
         );
         if b.ret == Some(Ty::Str) {
-            assert_eq!(
-                b.kind,
-                Kind::Text,
-                "`{}` returns Str but is not a text row",
+            // An INLINE row may also say `Str`, because it declares no call: no
+            // host function is imported for it, so `abi_params` never turns the
+            // result into a leading out-pointer and no slot is involved. What it
+            // says is the type of the expression, for the checker - `str(n)` and
+            // `substr(s, i, n)` produce strings and the compiler should know it.
+            assert!(
+                b.kind == Kind::Text || b.kind == Kind::Inline,
+                "`{}` returns Str but is neither a text nor an inline row",
                 b.name
             );
         }

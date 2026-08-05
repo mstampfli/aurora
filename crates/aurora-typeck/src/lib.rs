@@ -1396,6 +1396,7 @@ fn abi_ret_ty(b: &aurora_abi::Builtin) -> Option<Ty> {
         Some(aurora_abi::Ty::I64) => Some(Ty::Int(aurora_lexer::IntTy::I64)),
         Some(aurora_abi::Ty::F64) => Some(Ty::Float(aurora_lexer::FloatTy::F64)),
         Some(aurora_abi::Ty::Str) => Some(Ty::Str),
+        Some(aurora_abi::Ty::Bool) => Some(Ty::Bool),
         // A raw pointer result is a handle the checker has no name for.
         Some(aurora_abi::Ty::Ptr) => None,
         None => None,

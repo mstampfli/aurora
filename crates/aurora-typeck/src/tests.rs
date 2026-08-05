@@ -795,3 +795,34 @@ fn a_method_call_is_not_a_missing_field() {
         "a method call was judged as a field read: {errs:?}"
     );
 }
+
+/// An inline builtin's RETURN TYPE is checked, because the table now carries it.
+///
+/// `char_at` answers the byte as an `i64`. The ABI declared every inline builtin
+/// with `void` and no parameters, so the checker had no type for the call, and
+/// `s + char_at(s, 0)` - a `str` plus an `i64` - type-checked leniently and
+/// reached codegen, which emitted a pointer dereference of an integer. That is a
+/// SEGFAULT from a program the compiler accepted, which is the class of bug the
+/// one-builtin-table exists to make unspeakable.
+#[test]
+fn an_inline_builtin_result_is_typed() {
+    let errs = errors("fn f(s: str) -> str { s + char_at(s, 0) }");
+    assert!(
+        errs.iter().any(|e| e.contains("str")),
+        "concatenating a str with char_at's i64 must not check, got {errs:?}"
+    );
+
+    // The other direction, which matters as much: the ones that DO line up must
+    // still be silent, or typing the table would have cost more than it bought.
+    let ok = errors(
+        "fn g(s: str) -> str {
+            let n = len(s)
+            let c = char_at(s, 0)
+            let t = substr(s, 0, 1)
+            let d = sqrt(4.0)
+            if starts_with(s, \"x\") { }
+            t + str(n) + str(c) + str(d)
+         }",
+    );
+    assert!(ok.is_empty(), "correct uses must still check, got {ok:?}");
+}

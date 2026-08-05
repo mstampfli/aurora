@@ -5221,7 +5221,7 @@ fn abi_cty(t: aurora_abi::Ty) -> Cty {
     match t {
         aurora_abi::Ty::F64 => Cty::F64,
         aurora_abi::Ty::Str => Cty::Str,
-        aurora_abi::Ty::I64 | aurora_abi::Ty::Ptr => Cty::I64,
+        aurora_abi::Ty::I64 | aurora_abi::Ty::Ptr | aurora_abi::Ty::Bool => Cty::I64,
     }
 }
 

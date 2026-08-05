@@ -228,6 +228,13 @@ remaining debt is dropped, because chasing all of it makes the next frame longer
 still and the program never catches up. Losing simulated time after a stall is
 visible and survivable; locking up is not.
 
+Parsing: `is_i64(s) -> 1|0` / `parse_i64(s, fallback) -> i64`, and `is_f64` /
+`parse_f64(s, fallback) -> f64`. The fallback is an ARGUMENT rather than a built-in
+zero, so the guess is written at the call site where a reader can see what
+"unparseable" was taken to mean - a `parse` that folds bad input into 0 makes a
+corrupt save read as a level-0 character with no souls, confidently. Ask the
+predicate first wherever a wrong answer would be worse than none.
+
 Text files: `read_file(path) -> str` ("" if unreadable - discriminate with
 `file_exists(path) -> 1|0`), `write_file(path, contents) -> 1|0` (creates
 parent directories). `save_png(path)` writes the 2D framebuffer as a PNG

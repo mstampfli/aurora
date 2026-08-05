@@ -278,6 +278,53 @@ pub unsafe extern "C" fn aurora_sys_env(out: *mut i64, ptr: *const u8, len: i64)
     unsafe { crate::write_str(out, v.into_bytes()) };
 }
 
+/// `is_i64(s) -> 1|0`: whether `s` parses as a whole number.
+///
+/// The predicate half of parsing, and it exists so the fallback half cannot lie.
+/// A `parse` that folds "not a number" into a returned 0 makes a corrupt save
+/// file read as a level-0 character with no souls, confidently - the shape this
+/// engine's own callers keep getting bitten by. Ask this first when the answer
+/// has to be trusted; pass a fallback when it does not.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
+#[no_mangle]
+pub unsafe extern "C" fn aurora_is_i64(ptr: *const u8, len: i64) -> i64 {
+    i64::from(arg_str(ptr, len).trim().parse::<i64>().is_ok())
+}
+
+/// `parse_i64(s, fallback) -> i64`: `s` as a whole number, or `fallback`.
+///
+/// The fallback is an ARGUMENT rather than a built-in zero so the guess is
+/// written at the call site, where a reader can see what "unparseable" was taken
+/// to mean. Pair with `is_i64` when a wrong answer would be worse than none.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
+#[no_mangle]
+pub unsafe extern "C" fn aurora_parse_i64(ptr: *const u8, len: i64, fallback: i64) -> i64 {
+    arg_str(ptr, len).trim().parse::<i64>().unwrap_or(fallback)
+}
+
+/// `is_f64(s) -> 1|0`: whether `s` parses as a number. See `is_i64`.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
+#[no_mangle]
+pub unsafe extern "C" fn aurora_is_f64(ptr: *const u8, len: i64) -> i64 {
+    i64::from(arg_str(ptr, len).trim().parse::<f64>().is_ok())
+}
+
+/// `parse_f64(s, fallback) -> f64`: `s` as a number, or `fallback`. See
+/// `parse_i64` for why the fallback is an argument.
+///
+/// # Safety
+/// `ptr` must point to `len` initialized bytes.
+#[no_mangle]
+pub unsafe extern "C" fn aurora_parse_f64(ptr: *const u8, len: i64, fallback: f64) -> f64 {
+    arg_str(ptr, len).trim().parse::<f64>().unwrap_or(fallback)
+}
+
 /// `read_file(path) -> str`: the file's contents, or "" if unreadable
 /// (discriminate with `file_exists`). The string lives in the frame arena.
 ///
