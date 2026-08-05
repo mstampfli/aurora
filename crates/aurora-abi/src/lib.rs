@@ -504,6 +504,8 @@ macro_rules! for_each_builtin {
         [scalar,   play_sound_at,                 aurora_play_sound_at,                  [I64, I64, I64, F64, F64, F64],                  void, owner]
         [scalar,   play_sound_handle,             aurora_play_sound_handle,              [I64, I64],                                      void, owner]
         [scalar,   play_sound_handle_at,          aurora_play_sound_handle_at,           [I64, I64, F64, F64, F64],                       void, owner]
+        [scalar,   audio_plays,                   aurora_audio_plays,                    [],                                              I64, owner]
+        [scalar,   audio_last_sound,              aurora_audio_last_sound,               [],                                              I64, owner]
         [scalar,   play_music,                    aurora_play_music,                     [I64, I64],                                      void, shared]
         [scalar,   music_volume,                  aurora_music_volume,                   [I64],                                           void, shared]
         [scalar,   music_stop,                    aurora_music_stop,                     [],                                              void, shared]

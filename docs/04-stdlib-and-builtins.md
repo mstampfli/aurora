@@ -180,6 +180,8 @@ sustained fire re-plays the same buffer with no copy.
 | `load_sound(path) -> i64` | decode + cache, returns a handle (`-1` on failure) |
 | `play_sound_handle(h, vol)` | play a loaded sound (`vol` 0..100) |
 | `play_sound_handle_at(h, vol, x, y, z)` | the same, positioned for the 3D listener |
+| `audio_plays() -> i64` | how many library sounds have been played, ever |
+| `audio_last_sound() -> i64` | the handle most recently played, or -1 |
 | `play_music(h, vol)` | start a looping music bed (replaces any current bed) |
 | `music_volume(vol)` | change the bed's level WITHOUT restarting it |
 | `music_stop()` | stop the bed |
@@ -312,6 +314,15 @@ that as BLOCKED, never as a pass.
   `r3d_debug_skeleton(h, px,py,pz, yaw, scale, r,g,b)` draws a model's bones;
   `phys3d_debug_draw(r,g,b)` draws every physics collider as a wireframe
   (box/sphere/capsule) so you can verify hitboxes align with the mesh.
+`audio_plays` / `audio_last_sound` are how a HEADLESS run is asked whether the game
+actually made a noise. `audio_capture_save` renders synthesized notes only, and both
+handle-play functions used to return early under headless before they had even looked
+at the handle - so nothing a script could ask distinguished "the fight played
+twenty-six sounds" from "the assets were never staged and it ran in silence". A check
+written against that could only assert the files LOADED, which is not the thing that
+matters. A negative handle deliberately does not count, so the silent build is exactly
+the one that reports zero.
+
 - Offline audio: under headless, `play_note`/`play_sound` record their events
   (not the device); `audio_capture_save(path) -> 1|0` renders them to a 16-bit
   WAV at their virtual timestamps, so synthesized audio can be `wav-audit`ed.

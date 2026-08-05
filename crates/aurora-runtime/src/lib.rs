@@ -2211,6 +2211,51 @@ thread_local! {
     static AUDIO_CAP: RefCell<Vec<(i32, f32, f64)>> = const { RefCell::new(Vec::new()) };
 }
 
+// Library sound plays, so a headless run can be asked whether the game actually
+// made a noise.
+//
+// `audio_capture_save` above renders SYNTHESIZED notes only - its own comment
+// says library WAVs are audited directly - and both play functions returned
+// early under headless before they had even looked at the handle. So nothing a
+// script could ask distinguished "the fight played twenty-six sounds" from "the
+// assets were never staged and the game ran in silence", and a check written
+// against that could only assert the files LOADED, which is not the thing that
+// matters.
+//
+// A negative handle deliberately does NOT count. `load_sound` answers -1 for a
+// missing file and every play function treats that as a no-op, so the silent
+// build is exactly the one that reports zero plays - which is the failure a
+// check needs to be able to see.
+thread_local! {
+    static SOUND_PLAYS: std::cell::Cell<i64> = const { std::cell::Cell::new(0) };
+    static SOUND_LAST: std::cell::Cell<i64> = const { std::cell::Cell::new(-1) };
+}
+
+fn record_sound_play(handle: i64) {
+    SOUND_PLAYS.with(|c| c.set(c.get() + 1));
+    SOUND_LAST.with(|c| c.set(handle));
+}
+
+/// `audio_plays() -> i64`: how many library sounds have been played, ever.
+///
+/// Counts the request the engine ACCEPTED, not what reached a speaker: headless
+/// has no device and a distant sound is culled by the mixer, and neither of those
+/// is what a game is asking about when it asks whether it played a sound.
+#[no_mangle]
+pub extern "C" fn aurora_audio_plays() -> i64 {
+    SOUND_PLAYS.with(|c| c.get())
+}
+
+/// `audio_last_sound() -> i64`: the handle most recently played, or -1.
+///
+/// The half that makes a check non-decorative. A count says a noise happened; a
+/// game wants to assert that the DEFLECT played a clash rather than a hit, and
+/// that question needs to name which buffer went out.
+#[no_mangle]
+pub extern "C" fn aurora_audio_last_sound() -> i64 {
+    SOUND_LAST.with(|c| c.get())
+}
+
 fn audio_capture_note(semitone: i64, dur_ms: i64) {
     let t = crate::data::virtual_time_seconds();
     AUDIO_CAP.with(|c| {
@@ -4638,7 +4683,11 @@ pub unsafe extern "C" fn aurora_load_sound(ptr: *const u8, len: i64) -> i64 {
 /// Backs `play_sound_handle` - no re-decode, so it is safe on the hot path (every shot/footstep).
 #[no_mangle]
 pub extern "C" fn aurora_play_sound_handle(handle: i64, gain_pct: i64) {
-    if handle < 0 || headless_audio() {
+    if handle < 0 {
+        return;
+    }
+    record_sound_play(handle);
+    if headless_audio() {
         return;
     }
     let arc = SOUNDS.with(|s| s.borrow().get(handle as usize).cloned());
@@ -4653,7 +4702,11 @@ pub extern "C" fn aurora_play_sound_handle(handle: i64, gain_pct: i64) {
 /// play_sound_at but for a real WAV. Backs `play_sound_handle_at`.
 #[no_mangle]
 pub extern "C" fn aurora_play_sound_handle_at(handle: i64, gain_pct: i64, x: f64, y: f64, z: f64) {
-    if handle < 0 || headless_audio() {
+    if handle < 0 {
+        return;
+    }
+    record_sound_play(handle);
+    if headless_audio() {
         return;
     }
     let (sgain, pan) = spatialize([x, y, z]);
