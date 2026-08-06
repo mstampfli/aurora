@@ -40,6 +40,17 @@ fn skeleton_fingerprint(skel: &crate::model::Skeleton) -> u64 {
     h.finish()
 }
 
+/// A path folded into a cache key, so the same clip file retargeted from two
+/// different rigs cannot collide on one entry.
+fn fnv1a(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x1000_0000_01b3);
+    }
+    h
+}
+
 /// The heavy half of a drawable: uploaded GPU meshes and materials, plus the parsed
 /// model (skeleton, clips, CPU mesh data). SHARED between every handle that loaded the
 /// same file, and reference-counted so the last handle to go frees the GPU memory.
@@ -289,7 +300,7 @@ impl Scene {
     /// way to write a horde - one handle per body, so each animates independently - costs
     /// one upload per distinct file instead of one per body.
     pub fn load_model(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, path: &str) -> i64 {
-        self.load_model_inner(device, queue, path, None, &[], "", &[], &[])
+        self.load_model_inner(device, queue, path, None, &[], &[], &[])
     }
 
     /// Load a character together with a moveset gathered from separate files.
@@ -316,21 +327,11 @@ impl Scene {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         path: &str,
-        clips: &[&str],
-        source_rest: &str,
+        clips: &[(&str, &str)],
         rename: &[(&str, &str)],
         translate: &[&str],
     ) -> i64 {
-        self.load_model_inner(
-            device,
-            queue,
-            path,
-            None,
-            clips,
-            source_rest,
-            rename,
-            translate,
-        )
+        self.load_model_inner(device, queue, path, None, clips, rename, translate)
     }
 
     /// Load `path` as a part of `host`'s body: its skinning is rebound onto the
@@ -363,7 +364,7 @@ impl Scene {
             eprintln!("aurora: load_part: host {host} has no skeleton");
             return -1;
         };
-        self.load_model_inner(device, queue, path, Some(&skeleton), &[], "", &[], &[])
+        self.load_model_inner(device, queue, path, Some(&skeleton), &[], &[], &[])
     }
 
     /// Attach `texture` to any primitive whose material is named `material` and
@@ -441,8 +442,7 @@ impl Scene {
         queue: &wgpu::Queue,
         path: &str,
         rebind: Option<&crate::model::Skeleton>,
-        clips: &[&str],
-        source_rest: &str,
+        clips: &[(&str, &str)],
         rename: &[(&str, &str)],
         translate: &[&str],
     ) -> i64 {
@@ -513,7 +513,7 @@ impl Scene {
         // no usable rest pose of their own, and a joint's local rotation means
         // nothing without the rest orientation it was authored from.
         if !clips.is_empty() {
-            self.gather_clips(&mut model, source_rest, clips, rename, translate);
+            self.gather_clips(&mut model, clips, rename, translate);
         }
         let handle = self.upload_model(device, queue, key, model_key.clone(), Arc::new(model));
         self.drop_uploaded_pixels(&model_key);
@@ -574,11 +574,19 @@ impl Scene {
     ///
     /// A clip file that fails is reported and skipped: one bad export in a
     /// library of hundreds should cost that clip, not the character.
+    /// Each clip carries the rig it was AUTHORED on, because a body's moveset
+    /// can come from more than one pack and a clip retargeted from the wrong
+    /// rest pose does not fail - it lands, silently, with the limbs in the wrong
+    /// places. Poly-souls measured exactly that: a drink gesture from a second
+    /// pack brought the hand within 0.76m of the head where an idle that is not
+    /// drinking at all manages 0.85m.
+    ///
+    /// The rest skeletons are loaded once each and shared across the clips that
+    /// name them, so a moveset of hundreds from two packs reads two rigs.
     fn gather_clips(
         &mut self,
         model: &mut Model,
-        source_rest: &str,
-        clips: &[&str],
+        clips: &[(&str, &str)],
         rename: &[(&str, &str)],
         translate: &[&str],
     ) {
@@ -587,28 +595,22 @@ impl Scene {
             return;
         };
         let rig = skeleton_fingerprint(&target);
-        let missing: Vec<&&str> = clips
-            .iter()
-            .filter(|c| !self.clip_cache.contains_key(&((**c).to_string(), rig)))
-            .collect();
-        let rest = if missing.is_empty() {
-            None
-        } else {
-            match crate::model::Model::load_skeleton(source_rest) {
-                Ok(r) => Some(r),
-                Err(e) => {
-                    eprintln!("aurora: no retargeting reference rig: {e}");
-                    return;
-                }
-            }
-        };
-        for clip in clips {
-            let ck = ((*clip).to_string(), rig);
+        let mut rests: std::collections::HashMap<String, Option<crate::model::Skeleton>> =
+            std::collections::HashMap::new();
+        for (clip, source_rest) in clips {
+            let ck = ((*clip).to_string(), rig ^ fnv1a(source_rest));
             let got = match self.clip_cache.get(&ck) {
                 Some(c) => Arc::clone(c),
                 None => {
-                    // `rest` is Some whenever anything was missing, and this arm
-                    // only runs for something missing.
+                    let rest = rests.entry((*source_rest).to_string()).or_insert_with(|| {
+                        match crate::model::Model::load_skeleton(source_rest) {
+                            Ok(r) => Some(r),
+                            Err(e) => {
+                                eprintln!("aurora: no retargeting reference rig: {e}");
+                                None
+                            }
+                        }
+                    });
                     let Some(rest) = rest.as_ref() else { continue };
                     // Parsed through the shared model cache, so a clip file is
                     // READ once however many rigs retarget it. A modular cast
@@ -821,8 +823,7 @@ impl Scene {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         paths: &[&str],
-        clips: &[&str],
-        source_rest: &str,
+        clips: &[(&str, &str)],
         rename: &[(&str, &str)],
         translate: &[&str],
     ) -> i64 {
@@ -919,7 +920,7 @@ impl Scene {
         // again for every assembled body, which is every character in the game -
         // the whole cast goes through THIS path, not the other one.
         if !clips.is_empty() {
-            self.gather_clips(&mut model, source_rest, clips, rename, translate);
+            self.gather_clips(&mut model, clips, rename, translate);
         }
 
         let handle = self.upload_model(device, queue, key, model_key.clone(), Arc::new(model));

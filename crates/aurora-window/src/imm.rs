@@ -592,10 +592,16 @@ pub fn r3d_load_model(path: &str) -> i64 {
 /// accumulated call by call and consumed by [`r3d_load_character`].
 #[derive(Default)]
 struct CharacterRecipe {
-    /// The rig the clips were authored on. Clip-only exports carry no usable
-    /// rest pose, and a joint's local rotation means nothing without one.
+    /// The rig the clips added NEXT were authored on. Clip-only exports carry no
+    /// usable rest pose, and a joint's local rotation means nothing without one.
+    ///
+    /// It applies to the adds that follow it rather than to the whole recipe, so
+    /// a body can gather its moveset from packs authored on different rigs -
+    /// name a rig, add its clips, name the next. Retargeting a clip from the
+    /// wrong rest pose does not fail, it lands with the limbs in the wrong
+    /// places, which is a bug that has to be measured to be seen.
     rig: String,
-    clips: Vec<String>,
+    clips: Vec<(String, String)>,
     rename: Vec<(String, String)>,
     /// Bones allowed to take translation from a clip - normally just the root.
     translate: Vec<String>,
@@ -616,7 +622,11 @@ pub fn r3d_clip_rig(path: &str) {
 
 /// Add one clip file to the moveset being gathered.
 pub fn r3d_clip_add(path: &str) {
-    RECIPE.with(|r| r.borrow_mut().clips.push(path.to_string()));
+    RECIPE.with(|r| {
+        let mut r = r.borrow_mut();
+        let rig = r.rig.clone();
+        r.clips.push((path.to_string(), rig));
+    });
 }
 
 /// Add one mesh file to the body being gathered, for [`r3d_load_assembly`].
@@ -650,14 +660,18 @@ pub fn r3d_load_character(path: &str) -> i64 {
     let recipe = RECIPE.with(|r| std::mem::take(&mut *r.borrow_mut()));
     with_gfx(-1, |g| {
         let (d, q, s) = g.scene_mut();
-        let clips: Vec<&str> = recipe.clips.iter().map(|c| c.as_str()).collect();
+        let clips: Vec<(&str, &str)> = recipe
+            .clips
+            .iter()
+            .map(|(c, rig)| (c.as_str(), rig.as_str()))
+            .collect();
         let rename: Vec<(&str, &str)> = recipe
             .rename
             .iter()
             .map(|(a, b)| (a.as_str(), b.as_str()))
             .collect();
         let translate: Vec<&str> = recipe.translate.iter().map(|t| t.as_str()).collect();
-        s.load_character(d, q, path, &clips, &recipe.rig, &rename, &translate)
+        s.load_character(d, q, path, &clips, &rename, &translate)
     })
 }
 
@@ -673,14 +687,18 @@ pub fn r3d_load_assembly() -> i64 {
     with_gfx(-1, |g| {
         let (d, q, s) = g.scene_mut();
         let parts: Vec<&str> = recipe.parts.iter().map(|p| p.as_str()).collect();
-        let clips: Vec<&str> = recipe.clips.iter().map(|c| c.as_str()).collect();
+        let clips: Vec<(&str, &str)> = recipe
+            .clips
+            .iter()
+            .map(|(c, rig)| (c.as_str(), rig.as_str()))
+            .collect();
         let rename: Vec<(&str, &str)> = recipe
             .rename
             .iter()
             .map(|(a, b)| (a.as_str(), b.as_str()))
             .collect();
         let translate: Vec<&str> = recipe.translate.iter().map(|t| t.as_str()).collect();
-        s.load_assembly(d, q, &parts, &clips, &recipe.rig, &rename, &translate)
+        s.load_assembly(d, q, &parts, &clips, &rename, &translate)
     })
 }
 

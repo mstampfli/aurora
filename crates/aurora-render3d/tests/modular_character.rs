@@ -193,11 +193,13 @@ fn a_character_plays_a_retargeted_sword_clip() {
         &device,
         &queue,
         &format!("{}/SK_Character_Male_King.fbx", dir.display()),
-        &[&format!(
-            "{}/A_Attack_LightCombo01A_RootMotion_Sword.fbx",
-            dir.display()
+        &[(
+            &format!(
+                "{}/A_Attack_LightCombo01A_RootMotion_Sword.fbx",
+                dir.display()
+            ),
+            &format!("{}/PolygonSyntyCharacter.fbx", dir.display()),
         )],
-        &format!("{}/PolygonSyntyCharacter.fbx", dir.display()),
         SYNTY_MAP,
         &["Pelvis"],
     );
