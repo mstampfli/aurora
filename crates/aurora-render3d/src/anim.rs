@@ -711,6 +711,11 @@ impl AnimPlayer {
 
     /// Model-space global transform of one joint in the CURRENT pose (NOT skinned - no
     /// inverse-bind). For attaching a prop (a weapon) to a bone: world = draw * this.
+    ///
+    /// This answers about the pose ON SCREEN, which makes it a question only the
+    /// presentation layer may ask. When the caller is a rule - "where is the
+    /// blade on this tick of this swing" - it wants [`clip_joint_global`], which
+    /// is the same arithmetic over the asset instead of over the controller.
     pub fn joint_global(&self, model: &Model, joint: usize) -> Option<Mat4> {
         let skel = model.skeleton.as_ref()?;
         if joint >= skel.joints.len() {
@@ -814,6 +819,36 @@ fn sample_locals(
     time: f32,
 ) -> (Vec<Vec3>, Vec<Quat>, Vec<Vec3>) {
     skel.sample(clip, time)
+}
+
+/// Model-space global transform of one joint, sampled from a CLIP at a TIME -
+/// with no reference to whatever that model happens to be playing.
+///
+/// A free function over the asset rather than a method on the controller, and
+/// that is the whole point of it. [`Anim::joint_global`] answers about the pose
+/// on screen: a caller using it to decide something is asking the animator what
+/// is true, and gets the rest pose when a clip fails to load. This one is a pure
+/// function of authored data - a clip and a time in it - so a simulation that
+/// already owns which move is out and how far through it can ask where the
+/// weapon is without inverting the layers.
+///
+/// Only the chain from the root to `joint` is resolved, so the cost is the depth
+/// of that chain and not the size of the skeleton: a hitbox asks this once per
+/// swinging body per tick, and a 55-bone rig would otherwise do 55 matrix
+/// composes to answer about one hand.
+pub fn clip_joint_global(model: &Model, clip: usize, time: f32, joint: usize) -> Option<Mat4> {
+    let skel = model.skeleton.as_ref()?;
+    if joint >= skel.joints.len() {
+        return None;
+    }
+    let (t, r, s) = sample_locals(skel, model.clips.get(clip), time);
+    let n = skel.joints.len();
+    let local: Vec<Mat4> = (0..n)
+        .map(|i| Mat4::from_scale_rotation_translation(s[i], r[i], t[i]))
+        .collect();
+    let mut global: Vec<Option<Mat4>> = vec![None; n];
+    resolve_global(skel, &local, joint, &mut global);
+    global[joint]
 }
 
 /// Turn per-joint local TRS into skinning matrices (`global * inverse_bind`). Joints whose bit is
@@ -937,6 +972,107 @@ mod play_is_idempotent {
     /// Two looping clips of a second each, which is all a fade-source test needs:
     /// `blend` only reads durations through `reclocked`, and nothing here swaps
     /// a pair.
+    // A rig whose HAND actually moves, and two clips that move it differently.
+    //
+    // `two_clip_model` cannot pin anything about sampling: it has one joint and
+    // no channels, so every clip at every time answers the same identity, and a
+    // sampler that ignored its arguments entirely would pass.
+    fn swinging_model() -> Model {
+        use crate::model::{Channel, Interp, Path};
+        let hand_track = |x_at_end: f32| Channel {
+            joint: 1,
+            path: Path::Translation,
+            interp: Interp::Linear,
+            times: vec![0.0, 1.0],
+            values: vec![0.0, 0.0, 0.0, x_at_end, 0.0, 0.0],
+        };
+        Model {
+            primitives: Vec::new(),
+            skeleton: Some(Skeleton {
+                joints: vec![
+                    Joint {
+                        parent: None,
+                        inverse_bind: Mat4::IDENTITY,
+                        t: Vec3::ZERO,
+                        r: Quat::IDENTITY,
+                        s: Vec3::ONE,
+                        name: "Root".into(),
+                    },
+                    Joint {
+                        parent: Some(0),
+                        inverse_bind: Mat4::IDENTITY,
+                        t: Vec3::ZERO,
+                        r: Quat::IDENTITY,
+                        s: Vec3::ONE,
+                        name: "Hand".into(),
+                    },
+                ],
+            }),
+            clips: vec![
+                crate::model::Clip {
+                    name: "swing".into(),
+                    duration: 1.0,
+                    channels: vec![hand_track(4.0)],
+                    root: None,
+                },
+                crate::model::Clip {
+                    name: "other".into(),
+                    duration: 1.0,
+                    channels: vec![hand_track(0.0 - 9.0)],
+                    root: None,
+                },
+            ],
+        }
+    }
+
+    // Where the blade is on a frame of a swing is a question about the CLIP, and
+    // this is what makes that true rather than merely stated: the controller is
+    // playing something else entirely, and the answer does not move.
+    //
+    // Without it, a hitbox on the weapon would be reading the pose on screen -
+    // the layer inversion this project deletes on sight - and would quietly
+    // answer about the rest pose for any body whose clip failed to load.
+    #[test]
+    fn a_clip_joint_is_read_from_the_clip_and_not_from_what_is_playing() {
+        let m = swinging_model();
+        let hand = 1;
+        let at = |clip: usize, t: f32| {
+            clip_joint_global(&m, clip, t, hand)
+                .expect("the rig has that joint")
+                .w_axis
+                .x
+        };
+
+        // The swing moves the hand out to 4 over its length.
+        assert!((at(0, 0.0) - 0.0).abs() < 1e-5);
+        assert!((at(0, 0.5) - 2.0).abs() < 1e-5);
+        assert!((at(0, 1.0) - 4.0).abs() < 1e-5);
+        // And the other clip takes it the other way, at the same times.
+        assert!((at(1, 1.0) + 9.0).abs() < 1e-5);
+
+        // Now put the controller on the OTHER clip and run it to the end. What
+        // is on screen is the hand at -9.
+        let mut p = AnimPlayer::default();
+        p.play(1, false, 1.0, 0.0);
+        p.advance(&m, 2.0);
+        let on_screen = p
+            .joint_global(&m, hand)
+            .expect("the rig has that joint")
+            .w_axis
+            .x;
+        assert!((on_screen + 9.0).abs() < 1e-4, "on screen: {on_screen}");
+        // The clip query is unmoved by any of that.
+        assert!((at(0, 1.0) - 4.0).abs() < 1e-5);
+    }
+
+    // A missing clip must be TELLABLE from a joint that really is at the origin.
+    #[test]
+    fn a_clip_that_is_not_there_is_not_a_pose_at_the_origin() {
+        let m = swinging_model();
+        assert!(clip_joint_global(&m, 0, 0.0, 1).is_some());
+        assert!(clip_joint_global(&m, 0, 0.0, 99).is_none());
+    }
+
     fn two_clip_model() -> Model {
         Model {
             primitives: Vec::new(),

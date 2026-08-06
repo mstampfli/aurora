@@ -1183,6 +1183,69 @@ pub fn r3d_joint_basis(host: i64, joint: i64, axis: i64, comp: i64, yaw: f32) ->
         v[(comp.max(0) as usize).min(2)]
     })
 }
+/// Where a joint is when a CLIP is sampled at a TIME, in world space.
+///
+/// The asset-side twin of `r3d_joint_world`. See `Scene::clip_joint_world` for
+/// why a rule may call this one and may not call that one.
+#[allow(clippy::too_many_arguments)]
+pub fn r3d_clip_joint_world(
+    host: i64,
+    clip: i64,
+    time: f32,
+    joint: i64,
+    axis: i64,
+    x: f32,
+    y: f32,
+    z: f32,
+    yaw: f32,
+    scale: f32,
+) -> f32 {
+    with_gfx(0.0f32, |gf| {
+        let (_, _, s) = gf.scene_mut();
+        let p = s
+            .clip_joint_world(host, clip, time, joint, x, y, z, yaw, scale)
+            .unwrap_or([0.0, 0.0, 0.0]);
+        p[(axis.max(0) as usize).min(2)]
+    })
+}
+
+/// Which way a joint POINTS when a clip is sampled at a time.
+#[allow(clippy::too_many_arguments)]
+pub fn r3d_clip_joint_basis(
+    host: i64,
+    clip: i64,
+    time: f32,
+    joint: i64,
+    axis: i64,
+    comp: i64,
+    yaw: f32,
+) -> f32 {
+    with_gfx(0.0f32, |gf| {
+        let (_, _, s) = gf.scene_mut();
+        let v = s
+            .clip_joint_basis(host, clip, time, joint, axis, yaw)
+            .unwrap_or([0.0, 0.0, 0.0]);
+        v[(comp.max(0) as usize).min(2)]
+    })
+}
+
+/// CAN this rig answer about that joint in that clip at all?
+///
+/// The two above fall back to the origin, which is a plausible answer and
+/// therefore the dangerous kind: a hitbox built on a missing clip would sit at
+/// the body's feet and look like a weapon that misses rather than like a broken
+/// build. So the caller is given a way to ask, and the game asserts it once when
+/// a rig is loaded rather than testing a magic number every tick.
+pub fn r3d_clip_joint_ok(host: i64, clip: i64, joint: i64) -> i64 {
+    with_gfx(0i64, |gf| {
+        let (_, _, s) = gf.scene_mut();
+        match s.clip_joint_pos(host, clip, 0.0, joint) {
+            Some(_) => 1,
+            None => 0,
+        }
+    })
+}
+
 pub fn r3d_joint_pos(host: i64, joint: i64, axis: i64) -> f32 {
     with_gfx(0.0f32, |gf| {
         let (_, _, s) = gf.scene_mut();

@@ -3147,6 +3147,64 @@ pub extern "C" fn aurora_r3d_joint_world(
         scale as f32,
     ) as f64
 }
+/// `r3d_clip_joint_world(h, clip, t, joint, axis, x, y, z, yaw, scale) -> f64`:
+/// where a joint IS on one frame of one clip, in world space.
+///
+/// The asset-side twin of `r3d_joint_world`, which answers about the pose on
+/// screen. A rule may ask this and may not ask that: this is a pure function of
+/// authored data, so a simulation that owns which move is out and how far
+/// through it can place a hitbox on the weapon without asking the animator
+/// anything.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn aurora_r3d_clip_joint_world(
+    h: i64,
+    clip: i64,
+    t: f64,
+    joint: i64,
+    axis: i64,
+    x: f64,
+    y: f64,
+    z: f64,
+    yaw: f64,
+    scale: f64,
+) -> f64 {
+    aurora_window::imm_r3d_clip_joint_world(
+        h,
+        clip,
+        t as f32,
+        joint,
+        axis,
+        x as f32,
+        y as f32,
+        z as f32,
+        yaw as f32,
+        scale as f32,
+    ) as f64
+}
+/// `r3d_clip_joint_basis(h, clip, t, joint, axis, comp, yaw) -> f64`: which way
+/// a joint POINTS on one frame of one clip.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn aurora_r3d_clip_joint_basis(
+    h: i64,
+    clip: i64,
+    t: f64,
+    joint: i64,
+    axis: i64,
+    comp: i64,
+    yaw: f64,
+) -> f64 {
+    aurora_window::imm_r3d_clip_joint_basis(h, clip, t as f32, joint, axis, comp, yaw as f32) as f64
+}
+/// `r3d_clip_joint_ok(h, clip, joint) -> i64`: can this rig answer about that
+/// joint in that clip at all? The two above fall back to the origin, which is a
+/// plausible answer, so this is how a caller tells a missing clip from a joint
+/// that really is at the body's feet.
+#[no_mangle]
+pub extern "C" fn aurora_r3d_clip_joint_ok(h: i64, clip: i64, joint: i64) -> i64 {
+    aurora_window::imm_r3d_clip_joint_ok(h, clip, joint)
+}
 /// `r3d_yaw_rotate(yaw, lx, lz, axis) -> f64`: turn a LOCAL offset by a yaw into
 /// world space, in the renderer's own handedness. `axis` 0 = x, 2 = z.
 ///

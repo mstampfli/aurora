@@ -1927,6 +1927,81 @@ impl Scene {
         Some([u.x, u.y, u.z])
     }
 
+    /// Where a joint IS when a CLIP is sampled at a TIME, in world space.
+    ///
+    /// [`Self::joint_world`] answers about the pose on screen. This answers about
+    /// the asset, so a rule that owns which move is out and how far through it
+    /// can ask where the weapon is without asking the animator anything - and
+    /// gets the same answer whether or not that clip is the one playing, whether
+    /// the model is on screen, and whether the controller ever loaded.
+    ///
+    /// The placement is a parameter for the same reason it is on `joint_world`:
+    /// a joint's world position is only meaningful against one.
+    #[allow(clippy::too_many_arguments)]
+    pub fn clip_joint_world(
+        &self,
+        host: i64,
+        clip: i64,
+        time: f32,
+        joint: i64,
+        x: f32,
+        y: f32,
+        z: f32,
+        yaw: f32,
+        scale: f32,
+    ) -> Option<[f32; 3]> {
+        let local = self.clip_joint_pos(host, clip, time, joint)?;
+        let host_xform = Mat4::from_scale_rotation_translation(
+            glam::Vec3::splat(scale),
+            glam::Quat::from_rotation_y(yaw),
+            glam::Vec3::new(x, y, z),
+        );
+        let p = host_xform * glam::Vec4::new(local[0], local[1], local[2], 1.0);
+        Some([p.x, p.y, p.z])
+    }
+
+    /// One column of a joint's world rotation basis, sampled from a CLIP at a
+    /// TIME: which way a socketed prop POINTS on that frame of that move.
+    ///
+    /// The direction half of the pair above. A blade is a segment, so a hitbox
+    /// on the weapon needs where the fist is and which way the blade leaves it;
+    /// with only the first, a hitbox can only ever be a sphere at the hand.
+    pub fn clip_joint_basis(
+        &self,
+        host: i64,
+        clip: i64,
+        time: f32,
+        joint: i64,
+        axis: i64,
+        yaw: f32,
+    ) -> Option<[f32; 3]> {
+        let r = self.item(host)?;
+        let g = r.asset.model.as_ref().and_then(|m| {
+            crate::anim::clip_joint_global(m, clip.max(0) as usize, time, joint.max(0) as usize)
+        })?;
+        let m = Mat4::from_rotation_y(yaw) * g;
+        let c = match axis.clamp(0, 2) {
+            0 => m.x_axis,
+            1 => m.y_axis,
+            _ => m.z_axis,
+        };
+        let v = glam::Vec3::new(c.x, c.y, c.z);
+        if v.length() < 1e-9 {
+            return None;
+        }
+        let u = v.normalize();
+        Some([u.x, u.y, u.z])
+    }
+
+    pub fn clip_joint_pos(&self, host: i64, clip: i64, time: f32, joint: i64) -> Option<[f32; 3]> {
+        let r = self.item(host)?;
+        let g = r.asset.model.as_ref().and_then(|m| {
+            crate::anim::clip_joint_global(m, clip.max(0) as usize, time, joint.max(0) as usize)
+        })?;
+        let t = g.w_axis;
+        Some([t.x, t.y, t.z])
+    }
+
     pub fn joint_pos(&self, host: i64, joint: i64) -> Option<[f32; 3]> {
         let r = self.item(host)?;
         let g = r
