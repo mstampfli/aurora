@@ -204,6 +204,28 @@ fn wrapf(x: f64, lo: f64, hi: f64) -> f64 {
     let r = hi - lo
     if r <= 0.0 { lo } else { lo + fmodp(x - lo, r) }
 }
+// Positive INTEGER remainder -  for whole numbers.
+//
+// Aurora's `%` on a negative left operand is not something to rely on, and a
+// caller handing in a negative counter is a bug that should not become a
+// negative index. This folds it positive first.
+//
+// Here rather than in a game, because two modules of poly-souls had written it -
+// its animation controller keying a pose, and its rules cycling a resident's
+// gestures - and neither could import the other: the animator may not be a
+// dependency of the simulation. A shared arithmetic helper with no home is how
+// one implementation becomes two that agree by luck.
+fn modp(v: i64, m: i64) -> i64 {
+    if m <= 0 {
+        return 0
+    }
+    let mut x = v
+    if x < 0 {
+        x = 0 - x
+    }
+    x - m * (x / m)
+}
+
 // Positive floating remainder (Aurora `%` is integer-only).
 fn fmodp(a: f64, m: f64) -> f64 {
     let k = (a / m) as i64
