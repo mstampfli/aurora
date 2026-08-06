@@ -498,6 +498,7 @@ macro_rules! for_each_builtin {
         [scalar,   r3d_anim_play_upper,           aurora_r3d_anim_play_upper,            [I64, I64, I64, F64, F64, I64],                  void, owner]
         [scalar,   r3d_anim_aim_upper,            aurora_r3d_anim_aim_upper,             [I64, I64, I64, F64, F64, F64, I64],             void, owner]
         [scalar,   r3d_anim_blend,                aurora_r3d_anim_blend,                 [I64, I64, I64, F64, F64, F64, I64],             void, owner]
+        [scalar,   r3d_anim_blend_space,          aurora_r3d_anim_blend_space,           [I64, I64, I64, I64, I64, F64, F64, F64, F64, I64], void, owner]
         [scalar,   r3d_anim_seek,                 aurora_r3d_anim_seek,                  [I64, F64],                                      void, owner]
         [scalar,   r3d_anim_seek_upper,           aurora_r3d_anim_seek_upper,            [I64, F64],                                      void, owner]
         [scalar,   r3d_pose_bone,                 aurora_r3d_pose_bone,                  [I64, I64, F64, F64, F64],                       void, owner]

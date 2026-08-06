@@ -41,6 +41,22 @@ pub struct AnimPlayer {
     // Sustained two-clip BASE blend (e.g. idle <-> run by movement speed): when `bblend_on`, the
     // full-body base pose is lerp(clip, bclip2, bblend). `btime2` advances bclip2 independently, so
     // both loops play at their own cadence. Call blend() every frame to track a continuous value.
+    // THE DIRECTION AXIS. Each base slot is a PAIR of clips sampled at that
+    // slot's own clock and mixed by `bdir`, so locomotion is a 2x2 blend space:
+    // idle/walk or walk/run on one axis, and the two directional cycles either
+    // side of where the stick is pointing on the other.
+    //
+    // A pair rather than a wider set with its own phase model, because the
+    // clips in a tier have IDENTICAL durations - every walk in the pack is
+    // 1.0333s and every run is 0.7s - so two cycles started together on one
+    // clock stay in phase exactly. There is nothing to synchronise.
+    //
+    // Equal to their partners when nothing is asking for a direction, which is
+    // what makes the plain two-clip `blend` the same mechanism rather than a
+    // second one.
+    aclip2: usize,
+    bclip2b: usize,
+    bdir: f32,
     bclip2: usize,
     btime2: f32,
     bblend: f32,
@@ -100,6 +116,9 @@ impl Default for AnimPlayer {
             blend: 1.0,
             blend_rate: 0.0,
             posed: false,
+            aclip2: 0,
+            bclip2b: 0,
+            bdir: 0.0,
             bclip2: 0,
             btime2: 0.0,
             bblend: 0.0,
@@ -242,8 +261,51 @@ impl AnimPlayer {
         fade: f32,
         looping: bool,
     ) {
+        self.blend_space(
+            model, clip_a, clip_a, clip_b, clip_b, 0.0, weight, speed, fade, looping,
+        )
+    }
+
+    /// A 2x2 BLEND SPACE: two tiers, two directions in each, one weight along
+    /// each axis.
+    ///
+    /// `a0`/`a1` are the lower tier and `b0`/`b1` the upper - idle and walk, or
+    /// walk and run - and `dir` mixes within BOTH tiers at once, because a stick
+    /// pointing half-right points half-right whether you are walking or running.
+    ///
+    /// This exists because locomotion was quantised: six directional clips
+    /// chosen by thresholding the stick, so walking thirty degrees right showed
+    /// either a pure forward stride or a pure sideways one and never the mix.
+    /// The crossfade between them was correct and it is not what "too snappy"
+    /// means - a fade smooths the JOIN between two poses that are both wrong for
+    /// where the player is actually going.
+    ///
+    /// `blend` is this with both tiers collapsed, so there is one mechanism.
+    #[allow(clippy::too_many_arguments)]
+    pub fn blend_space(
+        &mut self,
+        model: &Model,
+        a0: usize,
+        a1: usize,
+        b0: usize,
+        b1: usize,
+        dir: f32,
+        weight: f32,
+        speed: f32,
+        fade: f32,
+        looping: bool,
+    ) {
+        let clip_a = a0;
+        let clip_b = b0;
         let entering = !self.bblend_on;
-        let swapped = !entering && (self.clip != clip_a || self.bclip2 != clip_b);
+        // The DIRECTION weight moving is not a swap. It is the axis this exists
+        // to make continuous, and treating it as a clip change would crossfade
+        // on every frame the stick moves - which is the snap, restored.
+        let swapped = !entering
+            && (self.clip != clip_a
+                || self.bclip2 != clip_b
+                || self.aclip2 != a1
+                || self.bclip2b != b1);
         if entering || swapped {
             // Crossfade out of whatever the base layer is SHOWING - which, when
             // already blending, is a composed pose rather than one clip. Its
@@ -276,6 +338,9 @@ impl AnimPlayer {
         self.bblend_on = true;
         self.clip = clip_a;
         self.bclip2 = clip_b;
+        self.aclip2 = a1;
+        self.bclip2b = b1;
+        self.bdir = dir.clamp(0.0, 1.0);
         self.bblend = weight.clamp(0.0, 1.0);
         self.looping = looping;
         self.speed = speed;
@@ -532,7 +597,11 @@ impl AnimPlayer {
             dt * base_spd,
             self.looping,
         );
+        let d = self.bdir.clamp(0.0, 1.0);
         let mut moved = travel(model, self.clip, step, self.time);
+        if self.aclip2 != self.clip {
+            moved = moved.lerp(travel(model, self.aclip2, step, self.time), d);
+        }
         // Weighted the same way, and in the same ORDER, as `sample_base_blend` composes the pose:
         // the sustained two-clip blend first, then the crossfade in from whatever came before it.
         if self.bblend_on {
@@ -542,7 +611,10 @@ impl AnimPlayer {
                 dt * self.speed,
                 self.looping,
             );
-            let b = travel(model, self.bclip2, step, self.btime2);
+            let mut b = travel(model, self.bclip2, step, self.btime2);
+            if self.bclip2b != self.bclip2 {
+                b = b.lerp(travel(model, self.bclip2b, step, self.btime2), d);
+            }
             moved = moved.lerp(b, self.bblend.clamp(0.0, 1.0));
         }
         if self.blend < 1.0 {
@@ -600,8 +672,9 @@ impl AnimPlayer {
         skel: &Skeleton,
         model: &Model,
     ) -> (Vec<Vec3>, Vec<Quat>, Vec<Vec3>) {
-        let (ta, ra, sa) = sample_locals(skel, model.clips.get(self.clip), self.time);
-        let (tb, rb, sb) = sample_locals(skel, model.clips.get(self.bclip2), self.btime2);
+        let d = self.bdir.clamp(0.0, 1.0);
+        let (ta, ra, sa) = sample_pair(skel, model, self.clip, self.aclip2, self.time, d);
+        let (tb, rb, sb) = sample_pair(skel, model, self.bclip2, self.bclip2b, self.btime2, d);
         let w = self.bblend.clamp(0.0, 1.0);
         let mut t = ta;
         let mut r = ra;
@@ -819,6 +892,39 @@ fn sample_locals(
     time: f32,
 ) -> (Vec<Vec3>, Vec<Quat>, Vec<Vec3>) {
     skel.sample(clip, time)
+}
+
+/// Two clips sampled at ONE clock and mixed - the direction axis of a blend
+/// space.
+///
+/// One clock rather than two because the members of a tier are the same cycle
+/// authored in different directions and share a duration exactly, so a single
+/// phase is not an approximation. `w` of 0 is the first clip alone, and the
+/// common case - a base slot that is not blending directions - passes the same
+/// clip twice and costs one extra sample of a pose that is then lerped with
+/// itself.
+fn sample_pair(
+    skel: &Skeleton,
+    model: &Model,
+    c0: usize,
+    c1: usize,
+    time: f32,
+    w: f32,
+) -> (Vec<Vec3>, Vec<Quat>, Vec<Vec3>) {
+    let (mut t, mut r, mut s) = sample_locals(skel, model.clips.get(c0), time);
+    if c1 == c0 || w <= 0.0001 {
+        return (t, r, s);
+    }
+    let (t1, r1, s1) = sample_locals(skel, model.clips.get(c1), time);
+    if w >= 0.9999 {
+        return (t1, r1, s1);
+    }
+    for i in 0..r.len() {
+        t[i] = t[i].lerp(t1[i], w);
+        r[i] = r[i].slerp(r1[i], w);
+        s[i] = s[i].lerp(s1[i], w);
+    }
+    (t, r, s)
 }
 
 /// Model-space global transform of one joint, sampled from a CLIP at a TIME -
@@ -1063,6 +1169,68 @@ mod play_is_idempotent {
         assert!((on_screen + 9.0).abs() < 1e-4, "on screen: {on_screen}");
         // The clip query is unmoved by any of that.
         assert!((at(0, 1.0) - 4.0).abs() < 1e-5);
+    }
+
+    // A blend space's DIRECTION axis has to move the pose continuously, which is
+    // the whole reason it exists: quantised locomotion showed a pure forward
+    // stride or a pure sideways one and never the mix, and a crossfade between
+    // them smooths the join between two poses that are both wrong.
+    //
+    // Asserted on the POSE, not on the weight that produces it - the weight
+    // being stored is what was already true of the old two-clip blend.
+    #[test]
+    fn the_direction_axis_moves_the_pose_continuously() {
+        let m = swinging_model();
+        let hand = 1;
+        let at = |dir: f32| {
+            let mut p = AnimPlayer::default();
+            // Both tiers the same pair, so `weight` cannot influence the answer
+            // and what is measured is the direction axis alone.
+            p.blend_space(&m, 0, 1, 0, 1, dir, 0.0, 1.0, 0.0, true);
+            // Half a cycle, not a whole one: these clips are a second long and
+            // loop, so advancing exactly their duration wraps them back to the
+            // pose they started in and measures nothing.
+            p.advance(&m, 0.5);
+            p.joint_global(&m, hand)
+                .expect("the rig has that joint")
+                .w_axis
+                .x
+        };
+        // Clip 0 takes the hand to +4 over its length and clip 1 to -9, so at
+        // half a cycle they stand at +2 and -4.5.
+        let ends = at(0.0);
+        let other = at(1.0);
+        assert!((ends - 2.0).abs() < 1e-4, "pure first: {ends}");
+        assert!((other + 4.5).abs() < 1e-4, "pure second: {other}");
+        // And halfway is halfway, rather than one or the other.
+        let mid = at(0.5);
+        assert!((mid + 1.25).abs() < 1e-4, "half and half: {mid}");
+        // Monotone across the sweep, with no step: this is what "lerp between
+        // them" asks for and what six thresholded clips cannot do.
+        let mut last = at(0.0);
+        for i in 1..=20 {
+            let now = at(i as f32 / 20.0);
+            let step = (now - last).abs();
+            assert!(step < 1.0, "a jump of {step} at {i}/20");
+            assert!(now < last, "not monotone at {i}/20: {last} -> {now}");
+            last = now;
+        }
+    }
+
+    // And the plain two-clip blend is the same mechanism with the axis collapsed,
+    // so there is one blend and not two that can drift apart.
+    #[test]
+    fn a_two_clip_blend_is_a_blend_space_with_no_direction() {
+        let m = swinging_model();
+        let mut a = AnimPlayer::default();
+        a.blend(&m, 0, 1, 0.25, 1.0, 0.0, true);
+        a.advance(&m, 1.0);
+        let mut b = AnimPlayer::default();
+        b.blend_space(&m, 0, 0, 1, 1, 0.0, 0.25, 1.0, 0.0, true);
+        b.advance(&m, 1.0);
+        let pa = a.joint_global(&m, 1).unwrap().w_axis.x;
+        let pb = b.joint_global(&m, 1).unwrap().w_axis.x;
+        assert!((pa - pb).abs() < 1e-6, "{pa} vs {pb}");
     }
 
     // A missing clip must be TELLABLE from a joint that really is at the origin.

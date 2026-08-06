@@ -21,7 +21,6 @@ const UNDOCUMENTED: &[&str] = &[
     "r3d_draw_on_joint",
     "r3d_anim_play_upper",
     "r3d_anim_aim_upper",
-    "r3d_anim_blend",
     "r3d_anim_seek_upper",
     "r3d_pose_bone",
     "r3d_clear_pose",

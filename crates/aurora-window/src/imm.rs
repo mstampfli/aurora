@@ -1313,6 +1313,25 @@ pub fn r3d_anim_blend(
         s.anim_blend(handle, clip_a, clip_b, weight, speed, fade, looping);
     });
 }
+/// A 2x2 blend space: two tiers, two directions in each.
+#[allow(clippy::too_many_arguments)]
+pub fn r3d_anim_blend_space(
+    handle: i64,
+    a0: i64,
+    a1: i64,
+    b0: i64,
+    b1: i64,
+    dir: f32,
+    weight: f32,
+    speed: f32,
+    fade: f32,
+    looping: bool,
+) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        s.anim_blend_space(handle, a0, a1, b0, b1, dir, weight, speed, fade, looping);
+    });
+}
 pub fn r3d_anim_seek(handle: i64, t: f32) {
     with_gfx((), |gf| {
         let (_, _, s) = gf.scene_mut();

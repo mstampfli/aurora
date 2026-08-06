@@ -1496,6 +1496,40 @@ impl Scene {
     /// Drive the FULL-BODY base as a sustained weighted blend of two clips (`clip_a` at weight 0,
     /// `clip_b` at weight 1) - e.g. idle <-> run by speed. Call every frame to update the weight; the
     /// first call crossfades in over `fade` so jump->land and similar transitions stay smooth.
+    /// A 2x2 blend space: two tiers, two directions in each. See
+    /// [`crate::anim::AnimPlayer::blend_space`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn anim_blend_space(
+        &mut self,
+        handle: i64,
+        a0: i64,
+        a1: i64,
+        b0: i64,
+        b1: i64,
+        dir: f32,
+        weight: f32,
+        speed: f32,
+        fade: f32,
+        looping: bool,
+    ) {
+        if let Some(r) = self.item_mut(handle) {
+            if let Some(model) = &r.asset.model {
+                r.player.blend_space(
+                    model,
+                    a0.max(0) as usize,
+                    a1.max(0) as usize,
+                    b0.max(0) as usize,
+                    b1.max(0) as usize,
+                    dir,
+                    weight,
+                    speed,
+                    fade,
+                    looping,
+                );
+            }
+        }
+    }
+
     pub fn anim_blend(
         &mut self,
         handle: i64,

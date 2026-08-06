@@ -3295,6 +3295,40 @@ pub extern "C" fn aurora_r3d_anim_blend(
         looping != 0,
     );
 }
+/// `r3d_anim_blend_space(h, a0, a1, b0, b1, dir, weight, speed, fade, looping)`:
+/// a 2x2 locomotion blend space.
+///
+/// `a0`/`a1` are the lower tier and `b0`/`b1` the upper - idle and walk, or walk
+/// and run - and `dir` mixes within BOTH at once. `r3d_anim_blend` is this with
+/// each tier collapsed to one clip, so a caller that has no direction axis is
+/// using the same mechanism rather than a different one.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn aurora_r3d_anim_blend_space(
+    h: i64,
+    a0: i64,
+    a1: i64,
+    b0: i64,
+    b1: i64,
+    dir: f64,
+    weight: f64,
+    speed: f64,
+    fade: f64,
+    looping: i64,
+) {
+    aurora_window::imm_r3d_anim_blend_space(
+        h,
+        a0,
+        a1,
+        b0,
+        b1,
+        dir as f32,
+        weight as f32,
+        speed as f32,
+        fade as f32,
+        looping != 0,
+    );
+}
 #[no_mangle]
 pub extern "C" fn aurora_r3d_anim_seek(h: i64, t: f64) {
     aurora_window::imm_r3d_anim_seek(h, t as f32);

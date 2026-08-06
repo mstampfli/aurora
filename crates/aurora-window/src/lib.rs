@@ -36,6 +36,7 @@ pub use imm::{
     mouse_delta as imm_mouse_delta, open as imm_open, poll_pads, present as imm_present,
     r3d_anim_aim_upper as imm_r3d_anim_aim_upper, r3d_anim_blend as imm_r3d_anim_blend,
     r3d_anim_blend_clip as imm_r3d_anim_blend_clip,
+    r3d_anim_blend_space as imm_r3d_anim_blend_space,
     r3d_anim_blend_weight as imm_r3d_anim_blend_weight, r3d_anim_clip as imm_r3d_anim_clip,
     r3d_anim_clip_upper as imm_r3d_anim_clip_upper, r3d_anim_done as imm_r3d_anim_done,
     r3d_anim_done_upper as imm_r3d_anim_done_upper, r3d_anim_play as imm_r3d_anim_play,
