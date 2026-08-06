@@ -1814,6 +1814,18 @@ impl Scene {
         }
     }
 
+    /// Like [`draw`] but adds `flash` as emissive LIGHT, after the texture. See
+    /// [`crate::render::Renderer::draw_flash`] for why a tint cannot do this.
+    pub fn draw_flash(&mut self, handle: i64, transform: Mat4, flash: [f32; 3]) {
+        let Some((joints, prims)) = self.draw_parts(handle) else {
+            return;
+        };
+        for (mesh, mat) in prims {
+            self.renderer
+                .draw_flash(mesh, mat, transform, joints.clone(), flash);
+        }
+    }
+
     /// Like [`draw`] but with an energy-shield Fresnel rim (cyan, `strength` 0..1, animated
     /// by `time`).
     pub fn draw_shield(&mut self, handle: i64, transform: Mat4, strength: f32, time: f32) {

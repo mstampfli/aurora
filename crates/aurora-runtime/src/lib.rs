@@ -2994,6 +2994,42 @@ pub extern "C" fn aurora_r3d_draw_tint(
         b as f32,
     );
 }
+/// `r3d_draw_flash(h, x, y, z, yaw, pitch, roll, scale, r, g, b)`: draw a model
+/// with `r`,`g`,`b` added as emissive LIGHT, after the texture.
+///
+/// `r3d_draw_tint` shifts the base colour and the texture multiplies afterwards,
+/// so on a dark surface it scales an already-small number and cannot brighten
+/// anything - measured at 2.13 of 255 with the tint driven to -1.0 on black
+/// armour. A hit flash needs light added, not albedo shifted.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn aurora_r3d_draw_flash(
+    h: i64,
+    px: f64,
+    py: f64,
+    pz: f64,
+    yaw: f64,
+    pitch: f64,
+    roll: f64,
+    scale: f64,
+    r: f64,
+    g: f64,
+    b: f64,
+) {
+    aurora_window::imm_r3d_draw_flash(
+        h,
+        px as f32,
+        py as f32,
+        pz as f32,
+        yaw as f32,
+        pitch as f32,
+        roll as f32,
+        scale as f32,
+        r as f32,
+        g as f32,
+        b as f32,
+    );
+}
 #[allow(clippy::too_many_arguments)]
 #[no_mangle]
 pub extern "C" fn aurora_r3d_draw_shield(

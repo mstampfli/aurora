@@ -1067,6 +1067,37 @@ pub fn r3d_draw_tint(
     });
 }
 
+/// Draw a model with `r`,`g`,`b` added as emissive LIGHT, after the texture.
+///
+/// `r3d_draw_tint` shifts the base colour, which the texture then multiplies, so
+/// on a dark surface it cannot brighten anything - measured at 2.13 of 255 with
+/// the tint driven all the way to -1.0 on black armour. This is the mechanism a
+/// hit flash needs.
+#[allow(clippy::too_many_arguments)]
+pub fn r3d_draw_flash(
+    handle: i64,
+    px: f32,
+    py: f32,
+    pz: f32,
+    yaw: f32,
+    pitch: f32,
+    roll: f32,
+    scale: f32,
+    r: f32,
+    g: f32,
+    b: f32,
+) {
+    with_gfx((), |gf| {
+        let (_, _, s) = gf.scene_mut();
+        let m = Mat4::from_scale_rotation_translation(
+            Vec3::splat(scale),
+            Quat::from_euler(EulerRot::YXZ, yaw, pitch, roll),
+            Vec3::new(px, py, pz),
+        );
+        s.draw_flash(handle, m, [r, g, b]);
+    });
+}
+
 /// Draw a model with an energy-shield Fresnel rim (cyan crackle): strength 0..1, animated by time.
 #[allow(clippy::too_many_arguments)]
 pub fn r3d_draw_shield(

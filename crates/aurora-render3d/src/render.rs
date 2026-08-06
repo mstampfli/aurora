@@ -125,6 +125,16 @@ struct ObjU {
     normal_mat: [[f32; 4]; 4],
     params: [f32; 4],  // x = skinned, yzw = tint offset
     params2: [f32; 4], // x = shield Fresnel strength, y = time
+    // A per-draw EMISSIVE, added after the texture rather than folded into the
+    // base colour.
+    //
+    // `params.yzw` shifts `base_color`, which the texture then multiplies - so on
+    // a dark surface it scales an already-small number and cannot brighten
+    // anything. Measured in poly-souls: a swordsman's own pixels average 14.9 of
+    // 255, and driving that tint to -1.0 moved the picture by 2.13. There is no
+    // value of it that reads, which is why a hit flash needed light ADDED rather
+    // than albedo shifted.
+    params3: [f32; 4], // rgb added to emissive, w unused
 }
 
 #[repr(C)]
@@ -230,6 +240,8 @@ struct DrawCmd {
     tint: [f32; 3],
     /// Energy-shield Fresnel rim: [strength, time]. strength 0 = off.
     shield: [f32; 2],
+    /// A per-draw EMISSIVE, added as light after the texture. (0,0,0) is off.
+    flash: [f32; 3],
     /// Viewmodel (first-person arms/weapon): drawn ONLY in the main color pass, skipped in the
     /// shadow cascades + SSAO prepass so it never casts a world shadow or darkens AO at the camera.
     viewmodel: bool,
@@ -1743,6 +1755,42 @@ impl Renderer3D {
             joints,
             tint,
             shield: [0.0, 0.0],
+            flash: [0.0, 0.0, 0.0],
+            viewmodel: self.vm_mode,
+        });
+    }
+
+    /// Like [`draw`] but adds `flash` to the surface as EMISSIVE LIGHT, after the
+    /// texture rather than before it.
+    ///
+    /// [`Self::draw_tint`] shifts `base_color`, which the texture then
+    /// multiplies, so on a dark surface it scales an already-small number and
+    /// cannot brighten anything. Measured in poly-souls: a swordsman's own pixels
+    /// average 14.9 of 255, and driving that tint all the way to -1.0 moved the
+    /// picture by 2.13. There is no value of it that reads on black armour.
+    ///
+    /// This is the mechanism a hit flash needs - the same one the energy shield
+    /// already used, without the Fresnel and with an arbitrary colour.
+    pub fn draw_flash(
+        &mut self,
+        mesh: MeshId,
+        material: MaterialId,
+        model: Mat4,
+        joints: Option<Arc<Vec<Mat4>>>,
+        flash: [f32; 3],
+    ) {
+        if !self.meshes.contains(mesh) {
+            return;
+        }
+        let material = self.resolve_material(material);
+        self.queue_cmds.push(DrawCmd {
+            mesh,
+            material,
+            model,
+            joints,
+            tint: [0.0, 0.0, 0.0],
+            shield: [0.0, 0.0],
+            flash,
             viewmodel: self.vm_mode,
         });
     }
@@ -1769,6 +1817,7 @@ impl Renderer3D {
             joints,
             tint: [0.0, 0.0, 0.0],
             shield: [strength, time],
+            flash: [0.0, 0.0, 0.0],
             viewmodel: self.vm_mode,
         });
     }
@@ -1879,6 +1928,7 @@ impl Renderer3D {
                 normal_mat: normal_mat.to_cols_array_2d(),
                 params: [skinned_flag, cmd.tint[0], cmd.tint[1], cmd.tint[2]],
                 params2: [cmd.shield[0], cmd.shield[1], 0.0, 0.0],
+                params3: [cmd.flash[0], cmd.flash[1], cmd.flash[2], 0.0],
             };
             let off = i as u64 * stride;
             obj_bytes[off as usize..off as usize + std::mem::size_of::<ObjU>()]
@@ -2644,7 +2694,7 @@ fn shader() -> &'static str {
 struct CascadeU { vp: mat4x4<f32> };
 @group(0) @binding(3) var<uniform> csm: CascadeU;
 
-struct ObjU { model: mat4x4<f32>, normal_mat: mat4x4<f32>, params: vec4<f32>, params2: vec4<f32> };
+struct ObjU { model: mat4x4<f32>, normal_mat: mat4x4<f32>, params: vec4<f32>, params2: vec4<f32>, params3: vec4<f32> };
 @group(1) @binding(0) var<uniform> obj: ObjU;
 struct Joints { m: array<mat4x4<f32>, 128> };
 @group(1) @binding(1) var<uniform> joints: Joints;
@@ -2931,6 +2981,9 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
         let field = (0.45 + 1.0 * fres) * (0.65 + 0.35 * crackle) * (0.75 + 0.25 * scan) * pulse;
         emissive = emissive + vec3<f32>(0.3, 0.85, 1.0) * field * shield_str * 4.5;
     }
+    // AND THE PER-DRAW FLASH, added as light rather than as albedo. A tint that
+    // shifts base_color is multiplied away by a dark texture; this is not.
+    emissive = emissive + obj.params3.rgb;
     let ao = textureSample(ao_tex, ao_samp, in.clip.xy / g.screen.xy).r;
     return shade(in.world_pos, n, albedo.rgb, albedo.a, metallic, rough, emissive, ao);
 }
